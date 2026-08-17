@@ -5,7 +5,7 @@
 import { describe, it, expect, afterEach, vi } from 'vitest';
 import { http, HttpResponse } from 'msw';
 import { setupServer } from 'msw/node';
-import { setAuthToken, getAuthToken, api, setStreamToken } from '../../api/client';
+import { setAuthToken, getAuthToken, api } from '../../api/client';
 
 // Mock sessionStorage (H-5: tokens are stored in sessionStorage, not localStorage)
 const sessionStorageMock = {
