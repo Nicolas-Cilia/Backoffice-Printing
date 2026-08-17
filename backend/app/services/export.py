@@ -21,7 +21,6 @@ class ExportService:
         "status",
         "quantity",
         "printer_id",
-        "project_name",
         "filament_type",
         "filament_used_grams",
         "print_time_seconds",
@@ -48,7 +47,6 @@ class ExportService:
         "status": "Status",
         "quantity": "Items Printed",
         "printer_id": "Printer ID",
-        "project_name": "Project",
         "filament_type": "Filament Type",
         "filament_used_grams": "Filament (g)",
         "print_time_seconds": "Print Time (s)",
@@ -75,7 +73,6 @@ class ExportService:
         format: str = "csv",
         fields: list[str] | None = None,
         printer_id: int | None = None,
-        project_id: int | None = None,
         status: str | None = None,
         date_from: datetime | None = None,
         date_to: datetime | None = None,
@@ -88,7 +85,6 @@ class ExportService:
             format: Export format ('csv' or 'xlsx')
             fields: List of fields to include (None = all default fields)
             printer_id: Filter by printer
-            project_id: Filter by project
             status: Filter by status
             date_from: Filter by start date
             date_to: Filter by end date
@@ -105,7 +101,6 @@ class ExportService:
         # gone is worse than useless for reconciling anything (#2731).
         query = (
             select(PrintArchive)
-            .options(selectinload(PrintArchive.project))
             .where(PrintArchive.deleted_at.is_(None))
             .order_by(PrintArchive.created_at.desc())
         )
@@ -113,8 +108,6 @@ class ExportService:
         # Apply filters
         if printer_id:
             query = query.where(PrintArchive.printer_id == printer_id)
-        if project_id:
-            query = query.where(PrintArchive.project_id == project_id)
         if status:
             query = query.where(PrintArchive.status == status)
         if date_from:
@@ -168,7 +161,6 @@ class ExportService:
         format: str = "csv",
         days: int = 30,
         printer_id: int | None = None,
-        project_id: int | None = None,
         created_by_id: int | None = None,
     ) -> tuple[bytes, str, str]:
         """Export statistics summary to CSV or Excel format.
@@ -177,7 +169,6 @@ class ExportService:
             format: Export format ('csv' or 'xlsx')
             days: Number of days to include in stats
             printer_id: Filter by printer
-            project_id: Filter by project
             created_by_id: Filter by user who created the print (-1 for no user)
 
         Returns:
@@ -190,7 +181,6 @@ class ExportService:
         analysis = await analysis_service.analyze_failures(
             days=days,
             printer_id=printer_id,
-            project_id=project_id,
             created_by_id=created_by_id,
         )
 
@@ -251,9 +241,7 @@ class ExportService:
         """Convert an archive to a row of values."""
         row = []
         for field in fields:
-            if field == "project_name":
-                value = archive.project.name if archive.project else None
-            elif field in ("started_at", "completed_at", "created_at"):
+            if field in ("started_at", "completed_at", "created_at"):
                 value = getattr(archive, field)
                 if value:
                     value = value.isoformat()

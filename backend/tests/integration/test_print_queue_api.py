@@ -182,61 +182,7 @@ class TestPrintQueueAPI:
         assert result["skip_filament_check"] is False
 
     @pytest.mark.asyncio
-    @pytest.mark.integration
-    async def test_add_to_queue_with_project_id(
-        self, async_client: AsyncClient, printer_factory, archive_factory, db_session
-    ):
-        """#932: queue items created from the project view carry project_id forward."""
-        from backend.app.models.project import Project
-
-        printer = await printer_factory()
-        archive = await archive_factory()
-        project = Project(name="Queue Project")
-        db_session.add(project)
-        await db_session.commit()
-        await db_session.refresh(project)
-
-        data = {
-            "printer_id": printer.id,
-            "archive_id": archive.id,
-            "project_id": project.id,
-        }
-        response = await async_client.post("/api/v1/queue/", json=data)
-        assert response.status_code == 200
-        result = response.json()
-        # The response schema may or may not echo project_id; the stored row is
-        # what matters, so verify via DB.
-        from sqlalchemy import select
-
-        from backend.app.models.print_queue import PrintQueueItem
-
-        row = (await db_session.execute(select(PrintQueueItem).where(PrintQueueItem.id == result["id"]))).scalar_one()
-        assert row.project_id == project.id
-
     @pytest.mark.asyncio
-    @pytest.mark.integration
-    async def test_add_to_queue_invalid_project_id_returns_404(
-        self, async_client: AsyncClient, printer_factory, archive_factory, db_session
-    ):
-        """#932: bogus project_id must be rejected before the FK constraint fires.
-
-        Regression guard for the pre-check added to add_to_queue. Without the
-        validation, a nonexistent project_id would reach db.commit() and raise
-        an IntegrityError → 500. The pre-check must convert that to a 404 so
-        the UI gets a clean error it can surface.
-        """
-        printer = await printer_factory()
-        archive = await archive_factory()
-
-        data = {
-            "printer_id": printer.id,
-            "archive_id": archive.id,
-            "project_id": 999999,  # nonexistent
-        }
-        response = await async_client.post("/api/v1/queue/", json=data)
-        assert response.status_code == 404
-        assert "project" in response.json()["detail"].lower()
-
     @pytest.mark.asyncio
     @pytest.mark.integration
     async def test_add_to_queue_with_ams_mapping(

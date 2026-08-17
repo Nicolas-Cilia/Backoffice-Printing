@@ -68,8 +68,6 @@ async def legacy_engine():
         print_log,
         print_queue,
         printer,
-        project,
-        project_bom,
         settings,
         slot_preset,
         smart_plug,

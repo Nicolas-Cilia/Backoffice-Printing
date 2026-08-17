@@ -29,7 +29,6 @@ from backend.app.models.archive import PrintArchive
 from backend.app.models.filament import Filament
 from backend.app.models.notification import NotificationProvider
 from backend.app.models.printer import Printer
-from backend.app.models.project import Project
 from backend.app.models.settings import Settings
 from backend.app.models.smart_plug import SmartPlug
 from backend.app.models.user import User
@@ -842,9 +841,6 @@ async def _collect_support_info() -> dict:
 
         result = await db.execute(select(func.count(Filament.id)))
         info["database"]["filaments_total"] = result.scalar() or 0
-
-        result = await db.execute(select(func.count(Project.id)))
-        info["database"]["projects_total"] = result.scalar() or 0
 
         result = await db.execute(select(func.count(SmartPlug.id)))
         info["database"]["smart_plugs_total"] = result.scalar() or 0

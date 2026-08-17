@@ -22,7 +22,6 @@ from backend.app.models.pipeline_run import PipelineJob, PipelineRun
 from backend.app.models.print_batch import PrintBatch
 from backend.app.models.printer import Printer
 from backend.app.models.printer_sensor_history import PrinterSensorHistory
-from backend.app.models.project import Project
 from backend.app.models.settings import Settings
 from backend.app.models.slicer_pipeline import SlicerPipeline
 from backend.app.models.smart_plug import SmartPlug

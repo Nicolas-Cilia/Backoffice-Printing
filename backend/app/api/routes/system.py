@@ -22,7 +22,6 @@ from backend.app.models.archive import PrintArchive
 from backend.app.models.filament import Filament
 from backend.app.models.print_log import PrintLogEntry
 from backend.app.models.printer import Printer
-from backend.app.models.project import Project
 from backend.app.models.smart_plug import SmartPlug
 from backend.app.models.user import User
 from backend.app.services.log_health import ScanResult, scan_logs
@@ -410,7 +409,6 @@ async def get_system_info(
     archive_count = await db.scalar(select(func.count(PrintArchive.id)))
     printer_count = await db.scalar(select(func.count(Printer.id)))
     filament_count = await db.scalar(select(func.count(Filament.id)))
-    project_count = await db.scalar(select(func.count(Project.id)))
     smart_plug_count = await db.scalar(select(func.count(SmartPlug.id)))
 
     # Archive stats by status
@@ -528,7 +526,6 @@ async def get_system_info(
             "archives_printing": printing_count,
             "printers": printer_count,
             "filaments": filament_count,
-            "projects": project_count,
             "smart_plugs": smart_plug_count,
             "total_print_time_seconds": total_print_time,
             "total_print_time_formatted": format_uptime(total_print_time),

@@ -65,12 +65,6 @@ class Permission(StrEnum):
     # gated by the existing LIBRARY_DELETE_* permissions instead.
     LIBRARY_PURGE = "library:purge"
 
-    # Projects
-    PROJECTS_READ = "projects:read"
-    PROJECTS_CREATE = "projects:create"
-    PROJECTS_UPDATE = "projects:update"
-    PROJECTS_DELETE = "projects:delete"
-
     # Filaments
     FILAMENTS_READ = "filaments:read"
     FILAMENTS_CREATE = "filaments:create"
@@ -235,10 +229,6 @@ PERMISSION_CATEGORIES = {
         Permission.LIBRARY_PURGE,
     ],
     "Projects": [
-        Permission.PROJECTS_READ,
-        Permission.PROJECTS_CREATE,
-        Permission.PROJECTS_UPDATE,
-        Permission.PROJECTS_DELETE,
     ],
     "Filaments": [
         Permission.FILAMENTS_READ,
@@ -403,10 +393,6 @@ DEFAULT_GROUPS = {
             # account binding.
             Permission.ORCA_CLOUD_AUTH.value,
             # Projects - full access
-            Permission.PROJECTS_READ.value,
-            Permission.PROJECTS_CREATE.value,
-            Permission.PROJECTS_UPDATE.value,
-            Permission.PROJECTS_DELETE.value,
             # Filaments - full access
             Permission.FILAMENTS_READ.value,
             Permission.FILAMENTS_CREATE.value,
@@ -479,7 +465,6 @@ DEFAULT_GROUPS = {
             Permission.ARCHIVES_READ_OWN.value,
             Permission.QUEUE_READ_OWN.value,
             Permission.LIBRARY_READ_OWN.value,
-            Permission.PROJECTS_READ.value,
             Permission.FILAMENTS_READ.value,
             Permission.INVENTORY_READ.value,
             Permission.INVENTORY_VIEW_ASSIGNMENTS.value,

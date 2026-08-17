@@ -939,16 +939,21 @@ class TestLibraryOwnershipPermissions(TestOwnershipPermissionsSetup):
     async def test_operator_cannot_delete_linked_folder(
         self, async_client: AsyncClient, auth_setup, library_folder_factory, db_session
     ):
-        """Project/archive links are created via update_all, so unlinking by
+        """Archive links are created via update_all, so unlinking by
         deletion stays admin-only even for empty folders."""
-        from backend.app.models.project import Project
+        from backend.app.models.archive import PrintArchive
 
-        project = Project(name="LinkTestProject")
-        db_session.add(project)
+        archive = PrintArchive(
+            filename="link-test.3mf",
+            file_path="archives/link-test.3mf",
+            file_size=1,
+            status="completed",
+        )
+        db_session.add(archive)
         await db_session.commit()
-        await db_session.refresh(project)
+        await db_session.refresh(archive)
 
-        folder = await library_folder_factory(name="LinkedFolder", project_id=project.id)
+        folder = await library_folder_factory(name="LinkedFolder", archive_id=archive.id)
 
         response = await async_client.delete(
             f"/api/v1/library/folders/{folder.id}",

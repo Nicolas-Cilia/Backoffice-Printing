@@ -33,7 +33,6 @@ from backend.app.core.tasks import spawn_background_task
 from backend.app.models.archive import PrintArchive
 from backend.app.models.library import LibraryFile, LibraryFileTag, LibraryFolder
 from backend.app.models.print_queue import PrintQueueItem
-from backend.app.models.project import Project
 from backend.app.models.user import User
 from backend.app.schemas.library import (
     AddToQueueError,
@@ -743,10 +742,9 @@ async def list_folders(
     # Prevent browser caching of folder list
     response.headers["Cache-Control"] = "no-cache, no-store, must-revalidate"
 
-    # Get all folders with project and archive joins
+    # Get all folders with the archive join
     result = await db.execute(
-        select(LibraryFolder, Project.name, PrintArchive.print_name)
-        .outerjoin(Project, LibraryFolder.project_id == Project.id)
+        select(LibraryFolder, PrintArchive.print_name)
         .outerjoin(PrintArchive, LibraryFolder.archive_id == PrintArchive.id)
         .order_by(LibraryFolder.name)
     )
@@ -783,7 +781,7 @@ async def list_folders(
     folder_map = {}
     root_folders = []
 
-    for folder, project_name, archive_name in rows:
+    for folder, archive_name in rows:
         own_activity = folder.fs_modified_at or folder.updated_at
         latest_file = latest_file_activity.get(folder.id)
         if latest_file is not None and latest_file > own_activity:
@@ -792,9 +790,7 @@ async def list_folders(
             id=folder.id,
             name=folder.name,
             parent_id=folder.parent_id,
-            project_id=folder.project_id,
             archive_id=folder.archive_id,
-            project_name=project_name,
             archive_name=archive_name,
             is_external=folder.is_external,
             external_path=folder.external_path,
@@ -806,7 +802,7 @@ async def list_folders(
         folder_map[folder.id] = folder_item
 
     # Link children to parents
-    for folder, _, _ in rows:
+    for folder, _ in rows:
         folder_item = folder_map[folder.id]
         if folder.parent_id is None:
             root_folders.append(folder_item)
@@ -836,67 +832,6 @@ async def list_folders(
         _bubble(root)
 
     return root_folders
-
-
-@router.get("/folders/by-project/{project_id}", response_model=list[FolderResponse])
-async def get_folders_by_project(
-    project_id: int,
-    db: AsyncSession = Depends(get_db),
-    _: tuple[User | None, bool] = Depends(
-        require_ownership_permission(
-            Permission.LIBRARY_READ_ALL,
-            Permission.LIBRARY_READ_OWN,
-        )
-    ),
-):
-    """Get all folders linked to a specific project."""
-    result = await db.execute(
-        select(LibraryFolder, Project.name)
-        .outerjoin(Project, LibraryFolder.project_id == Project.id)
-        .where(LibraryFolder.project_id == project_id)
-        .order_by(LibraryFolder.name)
-    )
-    rows = result.all()
-
-    folders = []
-    for folder, project_name in rows:
-        # Get file count + latest file activity (#1770/#2680) in one trip. Prefer
-        # the real on-disk mtime (external scans), fall back to the DB updated_at.
-        agg_result = await db.execute(
-            select(
-                func.count(LibraryFile.id),
-                func.max(func.coalesce(LibraryFile.fs_modified_at, LibraryFile.updated_at)),
-            ).where(
-                LibraryFile.folder_id == folder.id,
-                LibraryFile.deleted_at.is_(None),
-            )
-        )
-        file_count, latest_file = agg_result.one()
-        file_count = file_count or 0
-        own_activity = folder.fs_modified_at or folder.updated_at
-        latest_activity_at = max(own_activity, latest_file) if latest_file is not None else own_activity
-
-        folders.append(
-            FolderResponse(
-                id=folder.id,
-                name=folder.name,
-                parent_id=folder.parent_id,
-                project_id=folder.project_id,
-                archive_id=folder.archive_id,
-                project_name=project_name,
-                archive_name=None,
-                is_external=folder.is_external,
-                external_path=folder.external_path,
-                external_readonly=folder.external_readonly,
-                external_show_hidden=folder.external_show_hidden,
-                file_count=file_count,
-                latest_activity_at=latest_activity_at,
-                created_at=folder.created_at,
-                updated_at=folder.updated_at,
-            )
-        )
-
-    return folders
 
 
 @router.get("/folders/by-archive/{archive_id}", response_model=list[FolderResponse])
@@ -942,9 +877,7 @@ async def get_folders_by_archive(
                 id=folder.id,
                 name=folder.name,
                 parent_id=folder.parent_id,
-                project_id=folder.project_id,
                 archive_id=folder.archive_id,
-                project_name=None,
                 archive_name=archive_name,
                 is_external=folder.is_external,
                 external_path=folder.external_path,
@@ -974,15 +907,6 @@ async def create_folder(
         if not parent_result.scalar_one_or_none():
             raise HTTPException(status_code=404, detail="Parent folder not found")
 
-    # Verify project exists if specified
-    project_name = None
-    if data.project_id is not None:
-        project_result = await db.execute(select(Project).where(Project.id == data.project_id))
-        project = project_result.scalar_one_or_none()
-        if not project:
-            raise HTTPException(status_code=404, detail="Project not found")
-        project_name = project.name
-
     # Verify archive exists if specified
     archive_name = None
     if data.archive_id is not None:
@@ -995,7 +919,6 @@ async def create_folder(
     folder = LibraryFolder(
         name=data.name,
         parent_id=data.parent_id,
-        project_id=data.project_id,
         archive_id=data.archive_id,
     )
     db.add(folder)
@@ -1006,9 +929,7 @@ async def create_folder(
         id=folder.id,
         name=folder.name,
         parent_id=folder.parent_id,
-        project_id=folder.project_id,
         archive_id=folder.archive_id,
-        project_name=project_name,
         archive_name=archive_name,
         is_external=folder.is_external,
         external_path=folder.external_path,
@@ -1036,8 +957,7 @@ async def get_folder(
 ):
     """Get a folder by ID."""
     result = await db.execute(
-        select(LibraryFolder, Project.name, PrintArchive.print_name)
-        .outerjoin(Project, LibraryFolder.project_id == Project.id)
+        select(LibraryFolder, PrintArchive.print_name)
         .outerjoin(PrintArchive, LibraryFolder.archive_id == PrintArchive.id)
         .where(LibraryFolder.id == folder_id)
     )
@@ -1046,7 +966,7 @@ async def get_folder(
     if not row:
         raise HTTPException(status_code=404, detail="Folder not found")
 
-    folder, project_name, archive_name = row
+    folder, archive_name = row
 
     # Get file count + latest file activity (#1770) in one trip
     agg_result = await db.execute(
@@ -1066,9 +986,7 @@ async def get_folder(
         id=folder.id,
         name=folder.name,
         parent_id=folder.parent_id,
-        project_id=folder.project_id,
         archive_id=folder.archive_id,
-        project_name=project_name,
         archive_name=archive_name,
         is_external=folder.is_external,
         external_path=folder.external_path,
@@ -1186,17 +1104,6 @@ async def update_folder(
         else:
             folder.parent_id = None
 
-    # Update project_id (0 to unlink)
-    if data.project_id is not None:
-        if data.project_id == 0:
-            folder.project_id = None
-        else:
-            # Verify project exists
-            project_result = await db.execute(select(Project).where(Project.id == data.project_id))
-            if not project_result.scalar_one_or_none():
-                raise HTTPException(status_code=404, detail="Project not found")
-            folder.project_id = data.project_id
-
     # Update archive_id (0 to unlink)
     if data.archive_id is not None:
         if data.archive_id == 0:
@@ -1225,12 +1132,8 @@ async def update_folder(
     file_count = file_count or 0
     latest_activity_at = max(folder.updated_at, latest_file) if latest_file is not None else folder.updated_at
 
-    # Get project and archive names
-    project_name = None
+    # Get archive name
     archive_name = None
-    if folder.project_id:
-        project_result = await db.execute(select(Project.name).where(Project.id == folder.project_id))
-        project_name = project_result.scalar()
     if folder.archive_id:
         archive_result = await db.execute(select(PrintArchive.print_name).where(PrintArchive.id == folder.archive_id))
         archive_name = archive_result.scalar()
@@ -1239,9 +1142,7 @@ async def update_folder(
         id=folder.id,
         name=folder.name,
         parent_id=folder.parent_id,
-        project_id=folder.project_id,
         archive_id=folder.archive_id,
-        project_name=project_name,
         archive_name=archive_name,
         is_external=folder.is_external,
         external_path=folder.external_path,
@@ -1265,8 +1166,8 @@ async def _restricted_folder_delete_blocker(db: AsyncSession, folder: LibraryFol
     """
     if folder.is_external:
         return "External folders can only be deleted by users with library:delete_all"
-    if folder.project_id is not None or folder.archive_id is not None:
-        return "Folders linked to a project or archive can only be deleted by users with library:delete_all"
+    if folder.archive_id is not None:
+        return "Folders linked to an archive can only be deleted by users with library:delete_all"
 
     child_result = await db.execute(select(func.count(LibraryFolder.id)).where(LibraryFolder.parent_id == folder.id))
     if (child_result.scalar() or 0) > 0:
@@ -1550,7 +1451,6 @@ async def create_external_folder(
         id=folder.id,
         name=folder.name,
         parent_id=folder.parent_id,
-        project_id=None,
         archive_id=None,
         is_external=True,
         external_path=folder.external_path,
@@ -1919,7 +1819,6 @@ async def scan_external_folder(
 async def list_files(
     response: Response,
     folder_id: int | None = None,
-    project_id: int | None = None,
     include_root: bool = True,
     internal_only: bool = False,
     external_only: bool = False,
@@ -1933,11 +1832,10 @@ async def list_files(
         )
     ),
 ):
-    """List files, optionally filtered by folder or project.
+    """List files, optionally filtered by folder.
 
     Args:
         folder_id: Filter by folder ID. If None and include_root=True, returns root files.
-        project_id: Return all files across folders linked to this project (bulk fetch, avoids N+1).
         include_root: If True and folder_id is None, returns files at root level.
                      If False and folder_id is None, returns all files.
         internal_only: Restrict the result to files in managed storage (`is_external=False`).
@@ -1975,7 +1873,7 @@ async def list_files(
         # Cross-cutting filter — every requested tag must be present on the
         # file. JOIN + GROUP BY + HAVING COUNT(DISTINCT) is portable across
         # SQLite and Postgres without dialect tricks. We deliberately skip
-        # the folder / project / include_root scoping below so the result
+        # the folder / include_root scoping below so the result
         # is the global "all files carrying these tags".
         unique_tag_ids = list(dict.fromkeys(tag_ids))
         query = (
@@ -1995,10 +1893,6 @@ async def list_files(
         query = query.where(LibraryFile.folder_id.in_(select(descendants.c.id)))
     elif folder_id is not None:
         query = query.where(LibraryFile.folder_id == folder_id)
-    elif project_id is not None:
-        # Single join instead of one query per folder (avoids N+1 pattern)
-        query = query.join(LibraryFolder, LibraryFile.folder_id == LibraryFolder.id)
-        query = query.where(LibraryFolder.project_id == project_id)
     elif include_root:
         query = query.where(LibraryFile.folder_id.is_(None))
 
@@ -2668,17 +2562,6 @@ async def add_files_to_queue(
     result = await db.execute(LibraryFile.active().where(LibraryFile.id.in_(request.file_ids)))
     files = {f.id: f for f in result.scalars().all()}
 
-    # Project attribution (#1897): a file queued from a project-linked folder
-    # inherits that project, so the resulting archive counts toward the
-    # project's progress. A file's own project link wins over its folder's.
-    folder_ids = {f.folder_id for f in files.values() if f.folder_id is not None}
-    folder_projects: dict[int, int | None] = {}
-    if folder_ids:
-        folder_result = await db.execute(
-            select(LibraryFolder.id, LibraryFolder.project_id).where(LibraryFolder.id.in_(folder_ids))
-        )
-        folder_projects = dict(folder_result.all())
-
     # Get max position for queue ordering
     pos_result = await db.execute(select(func.coalesce(func.max(PrintQueueItem.position), 0)))
     max_position = pos_result.scalar() or 0
@@ -2716,8 +2599,6 @@ async def add_files_to_queue(
             queue_item = PrintQueueItem(
                 printer_id=None,  # Unassigned
                 library_file_id=file_id,
-                project_id=lib_file.project_id
-                or (folder_projects.get(lib_file.folder_id) if lib_file.folder_id is not None else None),
                 position=max_position,
                 status="pending",
             )
@@ -4176,7 +4057,7 @@ async def slice_and_persist_as_archive(
     job_id: int | None = None,
 ):
     """Slice a model and save the result as a new ``PrintArchive`` row,
-    inheriting printer / project / makerworld metadata from the source
+    inheriting printer / makerworld metadata from the source
     archive. Always exports as a `.gcode.3mf` so the existing thumbnail
     and plates infrastructure (which expects a zip-shaped 3MF) works on
     the new archive. Returns ``SliceArchiveResponse``.
@@ -4301,7 +4182,6 @@ async def slice_and_persist_as_archive(
 
     new_archive = PrintArchive(
         printer_id=new_printer_id,
-        project_id=source_archive.project_id,
         filename=out_filename,
         file_path=str(out_path.relative_to(app_settings.base_dir)),
         file_size=len(result.content),
@@ -4510,12 +4390,6 @@ async def get_file(
         folder_result = await db.execute(select(LibraryFolder.name).where(LibraryFolder.id == file.folder_id))
         folder_name = folder_result.scalar()
 
-    # Get project name
-    project_name = None
-    if file.project_id:
-        project_result = await db.execute(select(Project.name).where(Project.id == file.project_id))
-        project_name = project_result.scalar()
-
     # Get duplicates
     duplicates = []
     duplicate_count = 0
@@ -4556,8 +4430,6 @@ async def get_file(
         id=file.id,
         folder_id=file.folder_id,
         folder_name=folder_name,
-        project_id=file.project_id,
-        project_name=project_name,
         filename=file.filename,
         file_path=file.file_path,
         file_type=file.file_type,
@@ -4628,16 +4500,6 @@ async def update_file(
             if not folder_result.scalar_one_or_none():
                 raise HTTPException(status_code=404, detail="Folder not found")
             file.folder_id = data.folder_id
-
-    if data.project_id is not None:
-        if data.project_id == 0:
-            file.project_id = None
-        else:
-            # Verify project exists
-            project_result = await db.execute(select(Project).where(Project.id == data.project_id))
-            if not project_result.scalar_one_or_none():
-                raise HTTPException(status_code=404, detail="Project not found")
-            file.project_id = data.project_id
 
     if data.notes is not None:
         file.notes = data.notes if data.notes else None

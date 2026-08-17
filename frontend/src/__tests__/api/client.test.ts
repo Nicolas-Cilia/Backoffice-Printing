@@ -264,28 +264,17 @@ describe('Slicer download URLs', () => {
 });
 
 describe('FormData requests include auth header', () => {
-  it('importProjectFile includes Authorization header', async () => {
+  it('multipart uploads include the Authorization header', async () => {
     // Mock fetch directly for FormData requests (MSW can be flaky with multipart in some environments)
     const originalFetch = global.fetch;
     let capturedHeaders: Headers | null = null;
 
     global.fetch = vi.fn().mockImplementation((url: string, init?: RequestInit) => {
-      if (url.includes('/projects/import/file')) {
+      if (url.includes('/timelapse/upload')) {
         capturedHeaders = new Headers(init?.headers);
         return Promise.resolve(new Response(JSON.stringify({
-          id: 1,
-          name: 'Test Project',
-          description: '',
-          total_cost: 0,
-          total_print_time_seconds: 0,
-          total_prints: 0,
-          total_quantity: 0,
-          status: 'active',
-          due_date: null,
-          created_at: '2026-01-01T00:00:00Z',
-          updated_at: '2026-01-01T00:00:00Z',
-          archives: [],
-          bom_items: [],
+          status: 'ok',
+          filename: 'test.mp4',
         }), { status: 200 }));
       }
       return originalFetch(url, init);
@@ -293,8 +282,8 @@ describe('FormData requests include auth header', () => {
 
     try {
       setAuthToken('test-token');
-      const file = new File(['test content'], 'test.zip', { type: 'application/zip' });
-      await api.importProjectFile(file);
+      const file = new File(['test content'], 'test.mp4', { type: 'video/mp4' });
+      await api.uploadArchiveTimelapse(1, file);
 
       expect(capturedHeaders).not.toBeNull();
       expect(capturedHeaders!.get('Authorization')).toBe('Bearer test-token');
@@ -303,29 +292,6 @@ describe('FormData requests include auth header', () => {
     }
   });
 
-  it('exportProjectZip includes Authorization header', async () => {
-    let capturedHeaders: Headers | null = null;
-
-    server.use(
-      http.get('/api/v1/projects/:projectId/export', ({ request }) => {
-        capturedHeaders = request.headers;
-        const zipContent = new Uint8Array([0x50, 0x4b, 0x03, 0x04]); // ZIP magic bytes
-        return new HttpResponse(zipContent, {
-          status: 200,
-          headers: {
-            'Content-Type': 'application/zip',
-            'Content-Disposition': 'attachment; filename="project.zip"',
-          },
-        });
-      })
-    );
-
-    setAuthToken('test-token');
-    await api.exportProjectZip(1);
-
-    expect(capturedHeaders).not.toBeNull();
-    expect(capturedHeaders!.get('Authorization')).toBe('Bearer test-token');
-  });
 });
 
 describe('Printer control endpoints', () => {
@@ -363,34 +329,3 @@ describe('Printer control endpoints', () => {
   });
 });
 
-// #1155 — `<img src>` can't carry an `Authorization: Bearer …` header, so the
-// project cover-image URL must use the same stream-token pattern as
-// /archives/{id}/thumbnail. A regression where `withStreamToken` is removed
-// would break the modal preview AND the card thumbnail when auth is enabled.
-describe('Project cover image URL (#1155)', () => {
-  afterEach(() => {
-    setStreamToken(null);
-  });
-
-  it('appends the stream token query string when one is set', () => {
-    setStreamToken('abc123');
-    const url = api.getProjectCoverImageUrl(42);
-    expect(url).toContain('/projects/42/cover-image');
-    expect(url).toContain('token=abc123');
-  });
-
-  it('returns the bare URL when no stream token is set', () => {
-    setStreamToken(null);
-    const url = api.getProjectCoverImageUrl(42);
-    expect(url).toContain('/projects/42/cover-image');
-    expect(url).not.toContain('token=');
-  });
-
-  it('URL-encodes a token containing query-string-unsafe characters', () => {
-    setStreamToken('a&b=c');
-    const url = api.getProjectCoverImageUrl(7);
-    // Decoded back, the token must round-trip exactly.
-    const params = new URL(url, 'http://x').searchParams;
-    expect(params.get('token')).toBe('a&b=c');
-  });
-});

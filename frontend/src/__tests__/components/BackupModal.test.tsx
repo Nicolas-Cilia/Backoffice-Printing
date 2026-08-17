@@ -68,11 +68,6 @@ describe('BackupModal', () => {
       expect(screen.getByText(/archives/i)).toBeInTheDocument();
     });
 
-    it('has checkbox for projects', () => {
-      render(<BackupModal onClose={mockOnClose} />);
-
-      expect(screen.getByText('Projects')).toBeInTheDocument();
-    });
   });
 
   describe('actions', () => {

@@ -15,7 +15,6 @@ import {
   Loader2,
   RefreshCw,
   Plug,
-  FolderKanban,
   Palette,
   Bug,
   Download,
@@ -499,11 +498,6 @@ export function SystemInfoPage() {
             icon={Palette}
             label={t('system.filaments', 'Filaments')}
             value={systemInfo.database.filaments}
-          />
-          <StatCard
-            icon={FolderKanban}
-            label={t('system.projects', 'Projects')}
-            value={systemInfo.database.projects}
           />
           <StatCard
             icon={Plug}

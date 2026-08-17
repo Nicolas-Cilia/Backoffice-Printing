@@ -1284,7 +1284,7 @@ describe('PrintModal', () => {
     });
   });
 
-  describe('project_id forwarding', () => {
+  describe('queue dispatch', () => {
     beforeEach(() => {
       // Additional handlers needed for library file mode
       server.use(
@@ -1295,7 +1295,6 @@ describe('PrintModal', () => {
             print_name: null,
             file_type: '3mf',
             folder_id: null,
-            project_id: null,
             file_hash: null,
             file_size_bytes: 1024,
             thumbnail_path: null,
@@ -1315,42 +1314,6 @@ describe('PrintModal', () => {
       );
     });
 
-    it('includes project_id in queue item when printing a library file with projectId set', async () => {
-      let capturedBody: Record<string, unknown> | null = null;
-      server.use(
-        http.post('/api/v1/queue/', async ({ request }) => {
-          capturedBody = await request.json() as Record<string, unknown>;
-          return HttpResponse.json({ id: 1, status: 'pending' });
-        })
-      );
-      const user = userEvent.setup();
-
-      render(
-        <PrintModal
-          mode="create"
-          libraryFileId={5}
-          archiveName="Benchy"
-          projectId={42}
-          initialSelectedPrinterIds={[1]}
-          onClose={mockOnClose}
-          onSuccess={mockOnSuccess}
-        />
-      );
-
-      // Wait for the modal to load printer and file data
-      await waitFor(() => {
-        expect(screen.getByRole('button', { name: /^print$/i })).toBeInTheDocument();
-      });
-
-      await user.click(screen.getByRole('button', { name: /^print$/i }));
-
-      await waitFor(() => {
-        expect(capturedBody).not.toBeNull();
-        expect(capturedBody?.library_file_id).toBe(5);
-        expect(capturedBody?.project_id).toBe(42);
-      });
-    });
-
     it('queues archive prints through the scheduler path', async () => {
       let capturedBody: Record<string, unknown> | null = null;
       server.use(
@@ -1366,7 +1329,6 @@ describe('PrintModal', () => {
           mode="create"
           archiveId={1}
           archiveName="Benchy"
-          projectId={42}
           initialSelectedPrinterIds={[1]}
           onClose={mockOnClose}
           onSuccess={mockOnSuccess}
@@ -1382,7 +1344,6 @@ describe('PrintModal', () => {
       await waitFor(() => {
         expect(capturedBody).not.toBeNull();
         expect(capturedBody?.archive_id).toBe(1);
-        expect(capturedBody?.project_id).toBe(42);
       });
     });
 
@@ -1470,7 +1431,6 @@ describe('PrintModal', () => {
             filename: 'benchy.gcode.3mf',
             file_type: '3mf',
             folder_id: null,
-            project_id: null,
             file_hash: null,
             file_size_bytes: 1024,
             thumbnail_path: null,
