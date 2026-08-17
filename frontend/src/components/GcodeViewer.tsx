@@ -45,7 +45,7 @@ export function GcodeViewer({
     // Use extrusionColor as array for multi-tool support
     // Index in array = tool number
     const hasMultiColor = filamentColors && filamentColors.length > 1;
-    const primaryColor = filamentColors?.[0] || '#00ae42';
+    const primaryColor = filamentColors?.[0] || '#07bcec';
 
     // Create preview
     const preview = new WebGLPreview({
@@ -108,7 +108,7 @@ export function GcodeViewer({
         // Build remapped color array based on the mapping
         const remappedColors: string[] = [];
         sortedTools.forEach((originalTool, index) => {
-          const color = filamentColors?.[originalTool] || '#00ae42';
+          const color = filamentColors?.[originalTool] || '#07bcec';
           remappedColors[index % 8] = color;
         });
 

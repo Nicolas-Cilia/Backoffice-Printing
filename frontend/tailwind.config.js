@@ -8,11 +8,14 @@ export default {
   theme: {
     extend: {
       colors: {
-        // Bambu Lab color palette
+        // NOTE: Tailwind v4 loads its theme from the @theme block in
+        // src/index.css (there is no @config directive), so these colour values
+        // are not what the app renders — the accent resolves to the --accent
+        // CSS variable. Kept in step with index.css so the two don't disagree.
         bambu: {
-          green: '#00ae42',
-          'green-light': '#00c64d',
-          'green-dark': '#009438',
+          green: '#07bcec',
+          'green-light': '#15c9f8',
+          'green-dark': '#07a8d3',
           dark: '#1a1a1a',
           'dark-secondary': '#2d2d2d',
           'dark-tertiary': '#3d3d3d',

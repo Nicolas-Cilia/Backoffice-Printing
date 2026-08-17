@@ -140,7 +140,7 @@ function NozzleBadge({ side }: { side: 'L' | 'R' }) {
   return (
     <span
       className="inline-flex items-center justify-center w-4 h-4 text-[9px] font-bold rounded"
-      style={{ backgroundColor: '#1a4d2e', color: '#00ae42' }}
+      style={{ backgroundColor: '#0a3a4d', color: '#07bcec' }}
     >
       {side}
     </span>

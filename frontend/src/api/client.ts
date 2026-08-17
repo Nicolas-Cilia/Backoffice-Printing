@@ -1240,11 +1240,11 @@ export interface AppSettings {
   // Dark mode theme settings
   dark_style: 'classic' | 'glow' | 'vibrant';
   dark_background: 'neutral' | 'warm' | 'cool' | 'oled' | 'slate' | 'forest';
-  dark_accent: 'green' | 'teal' | 'blue' | 'orange' | 'purple' | 'red';
+  dark_accent: 'atos' | 'green' | 'teal' | 'blue' | 'orange' | 'purple' | 'red';
   // Light mode theme settings
   light_style: 'classic' | 'glow' | 'vibrant';
   light_background: 'neutral' | 'warm' | 'cool';
-  light_accent: 'green' | 'teal' | 'blue' | 'orange' | 'purple' | 'red';
+  light_accent: 'atos' | 'green' | 'teal' | 'blue' | 'orange' | 'purple' | 'red';
   // FTP retry settings
   ftp_retry_enabled: boolean;
   ftp_retry_count: number;

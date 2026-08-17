@@ -3,7 +3,7 @@ import { useEffect, useRef } from 'react';
 import { api } from '../api/client';
 import { useTheme } from '../contexts/ThemeContext';
 
-const FALLBACK_ACCENT = '#00ae42'; // Bambuddy green, if --accent can't be read (e.g. jsdom)
+const FALLBACK_ACCENT = '#07bcec'; // Atos blue, if --accent can't be read (e.g. jsdom)
 
 // A remaining_time <= 0 means "ETA not known yet" (the backend defaults it to 0,
 // not null), so treat it as unknown rather than "finishes now".

@@ -2437,6 +2437,7 @@ export default {
     bgOled: 'OLEDブラック',
     bgSlate: 'スレートブルー',
     bgForest: 'フォレストグリーン',
+    accentAtos: 'Atos Blue',
     accentGreen: 'グリーン',
     accentTeal: 'ティール',
     accentBlue: 'ブルー',

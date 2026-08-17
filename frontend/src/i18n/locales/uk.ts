@@ -2457,6 +2457,7 @@ export default {
     bgOled: "OLED Чорний",
     bgSlate: "Шиферно-блакитний",
     bgForest: "Зелений ліс",
+    accentAtos: 'Atos Blue',
     accentGreen: "Зелений",
     accentTeal: "Чирок",
     accentBlue: "Синій",

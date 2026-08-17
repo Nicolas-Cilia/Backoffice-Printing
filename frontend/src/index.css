@@ -55,10 +55,10 @@ html {
 }
 
 :root {
-  /* Default accent color (green) */
-  --accent: #00ae42;
-  --accent-light: #00c64d;
-  --accent-dark: #009438;
+  /* Default accent color (Atos blue) */
+  --accent: #07bcec;
+  --accent-light: #15c9f8;
+  --accent-dark: #07a8d3;
 
   /* Semantic status colors - these never change with accent theme */
   --status-ok: #22c55e;      /* green-500 - always green for success/online/ok */
@@ -245,6 +245,14 @@ html {
 /* ============================================
    LAYER 3: ACCENT COLORS
    ============================================ */
+
+/* Brand accent for this fork, and the default. Kept first so it reads as the
+   primary choice; the upstream accents below stay selectable. */
+.accent-atos {
+  --accent: #07bcec;
+  --accent-light: #15c9f8;
+  --accent-dark: #07a8d3;
+}
 
 .accent-green {
   --accent: #00ae42;

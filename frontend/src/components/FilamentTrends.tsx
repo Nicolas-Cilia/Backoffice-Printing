@@ -24,7 +24,7 @@ interface FilamentTrendsProps {
   dateTo?: string;
 }
 
-const COLORS = ['#00ae42', '#3b82f6', '#f59e0b', '#ef4444', '#8b5cf6', '#ec4899', '#14b8a6', '#f97316'];
+const COLORS = ['#07bcec', '#3b82f6', '#f59e0b', '#ef4444', '#8b5cf6', '#ec4899', '#14b8a6', '#f97316'];
 
 const DAY_NAMES = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
 const HOUR_SUFFIXES = ['12am', '1am', '2am', '3am', '4am', '5am', '6am', '7am', '8am', '9am', '10am', '11am', '12pm', '1pm', '2pm', '3pm', '4pm', '5pm', '6pm', '7pm', '8pm', '9pm', '10pm', '11pm'];
@@ -286,8 +286,8 @@ export function FilamentTrends({ archives, currency = '$', dateFrom, dateTo }: F
             <AreaChart data={chartData}>
               <defs>
                 <linearGradient id="colorFilament" x1="0" y1="0" x2="0" y2="1">
-                  <stop offset="5%" stopColor="#00ae42" stopOpacity={0.3}/>
-                  <stop offset="95%" stopColor="#00ae42" stopOpacity={0}/>
+                  <stop offset="5%" stopColor="#07bcec" stopOpacity={0.3}/>
+                  <stop offset="95%" stopColor="#07bcec" stopOpacity={0}/>
                 </linearGradient>
               </defs>
               <CartesianGrid strokeDasharray="3 3" stroke="#3d3d3d" />
@@ -314,7 +314,7 @@ export function FilamentTrends({ archives, currency = '$', dateFrom, dateTo }: F
               <Area
                 type="monotone"
                 dataKey="filament"
-                stroke="#00ae42"
+                stroke="#07bcec"
                 strokeWidth={2}
                 fillOpacity={1}
                 fill="url(#colorFilament)"

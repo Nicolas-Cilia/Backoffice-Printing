@@ -2442,6 +2442,7 @@ export default {
     bgOled: 'OLED Siyah',
     bgSlate: 'Arduvaz Mavisi',
     bgForest: 'Orman Yeşili',
+    accentAtos: 'Atos Blue',
     accentGreen: 'Yeşil',
     accentTeal: 'Camgöbeği',
     accentBlue: 'Mavi',
