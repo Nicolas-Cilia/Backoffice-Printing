@@ -228,8 +228,7 @@ PERMISSION_CATEGORIES = {
         Permission.LIBRARY_DELETE_ALL,
         Permission.LIBRARY_PURGE,
     ],
-    "Projects": [
-    ],
+    "Projects": [],
     "Filaments": [
         Permission.FILAMENTS_READ,
         Permission.FILAMENTS_CREATE,
