@@ -35,7 +35,6 @@ class PendingUpload(Base):
     # User additions (before archiving)
     tags: Mapped[str | None] = mapped_column(Text, nullable=True)
     notes: Mapped[str | None] = mapped_column(Text, nullable=True)
-    project_id: Mapped[int | None] = mapped_column(ForeignKey("projects.id", ondelete="SET NULL"), nullable=True)
 
     # After archiving - link to created archive
     archived_id: Mapped[int | None] = mapped_column(ForeignKey("print_archives.id", ondelete="SET NULL"), nullable=True)
@@ -45,9 +44,7 @@ class PendingUpload(Base):
     archived_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
 
     # Relationships
-    project: Mapped["Project | None"] = relationship()
     archive: Mapped["PrintArchive | None"] = relationship()
 
 
 from backend.app.models.archive import PrintArchive  # noqa: E402
-from backend.app.models.project import Project  # noqa: E402

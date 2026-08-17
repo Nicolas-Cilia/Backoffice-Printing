@@ -237,67 +237,7 @@ class TestLibraryFilesAPI:
         assert result[0]["id"] == file1.id
 
     @pytest.mark.asyncio
-    @pytest.mark.integration
-    async def test_list_files_by_project_id(self, async_client: AsyncClient, folder_factory, file_factory, db_session):
-        """#932: project_id filter returns files across all folders linked to the project.
-
-        Replaces the prior N+1 pattern where the frontend fired one request per
-        linked folder. A single JOIN query must return every file in folders whose
-        project_id matches, while excluding files from unlinked folders.
-        """
-        from backend.app.models.project import Project
-
-        project = Project(name="Test Project for Files", color="#00ff00")
-        db_session.add(project)
-        await db_session.commit()
-        await db_session.refresh(project)
-
-        folder_a = await folder_factory(name="Folder A", project_id=project.id)
-        folder_b = await folder_factory(name="Folder B", project_id=project.id)
-        other_folder = await folder_factory(name="Unlinked")
-
-        linked_a = await file_factory(folder_id=folder_a.id, filename="a.3mf")
-        linked_b = await file_factory(folder_id=folder_b.id, filename="b.3mf")
-        await file_factory(folder_id=other_folder.id, filename="unlinked.3mf")
-        await file_factory(filename="root.3mf")  # no folder → not part of any project
-
-        response = await async_client.get(f"/api/v1/library/files?project_id={project.id}")
-        assert response.status_code == 200
-        result = response.json()
-        ids = {f["id"] for f in result}
-        assert ids == {linked_a.id, linked_b.id}
-
     @pytest.mark.asyncio
-    @pytest.mark.integration
-    async def test_list_files_folder_id_takes_precedence_over_project_id(
-        self, async_client: AsyncClient, folder_factory, file_factory, db_session
-    ):
-        """When both folder_id and project_id are passed, folder_id wins.
-
-        Documented precedence in list_files(): folder_id > project_id > include_root.
-        This guards the behavior so a future refactor can't silently flip it.
-        """
-        from backend.app.models.project import Project
-
-        project = Project(name="Precedence Project")
-        db_session.add(project)
-        await db_session.commit()
-        await db_session.refresh(project)
-
-        folder_linked = await folder_factory(name="Linked", project_id=project.id)
-        folder_other = await folder_factory(name="Other")
-
-        await file_factory(folder_id=folder_linked.id, filename="linked.3mf")
-        other_file = await file_factory(folder_id=folder_other.id, filename="other.3mf")
-
-        # folder_id points at a folder that is NOT in the project — must return
-        # that folder's contents and ignore project_id entirely.
-        response = await async_client.get(f"/api/v1/library/files?folder_id={folder_other.id}&project_id={project.id}")
-        assert response.status_code == 200
-        result = response.json()
-        assert len(result) == 1
-        assert result[0]["id"] == other_file.id
-
     @pytest.mark.asyncio
     @pytest.mark.integration
     async def test_list_files_internal_only(self, async_client: AsyncClient, folder_factory, file_factory, db_session):

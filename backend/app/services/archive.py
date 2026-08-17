@@ -1139,7 +1139,6 @@ class ArchiveService:
         print_data: dict | None = None,
         created_by_id: int | None = None,
         original_filename: str | None = None,
-        project_id: int | None = None,
         subtask_id: str | None = None,
         prefer_filename_for_name: bool = False,
         plate_id: int | None = None,
@@ -1156,10 +1155,8 @@ class ArchiveService:
             created_by_id: User ID who created this archive (optional, for user tracking)
             original_filename: Original human-readable filename (optional, for library files
                 stored with UUID names)
-            project_id: Project to associate this archive with (optional, set when triggered
-                from the project view)
             library_file_id: Library file this run was dispatched from (optional,
-                set by the queue scheduler — powers per-file project progress, #1897)
+                set by the queue scheduler, #1897)
             subtask_id: MQTT-provided task identifier (optional). Used to match an
                 existing archive across a backend restart mid-print so the
                 original row can be resumed instead of cancelled (#972).
@@ -1352,7 +1349,6 @@ class ArchiveService:
             quantity=quantity,
             extra_data=metadata,
             created_by_id=created_by_id,
-            project_id=project_id,
             library_file_id=library_file_id,
             subtask_id=subtask_id,
             plate_id=plate_id,
@@ -1370,7 +1366,7 @@ class ArchiveService:
 
         result = await self.db.execute(
             select(PrintArchive)
-            .options(selectinload(PrintArchive.created_by), selectinload(PrintArchive.project))
+            .options(selectinload(PrintArchive.created_by))
             .where(PrintArchive.id == archive_id)
         )
         return result.scalar_one_or_none()
@@ -1399,7 +1395,6 @@ class ArchiveService:
     async def list_archives(
         self,
         printer_id: int | None = None,
-        project_id: int | None = None,
         date_from: date | None = None,
         date_to: date | None = None,
         limit: int = 50,
@@ -1416,7 +1411,7 @@ class ArchiveService:
 
         query = (
             select(PrintArchive)
-            .options(selectinload(PrintArchive.project), selectinload(PrintArchive.created_by))
+            .options(selectinload(PrintArchive.created_by))
             # Hide soft-deleted rows from the listings (#1343). The stats
             # endpoint deliberately does NOT add this filter so deleted
             # archives keep contributing to Quick Stats.
@@ -1427,8 +1422,6 @@ class ArchiveService:
         if printer_id:
             query = query.where(PrintArchive.printer_id == printer_id)
 
-        if project_id:
-            query = query.where(PrintArchive.project_id == project_id)
 
         if date_from:
             dt_from = datetime.combine(date_from, time.min, tzinfo=timezone.utc)

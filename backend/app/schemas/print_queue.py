@@ -92,7 +92,6 @@ class PrintQueueItemCreate(BaseModel):
     # the multi-plate auto-batch flow and by the "Group as batch" action.
     batch_id: int | None = None
     # Project to associate the resulting archive with
-    project_id: int | None = None
     # Direct printer-card uploads are temporary library files. The scheduler
     # deletes them after creating the durable archive copy.
     cleanup_library_after_dispatch: bool = False

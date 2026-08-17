@@ -280,8 +280,6 @@ async def init_db():
         print_queue,
         printer,
         printer_sensor_history,
-        project,
-        project_bom,
         settings,
         shopping_list,
         slicer_pipeline,
@@ -1120,26 +1118,6 @@ async def run_migrations(conn):
     except (OperationalError, ProgrammingError):
         pass  # Already applied
 
-    # Migration: Add project_id column to print_archives
-    try:
-        async with conn.begin_nested():
-            await conn.execute(
-                text(
-                    "ALTER TABLE print_archives ADD COLUMN project_id INTEGER REFERENCES projects(id) ON DELETE SET NULL"
-                )
-            )
-    except (OperationalError, ProgrammingError):
-        pass  # Already applied
-
-    # Migration: Add project_id column to print_queue
-    try:
-        async with conn.begin_nested():
-            await conn.execute(
-                text("ALTER TABLE print_queue ADD COLUMN project_id INTEGER REFERENCES projects(id) ON DELETE SET NULL")
-            )
-    except (OperationalError, ProgrammingError):
-        pass  # Already applied
-
     # Migration: Enforce uniqueness on user_oidc_links for existing rows.
     # create_all() is idempotent and does not add constraints to existing tables,
     # so we create covering unique indexes explicitly here.
@@ -1249,51 +1227,6 @@ async def run_migrations(conn):
     # Migration: Add plate not empty notification column to notification_providers
     await _safe_execute(conn, "ALTER TABLE notification_providers ADD COLUMN on_plate_not_empty BOOLEAN DEFAULT 1")
 
-    # Migration: Add notes column to projects (Phase 2)
-    await _safe_execute(conn, "ALTER TABLE projects ADD COLUMN notes TEXT")
-
-    # Migration: Add attachments column to projects (Phase 3)
-    await _safe_execute(conn, "ALTER TABLE projects ADD COLUMN attachments JSON")
-
-    # Migration: Add tags column to projects (Phase 4)
-    await _safe_execute(conn, "ALTER TABLE projects ADD COLUMN tags TEXT")
-
-    # Migration: Add due_date column to projects (Phase 5)
-    await _safe_execute(conn, "ALTER TABLE projects ADD COLUMN due_date DATETIME")
-
-    # Migration: Add priority column to projects (Phase 5)
-    await _safe_execute(conn, "ALTER TABLE projects ADD COLUMN priority VARCHAR(20) DEFAULT 'normal'")
-
-    # Migration: Add budget column to projects (Phase 6)
-    await _safe_execute(conn, "ALTER TABLE projects ADD COLUMN budget REAL")
-
-    # Migration: Add is_template column to projects (Phase 8)
-    await _safe_execute(conn, "ALTER TABLE projects ADD COLUMN is_template BOOLEAN DEFAULT 0")
-
-    # Migration: Add template_source_id column to projects (Phase 8)
-    await _safe_execute(conn, "ALTER TABLE projects ADD COLUMN template_source_id INTEGER")
-
-    # Migration: Add parent_id column to projects (Phase 10)
-    try:
-        async with conn.begin_nested():
-            await conn.execute(
-                text("ALTER TABLE projects ADD COLUMN parent_id INTEGER REFERENCES projects(id) ON DELETE SET NULL")
-            )
-    except (OperationalError, ProgrammingError):
-        pass  # Already applied
-
-    # Migration: Rename quantity_printed to quantity_acquired in project_bom_items
-    await _safe_execute(conn, "ALTER TABLE project_bom_items RENAME COLUMN quantity_printed TO quantity_acquired")
-
-    # Migration: Add unit_price column to project_bom_items
-    await _safe_execute(conn, "ALTER TABLE project_bom_items ADD COLUMN unit_price REAL")
-
-    # Migration: Add sourcing_url column to project_bom_items
-    await _safe_execute(conn, "ALTER TABLE project_bom_items ADD COLUMN sourcing_url VARCHAR(512)")
-
-    # Migration: Rename notes to remarks in project_bom_items
-    await _safe_execute(conn, "ALTER TABLE project_bom_items RENAME COLUMN notes TO remarks")
-
     # Migration: Add show_in_switchbar column to smart_plugs
     await _safe_execute(conn, "ALTER TABLE smart_plugs ADD COLUMN show_in_switchbar BOOLEAN DEFAULT 0")
 
@@ -1392,16 +1325,6 @@ async def run_migrations(conn):
     await _safe_execute(conn, "ALTER TABLE print_queue ADD COLUMN nozzle_mapping TEXT")
     await _safe_execute(conn, "ALTER TABLE print_queue ADD COLUMN nozzles_info TEXT")
 
-    # Migration: Add target_parts_count column to projects for tracking total parts needed
-    await _safe_execute(conn, "ALTER TABLE projects ADD COLUMN target_parts_count INTEGER")
-
-    # Migration: Add url + cover_image_filename columns to projects (#1155).
-    # url: external link rendered next to the project name on the card.
-    # cover_image_filename: filename of the project's hero image inside the
-    # existing attachments dir; rendered as a thumbnail on the card.
-    await _safe_execute(conn, "ALTER TABLE projects ADD COLUMN url VARCHAR(2048)")
-    await _safe_execute(conn, "ALTER TABLE projects ADD COLUMN cover_image_filename VARCHAR(255)")
-
     # Migration: enhanced filament colour handling on color_catalog (#1154).
     # Mirrors the Spool columns added below; widens hex_color to VARCHAR(9)
     # so catalog entries can store an alpha component (#RRGGBBAA). SQLite
@@ -1459,17 +1382,6 @@ async def run_migrations(conn):
 
     # Migration: Add ha_entity_id column to smart_plugs for HA integration
     await _safe_execute(conn, "ALTER TABLE smart_plugs ADD COLUMN ha_entity_id VARCHAR(100)")
-
-    # Migration: Add project_id column to library_folders for linking folders to projects
-    try:
-        async with conn.begin_nested():
-            await conn.execute(
-                text(
-                    "ALTER TABLE library_folders ADD COLUMN project_id INTEGER REFERENCES projects(id) ON DELETE SET NULL"
-                )
-            )
-    except (OperationalError, ProgrammingError):
-        pass  # Already applied
 
     # Migration: Add archive_id column to library_folders for linking folders to archives
     try:
@@ -1752,17 +1664,6 @@ async def run_migrations(conn):
 
     # Migration: Add is_external column to library_files for external cloud files
     await _safe_execute(conn, "ALTER TABLE library_files ADD COLUMN is_external BOOLEAN DEFAULT 0")
-
-    # Migration: Add project_id column to library_files
-    try:
-        async with conn.begin_nested():
-            await conn.execute(
-                text(
-                    "ALTER TABLE library_files ADD COLUMN project_id INTEGER REFERENCES projects(id) ON DELETE SET NULL"
-                )
-            )
-    except (OperationalError, ProgrammingError):
-        pass  # Already applied
 
     # Migration: Add is_external column to library_folders for external cloud folders
     await _safe_execute(conn, "ALTER TABLE library_folders ADD COLUMN is_external BOOLEAN DEFAULT 0")
@@ -3025,25 +2926,6 @@ async def run_migrations(conn):
         async with conn.begin_nested():
             await conn.execute(text("UPDATE api_keys SET can_manage_archives = FALSE"))
 
-    # #1893: carve project CRUD + membership (create/update/delete, add-archives)
-    # out of the admin denylist so automations can manage projects via API key.
-    # Identical shape and reasoning to can_manage_archives above: PROJECTS_CREATE
-    # / _UPDATE / _DELETE were EXPLICITLY denied for every API key under the
-    # pre-migration model (they were on ``_APIKEY_DENIED_PERMISSIONS``), so no
-    # existing integration relies on them. Column default TRUE for keys created
-    # via the UI going forward; existing rows backfill to FALSE so the upgrade
-    # path does not silently widen scope for keys created before this flag
-    # existed. Users opt in via Settings → API Keys per key. BOOLEAN is valid on
-    # both SQLite and Postgres, so no dialect branch is needed.
-    column_existed = await _api_keys_column_exists(conn, "can_manage_projects")
-    await _safe_execute(
-        conn,
-        "ALTER TABLE api_keys ADD COLUMN can_manage_projects BOOLEAN DEFAULT TRUE",
-    )
-    if not column_existed:
-        async with conn.begin_nested():
-            await conn.execute(text("UPDATE api_keys SET can_manage_projects = FALSE"))
-
     # Migration: Soft-delete column for trash bin (Issue #1008). Indexed so the
     # sweeper's "SELECT ... WHERE deleted_at < cutoff" and the trash list's
     # "WHERE deleted_at IS NOT NULL" stay cheap as the table grows.
@@ -3920,10 +3802,7 @@ async def run_migrations(conn):
     #   (SQLite can't ADD CONSTRAINT; the application uses SET NULL semantics
     #   via the ORM on fresh installs and tolerates dangling ids by matching
     #   hash/filename as fallback anyway).
-    # - projects.target_sets: optional copies-per-file target. INTEGER is
-    #   spelled identically on SQLite and Postgres — no dialect branch.
     await _safe_execute(conn, "ALTER TABLE print_archives ADD COLUMN library_file_id INTEGER")
-    await _safe_execute(conn, "ALTER TABLE projects ADD COLUMN target_sets INTEGER")
 
     # Migration: persist the timelapse snapshot-diff baseline (#2704).
     # The list of video filenames present on the printer when the print began,

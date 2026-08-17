@@ -23,8 +23,7 @@ class LibraryFolder(Base):
     external_show_hidden: Mapped[bool] = mapped_column(Boolean, default=False)
     external_path: Mapped[str | None] = mapped_column(String(500), nullable=True)
 
-    # Link to project or archive
-    project_id: Mapped[int | None] = mapped_column(ForeignKey("projects.id", ondelete="SET NULL"), nullable=True)
+    # Link to archive
     archive_id: Mapped[int | None] = mapped_column(ForeignKey("print_archives.id", ondelete="SET NULL"), nullable=True)
 
     # Timestamps
@@ -56,7 +55,6 @@ class LibraryFolder(Base):
         back_populates="folder",
         cascade="all, delete-orphan",
     )
-    project: Mapped["Project | None"] = relationship()
     archive: Mapped["PrintArchive | None"] = relationship()
 
 
@@ -67,7 +65,6 @@ class LibraryFile(Base):
 
     id: Mapped[int] = mapped_column(primary_key=True)
     folder_id: Mapped[int | None] = mapped_column(ForeignKey("library_folders.id", ondelete="CASCADE"), nullable=True)
-    project_id: Mapped[int | None] = mapped_column(ForeignKey("projects.id", ondelete="SET NULL"), nullable=True)
 
     # External file flag
     is_external: Mapped[bool] = mapped_column(Boolean, default=False)
@@ -120,7 +117,6 @@ class LibraryFile(Base):
 
     # Relationships
     folder: Mapped["LibraryFolder | None"] = relationship(back_populates="files")
-    project: Mapped["Project | None"] = relationship()
     created_by: Mapped["User | None"] = relationship()
     # Tags (#1268). M2M via library_file_tags. Loaded explicitly via
     # ``selectinload`` in list_files so each row in the listing carries its
@@ -184,5 +180,4 @@ class LibraryFileTag(Base):
 
 
 from backend.app.models.archive import PrintArchive  # noqa: E402, F811
-from backend.app.models.project import Project  # noqa: E402, F811
 from backend.app.models.user import User  # noqa: E402, F811

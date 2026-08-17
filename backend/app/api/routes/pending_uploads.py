@@ -23,7 +23,6 @@ class ArchiveRequest(BaseModel):
 
     tags: str | None = None
     notes: str | None = None
-    project_id: int | None = None
 
 
 class PendingUploadResponse(BaseModel):
@@ -37,7 +36,6 @@ class PendingUploadResponse(BaseModel):
     status: str
     tags: str | None
     notes: str | None
-    project_id: int | None
     uploaded_at: datetime
 
     class Config:
@@ -81,7 +79,6 @@ async def _augment_with_display_name(
             status=p.status,
             tags=p.tags,
             notes=p.notes,
-            project_id=p.project_id,
             uploaded_at=p.uploaded_at,
         )
         for p in pendings
@@ -275,14 +272,12 @@ async def archive_pending_upload(
     if not archive:
         raise HTTPException(status_code=500, detail="Failed to archive file")
 
-    # Apply tags/notes/project from request
+    # Apply tags/notes from request
     if request:
         if request.tags:
             archive.tags = request.tags
         if request.notes:
             archive.notes = request.notes
-        if request.project_id:
-            archive.project_id = request.project_id
 
     # Update pending record
     pending.status = "archived"
@@ -291,7 +286,6 @@ async def archive_pending_upload(
     if request:
         pending.tags = request.tags
         pending.notes = request.notes
-        pending.project_id = request.project_id
 
     await db.commit()
 

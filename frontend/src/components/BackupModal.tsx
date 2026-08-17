@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react';
-import { Download, X, Settings, Bell, FileText, Plug, Printer, Palette, Wrench, Archive, Loader2, Key, AlertTriangle, Link, FolderKanban, Upload, Camera } from 'lucide-react';
+import { Download, X, Settings, Bell, FileText, Plug, Printer, Palette, Wrench, Archive, Loader2, Key, AlertTriangle, Link, Upload, Camera } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
 import { Card, CardContent } from './Card';
 import { Button } from './Button';
@@ -96,14 +96,6 @@ const BACKUP_CATEGORIES: BackupCategory[] = [
     icon: <Archive className="w-4 h-4" />,
     default: false,
     description: 'All print data + files (3MF, thumbnails, photos)',
-  },
-  {
-    id: 'projects',
-    labelKey: 'backup.categories.projects',
-    defaultLabel: 'Projects',
-    icon: <FolderKanban className="w-4 h-4" />,
-    default: false,
-    description: 'Projects, BOM items, and attachments',
   },
   {
     id: 'pending_uploads',
