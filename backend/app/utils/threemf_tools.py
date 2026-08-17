@@ -5,13 +5,20 @@ per-layer filament usage data from the embedded G-code. This enables
 accurate partial usage reporting for multi-material prints.
 """
 
+import hashlib
 import json
+import logging
 import math
 import re
 import zipfile
+from collections import OrderedDict
+from dataclasses import dataclass, field
 from pathlib import Path
+from threading import Lock
 
 import defusedxml.ElementTree as ET
+
+logger = logging.getLogger(__name__)
 
 # Default filament properties
 DEFAULT_FILAMENT_DIAMETER = 1.75  # mm
@@ -264,6 +271,45 @@ def extract_filament_properties_from_3mf(file_path: Path) -> dict[int, dict]:
     return properties
 
 
+def _first_settings_id(value: object) -> str | None:
+    """A ``*_settings_id`` value is usually a string, occasionally a list (one
+    entry per extruder). Return the first non-empty string, else None."""
+    if isinstance(value, str):
+        return value.strip() or None
+    if isinstance(value, list):
+        for item in value:
+            if isinstance(item, str) and item.strip():
+                return item.strip()
+    return None
+
+
+def extract_embedded_presets_from_3mf(zf: zipfile.ZipFile) -> dict[str, str | None]:
+    """Read the printer / process preset names a 3MF project was prepared with.
+
+    BambuStudio / OrcaSlicer write the chosen preset names into
+    ``Metadata/project_settings.config`` (``printer_settings_id`` and
+    ``print_settings_id``). The SliceModal uses them to default its printer
+    and process dropdowns to what the file was sliced for (#1325) instead of
+    blindly taking the first listed preset.
+
+    Returns ``{"printer": <name|None>, "process": <name|None>}``. Every failure
+    mode (missing config, malformed JSON, unexpected shape) yields ``None``
+    values so the modal falls back to its own defaults.
+    """
+    result: dict[str, str | None] = {"printer": None, "process": None}
+    try:
+        if "Metadata/project_settings.config" not in zf.namelist():
+            return result
+        data = json.loads(zf.read("Metadata/project_settings.config").decode())
+    except (KeyError, ValueError, OSError):
+        return result
+    if not isinstance(data, dict):
+        return result
+    result["printer"] = _first_settings_id(data.get("printer_settings_id"))
+    result["process"] = _first_settings_id(data.get("print_settings_id"))
+    return result
+
+
 def extract_nozzle_mapping_from_3mf(zf: zipfile.ZipFile) -> dict[int, int] | None:
     """Extract per-slot nozzle/extruder mapping from a 3MF file.
 
@@ -308,13 +354,32 @@ def extract_nozzle_mapping_from_3mf(zf: zipfile.ZipFile) -> dict[int, int] | Non
             nozzle_counts = [n.partition("#")[2] for n in stats_str.split("|")]
             active_extruders.append(1 if any(c not in ("0", "") for c in nozzle_counts) else 0)
 
-        if sum(active_extruders) == 1:
+        # Parse slice_info once: needed by both the single-active shortcut
+        # (to verify the slice is actually single-group, #1825) and Priority 1.
+        si_root: ET.Element | None = None
+        distinct_group_ids: set[int] = set()
+        if "Metadata/slice_info.config" in zf.namelist():
+            si_content = zf.read("Metadata/slice_info.config").decode()
+            si_root = ET.fromstring(si_content)
+            for filament_elem in si_root.findall(".//filament"):
+                gid = filament_elem.get("group_id")
+                if gid is not None:
+                    try:
+                        distinct_group_ids.add(int(gid))
+                    except (ValueError, TypeError):
+                        pass
+
+        # Single-active shortcut: only safe when the slice actually uses one
+        # group. extruder_nozzle_stats can under-report a second installed
+        # nozzle when its volume-type differs from the profile's enumerated
+        # types (HT-AMS / High-Flow asymmetry on H2D, #1825); without this
+        # guard the shortcut collapses a real multi-extruder slice onto one
+        # nozzle and the group_id mapping below is skipped.
+        if sum(active_extruders) == 1 and len(distinct_group_ids) <= 1:
             nozzle_mapping: dict[int, int] = {}
             active_idx = active_extruders.index(1)
             target_extruder = int(physical_extruder_map[active_idx])
-            if "Metadata/slice_info.config" in zf.namelist():
-                si_content = zf.read("Metadata/slice_info.config").decode()
-                si_root = ET.fromstring(si_content)
+            if si_root is not None:
                 for filament_elem in si_root.findall(".//filament"):
                     try:
                         nozzle_mapping[int(filament_elem.get("id"))] = target_extruder
@@ -325,9 +390,7 @@ def extract_nozzle_mapping_from_3mf(zf: zipfile.ZipFile) -> dict[int, int] | Non
         # Priority 1: Use group_id from slice_info filament elements.
         # This reflects the actual slicer assignment (respects "Auto For Flush").
         nozzle_mapping: dict[int, int] = {}
-        if "Metadata/slice_info.config" in zf.namelist():
-            si_content = zf.read("Metadata/slice_info.config").decode()
-            si_root = ET.fromstring(si_content)
+        if si_root is not None:
             for filament_elem in si_root.findall(".//filament"):
                 group_id_str = filament_elem.get("group_id")
                 filament_id_str = filament_elem.get("id")
@@ -364,6 +427,178 @@ def extract_nozzle_mapping_from_3mf(zf: zipfile.ZipFile) -> dict[int, int] | Non
         return None
 
 
+@dataclass(frozen=True)
+class PlateMetadata:
+    """Combined per-plate slice_info.config values from a single 3MF parse.
+
+    Bundles the three fields the queue listing needs so a queue poll opens and
+    parses each 3MF once instead of three times (#2573). ``filament_usage`` is
+    the full per-filament list (other callers — usage tracking, Spoolman — need
+    it); ``filament_used_grams`` is its ``used_g`` sum, precomputed here so the
+    queue path doesn't re-sum on every hit.
+    """
+
+    print_time_seconds: int | None = None
+    filament_usage: list[dict] = field(default_factory=list)
+    bed_type: str | None = None
+    filament_used_grams: float = 0.0
+
+
+_EMPTY_PLATE_METADATA = PlateMetadata()
+
+# Revision-keyed cache for parsed per-plate metadata. Queue polling re-lists the
+# same unchanged 3MFs every few seconds per connected client (#2573); without a
+# cache each row costs a ZIP open + XML parse. The key includes the file's
+# mtime_ns and size so a replaced or edited file transparently gets a fresh
+# entry — no manual invalidation needed. Bounded LRU + lock so it stays small
+# and is safe to touch from worker threads.
+_PLATE_METADATA_CACHE: "OrderedDict[tuple, PlateMetadata]" = OrderedDict()
+_PLATE_METADATA_CACHE_LOCK = Lock()
+_PLATE_METADATA_CACHE_MAX = 512
+
+
+def clear_plate_metadata_cache() -> None:
+    """Drop all cached per-plate metadata (used by tests)."""
+    with _PLATE_METADATA_CACHE_LOCK:
+        _PLATE_METADATA_CACHE.clear()
+
+
+def _parse_plate_metadata_uncached(file_path: Path, plate_id: int | None) -> PlateMetadata:
+    """Open the 3MF once and pull print time, filament usage and bed type.
+
+    Replicates the per-field ``plate_id=None`` behaviour of the three legacy
+    helpers exactly: usage collects every ``<filament>`` in the file, while
+    print time and bed type come from the first ``<plate>``.
+    """
+    try:
+        with zipfile.ZipFile(file_path, "r") as zf:
+            if "Metadata/slice_info.config" not in zf.namelist():
+                return _EMPTY_PLATE_METADATA
+            content = zf.read("Metadata/slice_info.config").decode()
+            root = ET.fromstring(content)
+    except Exception as e:
+        logger.warning("Failed to read plate metadata from %s: %s", file_path, e)
+        return _EMPTY_PLATE_METADATA
+
+    def _plate_index(plate_elem) -> int | None:
+        for meta in plate_elem.findall("metadata"):
+            if meta.get("key") == "index":
+                try:
+                    return int(meta.get("value", "0"))
+                except ValueError:
+                    return None
+        return None
+
+    def _collect_filaments(plate_elem) -> list[dict]:
+        out: list[dict] = []
+        for f in plate_elem.findall("filament"):
+            filament_id = f.get("id")
+            # Both the used_g float() and the id int() must stay inside the guard:
+            # a non-numeric id or used_g is silently skipped (matches the legacy
+            # helpers, which tolerated garbage rows rather than raising — a raise
+            # here would 500 the whole queue listing).
+            try:
+                used_amount = float(f.get("used_g", "0"))
+                if filament_id:
+                    out.append(
+                        {
+                            "slot_id": int(filament_id),
+                            "used_g": used_amount,
+                            "type": f.get("type", ""),
+                            "color": f.get("color", ""),
+                        }
+                    )
+            except (ValueError, TypeError):
+                continue
+        return out
+
+    print_time: int | None = None
+    bed_type: str | None = None
+    filament_usage: list[dict] = []
+    matched_plate = None
+
+    if plate_id is not None:
+        for plate_elem in root.findall(".//plate"):
+            if _plate_index(plate_elem) == plate_id:
+                matched_plate = plate_elem
+                break
+    else:
+        matched_plate = root.find(".//plate")
+
+    if matched_plate is not None:
+        for meta in matched_plate.findall("metadata"):
+            key = meta.get("key")
+            if key == "prediction" and print_time is None:
+                try:
+                    print_time = int(meta.get("value", "0"))
+                except ValueError:
+                    print_time = None
+            elif key == "curr_bed_type" and meta.get("value"):
+                bed_type = (meta.get("value") or "").strip()
+
+    if plate_id is not None:
+        if matched_plate is not None:
+            filament_usage = _collect_filaments(matched_plate)
+    else:
+        # Legacy plate_id=None usage: every filament in the file, not just plate 1.
+        for f in root.findall(".//filament"):
+            filament_id = f.get("id")
+            # int()/float() both guarded — a garbage id/used_g row is skipped, not raised.
+            try:
+                used_amount = float(f.get("used_g", "0"))
+                if filament_id:
+                    filament_usage.append(
+                        {
+                            "slot_id": int(filament_id),
+                            "used_g": used_amount,
+                            "type": f.get("type", ""),
+                            "color": f.get("color", ""),
+                        }
+                    )
+            except (ValueError, TypeError):
+                continue
+
+    return PlateMetadata(
+        print_time_seconds=print_time,
+        filament_usage=filament_usage,
+        bed_type=bed_type,
+        filament_used_grams=sum(f["used_g"] for f in filament_usage),
+    )
+
+
+def extract_plate_metadata_from_3mf(file_path: Path, plate_id: int | None = None) -> PlateMetadata:
+    """Return combined per-plate metadata, cached by file revision (#2573).
+
+    The result is keyed by ``(path, plate_id, mtime_ns, size)`` so an unchanged
+    file is parsed at most once; a replaced/edited file re-parses automatically.
+    The returned ``PlateMetadata`` is shared and MUST be treated as read-only —
+    callers that need a mutable filament list get a copy from the wrappers below.
+    """
+    file_path = Path(file_path)
+    try:
+        stat = file_path.stat()
+    except OSError:
+        # File missing/unreadable: parse (which will return empty) but don't
+        # cache — the file may appear later and we don't want a sticky miss.
+        return _parse_plate_metadata_uncached(file_path, plate_id)
+
+    key = (str(file_path), plate_id, stat.st_mtime_ns, stat.st_size)
+    with _PLATE_METADATA_CACHE_LOCK:
+        cached = _PLATE_METADATA_CACHE.get(key)
+        if cached is not None:
+            _PLATE_METADATA_CACHE.move_to_end(key)
+            return cached
+
+    metadata = _parse_plate_metadata_uncached(file_path, plate_id)
+
+    with _PLATE_METADATA_CACHE_LOCK:
+        _PLATE_METADATA_CACHE[key] = metadata
+        _PLATE_METADATA_CACHE.move_to_end(key)
+        while len(_PLATE_METADATA_CACHE) > _PLATE_METADATA_CACHE_MAX:
+            _PLATE_METADATA_CACHE.popitem(last=False)
+    return metadata
+
+
 def extract_filament_usage_from_3mf(file_path: Path, plate_id: int | None = None) -> list[dict]:
     """Extract per-filament total usage from 3MF slice_info.config.
 
@@ -378,65 +613,619 @@ def extract_filament_usage_from_3mf(file_path: Path, plate_id: int | None = None
         List of filament usage dictionaries:
         [{"slot_id": 1, "used_g": 50.5, "type": "PLA", "color": "#FF0000"}, ...]
     """
-    filament_usage = []
+    # Delegate to the cached combined parse (#2573). Return fresh dicts so callers
+    # that mutate the list don't corrupt the shared cached PlateMetadata.
+    return [dict(f) for f in extract_plate_metadata_from_3mf(file_path, plate_id).filament_usage]
+
+
+def extract_print_time_from_3mf(file_path: Path, plate_id: int | None = None) -> int | None:
+    """Extract the slicer's predicted print time from a 3MF's slice_info.config.
+
+    Multi-plate 3MFs carry one ``<plate><metadata key="prediction" .../></plate>``
+    per plate. The archive-level `print_time_seconds` is the sum across all plates
+    (see services/archive.py:200-264, #1593). For per-plate UI / notifications,
+    callers re-read the 3MF and request the specific plate's value via this helper.
+
+    Args:
+        file_path: Path to the 3MF file
+        plate_id: Plate index to filter for; if None, returns the first plate's
+            ``prediction`` (matches the legacy single-plate read).
+
+    Returns:
+        Predicted print time in seconds, or None if not found / unparseable.
+    """
+    return extract_plate_metadata_from_3mf(file_path, plate_id).print_time_seconds
+
+
+def extract_bed_type_from_3mf(file_path: Path, plate_id: int | None = None) -> str | None:
+    """Extract the build plate type (`curr_bed_type`) for a specific plate (#1281).
+
+    ``archive.bed_type`` is captured at ingest time but is one value per archive
+    (the first plate's `curr_bed_type` — see services/archive.py:235). For a
+    multi-plate 3MF where different plates target different beds (e.g. a 40-plate
+    file mixing PEI + Engineering), the archive-level value lies. When a queue
+    item or print modal targets a specific plate, this re-reads the 3MF and
+    returns that plate's actual bed type.
+
+    Args:
+        file_path: Path to the 3MF file
+        plate_id: Plate index to filter for; if None, returns the first plate's
+            ``curr_bed_type`` (matches the archive-level capture).
+
+    Returns:
+        Bed type string (e.g. "Textured PEI Plate"), or None if not found.
+    """
+    return extract_plate_metadata_from_3mf(file_path, plate_id).bed_type
+
+
+# Header values exposed as `{placeholder}` substitutions inside snippets.
+# Aliases let users write Prusa-style names (`{max_layer_z}`) that map onto
+# Bambu/Orca header keys (`max_z_height`).
+_HEADER_PLACEHOLDER_ALIASES = {
+    "max_layer_z": "max_z_height",
+    "max_print_height": "max_z_height",
+    "total_layers": "total_layer_number",
+}
+
+_HEADER_KEY_RE = re.compile(r"^;\s*([^:]+?)\s*:\s*(.+?)\s*$")
+_PLACEHOLDER_RE = re.compile(r"\{([a-zA-Z_][a-zA-Z0-9_]*)\}")
+_START_GCODE_END_MARKER = "; MACHINE_START_GCODE_END"
+_EXECUTABLE_BLOCK_END_MARKER = "; EXECUTABLE_BLOCK_END"
+
+
+def _parse_3mf_gcode_header(content: str) -> dict[str, str]:
+    """Parse the `; HEADER_BLOCK_START..END` block into a normalised dict.
+
+    Keys are lowercased, ` [units]` suffixes stripped, and spaces converted
+    to underscores so callers can look up `total_layer_number` regardless of
+    whether the source line is `; total layer number: 80` or
+    `; total filament length [mm] : 12155.34`.
+    """
+    header: dict[str, str] = {}
+    in_header = False
+    for raw_line in content.splitlines():
+        line = raw_line.strip()
+        if line == "; HEADER_BLOCK_START":
+            in_header = True
+            continue
+        if line == "; HEADER_BLOCK_END":
+            break
+        if not in_header:
+            continue
+        m = _HEADER_KEY_RE.match(line)
+        if not m:
+            continue
+        key, value = m.group(1), m.group(2)
+        key = re.sub(r"\s*\[[^\]]*\]\s*$", "", key)
+        key = key.strip().lower().replace(" ", "_")
+        header[key] = value
+    return header
+
+
+def _select_plate_gcode_name(names: list[str], plate_id: int | None) -> str | None:
+    """Pick a plate's ``.gcode`` member out of a 3MF namelist.
+
+    Prefers ``plate_<id>.gcode``, then falls back to the first ``.gcode``
+    member so single-plate files — and files from slicers that don't use the
+    plate naming convention — still resolve.
+    """
+    gcodes = [n for n in names if n.endswith(".gcode")]
+    if not gcodes:
+        return None
+    if plate_id is not None:
+        suffix = f"plate_{plate_id}.gcode"
+        for name in gcodes:
+            if name.endswith(suffix):
+                return name
+    return gcodes[0]
+
+
+# The header block sits at the very top of the plate G-code. Read only that
+# much: a sliced plate is routinely tens of megabytes and `ZipFile.read()`
+# would inflate all of it to reach ~40 lines.
+_HEADER_READ_LIMIT_BYTES = 64 * 1024
+
+
+def extract_max_z_height_from_3mf(file_path: Path, plate_id: int | None = None) -> float | None:
+    """Return the plate's ``max_z_height`` in mm, or None if not knowable.
+
+    This is the Z the toolhead sat at for the final layer — the same value
+    Bambu's own end G-code adds its bed-drop offset to (``G1 Z{max_layer_z +
+    100}``). #2547 uses it to put the plate back into camera framing before the
+    finish photo, which is only safe because it is a height the printer was
+    physically at seconds earlier.
+
+    None means "don't know" and callers must treat it as such rather than
+    substituting a default: the file may be unreadable, carry no plate G-code,
+    or come from a slicer that writes no ``max_z_height`` header. Guessing a
+    height here would command a Z move to somewhere the nozzle has never been.
+    """
     try:
         with zipfile.ZipFile(file_path, "r") as zf:
-            if "Metadata/slice_info.config" not in zf.namelist():
-                return []
+            target = _select_plate_gcode_name(zf.namelist(), plate_id)
+            if target is None:
+                return None
+            with zf.open(target, "r") as fh:
+                head = fh.read(_HEADER_READ_LIMIT_BYTES)
+    except (OSError, zipfile.BadZipFile, KeyError) as e:
+        logger.debug("max_z_height: cannot read %s: %s", file_path, e)
+        return None
 
-            content = zf.read("Metadata/slice_info.config").decode()
-            root = ET.fromstring(content)
+    raw = _parse_3mf_gcode_header(head.decode("utf-8", errors="ignore")).get("max_z_height")
+    if raw is None:
+        return None
+    try:
+        value = float(raw)
+    except ValueError:
+        logger.debug("max_z_height: unusable value %r in %s", raw, file_path)
+        return None
+    # Zero or negative means the header key is present but meaningless. Passed
+    # on as a height it would become a move *toward* the bed, so drop it.
+    return value if value > 0 else None
 
-            if plate_id is not None:
-                # Find the plate element with matching index
-                for plate_elem in root.findall(".//plate"):
-                    plate_index = None
-                    for meta in plate_elem.findall("metadata"):
-                        if meta.get("key") == "index":
-                            try:
-                                plate_index = int(meta.get("value", "0"))
-                            except ValueError:
-                                pass
-                            break
 
-                    if plate_index == plate_id:
-                        for f in plate_elem.findall("filament"):
-                            filament_id = f.get("id")
-                            used_g = f.get("used_g", "0")
-                            try:
-                                used_amount = float(used_g)
-                                if filament_id:
-                                    filament_usage.append(
-                                        {
-                                            "slot_id": int(filament_id),
-                                            "used_g": used_amount,
-                                            "type": f.get("type", ""),
-                                            "color": f.get("color", ""),
-                                        }
-                                    )
-                            except (ValueError, TypeError):
-                                pass
-                        break
-            else:
-                # No plate_id specified - extract all filaments
-                for f in root.findall(".//filament"):
-                    filament_id = f.get("id")
-                    used_g = f.get("used_g", "0")
-                    try:
-                        used_amount = float(used_g)
-                        if filament_id:
-                            filament_usage.append(
-                                {
-                                    "slot_id": int(filament_id),
-                                    "used_g": used_amount,
-                                    "type": f.get("type", ""),
-                                    "color": f.get("color", ""),
-                                }
-                            )
-                    except (ValueError, TypeError):
-                        pass  # Skip filament entries with unparseable usage values
+def _substitute_placeholders(snippet: str, header: dict[str, str]) -> str:
+    """Replace `{var}` placeholders with header values, leaving unknowns intact."""
+
+    def repl(m: re.Match) -> str:
+        name = m.group(1)
+        value = header.get(name)
+        if value is None:
+            alias = _HEADER_PLACEHOLDER_ALIASES.get(name)
+            if alias is not None:
+                value = header.get(alias)
+        if value is None:
+            logger.warning(
+                "G-code injection: placeholder {%s} not found in 3MF header; leaving as-is",
+                name,
+            )
+            return m.group(0)
+        return value
+
+    return _PLACEHOLDER_RE.sub(repl, snippet)
+
+
+def _inject_start_at_marker(content: str, snippet: str) -> str:
+    """Insert snippet immediately before `; MACHINE_START_GCODE_END`.
+
+    The marker sits at the bottom of the printer's startup block — bed heat,
+    homing, and nozzle prime are already done, so injected snippets land in
+    the same place a slicer-side custom-start-gcode would. Falls back to
+    prepending if the marker isn't present (older files / non-Bambu slicers).
+    """
+    marker_idx = content.find(_START_GCODE_END_MARKER)
+    if marker_idx == -1:
+        logger.warning(
+            "G-code injection: '%s' not found, prepending start snippet to whole file",
+            _START_GCODE_END_MARKER,
+        )
+        return snippet.rstrip("\n") + "\n" + content
+    line_start = content.rfind("\n", 0, marker_idx)
+    line_start = 0 if line_start == -1 else line_start + 1
+    return content[:line_start] + snippet.rstrip("\n") + "\n" + content[line_start:]
+
+
+def _inject_end_before_marker(content: str, snippet: str) -> str:
+    """Insert snippet immediately before `; EXECUTABLE_BLOCK_END`.
+
+    The end snippet must run *inside* the executable block. Bambu firmware
+    (verified on a P1S) does not execute G-code that sits after
+    `; EXECUTABLE_BLOCK_END`, so appending to the file end silently drops the
+    snippet — auto-eject / plate-clear moves never fire. Inserting before the
+    marker places the snippet after the printer's own machine-end sequence but
+    still within the executed block. Falls back to appending at the file end if
+    the marker isn't present.
+    """
+    marker_idx = content.find(_EXECUTABLE_BLOCK_END_MARKER)
+    if marker_idx == -1:
+        logger.warning(
+            "G-code injection: '%s' not found, appending end snippet to file end",
+            _EXECUTABLE_BLOCK_END_MARKER,
+        )
+        return content.rstrip("\n") + "\n" + snippet.rstrip("\n") + "\n"
+    line_start = content.rfind("\n", 0, marker_idx)
+    line_start = 0 if line_start == -1 else line_start + 1
+    return content[:line_start] + snippet.rstrip("\n") + "\n" + content[line_start:]
+
+
+def inject_gcode_into_3mf(
+    source_path: Path,
+    plate_id: int,
+    start_gcode: str | None,
+    end_gcode: str | None,
+):
+    """Create a temp copy of a 3MF with G-code injected at start/end.
+
+    Snippets support `{placeholder}` substitution against values parsed from
+    the 3MF G-code header block (e.g. `{max_layer_z}` → `16.00`). Start
+    snippets are anchored to the `; MACHINE_START_GCODE_END` marker so they
+    run after the printer's own startup (#422). End snippets are inserted just
+    before `; EXECUTABLE_BLOCK_END` so they run inside the executable block —
+    Bambu firmware (P1S) ignores g-code placed after that marker.
+
+    The plate's `.gcode.md5` sidecar is recomputed so firmware that validates
+    it against the gcode (e.g. P1S) still accepts the modified file.
+
+    Args:
+        source_path: Path to the original 3MF file.
+        plate_id: Plate number (1-indexed) to inject into.
+        start_gcode: G-code to insert after printer startup, or None.
+        end_gcode: G-code to append, or None.
+
+    Returns:
+        Path to temp file with injected G-code, or None if injection failed.
+        Caller is responsible for cleaning up the temp file.
+    """
+    import tempfile
+
+    if not start_gcode and not end_gcode:
+        return None
+
+    try:
+        # Find the target gcode file inside the 3MF
+        with zipfile.ZipFile(source_path, "r") as zf:
+            # Plate-specific gcode first, else the first one in the file.
+            target_gcode = _select_plate_gcode_name(zf.namelist(), plate_id)
+            if target_gcode is None:
+                return None
+
+            # Read and modify gcode content
+            gcode_content = zf.read(target_gcode).decode("utf-8", errors="ignore")
+            header = _parse_3mf_gcode_header(gcode_content)
+
+            if start_gcode:
+                resolved = _substitute_placeholders(start_gcode, header)
+                # Log the post-substitution snippet so the actually-injected G-code
+                # (placeholders like {max_layer_z} already resolved) is visible at DEBUG.
+                logger.debug("G-code injection [%s]: resolved START snippet:\n%s", target_gcode, resolved)
+                gcode_content = _inject_start_at_marker(gcode_content, resolved)
+            if end_gcode:
+                resolved = _substitute_placeholders(end_gcode, header)
+                logger.debug("G-code injection [%s]: resolved END snippet:\n%s", target_gcode, resolved)
+                gcode_content = _inject_end_before_marker(gcode_content, resolved)
+
+            # The printer validates the plate gcode against an embedded
+            # `<plate>.gcode.md5` sidecar (uppercase hex, no trailing newline).
+            # Rewriting the gcode without refreshing this hash makes firmware
+            # reject the file at load (P1S: HMS 0500-4003 "unable to parse"),
+            # so recompute it from the exact bytes we're about to write.
+            gcode_bytes = gcode_content.encode("utf-8")
+            md5_name = target_gcode + ".md5"
+            # Not a security hash — this reproduces Bambu's `.gcode.md5` sidecar
+            # format, so flag it as non-security for the linters (ruff S324 / bandit B324).
+            md5_value = hashlib.md5(gcode_bytes, usedforsecurity=False).hexdigest().upper().encode("ascii")
+
+            # Write modified 3MF to temp file
+            with tempfile.NamedTemporaryFile(delete=False, suffix=".3mf") as tmp:
+                tmp_path = Path(tmp.name)
+
+            with zipfile.ZipFile(tmp_path, "w", zipfile.ZIP_DEFLATED) as zf_write:
+                for item in zf.namelist():
+                    info = zf.getinfo(item)
+                    if item == target_gcode:
+                        zf_write.writestr(info, gcode_bytes)
+                    elif item == md5_name:
+                        zf_write.writestr(info, md5_value)
+                    else:
+                        zf_write.writestr(info, zf.read(item))
+
+        return tmp_path
 
     except Exception:
-        pass  # Return whatever usage data was collected before the error
+        # Clean up temp file on error
+        if "tmp_path" in locals() and tmp_path.exists():
+            tmp_path.unlink(missing_ok=True)
+        return None
 
-    return filament_usage
+
+def extract_project_filaments_from_3mf(zf: zipfile.ZipFile) -> list[dict]:
+    """Project-wide AMS slot config from ``Metadata/project_settings.config``.
+
+    Returns one dict per configured AMS slot in slot order (1-indexed), with
+    ``type`` and ``color`` populated from the project's ``filament_type`` and
+    ``filament_colour`` arrays. ``used_grams`` / ``used_meters`` are 0 because
+    project_settings carries the configuration, not per-print usage — the
+    fields exist for shape compatibility with the slice_info-derived list.
+
+    The SliceModal needs this on **unsliced** project files: slice_info.config
+    is empty until Bambu Studio has actually sliced the project, but the user
+    can still pick filament profiles for a slice we're about to perform.
+    """
+    if "Metadata/project_settings.config" not in zf.namelist():
+        return []
+    try:
+        proj = json.loads(zf.read("Metadata/project_settings.config").decode())
+    except (ValueError, OSError):
+        return []
+    if not isinstance(proj, dict):
+        return []
+    types_arr = proj.get("filament_type") or []
+    colors_arr = proj.get("filament_colour") or []
+    slot_count = max(
+        len(types_arr) if isinstance(types_arr, list) else 0, len(colors_arr) if isinstance(colors_arr, list) else 0
+    )
+    out: list[dict] = []
+    for i in range(slot_count):
+        out.append(
+            {
+                "slot_id": i + 1,
+                "type": types_arr[i] if i < len(types_arr) and isinstance(types_arr[i], str) else "",
+                "color": colors_arr[i] if i < len(colors_arr) and isinstance(colors_arr[i], str) else "",
+                "used_grams": 0,
+                "used_meters": 0,
+            }
+        )
+    return out
+
+
+def expand_to_project_slots(zf: zipfile.ZipFile, used: list[dict]) -> list[dict]:
+    """Widen a used-only filament list to one entry per project slot.
+
+    ``used`` is the slice_info-derived list: only the slots whose G-code
+    actually consumed filament, each carrying real usage figures. That is the
+    right answer for print-time AMS matching, and the wrong one for the slice
+    modal, because the list the modal builds is **positional** — index 0 is
+    slot 1 all the way down to the ``filament_N.json`` parts handed to the CLI.
+    A source whose only used slot is 4 therefore produced a single dropdown
+    whose pick the CLI bound to slot 1, leaving slot 4 — the one the model
+    prints with — on whatever the source had baked in (#2712).
+
+    Returns the project's slots in slot order, each flagged ``used_in_plate``.
+    Rows present in ``used`` are kept whole, so their usage figures, resolved
+    type/colour and ``tray_info_idx`` survive; the rest come from the project
+    configuration with zero usage. A used slot beyond the project's slot count
+    is appended rather than dropped — the caller asked for a superset, and
+    silently losing the one slot that prints would be the original bug again.
+
+    ``used`` is returned unchanged when the file carries no project settings
+    to widen against: a narrower-than-ideal list still prints correctly, an
+    invented one might not.
+    """
+    project = extract_project_filaments_from_3mf(zf)
+    if not project:
+        return used
+
+    by_slot = {f["slot_id"]: f for f in used}
+    out: list[dict] = []
+    for slot in project:
+        known = by_slot.pop(slot["slot_id"], None)
+        if known is not None:
+            known["used_in_plate"] = True
+            out.append(known)
+        else:
+            slot["used_in_plate"] = False
+            out.append(slot)
+    # Anything slice_info reported that the project doesn't declare.
+    for leftover in by_slot.values():
+        leftover["used_in_plate"] = True
+        out.append(leftover)
+    out.sort(key=lambda f: f["slot_id"])
+    return out
+
+
+def extract_support_filament_slots_from_3mf(zf: zipfile.ZipFile) -> set[int]:
+    """Slots referenced by the process settings for support material.
+
+    Supports aren't attached to object geometry — they're generated by
+    the slicer's process pass — so :func:`extract_plate_extruder_set_from_3mf`,
+    which walks per-object extruder metadata + paint_color triangles,
+    doesn't see them. Callers that need the complete set of slots a
+    plate print will exercise (e.g. the SliceModal's filament-
+    substitution logic) must union this in — otherwise a support-only
+    slot (typical PLA-model + PVA-support setup) looks "unused" and its
+    user-picked profile gets silently overwritten with slot 1's,
+    producing a single-material print (#1881).
+
+    Returns the empty set when supports are disabled, ``support_filament``
+    / ``support_interface_filament`` are 0 (== "same as model"), the
+    project has no embedded settings, or the file isn't a valid 3MF.
+    """
+    if "Metadata/project_settings.config" not in zf.namelist():
+        return set()
+    try:
+        cfg = json.loads(zf.read("Metadata/project_settings.config").decode("utf-8"))
+    except (json.JSONDecodeError, UnicodeDecodeError, OSError):
+        return set()
+    if not isinstance(cfg, dict):
+        return set()
+    # BambuStudio serialises bool config options as string "1"/"0" in
+    # project_settings.config, but forks / older versions occasionally
+    # write real booleans or ints — accept anything that isn't
+    # unambiguously falsy.
+    enable = cfg.get("enable_support")
+    if enable in (False, 0, "0", "false", "False", "", None):
+        return set()
+    out: set[int] = set()
+    for key in ("support_filament", "support_interface_filament"):
+        raw = cfg.get(key)
+        if raw is None:
+            continue
+        try:
+            slot = int(raw)
+        except (ValueError, TypeError):
+            continue
+        # Slot 0 means "same as model" — no dedicated slot to preserve.
+        if slot > 0:
+            out.add(slot)
+    return out
+
+
+_PAINT_COLOR_ATTR_RE = re.compile(rb'paint_color="([0-9A-Fa-f]+)"')
+
+# Painted-face quadtree leaves include both real filament assignments and
+# tiny edit artifacts (single-leaf accidents from "tried a colour, undid,
+# repainted with a different one"). The threshold's only job is dropping
+# accidents — anything the user spent meaningful effort on must survive.
+# 5% of an object's painted triangles is well below any 60/40 / 70/30 /
+# 33/33/33 split a real two- or three-colour print would hit, so all
+# intentional colours are kept; one-off single-leaf paints (typically
+# 0.1-1.5% in observed projects) are filtered. Note that this fallback
+# path runs ONLY when the preview-slice path can't reach the sidecar; in
+# the normal flow the slicer's own pruning produces the canonical list and
+# this threshold isn't reached.
+_PAINT_NOISE_THRESHOLD = 0.05
+
+
+def extract_plate_extruder_set_from_3mf(zf: zipfile.ZipFile, plate_id: int) -> set[int]:
+    """Extruder/AMS slot indices (1-indexed) used by objects on ``plate_id``.
+
+    Three sources are unioned because Bambu Studio splits per-object extruder
+    info across THREE places depending on how the user assigned colours:
+
+    1. ``model_settings.config`` — top-level ``<metadata key="extruder">``
+       on each ``<object>`` (the "default extruder" for the whole object).
+    2. ``model_settings.config`` — per-``<part>`` ``<metadata key="extruder">``
+       overrides (used when the user split an object into multiple parts
+       with distinct filaments).
+    3. ``3D/Objects/object_*.model`` — ``paint_color`` attributes on
+       individual ``<triangle>`` elements (used when the user "painted" a
+       face with a different filament). The encoding is a hex string where
+       each nibble is a TriangleSelector tree node: ``0`` = unpainted leaf,
+       ``F`` = branch (4 children follow), ``1``..``E`` = leaf painted with
+       extruder N. We don't decode the tree — every leaf-paint nibble in
+       the string IS the extruder number, so a flat scan over hex chars
+       yields the correct set without recursive parsing.
+
+    Without (3) the painted-face data is invisible: model_settings says
+    every object on a multi-color plate uses extruder 1 by default but the
+    actual print uses 3, 4, 12 etc. via face paint, so the SliceModal would
+    render only one filament dropdown for what's clearly a multi-colour
+    print (#1150 follow-up).
+    """
+    if "Metadata/model_settings.config" not in zf.namelist():
+        return set()
+    try:
+        root = ET.fromstring(zf.read("Metadata/model_settings.config").decode())
+    except (ET.ParseError, OSError):
+        return set()
+
+    # Pass 1: object → set of extruders from XML metadata (sources 1 + 2)
+    # plus the per-object .model file path so we can later scan source 3.
+    object_extruders: dict[str, set[int]] = {}
+    object_model_paths: dict[str, list[str]] = {}
+    for obj_elem in root.findall(".//object"):
+        obj_id = obj_elem.get("id")
+        if not obj_id:
+            continue
+        extruders: set[int] = set()
+        top = obj_elem.find("metadata[@key='extruder']")
+        if top is not None:
+            try:
+                v = int(top.get("value", "0"))
+                if v > 0:
+                    extruders.add(v)
+            except (ValueError, TypeError):
+                pass
+        for part_elem in obj_elem.findall(".//part"):
+            part_ext = part_elem.find("metadata[@key='extruder']")
+            if part_ext is None:
+                continue
+            try:
+                v = int(part_ext.get("value", "0"))
+                if v > 0:
+                    extruders.add(v)
+            except (ValueError, TypeError):
+                pass
+        object_extruders[obj_id] = extruders
+
+    # Pass 2: 3dmodel.model maps each <object id="N"> to its component
+    # .model file path(s). Bambu wraps object IDs that match
+    # model_settings.config IDs around <components><component
+    # path="/3D/Objects/object_K.model" objectid="..." /></components>.
+    # Strip xmlns prefixes on attributes so ElementTree can find them
+    # without namespace gymnastics — `p:path` becomes `path` etc.
+    if "3D/3dmodel.model" in zf.namelist():
+        try:
+            raw = zf.read("3D/3dmodel.model").decode()
+            stripped = re.sub(r'xmlns:?\w*="[^"]*"', "", raw)
+            stripped = re.sub(r"<(/?)\w+:", r"<\1", stripped)
+            stripped = re.sub(r" \w+:(\w+=)", r" \1", stripped)
+            model_root = ET.fromstring(stripped)
+            for obj_elem in model_root.findall(".//object"):
+                oid = obj_elem.get("id")
+                if not oid:
+                    continue
+                comps = obj_elem.find("components")
+                if comps is None:
+                    continue
+                paths = []
+                for c in comps.findall("component"):
+                    p = c.get("path")
+                    if p:
+                        paths.append(p.lstrip("/"))
+                if paths:
+                    object_model_paths[oid] = paths
+        except (ET.ParseError, OSError):
+            pass  # No 3dmodel — paint scan just won't apply
+
+    # Pass 3: scan paint_color attrs in each per-object .model file. Cache
+    # by file path because two objects often share the same component tree.
+    paint_cache: dict[str, set[int]] = {}
+
+    def _scan_paint(path: str) -> set[int]:
+        if path in paint_cache:
+            return paint_cache[path]
+        out: set[int] = set()
+        if path not in zf.namelist():
+            paint_cache[path] = out
+            return out
+        try:
+            data = zf.read(path)
+        except OSError:
+            paint_cache[path] = out
+            return out
+        # Per-extruder triangle coverage. Each painted triangle may have
+        # multiple leaf nibbles (the quadtree subdivides the face into
+        # painted regions); we count one triangle per unique extruder per
+        # match so the resulting fraction is "what share of painted
+        # triangles include at least one leaf with extruder N". Noise from
+        # one-off edit artifacts is filtered out at the threshold below.
+        extruder_triangles: dict[int, int] = {}
+        total_painted = 0
+        for match in _PAINT_COLOR_ATTR_RE.finditer(data):
+            total_painted += 1
+            seen: set[int] = set()
+            for ch in match.group(1):
+                # Hex digit → 4-bit value. 0 = unpainted leaf, F = branch
+                # (decoded recursively but children are encoded inline, so
+                # we'll see them on later iterations). 1-E = leaf painted
+                # with extruder N.
+                if ch in b"123456789":
+                    seen.add(ch - 0x30)
+                elif ch in b"ABCDEabcde":
+                    seen.add((ch & 0x4F) - 0x37)
+            for e in seen:
+                extruder_triangles[e] = extruder_triangles.get(e, 0) + 1
+        if total_painted > 0:
+            cutoff = max(1, int(total_painted * _PAINT_NOISE_THRESHOLD))
+            for ext, count in extruder_triangles.items():
+                if count >= cutoff:
+                    out.add(ext)
+        paint_cache[path] = out
+        return out
+
+    # Walk plates — collect extruders for objects on the requested plate.
+    used: set[int] = set()
+    for plate_elem in root.findall(".//plate"):
+        plater_id = None
+        for meta in plate_elem.findall("metadata"):
+            if meta.get("key") == "plater_id":
+                try:
+                    plater_id = int(meta.get("value", ""))
+                except (ValueError, TypeError):
+                    pass
+                break
+        if plater_id != plate_id:
+            continue
+        for inst in plate_elem.findall("model_instance"):
+            for inst_meta in inst.findall("metadata"):
+                if inst_meta.get("key") != "object_id":
+                    continue
+                obj_id = inst_meta.get("value")
+                if not obj_id:
+                    continue
+                used.update(object_extruders.get(obj_id, set()))
+                for path in object_model_paths.get(obj_id, []):
+                    used.update(_scan_paint(path))
+        break
+    return used

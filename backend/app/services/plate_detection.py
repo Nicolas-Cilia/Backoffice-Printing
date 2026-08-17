@@ -8,6 +8,7 @@ a reference image of the empty plate.
 from __future__ import annotations
 
 import logging
+import os
 from pathlib import Path
 
 logger = logging.getLogger(__name__)
@@ -587,6 +588,7 @@ async def capture_camera_image(
     external_camera_url: str | None = None,
     external_camera_type: str | None = None,
     use_external: bool = False,
+    external_camera_snapshot_url: str | None = None,
 ) -> tuple[bytes | None, str]:
     """Capture an image from the printer camera.
 
@@ -602,12 +604,28 @@ async def capture_camera_image(
     # Try external camera first if requested and available
     if use_external and external_camera_url and external_camera_type:
         try:
+            from backend.app.api.routes.camera import live_frame_for_capture
             from backend.app.services.external_camera import capture_frame
 
-            image_data = await capture_frame(external_camera_url, external_camera_type)
-            if image_data:
-                camera_source = "external"
-                logger.debug("Captured frame from external camera for printer %s", printer_id)
+            # What this function's docstring already promised, but only the
+            # built-in fallback below delivered: an external camera is
+            # single-reader too, so capturing while a viewer watches fails
+            # (#2707).
+            defer, buffered = live_frame_for_capture(printer_id)
+            if defer:
+                if buffered:
+                    image_data = buffered
+                    camera_source = "external (buffered)"
+                    logger.debug("Using buffered external frame for printer %s", printer_id)
+            else:
+                image_data = await capture_frame(
+                    external_camera_url,
+                    external_camera_type,
+                    snapshot_url=external_camera_snapshot_url,
+                )
+                if image_data:
+                    camera_source = "external"
+                    logger.debug("Captured frame from external camera for printer %s", printer_id)
         except Exception as e:
             logger.warning("Failed to capture from external camera: %s", e)
 
@@ -632,8 +650,10 @@ async def capture_camera_image(
 
             from backend.app.services.camera import capture_camera_frame
 
-            with tempfile.NamedTemporaryFile(suffix=".jpg", delete=False) as tmp:
-                tmp_path = Path(tmp.name)
+            fd, tmp_name = tempfile.mkstemp(suffix=".jpg")
+            os.close(fd)
+            tmp_path = Path(tmp_name)
+            tmp_path.chmod(0o600)
 
             try:
                 success = await capture_camera_frame(ip_address, access_code, model, tmp_path, timeout=10)
@@ -662,6 +682,7 @@ async def check_plate_empty(
     external_camera_type: str | None = None,
     use_external: bool = False,
     roi: tuple[float, float, float, float] | None = None,
+    external_camera_snapshot_url: str | None = None,
 ) -> PlateDetectionResult:
     """Check if the build plate is empty for a printer.
 
@@ -689,7 +710,14 @@ async def check_plate_empty(
         )
 
     image_data, camera_source = await capture_camera_image(
-        printer_id, ip_address, access_code, model, external_camera_url, external_camera_type, use_external
+        printer_id,
+        ip_address,
+        access_code,
+        model,
+        external_camera_url,
+        external_camera_type,
+        use_external,
+        external_camera_snapshot_url=external_camera_snapshot_url,
     )
 
     if image_data is None:
@@ -719,6 +747,7 @@ async def calibrate_plate(
     external_camera_url: str | None = None,
     external_camera_type: str | None = None,
     use_external: bool = False,
+    external_camera_snapshot_url: str | None = None,
 ) -> tuple[bool, str, int]:
     """Calibrate plate detection by capturing a reference image of the empty plate.
 
@@ -739,7 +768,14 @@ async def calibrate_plate(
         return False, "OpenCV not available - plate detection disabled", -1
 
     image_data, camera_source = await capture_camera_image(
-        printer_id, ip_address, access_code, model, external_camera_url, external_camera_type, use_external
+        printer_id,
+        ip_address,
+        access_code,
+        model,
+        external_camera_url,
+        external_camera_type,
+        use_external,
+        external_camera_snapshot_url=external_camera_snapshot_url,
     )
 
     if image_data is None:

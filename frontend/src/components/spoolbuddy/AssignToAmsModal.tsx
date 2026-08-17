@@ -7,6 +7,7 @@ import { ConfirmModal } from '../ConfirmModal';
 import { AmsUnitCard, NozzleBadge } from './AmsUnitCard';
 import type { AmsThresholds } from './AmsUnitCard';
 import { getFillBarColor } from '../../utils/amsHelpers';
+import { getSwatchStyle } from '../../utils/colors';
 
 function getAmsName(id: number): string {
   if (id <= 3) return `AMS ${String.fromCharCode(65 + id)}`;
@@ -56,16 +57,22 @@ interface AssignToAmsModalProps {
   onClose: () => void;
   spool: InventorySpool;
   printerId: number | null;
+  spoolmanMode?: boolean;
 }
 
-export function AssignToAmsModal({ isOpen, onClose, spool, printerId }: AssignToAmsModalProps) {
+export function AssignToAmsModal({ isOpen, onClose, spool, printerId, spoolmanMode = false }: AssignToAmsModalProps) {
   const { t } = useTranslation();
   const queryClient = useQueryClient();
   const [statusMessage, setStatusMessage] = useState<string | null>(null);
   const [statusType, setStatusType] = useState<'info' | 'success' | 'error' | null>(null);
   const [showMismatchConfirm, setShowMismatchConfirm] = useState(false);
+  // Profile-only mismatches no longer trigger the popup — the backend
+  // pushes the spool's slicer profile to the AMS slot on every assign
+  // anyway, so the warning was friction without benefit (#1552). Material
+  // mismatch still warns because firmware can refuse a print when type
+  // doesn't match.
   const [mismatchDetails, setMismatchDetails] = useState<{
-    type: 'material' | 'partial' | 'profile' | 'material_profile' | 'partial_profile';
+    type: 'material' | 'partial' | 'material_profile' | 'partial_profile';
     spoolMaterial: string;
     trayMaterial: string;
     spoolProfile?: string;
@@ -120,6 +127,17 @@ export function AssignToAmsModal({ isOpen, onClose, spool, printerId }: AssignTo
     staleTime: 30 * 1000,
   });
 
+  const { data: spoolmanAssignments = [] } = useQuery({
+    queryKey: ['spoolman-slot-assignments', printerId],
+    queryFn: () => api.getSpoolmanSlotAssignments(printerId ?? undefined),
+    enabled: isOpen && !!spoolmanMode && printerId !== null,
+    staleTime: 30 * 1000,
+  });
+
+  const currentAssignment = spoolmanMode
+    ? spoolmanAssignments.find(a => a.spoolman_spool_id === spool.id)
+    : undefined;
+
   // Build fill-level override map from inventory assignments
   const fillOverrides = useMemo(() => {
     const map: Record<string, number> = {};
@@ -166,28 +184,50 @@ export function AssignToAmsModal({ isOpen, onClose, spool, printerId }: AssignTo
     return extruderId === 1 ? 'L' : 'R';
   }, [isDualNozzle, amsExtruderMap]);
 
-  // Assign spool to AMS slot — single API call, backend handles both
-  // DB record AND MQTT auto-configuration (same as SpoolStation).
+  // Assign spool to AMS slot — single API call, backend handles both DB record
+  // AND MQTT auto-configuration. When the target slot is currently empty, the
+  // backend persists the assignment and skips the MQTT publish (firmware drops
+  // it anyway); on_ams_change re-fires the full configuration when filament is
+  // later inserted. The response's `pending_config` flag distinguishes that
+  // from the immediate-apply path so we can adjust the success toast.
   const configureMutation = useMutation({
     mutationFn: async ({ amsId, trayId }: { amsId: number; trayId: number }) => {
       if (!printerId) throw new Error('No printer selected');
 
-      await api.assignSpool({
+      if (spoolmanMode) {
+        return await api.assignSpoolmanSlot({
+          spoolman_spool_id: spool.id,
+          printer_id: printerId,
+          ams_id: amsId,
+          tray_id: trayId,
+        });
+      }
+      return await api.assignSpool({
         spool_id: spool.id,
         printer_id: printerId,
         ams_id: amsId,
         tray_id: trayId,
       });
-
-      // Slot preset mapping is now saved by the backend in assign_spool()
-      // after successful MQTT configuration, using the authoritative
-      // slicer_filament_name from the spool record.
     },
-    onSuccess: () => {
+    onSuccess: (assignment) => {
       setStatusType('success');
-      setStatusMessage(t('spoolbuddy.modal.assignSuccess', 'Assigned!'));
+      // pending_config only exists on SpoolAssignment (the local-inventory path);
+      // the Spoolman path returns InventorySpool which always implies immediate apply.
+      const pendingConfig = assignment && 'pending_config' in assignment && assignment.pending_config;
+      if (pendingConfig) {
+        setStatusMessage(
+          t(
+            'spoolbuddy.modal.assignPendingInsert',
+            'Assigned. Slot will configure when you insert the spool.',
+          ),
+        );
+      } else {
+        setStatusMessage(t('spoolbuddy.modal.assignSuccess', 'Assigned!'));
+      }
       queryClient.invalidateQueries({ queryKey: ['slotPresets'] });
-      setTimeout(() => onClose(), 1500);
+      queryClient.invalidateQueries({ queryKey: ['spoolman-slot-assignments'] });
+      queryClient.invalidateQueries({ queryKey: ['spoolman-slot-assignments-all'] });
+      setTimeout(() => onClose(), pendingConfig ? 2500 : 1500);
     },
     onError: (err) => {
       setStatusType('error');
@@ -231,15 +271,15 @@ export function AssignToAmsModal({ isOpen, onClose, spool, printerId }: AssignTo
         const trayProfile = tray.tray_type || '';
         const profileMatches = checkProfileMatch(spoolProfile, trayProfile);
 
-        if (materialMatchResult !== 'exact' || !profileMatches) {
-          let mismatchType: 'material' | 'partial' | 'profile' | 'material_profile' | 'partial_profile' = 'profile';
+        if (materialMatchResult !== 'exact') {
+          let mismatchType: 'material' | 'partial' | 'material_profile' | 'partial_profile';
           if (materialMatchResult === 'none' && !profileMatches) {
             mismatchType = 'material_profile';
           } else if (materialMatchResult === 'partial' && !profileMatches) {
             mismatchType = 'partial_profile';
           } else if (materialMatchResult === 'none') {
             mismatchType = 'material';
-          } else if (materialMatchResult === 'partial') {
+          } else {
             mismatchType = 'partial';
           }
 
@@ -318,7 +358,7 @@ export function AssignToAmsModal({ isOpen, onClose, spool, printerId }: AssignTo
 
   if (!isOpen) return null;
 
-  const colorHex = spool.rgba ? `#${spool.rgba.slice(0, 6)}` : '#808080';
+  const colorStyle = getSwatchStyle(spool.rgba);
 
   return (
     <>
@@ -326,13 +366,14 @@ export function AssignToAmsModal({ isOpen, onClose, spool, printerId }: AssignTo
       {/* Header */}
       <div className="flex items-center justify-between px-5 py-3 border-b border-zinc-800 shrink-0">
         <div className="flex items-center gap-3 min-w-0">
-          <div className="w-7 h-7 rounded-full shrink-0" style={{ backgroundColor: colorHex }} />
+          <div className="w-7 h-7 rounded-full shrink-0" style={colorStyle} />
           <div className="min-w-0">
             <h2 className="text-sm font-semibold text-zinc-100 truncate">
               {t('spoolbuddy.modal.assignToAmsTitle', 'Assign to AMS')}
               <span className="font-normal text-zinc-500 ml-2">
                 {spool.color_name || 'Unknown'} &bull; {spool.brand} {spool.material}{spool.subtype && ` ${spool.subtype}`}
               </span>
+              <span className="text-[10px] font-mono text-zinc-500 ml-2 shrink-0">#{spool.id}</span>
             </h2>
           </div>
         </div>
@@ -388,7 +429,7 @@ export function AssignToAmsModal({ isOpen, onClose, spool, printerId }: AssignTo
                   <AmsUnitCard
                     key={unit.id}
                     unit={unit}
-                    activeSlot={null}
+                    activeSlot={currentAssignment?.ams_id === unit.id ? (currentAssignment.tray_id ?? null) : null}
                     onConfigureSlot={(_amsId, trayId) => handleSlotClick(unit.id, trayId)}
                     isDualNozzle={isDualNozzle}
                     nozzleSide={getNozzleSide(unit.id)}
@@ -404,13 +445,16 @@ export function AssignToAmsModal({ isOpen, onClose, spool, printerId }: AssignTo
               <div className="flex gap-2 shrink-0">
                 {singleSlots.map(({ key, label, amsId, trayId, tray, isEmpty, nozzleSide, effectiveFill }) => {
                   const color = trayColorToCSS(tray.tray_color);
+                  const isActive = !!currentAssignment &&
+                    currentAssignment.ams_id === amsId &&
+                    currentAssignment.tray_id === trayId;
                   return (
                     <div
                       key={key}
                       onClick={() => handleSlotClick(amsId, trayId)}
                       className={`bg-bambu-dark-secondary rounded-lg px-3 py-2 cursor-pointer hover:bg-bambu-dark-secondary/80 transition-all flex items-center gap-2 ${
-                        isWaiting ? 'opacity-50 pointer-events-none' : ''
-                      }`}
+                        isActive ? 'ring-2 ring-bambu-green' : ''
+                      } ${isWaiting ? 'opacity-50 pointer-events-none' : ''}`}
                     >
                       <div className="relative w-10 h-10 shrink-0">
                         {isEmpty ? (
@@ -503,13 +547,12 @@ export function AssignToAmsModal({ isOpen, onClose, spool, printerId }: AssignTo
           trayProfile: mismatchDetails.trayProfile || t('common.unknown'),
           location: mismatchDetails.location,
         })}`;
-      } else if (mismatchDetails.type === 'profile') {
-        message = t('inventory.assignProfileMismatchMessage', {
-          spoolProfile: mismatchDetails.spoolProfile || t('common.unknown'),
-          trayProfile: mismatchDetails.trayProfile || t('common.unknown'),
-          location: mismatchDetails.location,
-        });
       }
+
+      // Always tell the user the AMS slot will be reconfigured — without
+      // this, "Assign Anyway" reads as a no-op confirmation when the
+      // backend in fact pushes the spool profile on every assign (#1552).
+      message = `${message}\n\n${t('inventory.assignReconfigureNote')}`;
 
       return (
         <ConfirmModal

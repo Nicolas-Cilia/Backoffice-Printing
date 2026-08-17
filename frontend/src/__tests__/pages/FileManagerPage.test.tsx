@@ -2,7 +2,7 @@
  * Tests for the FileManagerPage component.
  */
 
-import { describe, it, expect, beforeEach } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { render } from '../utils';
@@ -21,6 +21,9 @@ const mockFolders = [
     archive_id: null,
     project_name: null,
     archive_name: null,
+    // #2680: distinctive year so the folder-pane display test can assert on it
+    // without colliding with the file mtimes below.
+    latest_activity_at: '2031-04-05T10:00:00Z',
     children: [
       {
         id: 2,
@@ -31,6 +34,7 @@ const mockFolders = [
         archive_id: null,
         project_name: null,
         archive_name: null,
+        latest_activity_at: '2032-06-07T10:00:00Z',
         children: [],
       },
     ],
@@ -44,6 +48,9 @@ const mockFolders = [
     archive_id: null,
     project_name: 'My Art Project',
     archive_name: null,
+    // No activity timestamp — must render no date line rather than an
+    // "Invalid Date" placeholder.
+    latest_activity_at: null,
     children: [],
   },
 ];
@@ -62,6 +69,9 @@ const mockFiles = [
     print_count: 5,
     duplicate_count: 0,
     created_at: '2024-01-01T00:00:00Z',
+    // #2680: real on-disk mtime in a distinctive year so the display test can
+    // prove fs_modified_at is preferred over created_at (2024).
+    fs_modified_at: '2030-06-15T12:00:00Z',
   },
   {
     id: 2,
@@ -473,8 +483,15 @@ describe('FileManagerPage', () => {
     });
   });
 
-  describe('schedule print', () => {
-    it('shows schedule print button when one sliced file is selected', async () => {
+  describe('bulk-action print button', () => {
+    // PR #1625 consolidated print actions: the old single-file-selected
+    // "Schedule" button now opens the unified PrintModal (which carries
+    // schedule options inside). The bulk-action toolbar shows a single
+    // "Print" button only when exactly one sliced file is selected, and
+    // hides it for multi-selection. The button is targeted by its accessible
+    // name ("Print") + role to disambiguate from the file-card dropdown's
+    // own Print entry, which stays collapsed unless its kebab is opened.
+    it('shows a Print button in the bulk toolbar when one sliced file is selected', async () => {
       const user = userEvent.setup();
       render(<FileManagerPage />);
 
@@ -489,11 +506,11 @@ describe('FileManagerPage', () => {
       }
 
       await waitFor(() => {
-        expect(screen.getByText(/Schedule/)).toBeInTheDocument();
+        expect(screen.getByRole('button', { name: /^Print$/ })).toBeInTheDocument();
       });
     });
 
-    it('hides schedule print button when multiple files are selected', async () => {
+    it('hides the bulk Print button when multiple files are selected', async () => {
       const user = userEvent.setup();
       render(<FileManagerPage />);
 
@@ -505,8 +522,7 @@ describe('FileManagerPage', () => {
       await user.click(screen.getByText('Select All'));
 
       await waitFor(() => {
-        // Schedule button should not be present when multiple files are selected
-        expect(screen.queryByText(/Schedule/)).not.toBeInTheDocument();
+        expect(screen.queryByRole('button', { name: /^Print$/ })).not.toBeInTheDocument();
       });
     });
   });
@@ -857,6 +873,286 @@ describe('FileManagerPage', () => {
 
       // Username should be displayed in the column
       expect(screen.getByText('testuser')).toBeInTheDocument();
+    });
+  });
+
+  describe('folder tree collapse preference (#996)', () => {
+    // localStorage is globally mocked in setup.ts (returns undefined by default),
+    // so we program each test's getItem return value explicitly.
+    const getItemMock = localStorage.getItem as ReturnType<typeof vi.fn>;
+    const setItemMock = localStorage.setItem as ReturnType<typeof vi.fn>;
+
+    beforeEach(() => {
+      getItemMock.mockReset();
+      setItemMock.mockReset();
+    });
+
+    // The mock is module-global, so an implementation left behind here would
+    // silently change every later describe (e.g. collapsing the folder tree).
+    afterEach(() => {
+      getItemMock.mockReset();
+      setItemMock.mockReset();
+    });
+
+    it('defaults to expanded (nested folders visible) when library-collapse-folders is unset', async () => {
+      getItemMock.mockReturnValue(null);
+      render(<FileManagerPage />);
+
+      await waitFor(() => {
+        expect(screen.getByText('Functional Parts')).toBeInTheDocument();
+      });
+      expect(screen.getByText('Brackets')).toBeInTheDocument();
+    });
+
+    it('honors library-collapse-folders=true on load (nested folders hidden)', async () => {
+      getItemMock.mockImplementation((key: string) =>
+        key === 'library-collapse-folders' ? 'true' : null
+      );
+      render(<FileManagerPage />);
+
+      await waitFor(() => {
+        expect(screen.getByText('Functional Parts')).toBeInTheDocument();
+      });
+      expect(screen.queryByText('Brackets')).not.toBeInTheDocument();
+    });
+
+    it('collapses nested folders and persists preference when Collapse is clicked', async () => {
+      getItemMock.mockReturnValue(null);
+      const user = userEvent.setup();
+      render(<FileManagerPage />);
+
+      await waitFor(() => {
+        expect(screen.getByText('Brackets')).toBeInTheDocument();
+      });
+
+      // The Collapse button sits next to Wrap in the sidebar header.
+      // Its text content is "Collapse" (from fileManager.collapse).
+      await user.click(screen.getByRole('button', { name: 'Collapse' }));
+
+      await waitFor(() => {
+        expect(screen.queryByText('Brackets')).not.toBeInTheDocument();
+      });
+      expect(setItemMock).toHaveBeenCalledWith('library-collapse-folders', 'true');
+    });
+
+    it('re-expands nested folders and persists preference when Collapse is toggled off', async () => {
+      getItemMock.mockImplementation((key: string) =>
+        key === 'library-collapse-folders' ? 'true' : null
+      );
+      const user = userEvent.setup();
+      render(<FileManagerPage />);
+
+      await waitFor(() => {
+        expect(screen.getByText('Functional Parts')).toBeInTheDocument();
+      });
+      expect(screen.queryByText('Brackets')).not.toBeInTheDocument();
+
+      await user.click(screen.getByRole('button', { name: 'Collapse' }));
+
+      await waitFor(() => {
+        expect(screen.getByText('Brackets')).toBeInTheDocument();
+      });
+      expect(setItemMock).toHaveBeenCalledWith('library-collapse-folders', 'false');
+    });
+  });
+
+  describe('Internal / External top-level views (#1621)', () => {
+    const externalMockFolders = [
+      ...mockFolders,
+      {
+        id: 99,
+        name: 'NAS Library',
+        parent_id: null,
+        file_count: 200,
+        project_id: null,
+        archive_id: null,
+        project_name: null,
+        archive_name: null,
+        is_external: true,
+        external_readonly: false,
+        external_path: '/mnt/nas',
+        children: [],
+      },
+    ];
+
+    it('shows the External sidebar entry only when at least one external folder is linked', async () => {
+      // Default mockFolders have no is_external entries → no External row.
+      const { unmount } = render(<FileManagerPage />);
+      await waitFor(() => {
+        expect(screen.getByText('All Files')).toBeInTheDocument();
+      });
+      expect(screen.queryByText('External')).not.toBeInTheDocument();
+      unmount();
+
+      // With an external folder linked, the row appears.
+      server.use(
+        http.get('/api/v1/library/folders', () => HttpResponse.json(externalMockFolders)),
+      );
+      render(<FileManagerPage />);
+      await waitFor(() => {
+        expect(screen.getByText('External')).toBeInTheDocument();
+      });
+    });
+
+    it('sends internal_only=true by default ("All Files" = managed storage only)', async () => {
+      const scopes: string[] = [];
+      server.use(
+        http.get('/api/v1/library/folders', () => HttpResponse.json(externalMockFolders)),
+        http.get('/api/v1/library/files', ({ request }) => {
+          const url = new URL(request.url);
+          scopes.push(
+            url.searchParams.get('internal_only') === 'true'
+              ? 'internal'
+              : url.searchParams.get('external_only') === 'true'
+                ? 'external'
+                : 'all',
+          );
+          return HttpResponse.json(mockFiles);
+        }),
+      );
+
+      render(<FileManagerPage />);
+      await waitFor(() => {
+        expect(scopes).toContain('internal');
+      });
+    });
+
+    it('switches to external_only=true when the External sidebar entry is clicked', async () => {
+      const scopes: string[] = [];
+      server.use(
+        http.get('/api/v1/library/folders', () => HttpResponse.json(externalMockFolders)),
+        http.get('/api/v1/library/files', ({ request }) => {
+          const url = new URL(request.url);
+          scopes.push(
+            url.searchParams.get('internal_only') === 'true'
+              ? 'internal'
+              : url.searchParams.get('external_only') === 'true'
+                ? 'external'
+                : 'all',
+          );
+          return HttpResponse.json([]);
+        }),
+      );
+
+      const { default: userEvent } = await import('@testing-library/user-event');
+      const user = userEvent.setup();
+      render(<FileManagerPage />);
+      await waitFor(() => expect(screen.getByText('External')).toBeInTheDocument());
+
+      await user.click(screen.getByText('External'));
+
+      await waitFor(() => {
+        expect(scopes).toContain('external');
+      });
+    });
+  });
+
+  describe('"All Files" view (#1499)', () => {
+    it('requests every file (include_root=false) so subfolder contents are visible', async () => {
+      const rootFile = {
+        id: 10,
+        filename: 'root-file.3mf',
+        file_path: '/library/root-file.3mf',
+        file_size: 1024,
+        file_type: '3mf',
+        folder_id: null,
+        thumbnail_path: null,
+        print_name: 'Root File',
+        print_time_seconds: 0,
+        print_count: 0,
+        duplicate_count: 0,
+        created_at: '2024-01-01T00:00:00Z',
+      };
+      const nestedFile = {
+        ...rootFile,
+        id: 11,
+        filename: 'nested-file.3mf',
+        file_path: '/library/Functional Parts/nested-file.3mf',
+        folder_id: 1,
+        print_name: 'Nested File',
+      };
+
+      const includeRootValues: string[] = [];
+      server.use(
+        http.get('/api/v1/library/files', ({ request }) => {
+          const url = new URL(request.url);
+          const includeRoot = url.searchParams.get('include_root');
+          includeRootValues.push(includeRoot ?? '');
+          // Mirror the backend: include_root=false returns everything; true
+          // returns only files with folder_id IS NULL.
+          if (includeRoot === 'false') {
+            return HttpResponse.json([rootFile, nestedFile]);
+          }
+          return HttpResponse.json([rootFile]);
+        }),
+      );
+
+      render(<FileManagerPage />);
+
+      await waitFor(() => {
+        expect(screen.getByText('Root File')).toBeInTheDocument();
+        expect(screen.getByText('Nested File')).toBeInTheDocument();
+      });
+      // Sanity-check: the buggy call would have sent include_root=true here.
+      expect(includeRootValues).toContain('false');
+    });
+  });
+
+  describe('last-modified date display (#2680)', () => {
+    it('is hidden by default and revealed by the toolbar toggle', async () => {
+      const user = userEvent.setup();
+      render(<FileManagerPage />);
+
+      await waitFor(() => {
+        expect(screen.getByText('Benchy')).toBeInTheDocument();
+      });
+
+      // Hidden by default.
+      expect(screen.queryByText(/2030/)).not.toBeInTheDocument();
+
+      // Toggle on via the toolbar button.
+      await user.click(screen.getByTitle('Show modified dates'));
+
+      // benchy carries fs_modified_at in 2030, which must be preferred over its
+      // created_at (2024) — proving the real on-disk mtime drives the display.
+      await waitFor(() => {
+        expect(screen.getByText(/2030/)).toBeInTheDocument();
+      });
+
+      // Toggling off hides it again.
+      await user.click(screen.getByTitle('Hide modified dates'));
+      await waitFor(() => {
+        expect(screen.queryByText(/2030/)).not.toBeInTheDocument();
+      });
+    });
+
+    it('the same toggle reveals latest activity on folder rows, including nested ones', async () => {
+      const user = userEvent.setup();
+      render(<FileManagerPage />);
+
+      await waitFor(() => {
+        expect(screen.getByText('Functional Parts')).toBeInTheDocument();
+      });
+
+      expect(screen.queryByText(/2031/)).not.toBeInTheDocument();
+
+      await user.click(screen.getByTitle('Show modified dates'));
+
+      await waitFor(() => {
+        expect(screen.getByText(/2031/)).toBeInTheDocument();
+      });
+      // Nested folders get it too — the prop must survive the recursion.
+      expect(screen.getByText(/2032/)).toBeInTheDocument();
+
+      // A folder with no activity timestamp renders nothing rather than an
+      // "Invalid Date" string.
+      const artRow = screen.getByText('Art Projects').closest('div.group')!;
+      expect(artRow.textContent).not.toMatch(/Invalid/);
+
+      await user.click(screen.getByTitle('Hide modified dates'));
+      await waitFor(() => {
+        expect(screen.queryByText(/2031/)).not.toBeInTheDocument();
+      });
     });
   });
 });

@@ -80,6 +80,7 @@ class ExportService:
         date_from: datetime | None = None,
         date_to: datetime | None = None,
         search: str | None = None,
+        visible_to_user_id: int | None = None,
     ) -> tuple[bytes, str, str]:
         """Export archives to CSV or Excel format.
 
@@ -92,13 +93,21 @@ class ExportService:
             date_from: Filter by start date
             date_to: Filter by end date
             search: Search filter
+            visible_to_user_id: Scope rows to those owned by this user (used
+                when the caller has ARCHIVES_READ_OWN but not _ALL).
 
         Returns:
             Tuple of (file_bytes, filename, content_type)
         """
-        # Build query
+        # Build query. Soft-deleted archives (#1343) are excluded: this export
+        # is the list the user is looking at, saved to a file, and that list
+        # hides them — an export that silently contains rows the UI says are
+        # gone is worse than useless for reconciling anything (#2731).
         query = (
-            select(PrintArchive).options(selectinload(PrintArchive.project)).order_by(PrintArchive.created_at.desc())
+            select(PrintArchive)
+            .options(selectinload(PrintArchive.project))
+            .where(PrintArchive.deleted_at.is_(None))
+            .order_by(PrintArchive.created_at.desc())
         )
 
         # Apply filters
@@ -112,6 +121,8 @@ class ExportService:
             query = query.where(PrintArchive.created_at >= date_from)
         if date_to:
             query = query.where(PrintArchive.created_at <= date_to)
+        if visible_to_user_id is not None:
+            query = query.where(PrintArchive.created_by_id == visible_to_user_id)
         if search:
             like_pattern = f"%{search}%"
             query = query.where(

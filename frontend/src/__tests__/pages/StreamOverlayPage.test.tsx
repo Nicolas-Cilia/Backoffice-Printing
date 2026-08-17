@@ -11,6 +11,7 @@ import { MemoryRouter, Route, Routes } from 'react-router-dom';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { ThemeProvider } from '../../contexts/ThemeContext';
 import { ToastProvider } from '../../contexts/ToastContext';
+import { AuthProvider } from '../../contexts/AuthContext';
 
 const mockPrinter = {
   id: 1,
@@ -60,13 +61,15 @@ function renderOverlayPage(printerId: number, queryParams = '') {
   return rtlRender(
     <QueryClientProvider client={queryClient}>
       <MemoryRouter initialEntries={[`/overlay/${printerId}${queryParams}`]}>
-        <ThemeProvider>
-          <ToastProvider>
-            <Routes>
-              <Route path="/overlay/:printerId" element={<StreamOverlayPage />} />
-            </Routes>
-          </ToastProvider>
-        </ThemeProvider>
+        <AuthProvider>
+          <ThemeProvider>
+            <ToastProvider>
+              <Routes>
+                <Route path="/overlay/:printerId" element={<StreamOverlayPage />} />
+              </Routes>
+            </ToastProvider>
+          </ThemeProvider>
+        </AuthProvider>
       </MemoryRouter>
     </QueryClientProvider>
   );
@@ -76,12 +79,17 @@ describe('StreamOverlayPage', () => {
   const originalTitle = document.title;
 
   beforeEach(() => {
-    // Mock WebSocket
-    vi.stubGlobal('WebSocket', vi.fn().mockImplementation(() => ({
-      close: vi.fn(),
-      onmessage: null,
-      onerror: null,
-    })));
+    // Mock WebSocket. vitest 4 dropped support for arrow-function constructor
+    // mocks (`new (() => ...)` throws "is not a constructor"); use a plain
+    // function so `new WebSocket(...)` resolves correctly.
+    vi.stubGlobal(
+      'WebSocket',
+      vi.fn().mockImplementation(function (this: { close: () => void; onmessage: null; onerror: null }) {
+        this.close = vi.fn();
+        this.onmessage = null;
+        this.onerror = null;
+      }),
+    );
 
     server.use(
       http.get('/api/v1/printers/:id', () => {
@@ -107,11 +115,11 @@ describe('StreamOverlayPage', () => {
       });
     });
 
-    it('shows Bambuddy logo', async () => {
+    it('shows Backoffice Printing logo', async () => {
       renderOverlayPage(1);
 
       await waitFor(() => {
-        expect(screen.getByAltText('Bambuddy')).toBeInTheDocument();
+        expect(screen.getByAltText('Backoffice Printing')).toBeInTheDocument();
       });
     });
 
@@ -119,7 +127,7 @@ describe('StreamOverlayPage', () => {
       renderOverlayPage(1);
 
       await waitFor(() => {
-        const logo = screen.getByAltText('Bambuddy');
+        const logo = screen.getByAltText('Backoffice Printing');
         const link = logo.closest('a');
         expect(link).toHaveAttribute('href', 'https://github.com/maziggy/bambuddy');
       });
@@ -185,7 +193,7 @@ describe('StreamOverlayPage', () => {
 
       await waitFor(() => {
         // Just verify it renders without error
-        expect(screen.getByAltText('Bambuddy')).toBeInTheDocument();
+        expect(screen.getByAltText('Backoffice Printing')).toBeInTheDocument();
       });
     });
 
@@ -358,6 +366,68 @@ describe('StreamOverlayPage', () => {
       await waitFor(() => {
         expect(screen.getByText('Printer offline')).toBeInTheDocument();
       });
+    });
+  });
+
+  describe('kiosk token mode (#2613)', () => {
+    const mockOverlayPrinting = {
+      id: 1,
+      name: 'X1 Carbon',
+      camera_rotation: 0,
+      connected: true,
+      state: 'RUNNING',
+      current_print: 'KioskBenchy.gcode.3mf',
+      gcode_file: 'plate_1.gcode',
+      progress: 67,
+      remaining_time: 40,
+      layer_num: 10,
+      total_layers: 20,
+      stg_cur_name: null,
+      time_format: 'system',
+    };
+
+    it('reads the token-authed overlay-status feed and carries the token to the camera', async () => {
+      let overlayHit = false;
+      server.use(
+        http.get('/api/v1/printers/:id/overlay-status', () => {
+          overlayHit = true;
+          return HttpResponse.json(mockOverlayPrinting);
+        })
+      );
+
+      renderOverlayPage(1, '?token=obs-tok');
+
+      await waitFor(() => {
+        expect(screen.getByText('KioskBenchy')).toBeInTheDocument();
+      });
+      expect(overlayHit).toBe(true);
+      expect(screen.getByText('67%')).toBeInTheDocument();
+
+      // The camera <img> must carry the same kiosk token — a fresh OBS browser
+      // has no session to mint a camera stream token from.
+      const img = screen.getByAltText('Camera stream') as HTMLImageElement;
+      expect(img.src).toContain('token=obs-tok');
+    });
+
+    it('does not touch the JWT-only status endpoint or a WebSocket in kiosk mode', async () => {
+      let statusHit = false;
+      server.use(
+        http.get('/api/v1/printers/:id/overlay-status', () => HttpResponse.json(mockOverlayPrinting)),
+        http.get('/api/v1/printers/:id/status', () => {
+          statusHit = true;
+          return HttpResponse.json(mockStatusIdle);
+        })
+      );
+
+      renderOverlayPage(1, '?token=obs-tok');
+
+      await waitFor(() => {
+        expect(screen.getByText('KioskBenchy')).toBeInTheDocument();
+      });
+      // The logged-in status query is disabled when a token is present, so an
+      // unauthenticated OBS browser never fires a doomed 401 (or opens a socket).
+      expect(statusHit).toBe(false);
+      expect(WebSocket).not.toHaveBeenCalled();
     });
   });
 });

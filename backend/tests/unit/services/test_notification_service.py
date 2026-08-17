@@ -670,6 +670,171 @@ class TestNotificationProviderTypes:
             assert "image" not in payload
 
 
+class TestDiscordProvider:
+    """Discord webhook URL host validation (#1363)."""
+
+    @pytest.fixture
+    def service(self):
+        return NotificationService()
+
+    @pytest.mark.asyncio
+    async def test_discord_accepts_discord_com_url(self, service):
+        config = {"webhook_url": "https://discord.com/api/webhooks/123/abc"}
+        mock_response = MagicMock()
+        mock_response.status_code = 204
+        mock_client = AsyncMock()
+        mock_client.post = AsyncMock(return_value=mock_response)
+
+        with patch.object(service, "_get_client", new_callable=AsyncMock) as mock_get_client:
+            mock_get_client.return_value = mock_client
+            success, _ = await service._send_discord(config, "Title", "Body")
+
+        assert success is True
+        mock_client.post.assert_called_once()
+
+    @pytest.mark.asyncio
+    async def test_discord_accepts_legacy_discordapp_com_url(self, service):
+        """Discord's 'Copy Webhook URL' button emits discordapp.com URLs (#1363)."""
+        config = {"webhook_url": "https://discordapp.com/api/webhooks/123/abc"}
+        mock_response = MagicMock()
+        mock_response.status_code = 204
+        mock_client = AsyncMock()
+        mock_client.post = AsyncMock(return_value=mock_response)
+
+        with patch.object(service, "_get_client", new_callable=AsyncMock) as mock_get_client:
+            mock_get_client.return_value = mock_client
+            success, _ = await service._send_discord(config, "Title", "Body")
+
+        assert success is True
+        mock_client.post.assert_called_once()
+
+    @pytest.mark.asyncio
+    async def test_discord_rejects_non_discord_host(self, service):
+        config = {"webhook_url": "https://evil.example.com/api/webhooks/123/abc"}
+        success, message = await service._send_discord(config, "Title", "Body")
+        assert success is False
+        assert "Invalid Discord webhook URL" in message
+
+    @pytest.mark.asyncio
+    async def test_discord_rejects_empty_url(self, service):
+        success, message = await service._send_discord({"webhook_url": ""}, "Title", "Body")
+        assert success is False
+        assert "required" in message.lower()
+
+
+class TestNtfyPriority:
+    """Per-event ntfy Priority header (#990)."""
+
+    @pytest.fixture
+    def service(self):
+        return NotificationService()
+
+    @staticmethod
+    def _mock_client(service):
+        """Patch _get_client and return the mock client + 200 response."""
+        mock_response = MagicMock()
+        mock_response.status_code = 200
+        mock_client = AsyncMock()
+        mock_client.post = AsyncMock(return_value=mock_response)
+        mock_client.put = AsyncMock(return_value=mock_response)
+        return mock_client
+
+    @pytest.mark.asyncio
+    async def test_priority_header_set_for_mapped_event(self, service):
+        """Mapped event → ntfy Priority header carries the configured value."""
+        config = {
+            "topic": "bambuddy",
+            "event_priorities": {"on_print_failed": 5, "on_print_complete": 2},
+        }
+        mock_client = self._mock_client(service)
+        with patch.object(service, "_get_client", new_callable=AsyncMock) as mock_get:
+            mock_get.return_value = mock_client
+            success, _ = await service._send_ntfy(config, "Title", "Body", event_type="on_print_failed")
+
+        assert success is True
+        headers = mock_client.post.call_args.kwargs["headers"]
+        assert headers.get("Priority") == "5"
+
+    @pytest.mark.asyncio
+    async def test_priority_header_omitted_for_unmapped_event(self, service):
+        """Unmapped event → no Priority header so ntfy uses its server default."""
+        config = {
+            "topic": "bambuddy",
+            "event_priorities": {"on_print_failed": 5},
+        }
+        mock_client = self._mock_client(service)
+        with patch.object(service, "_get_client", new_callable=AsyncMock) as mock_get:
+            mock_get.return_value = mock_client
+            await service._send_ntfy(config, "Title", "Body", event_type="on_print_complete")
+
+        headers = mock_client.post.call_args.kwargs["headers"]
+        assert "Priority" not in headers
+
+    @pytest.mark.asyncio
+    async def test_priority_header_omitted_when_no_priorities_set(self, service):
+        """Existing setups (no event_priorities key) keep current behaviour."""
+        config = {"topic": "bambuddy"}
+        mock_client = self._mock_client(service)
+        with patch.object(service, "_get_client", new_callable=AsyncMock) as mock_get:
+            mock_get.return_value = mock_client
+            await service._send_ntfy(config, "Title", "Body", event_type="on_print_failed")
+
+        headers = mock_client.post.call_args.kwargs["headers"]
+        assert "Priority" not in headers
+
+    @pytest.mark.asyncio
+    async def test_priority_header_omitted_when_event_type_missing(self, service):
+        """Test sends (no event_type) must not emit a Priority header."""
+        config = {
+            "topic": "bambuddy",
+            "event_priorities": {"on_print_failed": 5},
+        }
+        mock_client = self._mock_client(service)
+        with patch.object(service, "_get_client", new_callable=AsyncMock) as mock_get:
+            mock_get.return_value = mock_client
+            await service._send_ntfy(config, "Title", "Body")
+
+        headers = mock_client.post.call_args.kwargs["headers"]
+        assert "Priority" not in headers
+
+    @pytest.mark.asyncio
+    async def test_priority_out_of_range_is_ignored(self, service):
+        """Values outside 1-5 (or non-numeric) are dropped, not clamped."""
+        for bad in (0, 6, 99, -1, "not-a-number", None):
+            config = {
+                "topic": "bambuddy",
+                "event_priorities": {"on_print_failed": bad},
+            }
+            mock_client = self._mock_client(service)
+            with patch.object(service, "_get_client", new_callable=AsyncMock) as mock_get:
+                mock_get.return_value = mock_client
+                await service._send_ntfy(config, "Title", "Body", event_type="on_print_failed")
+
+            headers = mock_client.post.call_args.kwargs["headers"]
+            assert "Priority" not in headers, f"unexpected header for bad value {bad!r}"
+
+    @pytest.mark.asyncio
+    async def test_priority_header_set_on_attachment_path(self, service):
+        """Image-attachment path (PUT) must also carry the Priority header."""
+        config = {
+            "topic": "bambuddy",
+            "event_priorities": {"on_first_layer_complete": 4},
+        }
+        mock_client = self._mock_client(service)
+        with patch.object(service, "_get_client", new_callable=AsyncMock) as mock_get:
+            mock_get.return_value = mock_client
+            await service._send_ntfy(
+                config,
+                "Title",
+                "Body",
+                image_data=b"\xff\xd8\xff\xe0fake-jpeg",
+                event_type="on_first_layer_complete",
+            )
+
+        headers = mock_client.put.call_args.kwargs["headers"]
+        assert headers.get("Priority") == "4"
+
+
 class TestHomeAssistantProvider:
     """Tests for Home Assistant notification provider."""
 
@@ -711,6 +876,113 @@ class TestHomeAssistantProvider:
             payload = call_args.kwargs.get("json") or call_args[1].get("json")
             assert payload["title"] == "Test Title"
             assert payload["message"] == "Test Message"
+
+    @pytest.mark.asyncio
+    async def test_send_homeassistant_custom_data_merged(self, service):
+        """Custom service-data (#1441) is forwarded as HA's nested "data" object
+        so mobile-app push options (priority, ttl, channel, ...) reach the
+        notify service."""
+        mock_response = MagicMock()
+        mock_response.status_code = 200
+
+        mock_client = AsyncMock()
+        mock_client.post = AsyncMock(return_value=mock_response)
+
+        mock_db = AsyncMock()
+
+        with (
+            patch.object(service, "_get_client", new_callable=AsyncMock) as mock_get_client,
+            patch(
+                "backend.app.api.routes.settings.get_homeassistant_settings",
+                new_callable=AsyncMock,
+            ) as mock_ha_settings,
+        ):
+            mock_get_client.return_value = mock_client
+            mock_ha_settings.return_value = {
+                "ha_url": "http://ha.local:8123",
+                "ha_token": "test-token-123",
+                "ha_enabled": True,
+            }
+
+            config = {
+                "service": "notify.mobile_app_myphone",
+                "data": '{"priority": "high", "ttl": 0, "channel": "3D Printing"}',
+            }
+            success, _ = await service._send_homeassistant(config, "Title", "Body", db=mock_db)
+
+            assert success is True
+            call_args = mock_client.post.call_args
+            assert call_args[0][0] == "http://ha.local:8123/api/services/notify/mobile_app_myphone"
+            payload = call_args.kwargs.get("json") or call_args[1].get("json")
+            assert payload["data"] == {"priority": "high", "ttl": 0, "channel": "3D Printing"}
+            # ttl must survive as a number, not a string — that's why the
+            # field is JSON rather than key=value lines.
+            assert payload["data"]["ttl"] == 0
+
+    @pytest.mark.asyncio
+    async def test_send_homeassistant_without_data_omits_key(self, service):
+        """Without configured data the payload carries no "data" key — the
+        default persistent_notification.create schema rejects unknown keys."""
+        mock_response = MagicMock()
+        mock_response.status_code = 200
+
+        mock_client = AsyncMock()
+        mock_client.post = AsyncMock(return_value=mock_response)
+
+        mock_db = AsyncMock()
+
+        with (
+            patch.object(service, "_get_client", new_callable=AsyncMock) as mock_get_client,
+            patch(
+                "backend.app.api.routes.settings.get_homeassistant_settings",
+                new_callable=AsyncMock,
+            ) as mock_ha_settings,
+        ):
+            mock_get_client.return_value = mock_client
+            mock_ha_settings.return_value = {
+                "ha_url": "http://ha.local:8123",
+                "ha_token": "test-token-123",
+                "ha_enabled": True,
+            }
+
+            success, _ = await service._send_homeassistant({}, "Title", "Body", db=mock_db)
+
+            assert success is True
+            payload = mock_client.post.call_args.kwargs.get("json") or mock_client.post.call_args[1].get("json")
+            assert "data" not in payload
+
+    @pytest.mark.asyncio
+    async def test_send_homeassistant_invalid_data_rejected(self, service):
+        """Malformed JSON and non-object JSON in the data field fail loudly
+        instead of sending a half-built payload."""
+        mock_db = AsyncMock()
+
+        with (
+            patch.object(service, "_get_client", new_callable=AsyncMock) as mock_get_client,
+            patch(
+                "backend.app.api.routes.settings.get_homeassistant_settings",
+                new_callable=AsyncMock,
+            ) as mock_ha_settings,
+        ):
+            mock_client = AsyncMock()
+            mock_get_client.return_value = mock_client
+            mock_ha_settings.return_value = {
+                "ha_url": "http://ha.local:8123",
+                "ha_token": "test-token-123",
+                "ha_enabled": True,
+            }
+
+            success, message = await service._send_homeassistant(
+                {"data": "{priority: high}"}, "Title", "Body", db=mock_db
+            )
+            assert success is False
+            assert "Invalid JSON" in message
+
+            success, message = await service._send_homeassistant({"data": '["a", "b"]'}, "Title", "Body", db=mock_db)
+            assert success is False
+            assert "JSON object" in message
+
+            mock_client.post.assert_not_called()
 
     @pytest.mark.asyncio
     async def test_send_homeassistant_no_db_no_env(self, service):
@@ -818,6 +1090,129 @@ class TestHomeAssistantProvider:
         mock_send.assert_called_once()
 
 
+class TestBarkProvider:
+    """Bark (iOS push) provider (#1495)."""
+
+    @pytest.fixture
+    def service(self):
+        return NotificationService()
+
+    def _client_returning(self, status_code: int, json_body=None, text: str = ""):
+        mock_response = MagicMock()
+        mock_response.status_code = status_code
+        mock_response.text = text
+        if json_body is not None:
+            mock_response.json = MagicMock(return_value=json_body)
+        else:
+            mock_response.json = MagicMock(side_effect=ValueError("not json"))
+        mock_client = AsyncMock()
+        mock_client.post = AsyncMock(return_value=mock_response)
+        return mock_client
+
+    @pytest.mark.asyncio
+    async def test_send_bark_success_default_server(self, service):
+        """Minimal config posts to the official relay with device_key/title/body."""
+        mock_client = self._client_returning(200, {"code": 200, "message": "success"})
+
+        with patch.object(service, "_get_client", new_callable=AsyncMock) as mock_get_client:
+            mock_get_client.return_value = mock_client
+            success, _ = await service._send_bark({"device_key": "abc123"}, "Title", "Body")
+
+        assert success is True
+        call_args = mock_client.post.call_args
+        assert call_args[0][0] == "https://api.day.app/push"
+        payload = call_args.kwargs.get("json")
+        assert payload == {"device_key": "abc123", "title": "Title", "body": "Body"}
+
+    @pytest.mark.asyncio
+    async def test_send_bark_options_and_custom_server(self, service):
+        """group/sound/level are forwarded; an unknown level is dropped rather
+        than sent; a self-hosted server URL (with trailing slash) is used."""
+        mock_client = self._client_returning(200, {"code": 200})
+
+        with patch.object(service, "_get_client", new_callable=AsyncMock) as mock_get_client:
+            mock_get_client.return_value = mock_client
+            config = {
+                "device_key": "abc123",
+                "server": "https://bark.example.com/",
+                "group": "Bambuddy",
+                "sound": "minuet",
+                "level": "timeSensitive",
+            }
+            success, _ = await service._send_bark(config, "Title", "Body")
+
+        assert success is True
+        call_args = mock_client.post.call_args
+        assert call_args[0][0] == "https://bark.example.com/push"
+        payload = call_args.kwargs.get("json")
+        assert payload["group"] == "Bambuddy"
+        assert payload["sound"] == "minuet"
+        assert payload["level"] == "timeSensitive"
+
+        mock_client.post.reset_mock()
+        with patch.object(service, "_get_client", new_callable=AsyncMock) as mock_get_client:
+            mock_get_client.return_value = mock_client
+            await service._send_bark({"device_key": "abc123", "level": "shouty"}, "Title", "Body")
+        assert "level" not in mock_client.post.call_args.kwargs.get("json")
+
+    @pytest.mark.asyncio
+    async def test_send_bark_missing_device_key(self, service):
+        mock_client = self._client_returning(200, {"code": 200})
+
+        with patch.object(service, "_get_client", new_callable=AsyncMock) as mock_get_client:
+            mock_get_client.return_value = mock_client
+            success, message = await service._send_bark({}, "Title", "Body")
+
+        assert success is False
+        assert "Device key" in message
+        mock_client.post.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_send_bark_error_in_200_body(self, service, caplog):
+        """bark-server can wrap a failure in HTTP 200; the body code must win.
+
+        Only the numeric code is returned — the server is caller-supplied
+        (bark is self-hostable), so its free-text message is the same read
+        channel the HTTP-failure path closes. The text goes to the debug log.
+        """
+        mock_client = self._client_returning(200, {"code": 400, "message": "device token invalid"})
+
+        with patch.object(service, "_get_client", new_callable=AsyncMock) as mock_get_client:
+            mock_get_client.return_value = mock_client
+            with caplog.at_level("DEBUG", logger="backend.app.services.notification_service"):
+                success, message = await service._send_bark({"device_key": "bad"}, "Title", "Body")
+
+        assert success is False
+        assert "Bark error 400" in message
+        assert "device token invalid" not in message
+        assert "device token invalid" in caplog.text
+
+    @pytest.mark.asyncio
+    async def test_send_bark_http_error(self, service):
+        mock_client = self._client_returning(400, None, text="failed to get device token")
+
+        with patch.object(service, "_get_client", new_callable=AsyncMock) as mock_get_client:
+            mock_get_client.return_value = mock_client
+            success, message = await service._send_bark({"device_key": "bad"}, "Title", "Body")
+
+        assert success is False
+        assert "HTTP 400" in message
+
+    @pytest.mark.asyncio
+    async def test_send_to_provider_dispatches_bark(self, service):
+        provider = MagicMock()
+        provider.provider_type = "bark"
+        provider.config = json.dumps({"device_key": "abc123"})
+        provider.quiet_hours_enabled = False
+
+        with patch.object(service, "_send_bark", new_callable=AsyncMock) as mock_send:
+            mock_send.return_value = (True, "OK")
+            success, _ = await service._send_to_provider(provider, "Title", "Message", db=AsyncMock())
+
+        assert success is True
+        mock_send.assert_called_once()
+
+
 class TestNotificationVariableFallbacks:
     """Tests for notification variable fallback values."""
 
@@ -910,6 +1305,120 @@ class TestNotificationVariableFallbacks:
             # When archive data is provided, duration should not be "Unknown"
             if captured_variables.get("duration"):
                 assert captured_variables["duration"] != "Unknown"
+
+    @pytest.mark.asyncio
+    async def test_duration_prefers_actual_time_seconds_over_slicer_estimate(self, service):
+        """#1198: completion notification duration must reflect *actual* elapsed
+        time from started_at/completed_at, not the slicer's pre-print estimate.
+
+        Pre-fix the duration variable read from `print_time_seconds` (slicer
+        estimate parsed from the 3MF at archive creation), so a print cancelled
+        2 minutes into a 3-hour estimate would notify "duration: 3h"."""
+        mock_db = AsyncMock()
+        mock_provider = MagicMock()
+        mock_provider.id = 1
+
+        captured_variables: dict = {}
+
+        async def capture_build(db, event_type, variables):
+            captured_variables.update(variables)
+            return ("Test", "Test")
+
+        with (
+            patch.object(service, "_get_providers_for_event", new_callable=AsyncMock) as mock_get,
+            patch.object(service, "_send_to_providers", new_callable=AsyncMock),
+            patch.object(service, "_build_message_from_template", side_effect=capture_build),
+        ):
+            mock_get.return_value = [mock_provider]
+
+            await service.on_print_complete(
+                printer_id=1,
+                printer_name="Test",
+                status="cancelled",
+                data={"subtask_name": "test_print"},
+                db=mock_db,
+                archive_data={
+                    "print_time_seconds": 10800,  # 3h slicer estimate
+                    "actual_time_seconds": 120,  # 2m actual elapsed
+                },
+            )
+
+        # 2 minutes — not 3 hours — even though the slicer estimate is in the dict.
+        assert "2m" in captured_variables["duration"]
+        assert "3h" not in captured_variables["duration"]
+
+    @pytest.mark.asyncio
+    async def test_duration_falls_back_to_slicer_estimate_when_actual_time_missing(self, service):
+        """#1198: when actual_time_seconds is absent (e.g. timestamps weren't
+        recorded for some reason), the duration variable falls back to
+        print_time_seconds rather than rendering 'Unknown'. Preserves
+        backwards-compat for any code path that didn't compute actual elapsed."""
+        mock_db = AsyncMock()
+        mock_provider = MagicMock()
+        mock_provider.id = 1
+
+        captured_variables: dict = {}
+
+        async def capture_build(db, event_type, variables):
+            captured_variables.update(variables)
+            return ("Test", "Test")
+
+        with (
+            patch.object(service, "_get_providers_for_event", new_callable=AsyncMock) as mock_get,
+            patch.object(service, "_send_to_providers", new_callable=AsyncMock),
+            patch.object(service, "_build_message_from_template", side_effect=capture_build),
+        ):
+            mock_get.return_value = [mock_provider]
+
+            await service.on_print_complete(
+                printer_id=1,
+                printer_name="Test",
+                status="completed",
+                data={"subtask_name": "test_print"},
+                db=mock_db,
+                archive_data={
+                    "print_time_seconds": 3600,  # 1h slicer estimate, no actual
+                    "actual_time_seconds": None,
+                },
+            )
+
+        assert captured_variables["duration"] != "Unknown"
+        assert "1h" in captured_variables["duration"]
+
+    @pytest.mark.asyncio
+    async def test_duration_unknown_when_both_time_fields_missing(self, service):
+        """#1198: with neither actual nor estimated time available the duration
+        variable surfaces the existing 'Unknown' fallback."""
+        mock_db = AsyncMock()
+        mock_provider = MagicMock()
+        mock_provider.id = 1
+
+        captured_variables: dict = {}
+
+        async def capture_build(db, event_type, variables):
+            captured_variables.update(variables)
+            return ("Test", "Test")
+
+        with (
+            patch.object(service, "_get_providers_for_event", new_callable=AsyncMock) as mock_get,
+            patch.object(service, "_send_to_providers", new_callable=AsyncMock),
+            patch.object(service, "_build_message_from_template", side_effect=capture_build),
+        ):
+            mock_get.return_value = [mock_provider]
+
+            await service.on_print_complete(
+                printer_id=1,
+                printer_name="Test",
+                status="completed",
+                data={"subtask_name": "test_print"},
+                db=mock_db,
+                archive_data={
+                    "print_time_seconds": None,
+                    "actual_time_seconds": None,
+                },
+            )
+
+        assert captured_variables["duration"] == "Unknown"
 
     @pytest.mark.asyncio
     async def test_print_complete_with_finish_photo_url(self, service):
@@ -1427,6 +1936,149 @@ class TestPrinterErrorNotifications:
             assert captured_variables["error_detail"] == "No details available"
 
 
+class TestAIFailureDetectionNotifications:
+    """Tests for the AI failure-detection event (#1794 — split out of on_printer_error).
+
+    Pins that Obico failure-detection dispatches go through the dedicated
+    on_ai_failure_detection event field, not the multiplexed printer-error
+    field. Mirrors the printer-error coverage above so a regression on either
+    surface fails its own case.
+    """
+
+    @pytest.fixture
+    def service(self):
+        return NotificationService()
+
+    @pytest.fixture
+    def mock_provider(self):
+        provider = MagicMock()
+        provider.id = 1
+        provider.name = "Test Provider"
+        provider.provider_type = "webhook"
+        provider.enabled = True
+        provider.config = json.dumps({"webhook_url": "http://test.local/webhook"})
+        provider.on_ai_failure_detection = True
+        provider.on_printer_error = False  # disabled — the regression guard
+        provider.quiet_hours_enabled = False
+        provider.daily_digest_enabled = False
+        provider.printer_id = None
+        return provider
+
+    @pytest.fixture
+    def mock_db(self):
+        db = AsyncMock()
+        db.commit = AsyncMock()
+        return db
+
+    @pytest.mark.asyncio
+    async def test_dispatch_uses_ai_failure_detection_event_not_printer_error(self, service, mock_provider, mock_db):
+        """Regression guard: provider subscribed only to AI alerts must receive
+        the Obico notification."""
+        captured_event = []
+
+        async def capture(db, event_field, printer_id):
+            captured_event.append(event_field)
+            return [mock_provider]
+
+        with (
+            patch.object(service, "_get_providers_for_event", side_effect=capture),
+            patch.object(service, "_send_to_providers", new_callable=AsyncMock) as mock_send,
+            patch.object(service, "_build_message_from_template", new_callable=AsyncMock) as mock_build,
+        ):
+            mock_build.return_value = ("Possible Print Failure Detected", "details")
+
+            await service.on_ai_failure_detection(
+                printer_id=1,
+                printer_name="X1 Carbon",
+                task_name="benchy.3mf",
+                confidence=0.87,
+                action="notify",
+                db=mock_db,
+            )
+
+            assert captured_event == ["on_ai_failure_detection"]
+            mock_send.assert_called_once()
+
+    @pytest.mark.asyncio
+    async def test_skipped_when_only_printer_error_is_enabled(self, service, mock_provider, mock_db):
+        """Pre-#1794 behaviour MUST NOT survive: a provider with only the
+        legacy on_printer_error toggle should NOT receive AI notifications now."""
+        mock_provider.on_ai_failure_detection = False
+        mock_provider.on_printer_error = True
+
+        with (
+            patch.object(service, "_get_providers_for_event", new_callable=AsyncMock) as mock_get,
+            patch.object(service, "_send_to_providers", new_callable=AsyncMock) as mock_send,
+        ):
+            mock_get.return_value = []  # the event-field filter excludes the provider
+
+            await service.on_ai_failure_detection(
+                printer_id=1,
+                printer_name="X1 Carbon",
+                task_name="benchy.3mf",
+                confidence=0.87,
+                action="notify",
+                db=mock_db,
+            )
+
+            mock_send.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_variables_include_task_name_confidence_action(self, service, mock_provider, mock_db):
+        captured_variables = {}
+
+        async def capture_build(db, event_type, variables):
+            captured_variables.update(variables)
+            return ("Test", "Test")
+
+        with (
+            patch.object(service, "_get_providers_for_event", new_callable=AsyncMock) as mock_get,
+            patch.object(service, "_send_to_providers", new_callable=AsyncMock),
+            patch.object(service, "_build_message_from_template", side_effect=capture_build),
+        ):
+            mock_get.return_value = [mock_provider]
+
+            await service.on_ai_failure_detection(
+                printer_id=1,
+                printer_name="X1 Carbon",
+                task_name="benchy.3mf",
+                confidence=0.873,
+                action="pause_and_off",
+                db=mock_db,
+            )
+
+            assert captured_variables["printer"] == "X1 Carbon"
+            assert captured_variables["task_name"] == "benchy.3mf"
+            assert captured_variables["confidence"] == "0.87"  # 2-decimal format
+            assert captured_variables["action"] == "pause_and_off"
+
+    @pytest.mark.asyncio
+    async def test_task_name_fallback_when_unknown(self, service, mock_provider, mock_db):
+        captured_variables = {}
+
+        async def capture_build(db, event_type, variables):
+            captured_variables.update(variables)
+            return ("Test", "Test")
+
+        with (
+            patch.object(service, "_get_providers_for_event", new_callable=AsyncMock) as mock_get,
+            patch.object(service, "_send_to_providers", new_callable=AsyncMock),
+            patch.object(service, "_build_message_from_template", side_effect=capture_build),
+        ):
+            mock_get.return_value = [mock_provider]
+
+            await service.on_ai_failure_detection(
+                printer_id=1,
+                printer_name="Test",
+                task_name="",  # empty
+                confidence=0.5,
+                action="notify",
+                db=mock_db,
+            )
+
+            assert captured_variables["task_name"] == "current job"
+
+
 class TestPlateNotEmptyNotifications:
     """Tests for plate not empty (build plate detection) notifications."""
 
@@ -1778,3 +2430,364 @@ class TestFirstLayerCompleteNotifications:
             mock_send.assert_called_once()
             call_kwargs = mock_send.call_args
             assert call_kwargs.kwargs.get("image_data") == fake_image
+
+
+class TestNtfyOutbound:
+    """Regression for #1534 — UA hygiene and Cloudflare-challenge detection."""
+
+    @pytest.fixture
+    def service(self):
+        return NotificationService()
+
+    @pytest.mark.asyncio
+    async def test_notification_client_sets_honest_user_agent(self, service):
+        """Default httpx UA leaks `python-httpx/<version>` — every other
+        outbound client in the codebase identifies as Bambuddy. The
+        notification client must too."""
+        client = await service._get_client()
+        try:
+            assert client.headers.get("user-agent") == "Bambuddy/1.0 (+https://github.com/maziggy/bambuddy)"
+        finally:
+            await service.close()
+
+    @pytest.mark.asyncio
+    async def test_ntfy_cloudflare_challenge_returns_actionable_error(self, service):
+        """When ntfy is fronted by Cloudflare and CF returns its JS
+        challenge, the user must see a message that points at the actual
+        fix (CF security skip), not the raw HTML."""
+        import httpx
+
+        challenge_html = (
+            '<!DOCTYPE html><html lang="en-US"><head><title>Just a moment...</title>'
+            '<meta http-equiv="Content-Type" content="text/html; charset=UTF-8">'
+        )
+        mock_response = httpx.Response(
+            403,
+            content=challenge_html.encode(),
+            headers={"server": "cloudflare", "content-type": "text/html; charset=UTF-8"},
+        )
+
+        mock_client = AsyncMock()
+        mock_client.post = AsyncMock(return_value=mock_response)
+
+        with patch.object(service, "_get_client", AsyncMock(return_value=mock_client)):
+            ok, detail = await service._send_ntfy(
+                {"server": "https://ntfy.example", "topic": "alerts", "auth_token": "tk_xxx"},
+                title="t",
+                message="m",
+            )
+
+        assert ok is False
+        assert "Cloudflare" in detail
+        assert "security-skip" in detail or "Bot Fight Mode" in detail
+        # The raw HTML must not be the dominant content shown to the user.
+        assert "<!DOCTYPE" not in detail
+
+    @pytest.mark.asyncio
+    async def test_ntfy_normal_403_is_not_misread_as_a_cloudflare_challenge(self, service, caplog):
+        """A non-Cloudflare 403 (e.g. ntfy auth fail) must report the real
+        status rather than the Cloudflare-challenge advice — we only intercept
+        the challenge shape.
+
+        The origin's body is no longer returned to the API caller: the ntfy
+        server URL is caller-supplied, so echoing it made this an SSRF read
+        primitive. It goes to the debug log instead.
+        """
+        import httpx
+
+        mock_response = httpx.Response(
+            403,
+            content=b"forbidden: invalid auth token",
+            headers={"content-type": "text/plain"},
+        )
+
+        mock_client = AsyncMock()
+        mock_client.post = AsyncMock(return_value=mock_response)
+
+        with (
+            patch.object(service, "_get_client", AsyncMock(return_value=mock_client)),
+            caplog.at_level("DEBUG", logger="backend.app.services.notification_service"),
+        ):
+            ok, detail = await service._send_ntfy(
+                {"server": "https://ntfy.sh", "topic": "alerts", "auth_token": "bad"},
+                title="t",
+                message="m",
+            )
+
+        assert ok is False
+        assert "Cloudflare" not in detail
+        assert detail.startswith("HTTP 403")
+        assert "invalid auth token" not in detail
+        assert "invalid auth token" in caplog.text
+
+    @pytest.mark.asyncio
+    async def test_ntfy_origin_error_through_cloudflare_is_not_misclassified(self, service, caplog):
+        """Cloudflare adds Server: cloudflare to EVERY proxied response,
+        including legitimate origin errors. A real 401 "wrong token"
+        from an ntfy server that happens to sit behind Cloudflare must
+        still be reported as the origin's status — we must not flip
+        every CF-fronted 4xx into a "your Cloudflare is blocking" message.
+
+        As above, the origin body reaches the debug log rather than the caller.
+        """
+        import httpx
+
+        mock_response = httpx.Response(
+            401,
+            content=b'{"code":40101,"http":401,"error":"unauthorized"}',
+            headers={
+                "server": "cloudflare",
+                "cf-ray": "abc123-FRA",
+                "content-type": "application/json",
+                # No cf-mitigated — CF just proxied the origin response.
+            },
+        )
+
+        mock_client = AsyncMock()
+        mock_client.post = AsyncMock(return_value=mock_response)
+
+        with (
+            patch.object(service, "_get_client", AsyncMock(return_value=mock_client)),
+            caplog.at_level("DEBUG", logger="backend.app.services.notification_service"),
+        ):
+            ok, detail = await service._send_ntfy(
+                {"server": "https://ntfy.example", "topic": "alerts", "auth_token": "wrong"},
+                title="t",
+                message="m",
+            )
+
+        assert ok is False
+        assert "Cloudflare" not in detail
+        assert detail.startswith("HTTP 401")
+        assert "unauthorized" not in detail
+        assert "unauthorized" in caplog.text
+
+    @pytest.mark.asyncio
+    async def test_ntfy_cloudflare_cf_mitigated_header_alone_triggers(self, service):
+        """The cf-mitigated header on its own is enough — that's the
+        canonical CF "I actively blocked this" signal, even if the
+        response body shape changes between CF challenge generations."""
+        import httpx
+
+        mock_response = httpx.Response(
+            403,
+            content=b"<html>some future CF block page</html>",
+            headers={
+                "server": "cloudflare",
+                "cf-mitigated": "challenge",
+                "content-type": "text/html",
+            },
+        )
+
+        mock_client = AsyncMock()
+        mock_client.post = AsyncMock(return_value=mock_response)
+
+        with patch.object(service, "_get_client", AsyncMock(return_value=mock_client)):
+            ok, detail = await service._send_ntfy(
+                {"server": "https://ntfy.example", "topic": "alerts"},
+                title="t",
+                message="m",
+            )
+
+        assert ok is False
+        assert "Cloudflare" in detail
+
+
+class TestEmailProvider:
+    """Tests for SMTP email provider, including #1792 finish-photo inline embed.
+
+    Embed is opt-in via the template: only when the user's template referenced
+    ``{finish_photo_url}`` (so the URL appears in the rendered body) AND the
+    photo bytes are available does ``_send_email`` build the multipart/related
+    shape. Otherwise it stays single-part text — no surprise inline image.
+    """
+
+    PHOTO_URL = "https://printer.local/api/v1/archives/42/photos/finish.jpg"
+
+    @pytest.fixture
+    def service(self):
+        return NotificationService()
+
+    @pytest.fixture
+    def smtp_config(self):
+        return {
+            "smtp_server": "smtp.example.com",
+            "smtp_port": "587",
+            "username": "alice",
+            "password": "secret",
+            "from_email": "bambuddy@example.com",
+            "to_email": "alice@example.com",
+            "security": "starttls",
+            "auth_enabled": "true",
+        }
+
+    @staticmethod
+    def _fake_smtp_class(captured: dict):
+        class FakeSMTP:
+            # timeout matches the real smtplib.SMTP/SMTP_SSL signature — the
+            # service passes an explicit timeout so a wedged relay can't hang
+            # the send (#2572).
+            def __init__(self, host, port, timeout=None):
+                captured["host"] = host
+                captured["port"] = port
+                captured["timeout"] = timeout
+
+            def starttls(self):
+                captured["starttls"] = True
+
+            def login(self, u, p):
+                captured["login"] = (u, p)
+
+            def sendmail(self, frm, to, body):
+                captured["from"] = frm
+                captured["to"] = to
+                captured["raw"] = body
+
+            def quit(self):
+                captured["quit"] = True
+
+        return FakeSMTP
+
+    @pytest.mark.asyncio
+    async def test_email_without_image_or_url_stays_text_only(self, service, smtp_config):
+        """No image_data and no URL in body → original single-part text shape."""
+        captured: dict = {}
+        with patch("backend.app.services.notification_service.smtplib.SMTP", self._fake_smtp_class(captured)):
+            ok, _ = await service._send_email(smtp_config, "Print Failed", "Reason: unknown")
+
+        assert ok is True
+        assert "image/jpeg" not in captured["raw"]
+        assert "multipart/related" not in captured["raw"]
+        assert "cid:bambuddy-finish-photo" not in captured["raw"]
+        assert "Reason: unknown" in captured["raw"]
+
+    @pytest.mark.asyncio
+    async def test_email_image_without_template_reference_stays_text_only(self, service, smtp_config):
+        """image_data present but template didn't include {finish_photo_url} → no embed.
+
+        Pins the template-driven contract: a user whose body is just
+        "Print failed. Reason: unknown" does NOT get a surprise inline image
+        stapled to the bottom, even though the photo bytes are available
+        upstream from the archive.
+        """
+        captured: dict = {}
+        with patch("backend.app.services.notification_service.smtplib.SMTP", self._fake_smtp_class(captured)):
+            ok, _ = await service._send_email(
+                smtp_config,
+                "Print Failed",
+                "Reason: unknown",
+                image_data=b"\xff\xd8\xff\xe0jpeg",
+                finish_photo_url=self.PHOTO_URL,
+            )
+
+        assert ok is True
+        raw = captured["raw"]
+        assert "image/jpeg" not in raw
+        assert "multipart/related" not in raw
+        assert "cid:bambuddy-finish-photo" not in raw
+
+    @pytest.mark.asyncio
+    async def test_email_inlines_when_template_uses_finish_photo_url(self, service, smtp_config):
+        """URL in body + image_data present → multipart/related + cid embed; HTML swaps URL for <img>."""
+        captured: dict = {}
+        body = f"Print failed. Reason: unknown\n\nSnapshot: {self.PHOTO_URL}"
+
+        with patch("backend.app.services.notification_service.smtplib.SMTP", self._fake_smtp_class(captured)):
+            ok, _ = await service._send_email(
+                smtp_config,
+                "Print Failed",
+                body,
+                image_data=b"\xff\xd8\xff\xe0fake-jpeg-bytes",
+                finish_photo_url=self.PHOTO_URL,
+            )
+
+        assert ok is True
+        raw = captured["raw"]
+        # multipart/related shape with both alt parts and an image part
+        assert "multipart/related" in raw
+        assert "multipart/alternative" in raw
+        assert "text/plain" in raw
+        assert "text/html" in raw
+        assert "image/jpeg" in raw
+        # HTML references the exact cid the Content-ID header registers
+        assert "Content-ID: <bambuddy-finish-photo>" in raw
+        assert 'src="cid:bambuddy-finish-photo"' in raw
+        # Inline disposition so renders embedded, not as download attachment
+        assert 'Content-Disposition: inline; filename="finish-photo.jpg"' in raw
+        # Plain-text body keeps the URL so non-HTML clients still get a clickable link
+        assert self.PHOTO_URL in raw
+
+    @pytest.mark.asyncio
+    async def test_email_image_data_without_url_arg_stays_text_only(self, service, smtp_config):
+        """image_data passed but finish_photo_url=None → defence-in-depth, no embed.
+
+        Even if a future caller forgets to thread the URL through but does pass
+        the bytes, the conservative default is no embed (avoids attaching an
+        unreferenced image to an unrelated event type).
+        """
+        captured: dict = {}
+        with patch("backend.app.services.notification_service.smtplib.SMTP", self._fake_smtp_class(captured)):
+            ok, _ = await service._send_email(
+                smtp_config,
+                "Print Failed",
+                f"Snapshot: {self.PHOTO_URL}",
+                image_data=b"\xff\xd8\xff\xe0jpeg",
+                finish_photo_url=None,
+            )
+
+        assert ok is True
+        assert "image/jpeg" not in captured["raw"]
+        assert "multipart/related" not in captured["raw"]
+
+    @pytest.mark.asyncio
+    async def test_email_html_body_escapes_user_content(self, service, smtp_config):
+        """Template-rendered body must not be injected raw into the HTML part."""
+        captured: dict = {}
+        body = f"Filename: <script>alert(1)</script>\nLine 2\nSnapshot: {self.PHOTO_URL}"
+
+        with patch("backend.app.services.notification_service.smtplib.SMTP", self._fake_smtp_class(captured)):
+            ok, _ = await service._send_email(
+                smtp_config,
+                "Print Failed",
+                body,
+                image_data=b"\xff\xd8\xff\xe0jpeg",
+                finish_photo_url=self.PHOTO_URL,
+            )
+
+        assert ok is True
+        raw = captured["raw"]
+        # Raw HTML must NOT round-trip into the HTML part — verify escaped form is present.
+        assert "&lt;script&gt;alert(1)&lt;/script&gt;" in raw
+        # Newlines in the body become <br> in HTML
+        assert "Line 2" in raw
+        assert "<br>" in raw
+
+    @pytest.mark.asyncio
+    async def test_email_html_swaps_url_for_img_tag(self, service, smtp_config):
+        """In the HTML part, the URL substring is replaced with the <img cid:...> tag.
+
+        Plain text keeps the URL; HTML clients see the inline image where the
+        URL was. The URL must NOT appear inside an <a href> wrapping the image
+        — we replace the URL outright with the img tag (renderers don't need
+        the URL twice in the HTML part when the image is already inline).
+        """
+        captured: dict = {}
+        body = f"See: {self.PHOTO_URL} for the snapshot."
+
+        with patch("backend.app.services.notification_service.smtplib.SMTP", self._fake_smtp_class(captured)):
+            ok, _ = await service._send_email(
+                smtp_config,
+                "Print Failed",
+                body,
+                image_data=b"\xff\xd8\xff\xe0jpeg",
+                finish_photo_url=self.PHOTO_URL,
+            )
+
+        assert ok is True
+        raw = captured["raw"]
+        # The <img> tag appears in the HTML part
+        assert 'src="cid:bambuddy-finish-photo"' in raw
+        # The escaped URL is the marker we replaced — the HTML part should not
+        # contain BOTH the escaped URL AND the cid img (we swapped, not duplicated).
+        # The plain-text part still has the URL; check it's there at least once.
+        assert self.PHOTO_URL in raw

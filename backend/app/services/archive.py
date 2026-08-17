@@ -1,6 +1,8 @@
 import hashlib
+import html
 import json
 import logging
+import os
 import re
 import shutil
 import zipfile
@@ -12,11 +14,127 @@ from sqlalchemy import and_, or_, select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from backend.app.core.config import settings
+from backend.app.core.tasks import spawn_background_task
 from backend.app.models.archive import PrintArchive
 from backend.app.models.filament import Filament
 from backend.app.models.printer import Printer
+from backend.app.utils.safe_path import PathTraversalError, safe_join_under
 
 logger = logging.getLogger(__name__)
+
+
+def _copy_and_fsync(src: Path, dst: Path, chunk_size: int = 1024 * 1024) -> None:
+    """Copy src to dst with an explicit chunked read/write and fsync the dst.
+
+    Replacement for shutil.copy2 in the archive pipeline. shutil.copy2 uses
+    Linux sendfile(), which on some kernels/filesystems has returned a short
+    count on the first call and truncated the destination for larger 3MF
+    uploads (#1032, observed on Raspberry Pi OS bookworm / armv7l). An
+    explicit loop with fsync avoids that path and guarantees the dest bytes
+    are on disk before the caller inspects them as a ZIP.
+    """
+    with src.open("rb") as rf, dst.open("wb") as wf:
+        while True:
+            buf = rf.read(chunk_size)
+            if not buf:
+                break
+            wf.write(buf)
+        wf.flush()
+        os.fsync(wf.fileno())
+    shutil.copystat(src, dst)
+
+
+def resolve_display_stem(filename: str) -> str:
+    """Return a clean human-readable stem from a 3MF/gcode filename.
+
+    Bambu Studio's "Send to printer" dialog typically writes files like
+    ``Plate_1.gcode.3mf`` (a sliced gcode payload wrapped in a 3MF container).
+    The naive ``Path(filename).stem`` only drops the last suffix, leaving
+    ``Plate_1.gcode`` — which then surfaces in the archive UI as a confusing
+    ``Plate_1.gcode`` rather than ``Plate_1`` (#1152 follow-up).
+
+    Strip the recognised print-format suffixes in order:
+
+    - ``.gcode.3mf`` → bare stem (Bambu Studio FTP send)
+    - ``.3mf``       → bare stem
+    - ``.gcode``     → bare stem (rare standalone gcode upload)
+
+    Anything else passes through unchanged.
+    """
+    name = Path(filename).name  # drop any path components
+    lower = name.lower()
+    for suffix in (".gcode.3mf", ".3mf", ".gcode"):
+        if lower.endswith(suffix):
+            return name[: -len(suffix)]
+    return Path(name).stem
+
+
+def _read_plate_index(plate) -> int | None:
+    """Return the 1-based index of a ``slice_info.config`` ``<plate>`` element, or None.
+
+    Bambu Studio and OrcaSlicer record it as a ``<metadata key="index"
+    value="N"/>`` child — there is no ``plate_idx`` attribute on ``<plate>``
+    itself, so an XPath predicate on one never matches (#2522).
+    """
+    for meta in plate.findall("metadata"):
+        if meta.get("key") == "index":
+            value = meta.get("value")
+            if not value:
+                return None
+            try:
+                return int(value)
+            except ValueError:
+                return None
+    return None
+
+
+def peek_plate_index_in_3mf(file_path: Path) -> int | None:
+    """Return the plate index a single-plate Bambu 3MF represents, or None.
+
+    Reads only ``Metadata/slice_info.config`` to keep this cheap — used by
+    the print-start callback to verify that the 3MF we just downloaded over
+    FTP actually matches the plate the printer is running (#1204). The full
+    ThreeMFParser does much more work and runs later inside ArchiveService.
+
+    An all-plates export carries every plate, so "which plate is this file"
+    has no answer; returning None there keeps the #1204 guard from reading
+    plate 1 out of such a file, declaring a mismatch against the plate that
+    is really running, and discarding a perfectly good 3MF (#2522).
+    """
+    try:
+        with zipfile.ZipFile(file_path, "r") as zf:
+            if "Metadata/slice_info.config" not in zf.namelist():
+                return None
+            content = zf.read("Metadata/slice_info.config").decode()
+            root = ET.fromstring(content)
+            plates = root.findall(".//plate")
+            if len(plates) != 1:
+                return None
+            return _read_plate_index(plates[0])
+    except Exception:
+        return None
+
+
+_PLATE_SUFFIX_RE = re.compile(r"^(.*?)(\s*-\s*Plate\s+|_plate_)(\d+)$", re.IGNORECASE)
+
+
+def swap_plate_suffix(name: str | None, target_plate: int) -> str | None:
+    """Return ``name`` with its trailing plate number replaced, or None.
+
+    Bambu Studio names multi-plate uploads ``"<Project> - Plate <N>"`` (and
+    a lowercase ``"_plate_<N>"`` variant exists too — see
+    test_print_start_expected_promotion). When MQTT subtask_name lags
+    across consecutive plates of the same model (#1204) the suffix points
+    at the previous plate; swapping it gives us the correct upload to
+    re-fetch from FTP. Returns None if no recognised suffix is present.
+    """
+    if not name:
+        return None
+    m = _PLATE_SUFFIX_RE.match(name)
+    if not m:
+        return None
+    base, separator, _ = m.groups()
+    return f"{base}{separator}{target_plate}"
 
 
 class ThreeMFParser:
@@ -56,8 +174,16 @@ class ThreeMFParser:
                 self.metadata.pop("_slice_filament_type", None)
                 self.metadata.pop("_slice_filament_color", None)
                 self.metadata.pop("_plate_index", None)
-        except Exception:
-            pass  # Return whatever metadata was extracted before the error
+        except Exception as e:
+            # Return whatever metadata was extracted before the error, but
+            # surface the failure so corrupted / truncated 3MF archives are
+            # visible in support bundles (#1032).
+            logger.warning(
+                "ThreeMFParser: failed to parse %s: %s(%s) — returning partial metadata",
+                self.file_path,
+                type(e).__name__,
+                e,
+            )
         return self.metadata
 
     def _parse_slice_info(self, zf: zipfile.ZipFile):
@@ -80,47 +206,78 @@ class ThreeMFParser:
                             self.metadata["sliced_for_model"] = normalized
                         break
 
-                # Find the plate element (single-plate exports only have one plate)
-                plate = root.find(".//plate")
+                # Loop every <plate> so multi-plate exports get summed file-level
+                # totals. Pre-fix, this used `root.find(".//plate")` which
+                # returned only the first plate — file-level `print_time_seconds`
+                # / `filament_used_grams` reflected plate 1 alone, and the
+                # archive card / project rollup under-reported by the number
+                # of plates (#1593). Per-plate breakdown is still served by
+                # the dedicated `/plates` endpoint.
+                plates = root.findall(".//plate")
+                summed_time = 0
+                summed_grams = 0.0
+                any_time_seen = False
+                any_grams_seen = False
 
-                if plate is not None:
-                    # Extract metadata from plate element
+                for plate in plates:
+                    # Plate-level fields that only make sense at the file
+                    # level when there's exactly one plate. ``plate_number``
+                    # / ``_plate_index`` describe which plate the export
+                    # represents — meaningless for an all-plates 3MF, so we
+                    # only record them in the single-plate case. ``bed_type``
+                    # is also single-valued; we take the first plate's value
+                    # as a best-effort default for the archive metadata.
+                    plate_index_value: int | None = None
                     for meta in plate.findall("metadata"):
                         key = meta.get("key")
                         value = meta.get("value")
                         if key == "index" and value:
-                            # Extract plate index - this tells us which plate was exported
                             try:
-                                extracted_index = int(value)
-                                # Set plate_number if not already set from filename
-                                if not self.plate_number:
-                                    self.plate_number = extracted_index
-                                # Store in metadata for print_name generation
-                                self.metadata["_plate_index"] = extracted_index
+                                plate_index_value = int(value)
                             except ValueError:
                                 pass  # Skip non-numeric plate index
                         elif key == "prediction" and value:
-                            self.metadata["print_time_seconds"] = int(value)
-                        elif key == "weight" and value:
-                            self.metadata["filament_used_grams"] = float(value)
-
-                    # Extract printable objects for skip object functionality
-                    # Objects are stored as <object identify_id="123" name="Part1" skipped="false" />
-                    printable_objects = {}
-                    for obj in plate.findall("object"):
-                        identify_id = obj.get("identify_id")
-                        name = obj.get("name")
-                        skipped = obj.get("skipped", "false")
-
-                        # Only include objects that are not pre-skipped
-                        if identify_id and name and skipped.lower() != "true":
                             try:
-                                printable_objects[int(identify_id)] = name
+                                summed_time += int(value)
+                                any_time_seen = True
                             except ValueError:
-                                pass  # Skip objects with non-numeric identify_id
+                                pass
+                        elif key == "weight" and value:
+                            try:
+                                summed_grams += float(value)
+                                any_grams_seen = True
+                            except ValueError:
+                                pass
+                        elif key == "curr_bed_type" and value and "bed_type" not in self.metadata:
+                            self.metadata["bed_type"] = value
 
-                    if printable_objects:
-                        self.metadata["printable_objects"] = printable_objects
+                    # Per-plate object lists are only kept at the file level
+                    # when there's one plate — the skip-object affordance
+                    # operates on the plate being printed, which is the
+                    # `/plates` endpoint's job for multi-plate exports.
+                    if len(plates) == 1:
+                        if plate_index_value is not None:
+                            if not self.plate_number:
+                                self.plate_number = plate_index_value
+                            self.metadata["_plate_index"] = plate_index_value
+
+                        printable_objects: dict[int, str] = {}
+                        for obj in plate.findall("object"):
+                            identify_id = obj.get("identify_id")
+                            name = obj.get("name")
+                            skipped = obj.get("skipped", "false")
+                            if identify_id and name and skipped.lower() != "true":
+                                try:
+                                    printable_objects[int(identify_id)] = name
+                                except ValueError:
+                                    pass  # Skip objects with non-numeric identify_id
+                        if printable_objects:
+                            self.metadata["printable_objects"] = printable_objects
+
+                if any_time_seen:
+                    self.metadata["print_time_seconds"] = summed_time
+                if any_grams_seen:
+                    self.metadata["filament_used_grams"] = round(summed_grams, 2)
 
                 # Get filament info from filaments ACTUALLY USED in the print
                 # slice_info has <filament id="1" type="PLA" color="#FFFFFF" used_g="100" />
@@ -207,6 +364,20 @@ class ThreeMFParser:
             if match:
                 self.metadata["total_layers"] = int(match.group(1))
 
+            # Total filament usage. The slicer writes the print's totals into
+            # the G-code header ("; total filament weight [g] : 126.26"). Only
+            # a fallback — slice_info.config is more authoritative when present
+            # — but it covers sliced outputs whose slice_info lacks per-filament
+            # used_g, and it's the slicer's own figure regardless.
+            if "filament_used_grams" not in self.metadata:
+                match = re.search(r";\s*total\s+filament\s+weight\s*\[g\]\s*:\s*([\d.]+)", header, re.IGNORECASE)
+                if match:
+                    self.metadata["filament_used_grams"] = float(match.group(1))
+            if "filament_used_mm" not in self.metadata:
+                match = re.search(r";\s*total\s+filament\s+length\s*\[mm\]\s*:\s*([\d.]+)", header, re.IGNORECASE)
+                if match:
+                    self.metadata["filament_used_mm"] = float(match.group(1))
+
             # Look for printer_model in gcode header (fallback if not found in slice_info)
             # Format: "; printer_model = Bambu Lab X1 Carbon" or "; printer_model = X1C"
             if "sliced_for_model" not in self.metadata:
@@ -220,42 +391,39 @@ class ThreeMFParser:
             pass  # G-code header parsing is best-effort; metadata may come from other sources
 
     def _extract_filament_info(self, data: dict):
-        """Extract filament info, preferring non-support filaments."""
+        """Extract filament info from project settings — includes support
+        materials so a PLA-model / PVA-support project shows both on the
+        archive card badge (#1881).
+
+        Earlier code filtered by ``filament_is_support``; that hid PVA
+        (and any other soluble/breakaway support material) from the card
+        even when the user had explicitly configured it, and made source
+        3MFs look single-material until the print completed. slice_info
+        (parsed separately) is still preferred when present — it lists
+        only filaments the print actually consumes, this fallback only
+        runs on unsliced source 3MFs.
+        """
         try:
             filament_types = data.get("filament_type", [])
             filament_colors = data.get("filament_colour", [])
-            filament_is_support = data.get("filament_is_support", [])
 
             if not filament_types:
                 return
 
-            # Collect all non-support filaments
-            non_support_types = []
-            non_support_colors = []
+            unique_types: list[str] = []
+            for ftype in filament_types:
+                if ftype and ftype not in unique_types:
+                    unique_types.append(ftype)
 
-            for i, ftype in enumerate(filament_types):
-                is_support = filament_is_support[i] if i < len(filament_is_support) else "0"
-                if is_support == "0":
-                    if ftype and ftype not in non_support_types:
-                        non_support_types.append(ftype)
-                    if i < len(filament_colors) and filament_colors[i]:
-                        color = filament_colors[i]
-                        if color not in non_support_colors:
-                            non_support_colors.append(color)
+            unique_colors: list[str] = []
+            for color in filament_colors:
+                if color and color not in unique_colors:
+                    unique_colors.append(color)
 
-            # Fallback to first filament if all are support
-            if not non_support_types and filament_types:
-                non_support_types = [filament_types[0]]
-            if not non_support_colors and filament_colors:
-                non_support_colors = [filament_colors[0]]
-
-            # Store filament type(s)
-            if non_support_types:
-                self.metadata["filament_type"] = ", ".join(non_support_types)
-
-            # Store all colors as comma-separated (for multi-color display)
-            if non_support_colors:
-                self.metadata["filament_color"] = ",".join(non_support_colors)
+            if unique_types:
+                self.metadata["filament_type"] = ", ".join(unique_types)
+            if unique_colors:
+                self.metadata["filament_color"] = ",".join(unique_colors)
 
         except Exception:
             pass  # Filament info is optional; fall back to slice_info values
@@ -304,6 +472,13 @@ class ThreeMFParser:
                 from backend.app.utils.printer_models import normalize_printer_model
 
                 self.metadata["sliced_for_model"] = normalize_printer_model(data["printer_model"])
+
+            # Build plate type — only set from project_settings if slice_info didn't already
+            # provide it (slice_info is more authoritative as it reflects the exported plate).
+            if "bed_type" not in self.metadata and "curr_bed_type" in data:
+                val = data["curr_bed_type"]
+                if isinstance(val, str) and val.strip():
+                    self.metadata["bed_type"] = val.strip()
         except Exception:
             pass  # Print settings are optional; missing values are left unset
 
@@ -345,9 +520,20 @@ class ThreeMFParser:
             metadata_pattern = r'<metadata\s+name="([^"]+)"[^>]*>([^<]*)</metadata>'
             matches = re.findall(metadata_pattern, content)
 
+            # 3MF metadata values are XML-encoded — `&` becomes `&amp;`, etc.
+            # ProjectPageParser learned this the hard way: BambuStudio sometimes
+            # writes triple-encoded payloads (`&amp;amp;amp;`), so we unescape
+            # in a loop until the string stabilises. Without this, a Title like
+            # "Foo & Bar" lands in the DB as raw "Foo &amp; Bar" and React then
+            # double-escapes it on render to "Foo &amp;amp; Bar" (#1658).
             makerworld_fields = {}
             for name, value in matches:
-                makerworld_fields[name] = value.strip()
+                decoded = value.strip()
+                prev = None
+                while prev != decoded:
+                    prev = decoded
+                    decoded = html.unescape(decoded)
+                makerworld_fields[name] = decoded
 
             # Check for direct MakerWorld URL in content
             url_pattern = r'https?://makerworld\.com/[^\s<>"\']+/models/(\d+)'
@@ -393,6 +579,18 @@ class ThreeMFParser:
                 "Metadata/plate_1.png",
                 "Metadata/thumbnail.png",
                 "Metadata/model_thumbnail.png",
+                # Project-wide thumbnail BambuStudio embeds at upload time. We
+                # only reach this when BS hasn't written a per-plate
+                # ``Metadata/plate_N.png`` — most notably the #1493 cross-class
+                # re-slice path where ``--arrange`` rearranges objects but the
+                # CLI then doesn't emit a fresh per-plate preview. The
+                # ``_middle`` size is the editor-quality variant (~500 KB);
+                # ``_small`` and ``_3mf`` are smaller alternates if it's not
+                # present. Without this fallback the re-sliced archive cards
+                # render without a cover image.
+                "Auxiliaries/.thumbnails/thumbnail_middle.png",
+                "Auxiliaries/.thumbnails/thumbnail_small.png",
+                "Auxiliaries/.thumbnails/thumbnail_3mf.png",
             ]
         )
 
@@ -433,26 +631,26 @@ def extract_printable_objects_from_3mf(
             content = zf.read("Metadata/slice_info.config").decode()
             root = ET.fromstring(content)
 
-            # Find the correct plate
-            if plate_number:
-                plate = root.find(f".//plate[@plate_idx='{plate_number}']")
-                if plate is None:
-                    plate = root.find(".//plate")
-            else:
-                plate = root.find(".//plate")
-
-            if plate is None:
+            plates = root.findall(".//plate")
+            if not plates:
                 return printable_objects
 
-            # Get actual plate index from metadata (sliced files only have one plate)
-            plate_idx = plate_number or 1
-            for meta in plate.findall("metadata"):
-                if meta.get("key") == "index":
-                    try:
-                        plate_idx = int(meta.get("value", "1"))
-                    except ValueError:
-                        pass  # Use default plate_idx if value is non-numeric
-                    break
+            # Pick the plate that is actually printing. An all-plates export
+            # lists every plate, so without this we offered the objects (and
+            # the marker positions) of plate 1 whatever the printer was
+            # running (#2522). Falling back to the first plate keeps the
+            # single-plate export — the common case — working when the caller
+            # has no plate to give us.
+            plate = None
+            if plate_number is not None:
+                plate = next((p for p in plates if _read_plate_index(p) == plate_number), None)
+            if plate is None:
+                plate = plates[0]
+
+            # Derive plate_idx from the plate we settled on, never from the
+            # requested one: on a fallback they differ, and plate_idx also
+            # selects the plate_N.json the positions come from.
+            plate_idx = _read_plate_index(plate) or 1
 
             # Load position data from plate_N.json if we need positions
             # Build a lookup by name - use list to handle duplicate names
@@ -711,6 +909,84 @@ class ProjectPageParser:
             return False
 
 
+async def _null_print_log_thumbnail_paths(db: AsyncSession, archive_id: int) -> None:
+    """NULL thumbnail_path on PrintLogEntry rows linked to *archive_id*.
+
+    Called from both soft- and hard-delete paths before the archive's files
+    leave disk. The FK on PrintLogEntry.archive_id is ON DELETE SET NULL so
+    log rows survive the archive — without this clear, their cached
+    thumbnail_path would still point at a deleted file and the print-log
+    view would 404-storm on every render (#1348 follow-up). Lazy-NULL on
+    the GET route self-heals stragglers (e.g. failed prints that never had
+    a thumbnail written), but eager clear here avoids the one-time storm.
+    """
+    from sqlalchemy import update as sa_update
+
+    from backend.app.models.print_log import PrintLogEntry
+
+    await db.execute(sa_update(PrintLogEntry).where(PrintLogEntry.archive_id == archive_id).values(thumbnail_path=None))
+
+
+async def _delete_related_queue_items(db: AsyncSession, archive_id: int) -> int:
+    """Delete every queue item pointing at *archive_id* (#1734).
+
+    Called from ``soft_delete_archive``. Hard-delete is covered by the
+    ``ON DELETE CASCADE`` on ``print_queue.archive_id`` — same end state
+    via the FK. Pre-#1734 this helper merely flipped pending rows to
+    ``status='cancelled'`` while leaving every other status alone and
+    leaving the rows in the DB, which surprised users who expected the
+    queue lines to disappear when their backing archive went away. Worse,
+    a Send-All archive backed N queue items (one per plate, #1733) — soft-
+    deleting that archive left N "cancelled" rows behind, none of which
+    could ever dispatch.
+
+    Now we delete unconditionally regardless of status. ``printing`` rows
+    are blocked one layer up at the route (``delete_archive`` returns 409
+    when a related row is mid-print) so we never delete an actively-
+    running queue row out from under the dispatcher. Completed / failed
+    / cancelled rows go too — they're queue history, not print history.
+    PrintLogEntry rows are the authoritative print history and are
+    untouched (FK ``ON DELETE SET NULL``).
+
+    Returns the number of rows removed so the caller can report it.
+    """
+    from sqlalchemy import delete as sa_delete
+
+    from backend.app.models.print_queue import PrintQueueItem
+
+    result = await db.execute(sa_delete(PrintQueueItem).where(PrintQueueItem.archive_id == archive_id))
+    return result.rowcount or 0
+
+
+async def _count_related_queue_items(db: AsyncSession, archive_id: int) -> tuple[int, int]:
+    """Return ``(total, printing)`` queue items linked to *archive_id*.
+
+    Used by the archive GET response so the frontend delete-confirm modal
+    can surface how much the deletion will wipe out, and by the delete
+    route so it can 409 when a related row is currently printing (#1734).
+    """
+    from sqlalchemy import func as sa_func, select as sa_select
+
+    from backend.app.models.print_queue import PrintQueueItem
+
+    total = (
+        await db.execute(
+            sa_select(sa_func.count()).select_from(PrintQueueItem).where(PrintQueueItem.archive_id == archive_id)
+        )
+    ).scalar_one()
+    printing = (
+        await db.execute(
+            sa_select(sa_func.count())
+            .select_from(PrintQueueItem)
+            .where(
+                PrintQueueItem.archive_id == archive_id,
+                PrintQueueItem.status == "printing",
+            )
+        )
+    ).scalar_one()
+    return int(total or 0), int(printing or 0)
+
+
 class ArchiveService:
     """Service for archiving print jobs."""
 
@@ -738,9 +1014,13 @@ class ArchiveService:
         """
         from sqlalchemy import func
 
+        # Soft-deleted archives don't appear in the listing (#1343), so they
+        # mustn't influence the duplicate-group counts either — otherwise a
+        # group with 1 live + 4 soft-deleted would still be flagged as a
+        # duplicate even though the user only sees one row.
         result = await self.db.execute(
             select(PrintArchive.content_hash)
-            .where(PrintArchive.content_hash.isnot(None))
+            .where(PrintArchive.content_hash.isnot(None), PrintArchive.deleted_at.is_(None))
             .group_by(PrintArchive.content_hash)
             .having(func.count(PrintArchive.id) > 1)
         )
@@ -750,7 +1030,11 @@ class ArchiveService:
         # This avoids marking different files with the same name as duplicates
         result = await self.db.execute(
             select(func.lower(PrintArchive.print_name), PrintArchive.content_hash)
-            .where(PrintArchive.print_name.isnot(None), PrintArchive.content_hash.isnot(None))
+            .where(
+                PrintArchive.print_name.isnot(None),
+                PrintArchive.content_hash.isnot(None),
+                PrintArchive.deleted_at.is_(None),
+            )
             .group_by(func.lower(PrintArchive.print_name), PrintArchive.content_hash)
             .having(func.count(PrintArchive.id) > 1)
         )
@@ -779,6 +1063,7 @@ class ArchiveService:
                     and_(
                         PrintArchive.content_hash == content_hash,
                         PrintArchive.id != archive_id,
+                        PrintArchive.deleted_at.is_(None),
                     )
                 )
                 .order_by(PrintArchive.created_at.desc())
@@ -798,7 +1083,7 @@ class ArchiveService:
         # Prefer strict name+hash matching when hash exists; fallback to name-only for legacy/manual
         # archives that may not have a content_hash.
         if print_name or makerworld_model_id:
-            conditions = [PrintArchive.id != archive_id]
+            conditions = [PrintArchive.id != archive_id, PrintArchive.deleted_at.is_(None)]
 
             name_conditions = []
             if print_name:
@@ -854,6 +1139,13 @@ class ArchiveService:
         print_data: dict | None = None,
         created_by_id: int | None = None,
         original_filename: str | None = None,
+        project_id: int | None = None,
+        subtask_id: str | None = None,
+        prefer_filename_for_name: bool = False,
+        plate_id: int | None = None,
+        library_file_id: int | None = None,
+        slicer_ams_mapping: list[int] | None = None,
+        slicer_ams_mapping_printer_id: int | None = None,
     ) -> PrintArchive | None:
         """Archive a 3MF file with metadata.
 
@@ -864,6 +1156,33 @@ class ArchiveService:
             created_by_id: User ID who created this archive (optional, for user tracking)
             original_filename: Original human-readable filename (optional, for library files
                 stored with UUID names)
+            project_id: Project to associate this archive with (optional, set when triggered
+                from the project view)
+            library_file_id: Library file this run was dispatched from (optional,
+                set by the queue scheduler — powers per-file project progress, #1897)
+            subtask_id: MQTT-provided task identifier (optional). Used to match an
+                existing archive across a backend restart mid-print so the
+                original row can be resumed instead of cancelled (#972).
+            prefer_filename_for_name: When True, use the uploaded filename stem as the
+                archive's display name even if the 3MF embeds a `print_name` in its
+                metadata. Used by virtual-printer flows so users who rename a job in
+                BambuStudio's "send to printer" dialog see that name instead of the
+                creator-baked title (#1152).
+            slicer_ams_mapping: The slicer's own live-resolved AMS-slot pick, to persist
+                onto `extra_data.slicer_ams_mapping` for a later reprint to reuse. Deliberately
+                a distinct parameter, not read off `print_data["ams_mapping"]` — that key is
+                populated on every MQTT print-start callback regardless of source (bambu_mqtt's
+                request-topic interception captures it for slicer-direct LAN prints too), so
+                promoting it unconditionally would stamp every archive on installs with no
+                virtual printer at all. Callers that gate this behind an opt-in (the VP-queue
+                "Save AMS mapping" toggle) pass it explicitly; everyone else leaves it unset.
+            slicer_ams_mapping_printer_id: The printer `slicer_ams_mapping`'s tray IDs were
+                resolved against. Required alongside `slicer_ams_mapping` — a global tray ID
+                only means something relative to one printer's specific AMS layout, so a
+                mapping saved without knowing which printer it came from can't be safely
+                reused later on any printer, including the same one (there'd be no way to
+                tell). A model-based VP with no fixed target printer has no valid value to
+                pass here and must leave both params unset.
         """
         # Verify printer exists if specified
         if printer_id is not None:
@@ -874,16 +1193,55 @@ class ArchiveService:
 
         # Create archive directory structure
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-        display_stem = Path(original_filename).stem if original_filename else source_file.stem
+        display_stem = resolve_display_stem(original_filename if original_filename else source_file.name)
         archive_name = f"{timestamp}_{display_stem}"
         # Use "unassigned" folder for archives without a printer
         printer_folder = str(printer_id) if printer_id is not None else "unassigned"
-        archive_dir = settings.archive_dir / printer_folder / archive_name
+        archive_dir = (
+            settings.archive_dir / printer_folder / archive_name
+        )  # SEC-PATH-OK: printer_folder = str(int|None) → digits or "unassigned"; archive_name = f"{timestamp}_{display_stem}" where resolve_display_stem strips path components via Path(filename).name
         archive_dir.mkdir(parents=True, exist_ok=True)
 
-        # Copy 3MF file
+        # Copy 3MF file with an explicit fsync'd loop (avoids a sendfile
+        # short-read quirk that silently truncated 3MF archives on some
+        # platforms — see _copy_and_fsync and #1032).
         dest_file = archive_dir / source_file.name
-        shutil.copy2(source_file, dest_file)
+        _copy_and_fsync(source_file, dest_file)
+
+        # If we just archived a 3MF, verify the dest is a valid ZIP before
+        # going any further. Staying quiet here is how #1032 escaped review —
+        # the archive row was written but every later zipfile.ZipFile() call
+        # on the dest failed with "File is not a zip file".
+        if (
+            source_file.suffix.lower() == ".3mf"
+            and zipfile.is_zipfile(source_file)
+            and not zipfile.is_zipfile(dest_file)
+        ):
+            try:
+                src_size = source_file.stat().st_size
+                dst_size = dest_file.stat().st_size
+            except OSError:
+                src_size = dst_size = -1
+            logger.error(
+                "Archive copy corrupted 3MF: src=%s (%s bytes, valid ZIP) -> dst=%s (%s bytes, NOT a ZIP). Refusing to create archive row.",
+                source_file,
+                src_size,
+                dest_file,
+                dst_size,
+            )
+            # Narrow cleanup: remove only the truncated file and the archive
+            # directory if it's now empty. archive_dir was created with
+            # exist_ok=True so it could in theory pre-date this call (e.g.
+            # same-second same-filename collision); rmtree would be too broad.
+            try:
+                dest_file.unlink()
+            except OSError:
+                pass
+            try:
+                archive_dir.rmdir()
+            except OSError:
+                pass  # directory not empty — leave untouched
+            return None
 
         # Compute content hash for duplicate detection
         content_hash = self.compute_file_hash(dest_file)
@@ -912,6 +1270,25 @@ class ArchiveService:
         # Merge with print data from MQTT
         if print_data:
             metadata["_print_data"] = print_data
+
+        # Promote the slicer's own live-resolved AMS-slot pick, when the caller
+        # explicitly opted in (see the `slicer_ams_mapping` param docstring for
+        # why this is NOT read off `print_data["ams_mapping"]`), to a stable
+        # top-level extra_data key. Lets a later reprint reuse the exact tray
+        # the user picked/BambuStudio auto-matched at slice time instead of the
+        # scheduler re-deriving one from just the file's static type/color,
+        # which can land on the wrong physical spool when that match isn't
+        # unique. Top-level (not nested under the `_print_data` diagnostic bag)
+        # so API consumers have a single stable path:
+        # `archive.extra_data.slicer_ams_mapping`. Stored together with the
+        # printer it was resolved against — see `slicer_ams_mapping_printer_id`
+        # param docstring — so a later reprint can tell whether it's even
+        # applicable before trying to reuse it.
+        if slicer_ams_mapping and slicer_ams_mapping_printer_id is not None:
+            metadata["slicer_ams_mapping"] = {
+                "mapping": slicer_ams_mapping,
+                "printer_id": slicer_ams_mapping_printer_id,
+            }
 
         # Determine status and timestamps
         status = print_data.get("status", "completed") if print_data else "archived"
@@ -954,7 +1331,7 @@ class ArchiveService:
             file_size=dest_file.stat().st_size,
             content_hash=content_hash,
             thumbnail_path=thumbnail_path,
-            print_name=metadata.get("print_name") or display_stem,
+            print_name=display_stem if prefer_filename_for_name else (metadata.get("print_name") or display_stem),
             print_time_seconds=metadata.get("print_time_seconds"),
             filament_used_grams=metadata.get("filament_used_grams"),
             filament_type=metadata.get("filament_type"),
@@ -963,6 +1340,7 @@ class ArchiveService:
             total_layers=metadata.get("total_layers"),
             nozzle_diameter=metadata.get("nozzle_diameter"),
             bed_temperature=metadata.get("bed_temperature"),
+            bed_type=metadata.get("bed_type"),
             nozzle_temperature=metadata.get("nozzle_temperature"),
             sliced_for_model=metadata.get("sliced_for_model"),
             makerworld_url=metadata.get("makerworld_url"),
@@ -974,6 +1352,10 @@ class ArchiveService:
             quantity=quantity,
             extra_data=metadata,
             created_by_id=created_by_id,
+            project_id=project_id,
+            library_file_id=library_file_id,
+            subtask_id=subtask_id,
+            plate_id=plate_id,
         )
 
         self.db.add(archive)
@@ -1022,13 +1404,23 @@ class ArchiveService:
         date_to: date | None = None,
         limit: int = 50,
         offset: int = 0,
+        visible_to_user_id: int | None = None,
     ) -> list[PrintArchive]:
-        """List archives with optional filtering."""
+        """List archives with optional filtering.
+
+        ``visible_to_user_id`` scopes results to archives that user owns. Used
+        when the caller has ARCHIVES_READ_OWN but not ARCHIVES_READ_ALL — pass
+        ``None`` to skip the filter (caller has read-all or auth is disabled).
+        """
         from sqlalchemy.orm import selectinload
 
         query = (
             select(PrintArchive)
             .options(selectinload(PrintArchive.project), selectinload(PrintArchive.created_by))
+            # Hide soft-deleted rows from the listings (#1343). The stats
+            # endpoint deliberately does NOT add this filter so deleted
+            # archives keep contributing to Quick Stats.
+            .where(PrintArchive.deleted_at.is_(None))
             .order_by(PrintArchive.created_at.desc())
         )
 
@@ -1046,9 +1438,77 @@ class ArchiveService:
             dt_to = datetime.combine(date_to, time.max, tzinfo=timezone.utc)
             query = query.where(PrintArchive.created_at <= dt_to)
 
+        if visible_to_user_id is not None:
+            query = query.where(PrintArchive.created_by_id == visible_to_user_id)
+
         query = query.limit(limit).offset(offset)
         result = await self.db.execute(query)
         return list(result.scalars().all())
+
+    async def soft_delete_archive(self, archive_id: int) -> bool:
+        """Soft-delete an archive (#1343).
+
+        Removes the archive's files from disk (it disappears from the listings
+        and frees the storage) but flips the row's ``deleted_at`` so the stats
+        endpoint keeps counting its filament / energy / time / cost. The user
+        can opt into a hard delete via the "Also remove from statistics"
+        checkbox in the delete dialog — that path calls ``delete_archive``
+        instead and removes the row entirely.
+        """
+        archive = await self.get_archive(archive_id)
+        if not archive:
+            return False
+        if archive.deleted_at is not None:
+            # Already soft-deleted; nothing to do. The files were purged on
+            # the first soft-delete pass so there is nothing left on disk.
+            return True
+
+        dir_to_delete = self._resolve_archive_dir_for_delete(archive)
+
+        await _null_print_log_thumbnail_paths(self.db, archive_id)
+        await _delete_related_queue_items(self.db, archive_id)
+        archive.deleted_at = datetime.now(timezone.utc)
+        await self.db.commit()
+
+        if dir_to_delete:
+            shutil.rmtree(dir_to_delete, ignore_errors=True)
+        return True
+
+    def _resolve_archive_dir_for_delete(self, archive: PrintArchive) -> Path | None:
+        """Return the on-disk directory that backs *archive*, after the same
+        two safety checks ``delete_archive`` enforces.
+
+        Extracted so soft-delete and hard-delete share the path-resolution
+        rules. Returns ``None`` when nothing should be removed from disk
+        (no file_path, path outside archive_dir, or path not deep enough).
+        """
+        if not archive.file_path or not archive.file_path.strip():
+            logger.error(
+                f"SECURITY: Refusing to delete files for archive {archive.id} - "
+                f"file_path is empty or invalid: '{archive.file_path}'"
+            )
+            return None
+
+        file_path = settings.base_dir / archive.file_path
+        if not file_path.exists():
+            return None
+
+        archive_dir = file_path.parent
+        try:
+            relative_path = archive_dir.resolve().relative_to(settings.archive_dir.resolve())
+        except ValueError:
+            logger.error(
+                f"SECURITY: Refusing to delete archive {archive.id} - "
+                f"path {archive_dir} is outside archive directory {settings.archive_dir}"
+            )
+            return None
+        if len(relative_path.parts) < 1:
+            logger.error(
+                f"SECURITY: Refusing to delete archive {archive.id} - "
+                f"path {archive_dir} is not deep enough inside archive directory"
+            )
+            return None
+        return archive_dir
 
     async def delete_archive(self, archive_id: int) -> bool:
         """Delete an archive and its files."""
@@ -1097,6 +1557,13 @@ class ArchiveService:
                 f"file_path is empty or invalid: '{archive.file_path}'"
             )
 
+        # NULL stale thumbnail_path on linked PrintLogEntries before the FK
+        # SET-NULL cascade fires. The on-disk file is about to be removed by
+        # the rmtree below, so the path on any surviving log entry (archive_id
+        # gets SET NULL by the FK) would otherwise point at a missing file
+        # and produce 404 storms in the print-log view (#1348-followup).
+        await _null_print_log_thumbnail_paths(self.db, archive_id)
+
         # Delete database record FIRST — if the commit fails (e.g. database locked
         # during concurrent bulk deletes), the files stay on disk and nothing is lost.
         await self.db.delete(archive)
@@ -1126,12 +1593,29 @@ class ArchiveService:
             return False
 
         # Get archive directory
-        file_path = settings.base_dir / archive.file_path
+        file_path = (
+            settings.base_dir / archive.file_path
+        )  # SEC-PATH-OK: archive.file_path is DB-stored, set by archive_print() under settings.archive_dir
         archive_dir = file_path.parent
 
         # Save timelapse - use thread pool to avoid blocking event loop
-        # (timelapse files can be 100MB+, sync write blocks for seconds)
-        timelapse_file = archive_dir / filename
+        # (timelapse files can be 100MB+, sync write blocks for seconds).
+        # `filename` ultimately comes from a printer's FTP listing (compromised-
+        # printer threat model) or a query param on /archives/{id}/timelapse/select;
+        # the safe-join helper rejects ``..`` segments and absolute paths so a
+        # crafted name can't escape the archive directory. Use http=False so a
+        # service-layer reject surfaces as a return False (matching the existing
+        # not-found contract) rather than a 400 raised from inside a background
+        # task.
+        try:
+            timelapse_file = safe_join_under(archive_dir, filename, http=False)
+        except PathTraversalError:
+            logger.warning(
+                "Refusing to attach timelapse with unsafe filename %r to archive %s",
+                filename,
+                archive_id,
+            )
+            return False
         await asyncio.to_thread(timelapse_file.write_bytes, timelapse_data)
 
         # Update archive record
@@ -1140,7 +1624,7 @@ class ArchiveService:
 
         # For non-MP4 videos (e.g. AVI from P1S), kick off background conversion
         if not filename.lower().endswith(".mp4"):
-            asyncio.create_task(
+            spawn_background_task(
                 _convert_timelapse_to_mp4(archive_id, timelapse_file),
                 name=f"timelapse-convert-{archive_id}",
             )

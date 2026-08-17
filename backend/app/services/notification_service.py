@@ -1,11 +1,13 @@
 """Notification service for sending push notifications via various providers."""
 
 import asyncio
+import html
 import json
 import logging
 import re
 import smtplib
 from datetime import datetime, timedelta, timezone
+from email.mime.image import MIMEImage
 from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
 from typing import Any
@@ -20,6 +22,96 @@ from backend.app.models.notification_template import NotificationTemplate
 
 logger = logging.getLogger(__name__)
 
+# Honest User-Agent — matches the convention used by every other outbound
+# httpx client in the codebase (bambu_cloud, makerworld, firmware_check,
+# inventory). Previously this client leaked python-httpx/<version>, which
+# was both inconsistent with the rest of the project and a more obvious
+# bot signature for upstream WAFs.
+_USER_AGENT = "Bambuddy/1.0 (+https://github.com/maziggy/bambuddy)"
+
+
+def _looks_like_cloudflare_challenge(response: httpx.Response) -> bool:
+    """Return True if ``response`` looks like a Cloudflare mitigation
+    interstitial (JS challenge / managed challenge / block page) rather
+    than a legitimate response passed through Cloudflare.
+
+    Self-hosted servers behind Cloudflare (Tunnel, "Bot Fight Mode", or
+    "Under Attack" mode) intercept non-browser clients at the edge and
+    return a challenge HTML page instead of forwarding to the origin —
+    so we never reach the user's actual ntfy / webhook backend.
+    Cloudflare cannot be defeated from a Python client; the user has to
+    add a security-skip rule on their side. We detect the shape so the
+    UI can tell them that, instead of dumping the raw HTML.
+
+    Detection deliberately does NOT rely on ``Server: cloudflare`` alone
+    — Cloudflare adds that header to every response it proxies (success
+    AND legitimate origin errors), so a real 401 "wrong token" from a
+    CF-fronted ntfy would false-positive into a misleading "your CF is
+    blocking" message. Reliable signals: the ``cf-mitigated`` header
+    (set only when CF actively mitigates) and the challenge body shape.
+    """
+    if response.headers.get("cf-mitigated"):
+        return True
+    content_type = (response.headers.get("content-type") or "").lower()
+    if "html" not in content_type:
+        return False
+    body = (response.text or "")[:1024].lower()
+    # "Just a moment..." is Cloudflare's universal challenge-page title
+    # (managed challenge, JS challenge, Under Attack mode). Combined with
+    # an HTML content-type this is unambiguous — no legitimate ntfy or
+    # webhook backend returns HTML with that title. ``cf-chl-*`` and
+    # ``challenge-platform`` cover newer / non-default CF templates.
+    return "just a moment" in body or "cf-chl-bypass" in body or "cf-chl-opt" in body or "challenge-platform" in body
+
+
+def _assert_safe_provider_url(url: str, *, label: str) -> str | None:
+    """Validate a provider URL taken from user-supplied config.
+
+    Returns an error message on rejection, or None when the URL is
+    acceptable — the ``_send_*`` methods return ``tuple[bool, str]`` rather
+    than raising, so a message is more useful here than an exception.
+
+    Uses the LAN-service policy: self-hosting ntfy, Bark, Gotify or a webhook
+    receiver on the home LAN is normal and must keep working, so loopback and
+    RFC-1918 stay permitted. Cloud-metadata endpoints, numeric-encoded IPs and
+    non-HTTP schemes are rejected.
+    """
+    from backend.app.api.routes._url_safety import assert_safe_lan_service_url
+
+    try:
+        assert_safe_lan_service_url(url, label=label)
+    except ValueError as exc:
+        return str(exc)
+    return None
+
+
+def _opaque_http_failure(response: httpx.Response, *, label: str) -> str:
+    """Failure message for a provider whose destination host the user supplies.
+
+    The response body is deliberately **not** returned to the caller. Provider
+    URLs are configurable by anyone holding ``NOTIFICATIONS_CREATE`` — which
+    the default Operators group carries and which does not imply
+    ``SETTINGS_UPDATE`` — and ``POST /notifications/test-config`` accepts a URL
+    straight from the request body without persisting anything. Echoing the
+    response body there turned an intended "does my webhook work?" check into
+    an authenticated read primitive against any host the Bambuddy process can
+    reach, including services that are not exposed to the network at all.
+
+    Providers whose host Bambuddy hardcodes (Pushover, Telegram, CallMeBot)
+    keep returning the upstream body — there is no trust boundary to cross
+    when the destination cannot be influenced.
+
+    The body is logged at debug level, where it stays available to whoever
+    already administers the host without being handed back over the API.
+    """
+    logger.debug(
+        "%s delivery failed with HTTP %s; body: %s",
+        label,
+        response.status_code,
+        (response.text or "")[:200],
+    )
+    return f"HTTP {response.status_code} from the configured {label} (see server logs at debug level for details)"
+
 
 class NotificationService:
     """Service for sending notifications through various providers."""
@@ -33,7 +125,10 @@ class NotificationService:
     async def _get_client(self) -> httpx.AsyncClient:
         """Get or create HTTP client."""
         if self._http_client is None or self._http_client.is_closed:
-            self._http_client = httpx.AsyncClient(timeout=30.0)
+            self._http_client = httpx.AsyncClient(
+                timeout=30.0,
+                headers={"User-Agent": _USER_AGENT},
+            )
         return self._http_client
 
     async def close(self):
@@ -179,6 +274,8 @@ class NotificationService:
                 return await self._send_webhook(config, title, message)
             elif provider_type == "homeassistant":
                 return await self._send_homeassistant(config, title, message, db=db)
+            elif provider_type == "bark":
+                return await self._send_bark(config, title, message)
             else:
                 return False, f"Unknown provider type: {provider_type}"
         except Exception as e:
@@ -205,8 +302,63 @@ class NotificationService:
         else:
             return False, f"HTTP {response.status_code}: {response.text[:200]}"
 
+    async def _send_bark(self, config: dict, title: str, message: str) -> tuple[bool, str]:
+        """Send notification via Bark, the self-hostable iOS push service (#1495).
+
+        POSTs JSON to {server}/push. Defaults to the official api.day.app
+        relay; a self-hosted bark-server works by overriding the server URL.
+        """
+        server = (config.get("server") or "https://api.day.app").strip().rstrip("/")
+        device_key = (config.get("device_key") or "").strip()
+
+        if not device_key:
+            return False, "Device key is required"
+
+        url_error = _assert_safe_provider_url(server, label="Bark server URL")
+        if url_error:
+            return False, url_error
+
+        payload: dict[str, Any] = {
+            "device_key": device_key,
+            "title": title,
+            "body": message,
+        }
+        group = (config.get("group") or "").strip()
+        if group:
+            payload["group"] = group
+        sound = (config.get("sound") or "").strip()
+        if sound:
+            payload["sound"] = sound
+        level = (config.get("level") or "").strip()
+        if level in ("active", "timeSensitive", "critical", "passive"):
+            payload["level"] = level
+
+        client = await self._get_client()
+        response = await client.post(f"{server}/push", json=payload)
+
+        if response.status_code == 200:
+            # bark-server can report failures inside an HTTP 200 body
+            # ({"code": 400, "message": ...}), so the status alone isn't proof.
+            try:
+                body = response.json()
+            except ValueError:
+                body = None
+            if isinstance(body, dict) and body.get("code") not in (200, None):
+                # Only the numeric code is echoed. A server chosen by the caller
+                # controls this body too, so the free-text message is a (narrow)
+                # read channel of the same kind _opaque_http_failure closes.
+                logger.debug("Bark reported error %s: %s", body.get("code"), str(body.get("message"))[:200])
+                return False, f"Bark error {body.get('code')} (see server logs at debug level for details)"
+            return True, "Message sent successfully"
+        return False, _opaque_http_failure(response, label="Bark server")
+
     async def _send_ntfy(
-        self, config: dict, title: str, message: str, image_data: bytes | None = None
+        self,
+        config: dict,
+        title: str,
+        message: str,
+        image_data: bytes | None = None,
+        event_type: str | None = None,
     ) -> tuple[bool, str]:
         """Send notification via ntfy."""
         server = config.get("server", "https://ntfy.sh").rstrip("/")
@@ -216,12 +368,29 @@ class NotificationService:
         if not topic:
             return False, "Topic is required"
 
+        url_error = _assert_safe_provider_url(server, label="ntfy server URL")
+        if url_error:
+            return False, url_error
+
         url = f"{server}/{topic}"
         # ntfy reads Title/Message from HTTP headers. httpx enforces ASCII
         # for str header values, but printer names and filenames can contain
         # non-ASCII characters (e.g. accented letters, CJK). Passing bytes
         # bypasses the ASCII check — ntfy handles UTF-8 headers correctly.
         headers: dict[str, str | bytes] = {"Title": title.encode("utf-8")}
+
+        # Per-event Priority header (#990). Only set when the user has
+        # explicitly mapped this event to a 1-5 value; otherwise fall through
+        # to the ntfy server's default so existing setups stay unchanged.
+        event_priorities = config.get("event_priorities") or {}
+        if event_type and isinstance(event_priorities, dict):
+            raw = event_priorities.get(event_type)
+            try:
+                priority = int(raw) if raw is not None else None
+            except (TypeError, ValueError):
+                priority = None
+            if priority is not None and 1 <= priority <= 5:
+                headers["Priority"] = str(priority)
 
         if auth_token:
             headers["Authorization"] = f"Bearer {auth_token}"
@@ -246,8 +415,16 @@ class NotificationService:
 
         if response.status_code in (200, 204):
             return True, "Message sent successfully"
-        else:
-            return False, f"HTTP {response.status_code}: {response.text[:200]}"
+        if _looks_like_cloudflare_challenge(response):
+            return False, (
+                f"HTTP {response.status_code} — ntfy server is behind a Cloudflare "
+                "challenge. Bambuddy was served the JS challenge page instead of "
+                "reaching ntfy. Cloudflare cannot be solved from a backend; add a "
+                "Cloudflare security-skip rule for this hostname, disable Bot "
+                "Fight Mode, or front the server with Cloudflare Access using a "
+                "service token. (#1534)"
+            )
+        return False, _opaque_http_failure(response, label="ntfy server")
 
     async def _send_pushover(
         self, config: dict, title: str, message: str, image_data: bytes | None = None
@@ -262,7 +439,10 @@ class NotificationService:
         """
         user_key = config.get("user_key", "").strip()
         app_token = config.get("app_token", "").strip()
-        priority = config.get("priority", 0)
+        try:
+            priority = int(config.get("priority", 0))
+        except (TypeError, ValueError):
+            priority = 0
 
         if not user_key or not app_token:
             return False, "User key and app token are required"
@@ -275,6 +455,22 @@ class NotificationService:
             "message": message,
             "priority": priority,
         }
+
+        # Emergency priority (2) keeps re-alerting until acknowledged, so
+        # Pushover *requires* retry (how often, >= 30s) and expire (when to
+        # give up, <= 10800s). Without them the API rejects the message. Only
+        # send them at priority 2 — Pushover ignores them at other priorities.
+        if priority == 2:
+            try:
+                retry = int(config.get("retry", 60))
+            except (TypeError, ValueError):
+                retry = 60
+            try:
+                expire = int(config.get("expire", 3600))
+            except (TypeError, ValueError):
+                expire = 3600
+            data["retry"] = max(30, min(retry, 10800))
+            data["expire"] = max(30, min(expire, 10800))
 
         client = await self._get_client()
 
@@ -303,6 +499,19 @@ class NotificationService:
         if not bot_token or not chat_id:
             return False, "Bot token and chat ID are required"
 
+        # Optional forum topic (#1518).  Telegram expects message_thread_id as an
+        # integer in the JSON sendMessage body — a string 400s there even though
+        # the multipart sendPhoto call below would happily accept one.  Coerce it
+        # once, up front, so both call sites agree and a bad value fails loudly
+        # instead of silently breaking only the text notifications.
+        thread_id_raw = str(config.get("message_thread_id") or "").strip()
+        message_thread_id: int | None = None
+        if thread_id_raw:
+            try:
+                message_thread_id = int(thread_id_raw)
+            except ValueError:
+                return False, f"Invalid message thread ID: {thread_id_raw!r} is not a number"
+
         # Escape underscores in the message body so Telegram Markdown
         # parsing doesn't break on job names like "A1_plate_8" or error
         # codes like "0300_0001".  The title is already wrapped in *bold*
@@ -317,18 +526,23 @@ class NotificationService:
         if image_data:
             # Use sendPhoto to attach the thumbnail with the caption
             url = f"https://api.telegram.org/bot{bot_token}/sendPhoto"
+            form: dict[str, Any] = {"chat_id": chat_id, "caption": message, "parse_mode": "Markdown"}
+            if message_thread_id is not None:
+                form["message_thread_id"] = message_thread_id
             response = await client.post(
                 url,
-                data={"chat_id": chat_id, "caption": message, "parse_mode": "Markdown"},
+                data=form,
                 files={"photo": ("photo.jpg", image_data, "image/jpeg")},
             )
         else:
             url = f"https://api.telegram.org/bot{bot_token}/sendMessage"
-            data = {
+            data: dict[str, Any] = {
                 "chat_id": chat_id,
                 "text": message,
                 "parse_mode": "Markdown",
             }
+            if message_thread_id is not None:
+                data["message_thread_id"] = message_thread_id
             response = await client.post(url, json=data)
 
         if response.status_code == 200:
@@ -340,8 +554,27 @@ class NotificationService:
         else:
             return False, f"HTTP {response.status_code}: {response.text[:200]}"
 
-    async def _send_email(self, config: dict, subject: str, body: str) -> tuple[bool, str]:
-        """Send notification via email (SMTP)."""
+    async def _send_email(
+        self,
+        config: dict,
+        subject: str,
+        body: str,
+        image_data: bytes | None = None,
+        finish_photo_url: str | None = None,
+    ) -> tuple[bool, str]:
+        """Send notification via email (SMTP).
+
+        Inline finish-photo embed is opt-in via the template: when the rendered
+        ``body`` contains the substituted ``{finish_photo_url}`` value AND the
+        finish-photo bytes are present, the message is built as
+        ``multipart/related`` wrapping a ``multipart/alternative`` (plain + HTML)
+        plus an inline ``MIMEImage`` with ``Content-ID: <bambuddy-finish-photo>``.
+        The HTML part replaces the URL with ``<img src="cid:...">``; the plain-
+        text part keeps the URL as a clickable link. When the template doesn't
+        reference ``{finish_photo_url}`` (or image bytes aren't available), the
+        original single-part text shape is used — no attachment, no surprise
+        inline image (#1792).
+        """
         smtp_server = config.get("smtp_server", "").strip()
         smtp_port = int(config.get("smtp_port", 587))
         username = config.get("username", "").strip()
@@ -359,29 +592,86 @@ class NotificationService:
         if auth_enabled and not all([username, password]):
             return False, "Username and password are required when authentication is enabled"
 
+        # Template-driven: only inline-embed when the user's template explicitly
+        # referenced {finish_photo_url} (so the URL appears in the rendered body)
+        # AND the photo bytes are available. Falls back to text-only otherwise.
+        inline_photo = bool(image_data and finish_photo_url and finish_photo_url in body)
+
         try:
-            msg = MIMEMultipart()
-            msg["From"] = from_email
-            msg["To"] = to_email
-            msg["Subject"] = f"[Bambuddy] {subject}"
-            msg.attach(MIMEText(body, "plain"))
+            if inline_photo:
+                # multipart/related → (multipart/alternative → text, html) + inline image
+                msg = MIMEMultipart("related")
+                msg["From"] = from_email
+                msg["To"] = to_email
+                msg["Subject"] = f"[Bambuddy] {subject}"
 
-            if security == "ssl":
-                # Direct SSL connection (typically port 465)
-                server = smtplib.SMTP_SSL(smtp_server, smtp_port)
-            elif security == "starttls":
-                # STARTTLS upgrade (typically port 587)
-                server = smtplib.SMTP(smtp_server, smtp_port)
-                server.starttls()
+                alt = MIMEMultipart("alternative")
+                alt.attach(MIMEText(body, "plain"))
+                # Build HTML body: escape the rendered body, then swap the
+                # escaped URL substring for an inline <img> referencing the
+                # MIMEImage we attach below. Done AFTER escape so the cid: URL
+                # we inject isn't re-escaped.
+                escaped_body = html.escape(body).replace("\n", "<br>\n")
+                escaped_url = html.escape(finish_photo_url)
+                img_tag = (
+                    '<img src="cid:bambuddy-finish-photo" '
+                    'alt="Printer camera snapshot" '
+                    'style="max-width:100%;height:auto;border:1px solid #ddd;border-radius:4px;">'
+                )
+                html_body = f"<html><body><p>{escaped_body.replace(escaped_url, img_tag)}</p></body></html>"
+                alt.attach(MIMEText(html_body, "html"))
+                msg.attach(alt)
+
+                img = MIMEImage(image_data, _subtype="jpeg")
+                # Angle-bracketed Content-ID per RFC 2392, referenced from HTML
+                # without the brackets via ``cid:bambuddy-finish-photo``.
+                img.add_header("Content-ID", "<bambuddy-finish-photo>")
+                img.add_header("Content-Disposition", "inline", filename="finish-photo.jpg")
+                msg.attach(img)
             else:
-                # No encryption (typically port 25) - use with caution
-                server = smtplib.SMTP(smtp_server, smtp_port)
+                msg = MIMEMultipart()
+                msg["From"] = from_email
+                msg["To"] = to_email
+                msg["Subject"] = f"[Bambuddy] {subject}"
+                msg.attach(MIMEText(body, "plain"))
 
-            if auth_enabled:
-                server.login(username, password)
+            # smtplib is synchronous and blocking: a wedged / greylisting /
+            # firewall-dropped relay leaves recv() stuck. Two problems, two
+            # fixes (#2572):
+            #   1. No timeout — smtplib defaults to the global socket timeout,
+            #      which this app never sets, so a stuck relay blocks forever.
+            #      Pass an explicit timeout to every connect.
+            #   2. Run on the event loop — a stuck (or merely slow) send freezes
+            #      every other coroutine, including a DB session a caller is
+            #      holding open across this notification. Offload to a worker
+            #      thread so the loop stays live and the connection is released
+            #      on schedule.
+            smtp_timeout = 30.0
+            msg_str = msg.as_string()
 
-            server.sendmail(from_email, to_email, msg.as_string())
-            server.quit()
+            def _blocking_send() -> None:
+                if security == "ssl":
+                    # Direct SSL connection (typically port 465)
+                    server = smtplib.SMTP_SSL(smtp_server, smtp_port, timeout=smtp_timeout)
+                elif security == "starttls":
+                    # STARTTLS upgrade (typically port 587)
+                    server = smtplib.SMTP(smtp_server, smtp_port, timeout=smtp_timeout)
+                    server.starttls()
+                else:
+                    # No encryption (typically port 25) - use with caution
+                    server = smtplib.SMTP(smtp_server, smtp_port, timeout=smtp_timeout)
+                try:
+                    if auth_enabled:
+                        server.login(username, password)
+                    server.sendmail(from_email, to_email, msg_str)
+                finally:
+                    # quit() in finally so a send error doesn't leak the socket.
+                    try:
+                        server.quit()
+                    except Exception:  # noqa: BLE001 — closing a broken connection is best-effort
+                        pass
+
+            await asyncio.to_thread(_blocking_send)
 
             return True, "Email sent successfully"
         except smtplib.SMTPAuthenticationError:
@@ -400,7 +690,10 @@ class NotificationService:
         if not webhook_url:
             return False, "Webhook URL is required"
 
-        if not webhook_url.startswith("https://discord.com/api/webhooks/"):
+        if not (
+            webhook_url.startswith("https://discord.com/api/webhooks/")
+            or webhook_url.startswith("https://discordapp.com/api/webhooks/")
+        ):
             return False, "Invalid Discord webhook URL"
 
         # Discord embed format for nicer messages
@@ -451,6 +744,10 @@ class NotificationService:
         if not webhook_url:
             return False, "Webhook URL is required"
 
+        url_error = _assert_safe_provider_url(webhook_url, label="Webhook URL")
+        if url_error:
+            return False, url_error
+
         # Build payload based on format
         if payload_format == "slack":
             # Slack/Mattermost format - just text field
@@ -496,7 +793,7 @@ class NotificationService:
             if response.status_code in (200, 201, 202, 204):
                 return True, "Webhook delivered successfully"
             else:
-                return False, f"HTTP {response.status_code}: {response.text[:200]}"
+                return False, _opaque_http_failure(response, label="webhook endpoint")
         except Exception as e:
             return False, f"Webhook error: {str(e)}"
 
@@ -571,6 +868,24 @@ class NotificationService:
             "message": message,
         }
 
+        # Optional custom service-data (#1441), forwarded as HA's nested "data"
+        # object so mobile-app push options (priority, ttl, channel, group, ...)
+        # reach the notify service. Only included when configured — the default
+        # persistent_notification.create schema rejects unknown keys.
+        raw_data = config.get("data")
+        if raw_data:
+            if isinstance(raw_data, str):
+                try:
+                    parsed_data = json.loads(raw_data)
+                except json.JSONDecodeError as e:
+                    return False, f"Invalid JSON in the Data field: {e}"
+            else:
+                parsed_data = raw_data
+            if not isinstance(parsed_data, dict):
+                return False, 'The Data field must be a JSON object, e.g. {"priority": "high", "ttl": 0}'
+            if parsed_data:
+                payload["data"] = parsed_data
+
         client = await self._get_client()
         response = await client.post(url, json=payload, headers=headers)
 
@@ -579,7 +894,11 @@ class NotificationService:
         elif response.status_code == 401:
             return False, "Home Assistant authentication failed - check your token"
         else:
-            return False, f"HTTP {response.status_code}: {response.text[:200]}"
+            # ha_url comes from global settings (SETTINGS_UPDATE, admin-only), so
+            # this is a narrower channel than the per-request provider URLs — but
+            # it lands in the same NOTIFICATIONS_CREATE-gated test response, so it
+            # gets the same treatment.
+            return False, _opaque_http_failure(response, label="Home Assistant endpoint")
 
     async def _send_to_provider(
         self,
@@ -603,13 +922,19 @@ class NotificationService:
             if provider.provider_type == "callmebot":
                 return await self._send_callmebot(config, f"{title}\n{message}")
             elif provider.provider_type == "ntfy":
-                return await self._send_ntfy(config, title, message, image_data=image_data)
+                return await self._send_ntfy(config, title, message, image_data=image_data, event_type=event_type)
             elif provider.provider_type == "pushover":
                 return await self._send_pushover(config, title, message, image_data=image_data)
             elif provider.provider_type == "telegram":
                 return await self._send_telegram(config, f"*{title}*\n{message}", image_data=image_data)
             elif provider.provider_type == "email":
-                return await self._send_email(config, title, message)
+                # finish_photo_url is pulled from the rendered template variables
+                # so _send_email can detect whether the template referenced the
+                # URL and inline-embed the photo only in that case.
+                finish_photo_url = (variables or {}).get("finish_photo_url")
+                return await self._send_email(
+                    config, title, message, image_data=image_data, finish_photo_url=finish_photo_url
+                )
             elif provider.provider_type == "discord":
                 return await self._send_discord(config, title, message, image_data=image_data)
             elif provider.provider_type == "webhook":
@@ -618,6 +943,8 @@ class NotificationService:
                 )
             elif provider.provider_type == "homeassistant":
                 return await self._send_homeassistant(config, title, message, db=db)
+            elif provider.provider_type == "bark":
+                return await self._send_bark(config, title, message)
             else:
                 return False, f"Unknown provider type: {provider.provider_type}"
         except Exception as e:
@@ -888,8 +1215,12 @@ class NotificationService:
         }
 
         if archive_data:
-            if archive_data.get("print_time_seconds"):
-                variables["duration"] = self._format_duration(archive_data["print_time_seconds"])
+            # {{duration}} on completion / failure / stopped events is the *actual*
+            # elapsed time (#1198). Slicer-estimated print_time_seconds is only used
+            # as a last-resort fallback when timestamps weren't recorded.
+            duration_seconds = archive_data.get("actual_time_seconds") or archive_data.get("print_time_seconds")
+            if duration_seconds:
+                variables["duration"] = self._format_duration(duration_seconds)
             if archive_data.get("actual_filament_grams"):
                 variables["filament_grams"] = f"{archive_data['actual_filament_grams']:.1f}"
             if status == "failed" and archive_data.get("failure_reason"):
@@ -1068,6 +1399,45 @@ class NotificationService:
             variables=variables,
         )
 
+    async def on_ai_failure_detection(
+        self,
+        printer_id: int,
+        printer_name: str,
+        task_name: str,
+        confidence: float,
+        action: str,
+        db: AsyncSession,
+        image_data: bytes | None = None,
+    ):
+        """Handle AI failure-detection event (Obico spaghetti / print-failure ML).
+
+        Split out of on_printer_error (#1794) so a user can subscribe to AI
+        alerts without also being paged for every HMS hardware code.
+        """
+        providers = await self._get_providers_for_event(db, "on_ai_failure_detection", printer_id)
+        if not providers:
+            return
+
+        variables = {
+            "printer": printer_name,
+            "task_name": task_name or "current job",
+            "confidence": f"{confidence:.2f}",
+            "action": action,
+        }
+
+        title, message = await self._build_message_from_template(db, "ai_failure_detection", variables)
+        await self._send_to_providers(
+            providers,
+            title,
+            message,
+            db,
+            "ai_failure_detection",
+            printer_id,
+            printer_name,
+            image_data=image_data,
+            variables=variables,
+        )
+
     async def on_plate_not_empty(
         self,
         printer_id: int,
@@ -1095,6 +1465,39 @@ class NotificationService:
             printer_id,
             printer_name,
             force_immediate=True,
+            variables=variables,
+        )
+
+    async def on_plate_clear_required(
+        self,
+        printer_id: int,
+        printer_name: str,
+        db: AsyncSession,
+    ):
+        """Handle plate-clear-required event — a print ended and the queue is gated (#2525).
+
+        Distinct from ``on_plate_not_empty``, which is the camera check *before* a
+        print starts. This one fires on the rising edge of the Bambuddy-side
+        awaiting-plate-clear flag, i.e. whenever a print reaches a terminal state
+        and the next queued job can't dispatch until someone confirms the bed is
+        free. Off by default on every provider: it lands at the same moment as the
+        print-complete notification, so opting in is a deliberate choice.
+        """
+        providers = await self._get_providers_for_event(db, "on_plate_clear_required", printer_id)
+        if not providers:
+            return
+
+        variables = {"printer": printer_name}
+
+        title, message = await self._build_message_from_template(db, "plate_clear_required", variables)
+        await self._send_to_providers(
+            providers,
+            title,
+            message,
+            db,
+            "plate_clear_required",
+            printer_id,
+            printer_name,
             variables=variables,
         )
 
@@ -1639,6 +2042,60 @@ class NotificationService:
 
         title, message = await self._build_message_from_template(db, "queue_completed", variables)
         await self._send_to_providers(providers, title, message, db, "queue_completed", variables=variables)
+
+    # ==================== Inventory Stock Alerts ====================
+
+    async def on_stock_reorder_alert(
+        self,
+        material: str,
+        brand: str | None,
+        stock_g: float,
+        rate_g_day: float,
+        days_left: int,
+        db: AsyncSession,
+    ):
+        """Fire when an inventory SKU reaches its reorder point."""
+        providers = await self._get_providers_for_event(db, "on_stock_reorder_alert", None)
+        if not providers:
+            return
+
+        variables = {
+            "material": material,
+            "brand": brand or "",
+            "stock_g": f"{stock_g:.0f}",
+            "rate_g_day": f"{rate_g_day:.1f}",
+            "days_left": str(days_left),
+        }
+
+        title, message = await self._build_message_from_template(db, "stock_reorder_alert", variables)
+        await self._send_to_providers(providers, title, message, db, "stock_reorder_alert", variables=variables)
+
+    async def on_stock_break_alert(
+        self,
+        material: str,
+        brand: str | None,
+        stock_g: float,
+        rate_g_day: float,
+        days_left: int,
+        lead_time_days: int,
+        db: AsyncSession,
+    ):
+        """Fire when a stock break is detected (stock runs out before lead time)."""
+        providers = await self._get_providers_for_event(db, "on_stock_break_alert", None)
+        if not providers:
+            return
+
+        variables = {
+            "material": material,
+            "brand": brand or "",
+            "stock_g": f"{stock_g:.0f}",
+            "rate_g_day": f"{rate_g_day:.1f}",
+            "days_left": str(days_left),
+            "lead_time_days": str(lead_time_days),
+        }
+
+        title, message = await self._build_message_from_template(db, "stock_break_alert", variables)
+        await self._send_to_providers(providers, title, message, db, "stock_break_alert", variables=variables)
 
     async def _queue_for_digest(
         self,

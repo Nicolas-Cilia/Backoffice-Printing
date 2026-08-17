@@ -2,7 +2,7 @@ import { useState, useEffect } from 'react';
 import { useTranslation } from 'react-i18next';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { Loader2, Check, X, RefreshCw, Link2, Link2Off, Database, ChevronDown, Info, AlertTriangle, Package, ExternalLink } from 'lucide-react';
-import { api } from '../api/client';
+import { api, ApiError } from '../api/client';
 import type { SpoolmanSyncResult, Printer } from '../api/client';
 import { Card, CardContent, CardHeader } from './Card';
 import { Button } from './Button';
@@ -18,10 +18,12 @@ export function SpoolmanSettings() {
   const [localSyncMode, setLocalSyncMode] = useState('auto');
   const [localDisableWeightSync, setLocalDisableWeightSync] = useState(false);
   const [localReportPartialUsage, setLocalReportPartialUsage] = useState(true);
+  const [localAutoAddUnknownRfid, setLocalAutoAddUnknownRfid] = useState(true);
   const [selectedPrinterId, setSelectedPrinterId] = useState<number | 'all'>('all');
   const [isInitialized, setIsInitialized] = useState(false);
   const [showAllSkipped, setShowAllSkipped] = useState(false);
   const [showAmsSyncConfirm, setShowAmsSyncConfirm] = useState(false);
+  const [showSpoolmanAmsSyncConfirm, setShowSpoolmanAmsSyncConfirm] = useState(false);
 
   // Fetch Spoolman settings
   const { data: settings, isLoading: settingsLoading } = useQuery({
@@ -50,6 +52,7 @@ export function SpoolmanSettings() {
       setLocalSyncMode(settings.spoolman_sync_mode || 'auto');
       setLocalDisableWeightSync(settings.spoolman_disable_weight_sync === 'true');
       setLocalReportPartialUsage(settings.spoolman_report_partial_usage !== 'false');
+      setLocalAutoAddUnknownRfid(settings.auto_add_unknown_rfid !== 'false');
       setIsInitialized(true);
     }
   }, [settings]);
@@ -64,7 +67,8 @@ export function SpoolmanSettings() {
       (settings.spoolman_url || '') !== localUrl ||
       (settings.spoolman_sync_mode || 'auto') !== localSyncMode ||
       (settings.spoolman_disable_weight_sync === 'true') !== localDisableWeightSync ||
-      (settings.spoolman_report_partial_usage !== 'false') !== localReportPartialUsage;
+      (settings.spoolman_report_partial_usage !== 'false') !== localReportPartialUsage ||
+      (settings.auto_add_unknown_rfid !== 'false') !== localAutoAddUnknownRfid;
 
     if (hasChanges) {
       const timeoutId = setTimeout(() => {
@@ -73,7 +77,7 @@ export function SpoolmanSettings() {
       return () => clearTimeout(timeoutId);
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [localEnabled, localUrl, localSyncMode, localDisableWeightSync, localReportPartialUsage, isInitialized]);
+  }, [localEnabled, localUrl, localSyncMode, localDisableWeightSync, localReportPartialUsage, localAutoAddUnknownRfid, isInitialized]);
 
   // Save mutation
   const saveMutation = useMutation({
@@ -84,13 +88,18 @@ export function SpoolmanSettings() {
         spoolman_sync_mode: localSyncMode,
         spoolman_disable_weight_sync: localDisableWeightSync ? 'true' : 'false',
         spoolman_report_partial_usage: localReportPartialUsage ? 'true' : 'false',
+        auto_add_unknown_rfid: localAutoAddUnknownRfid ? 'true' : 'false',
       }),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['spoolman-settings'] });
       queryClient.invalidateQueries({ queryKey: ['spoolman-status'] });
       queryClient.invalidateQueries({ queryKey: ['spool-assignments'] });
       queryClient.invalidateQueries({ queryKey: ['settings'] });
+      queryClient.invalidateQueries({ queryKey: ['spoolman-inventory-filaments'] });
       showToast(t('settings.toast.settingsSaved'));
+    },
+    onError: () => {
+      showToast(t('settings.toast.saveFailed'), 'error');
     },
   });
 
@@ -100,6 +109,9 @@ export function SpoolmanSettings() {
     onSuccess: () => {
       refetchStatus();
     },
+    onError: () => {
+      showToast(t('settings.toast.saveFailed'), 'error');
+    },
   });
 
   // Disconnect mutation
@@ -108,15 +120,19 @@ export function SpoolmanSettings() {
     onSuccess: () => {
       refetchStatus();
     },
+    onError: () => {
+      showToast(t('settings.toast.saveFailed'), 'error');
+    },
   });
 
   // Sync all mutation
   const syncAllMutation = useMutation({
     mutationFn: api.syncAllPrintersAms,
     onSuccess: (data: SpoolmanSyncResult) => {
-      if (data.success) {
-        // Show success message
-      }
+      showToast(t('settings.spoolmanAmsSyncSuccess', { synced: data.synced_count, skipped: 0 }), 'success');
+    },
+    onError: () => {
+      showToast(t('settings.toast.saveFailed'), 'error');
     },
   });
 
@@ -124,9 +140,10 @@ export function SpoolmanSettings() {
   const syncPrinterMutation = useMutation({
     mutationFn: (printerId: number) => api.syncPrinterAms(printerId),
     onSuccess: (data: SpoolmanSyncResult) => {
-      if (data.success) {
-        // Show success message
-      }
+      showToast(t('settings.spoolmanAmsSyncSuccess', { synced: data.synced_count, skipped: 0 }), 'success');
+    },
+    onError: () => {
+      showToast(t('settings.toast.saveFailed'), 'error');
     },
   });
 
@@ -154,6 +171,26 @@ export function SpoolmanSettings() {
     },
   });
 
+  // Spoolman AMS weight sync mutation
+  const spoolmanAmsSyncMutation = useMutation({
+    mutationFn: api.syncSpoolmanAmsWeights,
+    onSuccess: (data) => {
+      queryClient.invalidateQueries({ queryKey: ['spoolman-inventory-spools'] });
+      showToast(t('settings.spoolmanAmsSyncSuccess', { synced: data.synced, skipped: data.skipped }), 'success');
+      setShowSpoolmanAmsSyncConfirm(false);
+    },
+    onError: (error: Error) => {
+      if (error instanceof ApiError && error.status === 503) {
+        showToast(t('settings.spoolmanAmsSyncErrorUnreachable'), 'error');
+      } else if (error instanceof ApiError && error.status === 400) {
+        showToast(t('settings.spoolmanAmsSyncErrorNotConfigured'), 'error');
+      } else {
+        showToast(t('settings.spoolmanAmsSyncError'), 'error');
+      }
+      setShowSpoolmanAmsSyncConfirm(false);
+    },
+  });
+
   // Combine mutation states
   const isSyncing = syncAllMutation.isPending || syncPrinterMutation.isPending;
   const syncResult = selectedPrinterId === 'all' ? syncAllMutation.data : syncPrinterMutation.data;
@@ -161,7 +198,7 @@ export function SpoolmanSettings() {
 
   if (settingsLoading) {
     return (
-      <Card>
+      <Card id="card-spoolman">
         <CardHeader>
           <div className="flex items-center gap-2">
             <Database className="w-5 h-5 text-bambu-green" />
@@ -178,7 +215,7 @@ export function SpoolmanSettings() {
   }
 
   return (
-    <Card>
+    <Card id="card-spoolman">
       <CardHeader>
         <div className="flex items-center justify-between">
           <div className="flex items-center gap-2">
@@ -252,6 +289,25 @@ export function SpoolmanSettings() {
           </button>
         </div>
 
+        {/* Auto-add unknown RFID toggle — applies to both internal and Spoolman modes */}
+        <div className="flex items-center justify-between pt-2 border-t border-bambu-dark-tertiary">
+          <div className="pr-4">
+            <p className="text-white">{t('settings.autoAddUnknownRfid')}</p>
+            <p className="text-sm text-bambu-gray">
+              {t('settings.autoAddUnknownRfidDesc')}
+            </p>
+          </div>
+          <label className="relative inline-flex items-center cursor-pointer">
+            <input
+              type="checkbox"
+              checked={localAutoAddUnknownRfid}
+              onChange={(e) => setLocalAutoAddUnknownRfid(e.target.checked)}
+              className="sr-only peer"
+            />
+            <div className="w-11 h-6 bg-bambu-dark-tertiary peer-focus:outline-none rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:rounded-full after:h-5 after:w-5 after:transition-all peer-checked:bg-bambu-green"></div>
+          </label>
+        </div>
+
         {/* Built-in Inventory details */}
         {!localEnabled && (
           <div className="space-y-3">
@@ -289,18 +345,18 @@ export function SpoolmanSettings() {
         {localEnabled && (
           <div className="space-y-4">
             {/* Info banner about sync requirements */}
-            <div className="p-3 bg-blue-500/10 border border-blue-500/30 rounded-lg">
+            <div className="p-3 bg-blue-50 dark:bg-blue-500/10 border border-blue-300 dark:border-blue-500/30 rounded-lg">
               <div className="flex gap-2">
-                <Info className="w-4 h-4 text-blue-400 flex-shrink-0 mt-0.5" />
-                <div className="text-xs text-blue-300">
+                <Info className="w-4 h-4 text-blue-600 dark:text-blue-400 flex-shrink-0 mt-0.5" />
+                <div className="text-xs text-blue-700 dark:text-blue-300">
                   <p className="font-medium mb-1">{t('settings.howSyncWorks')}</p>
-                  <ul className="list-disc list-inside space-y-0.5 text-blue-300/80">
+                  <ul className="list-disc list-inside space-y-0.5 text-blue-700/90 dark:text-blue-300/80">
                     <li>{t('settings.syncInfoRfidOnly')}</li>
                     <li>{t('settings.syncInfoAutoCreate')}</li>
                     <li>{t('settings.syncInfoThirdPartySkipped')}</li>
                   </ul>
                   <p className="font-medium mt-2 mb-1">{t('settings.linkingExistingSpools')}</p>
-                  <p className="text-blue-300/80">
+                  <p className="text-blue-700/90 dark:text-blue-300/80">
                     {t('settings.linkingExistingSpoolsDesc')}
                   </p>
                 </div>
@@ -438,9 +494,9 @@ export function SpoolmanSettings() {
               </div>
 
               {/* Error display */}
-              {connectMutation.isError && (
-                <div className="mb-3 p-2 bg-red-500/20 border border-red-500/50 rounded text-sm text-red-400">
-                  {(connectMutation.error as Error).message}
+              {(connectMutation.isError || disconnectMutation.isError) && (
+                <div className="mb-3 p-2 bg-red-100 dark:bg-red-500/20 border border-red-300 dark:border-red-500/50 rounded text-sm text-red-700 dark:text-red-400">
+                  {((connectMutation.error || disconnectMutation.error) as Error).message}
                 </div>
               )}
 
@@ -488,6 +544,31 @@ export function SpoolmanSettings() {
                 </div>
               )}
 
+              {/* Spoolman AMS weight sync */}
+              {status?.connected && (
+                <div className="mt-4 pt-4 border-t border-bambu-dark-tertiary">
+                  <div className="flex items-center justify-between">
+                    <div>
+                      <p className="text-sm text-white">{t('settings.spoolmanAmsSyncButton')}</p>
+                      <p className="text-xs text-bambu-gray">{t('settings.spoolmanAmsSyncMessage')}</p>
+                    </div>
+                    <Button
+                      variant="secondary"
+                      size="sm"
+                      onClick={() => setShowSpoolmanAmsSyncConfirm(true)}
+                      disabled={spoolmanAmsSyncMutation.isPending}
+                    >
+                      {spoolmanAmsSyncMutation.isPending ? (
+                        <Loader2 className="w-4 h-4 animate-spin" />
+                      ) : (
+                        <RefreshCw className="w-4 h-4" />
+                      )}
+                      {spoolmanAmsSyncMutation.isPending ? t('settings.spoolmanAmsSyncing') : t('settings.spoolmanAmsSyncButton')}
+                    </Button>
+                  </div>
+                </div>
+              )}
+
               {/* Sync result */}
               {syncSuccess && syncResult && (
                 <div className="mt-3 space-y-2">
@@ -495,8 +576,8 @@ export function SpoolmanSettings() {
                   <div
                     className={`p-2 rounded text-sm ${
                       syncResult.success
-                        ? 'bg-green-500/20 border border-green-500/50 text-green-400'
-                        : 'bg-yellow-500/20 border border-yellow-500/50 text-yellow-400'
+                        ? 'bg-green-100 dark:bg-green-500/20 border border-green-300 dark:border-green-500/50 text-green-700 dark:text-green-400'
+                        : 'bg-yellow-100 dark:bg-yellow-500/20 border border-yellow-300 dark:border-yellow-500/50 text-yellow-700 dark:text-yellow-400'
                     }`}
                   >
                     {syncResult.success
@@ -506,8 +587,8 @@ export function SpoolmanSettings() {
 
                   {/* Skipped spools */}
                   {syncResult.skipped_count > 0 && (
-                    <div className="p-2 bg-amber-500/10 border border-amber-500/30 rounded text-sm">
-                      <div className="flex items-center justify-between text-amber-400 mb-1">
+                    <div className="p-2 bg-amber-50 dark:bg-amber-500/10 border border-amber-300 dark:border-amber-500/30 rounded text-sm">
+                      <div className="flex items-center justify-between text-amber-700 dark:text-amber-400 mb-1">
                         <div className="flex items-center gap-1.5">
                           <AlertTriangle className="w-3.5 h-3.5" />
                           <span className="font-medium">
@@ -517,13 +598,13 @@ export function SpoolmanSettings() {
                         {syncResult.skipped_count > 5 && (
                           <button
                             onClick={() => setShowAllSkipped(!showAllSkipped)}
-                            className="text-xs text-amber-400 hover:text-amber-300 underline"
+                            className="text-xs text-amber-700 dark:text-amber-400 hover:text-amber-800 dark:hover:text-amber-300 underline"
                           >
                             {showAllSkipped ? 'Show less' : 'Show all'}
                           </button>
                         )}
                       </div>
-                      <ul className="text-xs text-amber-300/80 space-y-0.5">
+                      <ul className="text-xs text-amber-700/90 dark:text-amber-300/80 space-y-0.5">
                         {(showAllSkipped ? syncResult.skipped : syncResult.skipped.slice(0, 5)).map((s, i) => (
                           <li key={i} className="flex items-center gap-2">
                             {s.color && (
@@ -533,11 +614,11 @@ export function SpoolmanSettings() {
                               />
                             )}
                             <span>{s.location}</span>
-                            <span className="text-amber-300/60">- {s.reason}</span>
+                            <span className="text-amber-700/70 dark:text-amber-300/60">- {s.reason}</span>
                           </li>
                         ))}
                         {!showAllSkipped && syncResult.skipped_count > 5 && (
-                          <li className="text-amber-300/60 italic">
+                          <li className="text-amber-700/70 dark:text-amber-300/60 italic">
                             ...and {syncResult.skipped_count - 5} more
                           </li>
                         )}
@@ -547,9 +628,9 @@ export function SpoolmanSettings() {
 
                   {/* Errors */}
                   {syncResult.errors.length > 0 && (
-                    <div className="p-2 bg-red-500/10 border border-red-500/30 rounded text-sm">
-                      <div className="text-red-400 font-medium mb-1">Errors:</div>
-                      <ul className="text-xs text-red-300/80 space-y-0.5">
+                    <div className="p-2 bg-red-50 dark:bg-red-500/10 border border-red-300 dark:border-red-500/30 rounded text-sm">
+                      <div className="text-red-700 dark:text-red-400 font-medium mb-1">Errors:</div>
+                      <ul className="text-xs text-red-700/90 dark:text-red-300/80 space-y-0.5">
                         {syncResult.errors.map((err, i) => (
                           <li key={i}>{err}</li>
                         ))}
@@ -573,6 +654,19 @@ export function SpoolmanSettings() {
           loadingText={t('settings.amsSyncing')}
           onConfirm={() => amsSyncMutation.mutate()}
           onCancel={() => setShowAmsSyncConfirm(false)}
+        />
+      )}
+
+      {showSpoolmanAmsSyncConfirm && (
+        <ConfirmModal
+          title={t('settings.spoolmanAmsSyncTitle')}
+          message={t('settings.spoolmanAmsSyncMessage')}
+          confirmText={t('settings.spoolmanAmsSyncButton')}
+          variant="warning"
+          isLoading={spoolmanAmsSyncMutation.isPending}
+          loadingText={t('settings.spoolmanAmsSyncing')}
+          onConfirm={() => spoolmanAmsSyncMutation.mutate()}
+          onCancel={() => setShowSpoolmanAmsSyncConfirm(false)}
         />
       )}
     </Card>

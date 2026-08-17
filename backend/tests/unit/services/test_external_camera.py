@@ -8,6 +8,199 @@ from unittest.mock import patch
 
 import pytest
 
+JPEG_START = b"\xff\xd8"
+JPEG_END = b"\xff\xd9"
+
+
+def _make_jpeg(payload: bytes = b"\x00" * 100) -> bytes:
+    """Build a synthetic JPEG byte sequence (SOI + payload + EOI)."""
+    return JPEG_START + payload + JPEG_END
+
+
+class _FakeMjpegResponse:
+    """Drop-in for aiohttp's response that drives `iter_chunked` from a fixed
+    list of byte chunks. Each chunk is yielded once; if the iterator runs out
+    the response is treated as closed (which is the realistic behaviour for an
+    MJPEG stream the upstream server has finished). An optional `raise_after`
+    raises the supplied exception after N chunks to simulate timeout / IO
+    failure mid-stream."""
+
+    def __init__(self, chunks, status=200, raise_after=None, raise_exc=None):
+        self.status = status
+        self._chunks = list(chunks)
+        self._raise_after = raise_after
+        self._raise_exc = raise_exc
+        self.content = self  # the function calls `response.content.iter_chunked(...)`
+
+    def iter_chunked(self, _size):  # noqa: ARG002 — chunk size is informational
+        chunks = self._chunks
+        raise_after = self._raise_after
+        raise_exc = self._raise_exc
+
+        async def _gen():
+            for i, chunk in enumerate(chunks):
+                if raise_after is not None and i >= raise_after:
+                    raise raise_exc
+                yield chunk
+
+        return _gen()
+
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, *_):
+        return None
+
+
+class _FakeMjpegSession:
+    """Drop-in for aiohttp.ClientSession; `get(url)` returns a pre-baked
+    `_FakeMjpegResponse`."""
+
+    def __init__(self, response):
+        self._response = response
+
+    def get(self, _url):
+        return self._response
+
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, *_):
+        return None
+
+
+def _patch_mjpeg_session(response):
+    """Patch `aiohttp.ClientSession` inside the external_camera module so the
+    real `_capture_mjpeg_frame` runs against our fake stream."""
+
+    def _factory(*_args, **_kwargs):
+        return _FakeMjpegSession(response)
+
+    return patch("backend.app.services.external_camera.aiohttp.ClientSession", _factory)
+
+
+class TestCaptureMjpegFrameWarmupSkip:
+    """Regression for #1177. Many MJPEG sources (notably go2rtc) emit a
+    warm-up / black frame on the first byte that follows connection accept;
+    `_capture_mjpeg_frame` must skip past it and return the second frame.
+    Where the stream ends or times out before a second frame ever arrives the
+    function falls back to the warm-up frame so callers still get *something*
+    — returning None there would regress every code path that consumed the
+    pre-fix behaviour (snapshot UX, plate-detection CV, finish photo,
+    timelapse, Obico inference)."""
+
+    @pytest.mark.asyncio
+    async def test_skips_warmup_frame_returns_second_frame(self):
+        # Two frames arriving in two chunks — typical of a steady MJPEG feed.
+        # Pre-fix this returned `warm`; post-fix returns `live`.
+        from backend.app.services.external_camera import _capture_mjpeg_frame
+
+        warm = _make_jpeg(b"\x10" * 50)  # warm-up — encoder hasn't caught up
+        live = _make_jpeg(b"\x20" * 200)  # representative scene
+        response = _FakeMjpegResponse(chunks=[warm, live])
+
+        with _patch_mjpeg_session(response):
+            frame = await _capture_mjpeg_frame("http://camera.example/stream", timeout=15)
+
+        assert frame == live
+        assert frame != warm
+
+    @pytest.mark.asyncio
+    async def test_two_frames_in_single_chunk_returns_second(self):
+        # High-FPS sources often pack multiple frames into one chunk delivered
+        # in a single iteration of `iter_chunked`. The inner while-loop must
+        # drain every complete frame from the buffer before reading more.
+        from backend.app.services.external_camera import _capture_mjpeg_frame
+
+        warm = _make_jpeg(b"\x10" * 50)
+        live = _make_jpeg(b"\x20" * 200)
+        response = _FakeMjpegResponse(chunks=[warm + live])
+
+        with _patch_mjpeg_session(response):
+            frame = await _capture_mjpeg_frame("http://camera.example/stream", timeout=15)
+
+        assert frame == live
+
+    @pytest.mark.asyncio
+    async def test_partial_frame_split_across_chunks_assembles_correctly(self):
+        # Realistic chunking: TCP doesn't respect frame boundaries, so a
+        # single frame can straddle two chunks. The fix's buffer-trim path
+        # must still find the SOI / EOI pair across the boundary.
+        from backend.app.services.external_camera import _capture_mjpeg_frame
+
+        warm = _make_jpeg(b"\x10" * 50)
+        live = _make_jpeg(b"\x20" * 200)
+        # Split `live` mid-payload
+        split_at = len(JPEG_START) + 100
+        chunks = [warm + live[:split_at], live[split_at:]]
+        response = _FakeMjpegResponse(chunks=chunks)
+
+        with _patch_mjpeg_session(response):
+            frame = await _capture_mjpeg_frame("http://camera.example/stream", timeout=15)
+
+        assert frame == live
+
+    @pytest.mark.asyncio
+    async def test_single_frame_stream_falls_back_to_first_frame(self):
+        # Critical no-regression case. A snapshot-style endpoint that emits
+        # exactly one frame and closes the connection (or a slow stream that
+        # only delivers one frame within the timeout window) must still hand
+        # back that one frame — not None. Pre-fix users on these sources got
+        # the frame; the warm-up skip would otherwise turn that into None
+        # silently.
+        from backend.app.services.external_camera import _capture_mjpeg_frame
+
+        only = _make_jpeg(b"\xab" * 80)
+        response = _FakeMjpegResponse(chunks=[only])
+
+        with _patch_mjpeg_session(response):
+            frame = await _capture_mjpeg_frame("http://camera.example/stream", timeout=15)
+
+        assert frame == only
+
+    @pytest.mark.asyncio
+    async def test_timeout_after_first_frame_falls_back_to_first(self):
+        # Timeout mid-stream — the warm-up frame has already arrived but the
+        # second hasn't. Same fallback: hand back what we have, never None.
+        from backend.app.services.external_camera import _capture_mjpeg_frame
+
+        warm = _make_jpeg(b"\x10" * 50)
+        response = _FakeMjpegResponse(
+            chunks=[warm, b""],  # second yield will raise instead
+            raise_after=1,
+            raise_exc=TimeoutError(),
+        )
+
+        with _patch_mjpeg_session(response):
+            frame = await _capture_mjpeg_frame("http://camera.example/stream", timeout=15)
+
+        assert frame == warm
+
+    @pytest.mark.asyncio
+    async def test_no_frames_returns_none(self):
+        # Server replied 200 but emitted zero JPEG bytes before closing —
+        # there's nothing to return, so None is the correct answer.
+        from backend.app.services.external_camera import _capture_mjpeg_frame
+
+        response = _FakeMjpegResponse(chunks=[b"\x00\x01\x02\x03"])
+
+        with _patch_mjpeg_session(response):
+            frame = await _capture_mjpeg_frame("http://camera.example/stream", timeout=15)
+
+        assert frame is None
+
+    @pytest.mark.asyncio
+    async def test_non_200_status_returns_none(self):
+        # Invariant: a 4xx/5xx is never a valid frame source.
+        from backend.app.services.external_camera import _capture_mjpeg_frame
+
+        response = _FakeMjpegResponse(chunks=[], status=404)
+
+        with _patch_mjpeg_session(response):
+            frame = await _capture_mjpeg_frame("http://camera.example/stream", timeout=15)
+
+        assert frame is None
+
 
 class TestFormatMjpegFrame:
     """Tests for MJPEG frame formatting."""
@@ -179,6 +372,147 @@ class TestCameraTypeValidation:
             assert result is None
 
 
+class TestSnapshotUrlOverride:
+    """#1177 follow-up. When ``external_camera_snapshot_url`` is set on the
+    printer, every single-frame capture (notification thumbnail, finish photo,
+    timelapse, plate-detect) must route through the plain HTTP-GET path on the
+    snapshot URL instead of opening the live stream and skipping a warm-up
+    frame. Sources that expose a dedicated frame endpoint (e.g. go2rtc's
+    ``/api/frame.jpeg``) reliably return a clean image — the warm-up dance is
+    only required for sources that don't, and bypassing it removes the
+    inconsistency the reporter still saw after the warm-up fix landed."""
+
+    @pytest.mark.asyncio
+    async def test_snapshot_override_routes_to_snapshot_path(self):
+        from unittest.mock import AsyncMock
+
+        with (
+            patch(
+                "backend.app.services.external_camera._capture_snapshot",
+                new=AsyncMock(return_value=b"\xff\xd8snapshot\xff\xd9"),
+            ) as mocked_snapshot,
+            patch(
+                "backend.app.services.external_camera._capture_mjpeg_frame",
+                new=AsyncMock(return_value=b"should-not-be-called"),
+            ) as mocked_mjpeg,
+        ):
+            from backend.app.services.external_camera import capture_frame
+
+            result = await capture_frame(
+                "http://192.168.1.61:1984/api/stream.mjpeg",
+                "mjpeg",
+                snapshot_url="http://192.168.1.61:1984/api/frame.jpeg",
+            )
+
+        assert result == b"\xff\xd8snapshot\xff\xd9"
+        mocked_snapshot.assert_awaited_once()
+        # First positional arg is the snapshot URL; the live-stream URL is ignored.
+        assert mocked_snapshot.await_args.args[0] == "http://192.168.1.61:1984/api/frame.jpeg"
+        mocked_mjpeg.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_no_snapshot_override_routes_to_camera_type_handler(self):
+        from unittest.mock import AsyncMock
+
+        with (
+            patch(
+                "backend.app.services.external_camera._capture_snapshot",
+                new=AsyncMock(return_value=b"should-not-be-called"),
+            ) as mocked_snapshot,
+            patch(
+                "backend.app.services.external_camera._capture_mjpeg_frame",
+                new=AsyncMock(return_value=b"\xff\xd8live\xff\xd9"),
+            ) as mocked_mjpeg,
+        ):
+            from backend.app.services.external_camera import capture_frame
+
+            result = await capture_frame("http://192.168.1.61:1984/api/stream.mjpeg", "mjpeg")
+
+        assert result == b"\xff\xd8live\xff\xd9"
+        mocked_mjpeg.assert_awaited_once()
+        mocked_snapshot.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_empty_string_snapshot_url_treated_as_unset(self):
+        """Falsy snapshot_url (empty string from a cleared input) must NOT
+        hijack the live-stream path — the form-cleared input becomes ``None``
+        in the DB, but a defence-in-depth empty-string guard means a stale
+        config row still uses the live stream rather than firing GET ''."""
+        from unittest.mock import AsyncMock
+
+        with (
+            patch(
+                "backend.app.services.external_camera._capture_snapshot",
+                new=AsyncMock(return_value=b"should-not-be-called"),
+            ) as mocked_snapshot,
+            patch(
+                "backend.app.services.external_camera._capture_mjpeg_frame",
+                new=AsyncMock(return_value=b"\xff\xd8live\xff\xd9"),
+            ) as mocked_mjpeg,
+        ):
+            from backend.app.services.external_camera import capture_frame
+
+            result = await capture_frame(
+                "http://192.168.1.61:1984/api/stream.mjpeg",
+                "mjpeg",
+                snapshot_url="",
+            )
+
+        assert result == b"\xff\xd8live\xff\xd9"
+        mocked_mjpeg.assert_awaited_once()
+        mocked_snapshot.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_snapshot_override_honours_ssrf_guard(self):
+        """The override goes through ``_capture_snapshot`` which already
+        sanitises the URL — link-local / metadata / blocked-host targets
+        return None instead of being fetched."""
+        from backend.app.services.external_camera import capture_frame
+
+        result = await capture_frame(
+            "http://192.168.1.61:1984/api/stream.mjpeg",
+            "mjpeg",
+            snapshot_url="http://169.254.169.254/latest/meta-data/",
+        )
+        assert result is None
+
+    @pytest.mark.asyncio
+    async def test_snapshot_override_works_for_rtsp_and_usb_camera_types(self):
+        """The override is camera-type agnostic: a user with an RTSP or USB
+        stream paired with a separate HTTP snapshot endpoint (e.g. go2rtc
+        feeding a USB cam, exposing both /api/stream.mjpeg and
+        /api/frame.jpeg) gets clean snapshots without spinning up ffmpeg."""
+        from unittest.mock import AsyncMock
+
+        for camera_type in ("rtsp", "usb"):
+            with (
+                patch(
+                    "backend.app.services.external_camera._capture_snapshot",
+                    new=AsyncMock(return_value=b"\xff\xd8snap\xff\xd9"),
+                ) as mocked_snapshot,
+                patch(
+                    "backend.app.services.external_camera._capture_rtsp_frame",
+                    new=AsyncMock(return_value=b"should-not-be-called"),
+                ) as mocked_rtsp,
+                patch(
+                    "backend.app.services.external_camera._capture_usb_frame",
+                    new=AsyncMock(return_value=b"should-not-be-called"),
+                ) as mocked_usb,
+            ):
+                from backend.app.services.external_camera import capture_frame
+
+                result = await capture_frame(
+                    "rtsp://printer/stream" if camera_type == "rtsp" else "/dev/video0",
+                    camera_type,
+                    snapshot_url="http://192.168.1.61:1984/api/frame.jpeg",
+                )
+
+            assert result == b"\xff\xd8snap\xff\xd9", f"camera_type={camera_type}"
+            mocked_snapshot.assert_awaited_once()
+            mocked_rtsp.assert_not_awaited()
+            mocked_usb.assert_not_awaited()
+
+
 class TestRtspUrlHandling:
     """Tests for RTSP/RTSPS URL handling."""
 
@@ -257,3 +591,117 @@ class TestUsbCameraHandling:
 
         result = await capture_frame("http://example.com", "usb", timeout=1)
         assert result is None
+
+
+def _encode_image(ext: str) -> bytes:
+    """Encode a small solid test image to the given container (.png/.webp/.jpg)."""
+    import cv2
+    import numpy as np
+
+    img = np.zeros((16, 24, 3), dtype=np.uint8)
+    img[:, :12] = (0, 0, 255)  # half red so the frame isn't uniformly black
+    ok, buf = cv2.imencode(ext, img)
+    assert ok, f"failed to encode {ext}"
+    return buf.tobytes()
+
+
+def _fake_snapshot_session(body: bytes, status: int = 200):
+    """Build an aiohttp.ClientSession stand-in whose GET yields `body`.
+
+    Matches the `async with ClientSession(...) as session, session.get(url) as
+    response` usage inside `_capture_snapshot`.
+    """
+
+    class _Resp:
+        def __init__(self):
+            self.status = status
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *a):
+            return False
+
+        async def read(self):
+            return body
+
+    class _Session:
+        def __init__(self, *a, **k):
+            pass
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *a):
+            return False
+
+        def get(self, _url):
+            return _Resp()
+
+    return _Session
+
+
+class TestSnapshotTranscode:
+    """Regression for #1902. Snapshot endpoints that serve PNG/WebP (not JPEG)
+    broke the browser MJPEG stream, because every multipart part is hard-labelled
+    ``Content-Type: image/jpeg`` — the browser rejected the non-JPEG payload and
+    dropped the whole stream ("connection lost"). ``_capture_snapshot`` now
+    transcodes non-JPEG stills to JPEG; only genuinely undecodable payloads fall
+    through to the raw bytes (unchanged last-resort behaviour)."""
+
+    def test_transcode_png_to_jpeg(self):
+        from backend.app.services.external_camera import _transcode_to_jpeg
+
+        png = _encode_image(".png")
+        assert not png.startswith(JPEG_START)  # sanity: input really is PNG
+        out = _transcode_to_jpeg(png)
+        assert out is not None and out.startswith(JPEG_START)
+
+    def test_transcode_webp_to_jpeg(self):
+        from backend.app.services.external_camera import _transcode_to_jpeg
+
+        webp = _encode_image(".webp")
+        assert not webp.startswith(JPEG_START)
+        out = _transcode_to_jpeg(webp)
+        assert out is not None and out.startswith(JPEG_START)
+
+    def test_transcode_returns_none_for_non_image(self):
+        """HTML error pages / auth redirects / empty bodies aren't images —
+        transcode returns None so the caller can log and fall back."""
+        from backend.app.services.external_camera import _transcode_to_jpeg
+
+        assert _transcode_to_jpeg(b"<html><body>404 Not Found</body></html>") is None
+        assert _transcode_to_jpeg(b"") is None
+
+    @pytest.mark.asyncio
+    async def test_capture_snapshot_transcodes_png_response(self):
+        """The reported case: a snapshot URL returning PNG yields JPEG bytes."""
+        from backend.app.services import external_camera as ec
+
+        png = _encode_image(".png")
+        with patch.object(ec.aiohttp, "ClientSession", _fake_snapshot_session(png)):
+            out = await ec._capture_snapshot("http://192.168.50.50/snapshot.png", 10)
+        assert out is not None and out.startswith(JPEG_START)
+
+    @pytest.mark.asyncio
+    async def test_capture_snapshot_jpeg_passthrough_unchanged(self):
+        """A JPEG snapshot must be returned byte-for-byte (fast path, no
+        re-encode) so we don't degrade quality or waste CPU on JPEG cameras."""
+        from backend.app.services import external_camera as ec
+
+        jpeg = _encode_image(".jpg")
+        assert jpeg.startswith(JPEG_START)
+        with patch.object(ec.aiohttp, "ClientSession", _fake_snapshot_session(jpeg)):
+            out = await ec._capture_snapshot("http://192.168.50.50/snapshot.jpg", 10)
+        assert out == jpeg  # identical object bytes — proves no transcode ran
+
+    @pytest.mark.asyncio
+    async def test_capture_snapshot_non_image_falls_back_to_raw(self):
+        """Undecodable (non-image) responses return the raw bytes unchanged, so
+        behaviour is never worse than before the fix."""
+        from backend.app.services import external_camera as ec
+
+        html = b"<html><body>unauthorized</body></html>"
+        with patch.object(ec.aiohttp, "ClientSession", _fake_snapshot_session(html)):
+            out = await ec._capture_snapshot("http://192.168.50.50/snapshot", 10)
+        assert out == html

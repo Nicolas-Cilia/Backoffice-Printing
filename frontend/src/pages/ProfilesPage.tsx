@@ -51,9 +51,10 @@ import { useToast } from '../contexts/ToastContext';
 import { useAuth } from '../contexts/AuthContext';
 import { KProfilesView } from '../components/KProfilesView';
 import { LocalProfilesView } from '../components/LocalProfilesView';
+import { OrcaCloudView } from '../components/OrcaCloudView';
 
 type TFunction = (key: string, options?: Record<string, unknown>) => string;
-type ProfileTab = 'cloud' | 'local' | 'kprofiles';
+type ProfileTab = 'cloud' | 'orca_cloud' | 'local' | 'kprofiles';
 type LoginStep = 'email' | 'code' | 'token';
 type PresetType = 'all' | 'filament' | 'printer' | 'process';
 
@@ -128,7 +129,7 @@ function LoginForm({ onSuccess, t }: { onSuccess: () => void; t: TFunction }) {
   });
 
   const verifyMutation = useMutation({
-    mutationFn: () => api.cloudVerify(email, code, tfaKey || undefined),
+    mutationFn: () => api.cloudVerify(email, code, tfaKey || undefined, region),
     onSuccess: (result) => {
       if (result.success) {
         showToast(t('profiles.login.toast.loggedIn'));
@@ -141,7 +142,7 @@ function LoginForm({ onSuccess, t }: { onSuccess: () => void; t: TFunction }) {
   });
 
   const tokenMutation = useMutation({
-    mutationFn: () => api.cloudSetToken(token),
+    mutationFn: () => api.cloudSetToken(token, region),
     onSuccess: () => {
       showToast(t('profiles.login.toast.tokenSet'));
       onSuccess();
@@ -231,18 +232,31 @@ function LoginForm({ onSuccess, t }: { onSuccess: () => void; t: TFunction }) {
           )}
 
           {step === 'token' && (
-            <div>
-              <label className="block text-sm text-bambu-gray mb-1">{t('profiles.login.accessToken')}</label>
-              <p className="text-xs text-bambu-gray mb-2">{t('profiles.login.accessTokenHint')}</p>
-              <textarea
-                value={token}
-                onChange={(e) => setToken(e.target.value)}
-                className="w-full px-3 py-2 bg-bambu-dark border border-bambu-dark-tertiary rounded-lg text-white text-xs font-mono placeholder-bambu-gray-dark focus:border-bambu-green focus:outline-none resize-none"
-                placeholder="eyJ..."
-                rows={4}
-                required
-              />
-            </div>
+            <>
+              <div>
+                <label className="block text-sm text-bambu-gray mb-1">{t('profiles.login.accessToken')}</label>
+                <p className="text-xs text-bambu-gray mb-2">{t('profiles.login.accessTokenHint')}</p>
+                <textarea
+                  value={token}
+                  onChange={(e) => setToken(e.target.value)}
+                  className="w-full px-3 py-2 bg-bambu-dark border border-bambu-dark-tertiary rounded-lg text-white text-xs font-mono placeholder-bambu-gray-dark focus:border-bambu-green focus:outline-none resize-none"
+                  placeholder="eyJ..."
+                  rows={4}
+                  required
+                />
+              </div>
+              <div>
+                <label className="block text-sm text-bambu-gray mb-1">{t('profiles.login.region')}</label>
+                <select
+                  value={region}
+                  onChange={(e) => setRegion(e.target.value)}
+                  className="w-full px-3 py-2 bg-bambu-dark border border-bambu-dark-tertiary rounded-lg text-white focus:border-bambu-green focus:outline-none"
+                >
+                  <option value="global">{t('profiles.login.regionGlobal')}</option>
+                  <option value="china">{t('profiles.login.regionChina')}</option>
+                </select>
+              </div>
+            </>
           )}
 
           <div className="flex gap-2 max-[550px]:flex-wrap max-[550px]:items-center">
@@ -292,7 +306,7 @@ function LoginForm({ onSuccess, t }: { onSuccess: () => void; t: TFunction }) {
 // FILTER DROPDOWN
 // ============================================================================
 
-function FilterDropdown({
+export function FilterDropdown({
   label,
   value,
   options,
@@ -586,7 +600,7 @@ function PresetDetailModal({
           {/* Footer */}
           {showDeleteConfirm ? (
             <div className="flex-shrink-0 p-4 border-t border-bambu-dark-tertiary bg-red-500/5">
-              <div className="flex items-center gap-2 mb-3 text-red-400">
+              <div className="flex items-center gap-2 mb-3 text-red-700 dark:text-red-400">
                 <AlertTriangle className="w-5 h-5" />
                 <span className="font-medium">{t('profiles.presets.deleteConfirm')}</span>
               </div>
@@ -756,9 +770,9 @@ function TemplatesModal({
   };
 
   const typeLabels = {
-    filament: { label: t('profiles.presets.types.filament'), icon: Droplet, color: 'text-amber-400' },
-    print: { label: t('profiles.presets.types.process'), icon: Settings2, color: 'text-blue-400' },
-    printer: { label: t('profiles.presets.types.printer'), icon: PrinterIcon, color: 'text-purple-400' },
+    filament: { label: t('profiles.presets.types.filament'), icon: Droplet, color: 'text-amber-600 dark:text-amber-400' },
+    print: { label: t('profiles.presets.types.process'), icon: Settings2, color: 'text-blue-600 dark:text-blue-400' },
+    printer: { label: t('profiles.presets.types.printer'), icon: PrinterIcon, color: 'text-purple-600 dark:text-purple-400' },
   };
 
   const templateToDelete = deleteConfirmId ? templates.find(tpl => tpl.id === deleteConfirmId) : null;
@@ -789,7 +803,7 @@ function TemplatesModal({
             <CardContent className="p-6">
               <div className="flex items-center gap-3 mb-4">
                 <div className="p-2 bg-red-500/20 rounded-lg">
-                  <AlertTriangle className="w-6 h-6 text-red-400" />
+                  <AlertTriangle className="w-6 h-6 text-red-600 dark:text-red-400" />
                 </div>
                 <div>
                   <h3 className="text-lg font-semibold text-white">{t('profiles.templates.deleteTitle')}</h3>
@@ -818,7 +832,7 @@ function TemplatesModal({
           {/* Header */}
           <div className="flex items-center justify-between p-4 border-b border-bambu-dark-tertiary">
             <h2 className="text-lg font-semibold text-white flex items-center gap-2">
-              <Sparkles className="w-5 h-5 text-amber-400" />
+              <Sparkles className="w-5 h-5 text-amber-600 dark:text-amber-400" />
               {t('profiles.templates.title')}
             </h2>
             <button onClick={onClose} className="text-bambu-gray hover:text-white">
@@ -895,7 +909,7 @@ function TemplatesModal({
                             }`}
                           />
                           {editSettingsError && (
-                            <p className="text-xs text-red-400 mt-1">{editSettingsError}</p>
+                            <p className="text-xs text-red-700 dark:text-red-400 mt-1">{editSettingsError}</p>
                           )}
                         </div>
                         <div className="flex gap-2">
@@ -950,7 +964,7 @@ function TemplatesModal({
                       </button>
                       <button
                         onClick={() => setDeleteConfirmId(template.id)}
-                        className="p-1 text-bambu-gray hover:text-red-400"
+                        className="p-1 text-bambu-gray hover:text-red-600 dark:hover:text-red-400"
                         title={t('common.delete')}
                       >
                         <Trash2 className="w-4 h-4" />
@@ -1103,7 +1117,7 @@ function DiffModal({
           {/* Header */}
           <div className="flex-shrink-0 flex items-center justify-between p-4 border-b border-bambu-dark-tertiary">
             <h2 className="text-lg font-semibold text-white flex items-center gap-2">
-              <GitCompare className="w-5 h-5 text-blue-400" />
+              <GitCompare className="w-5 h-5 text-blue-600 dark:text-blue-400" />
               {t('profiles.diff.title')}
             </h2>
             <button onClick={onClose} className="text-bambu-gray hover:text-white">
@@ -1126,15 +1140,15 @@ function DiffModal({
           {/* Stats and filters */}
           <div className="flex-shrink-0 flex items-center justify-between p-4 border-b border-bambu-dark-tertiary">
             <div className="flex items-center gap-4 text-sm">
-              <span className="flex items-center gap-1 text-green-400">
+              <span className="flex items-center gap-1 text-green-700 dark:text-green-400">
                 <PlusIcon className="w-3.5 h-3.5" />
                 {stats.added} {t('profiles.diff.added')}
               </span>
-              <span className="flex items-center gap-1 text-red-400">
+              <span className="flex items-center gap-1 text-red-700 dark:text-red-400">
                 <MinusIcon className="w-3.5 h-3.5" />
                 {stats.removed} {t('profiles.diff.removed')}
               </span>
-              <span className="flex items-center gap-1 text-amber-400">
+              <span className="flex items-center gap-1 text-amber-700 dark:text-amber-400">
                 <ArrowRight className="w-3.5 h-3.5" />
                 {stats.changed} {t('profiles.diff.changed')}
               </span>
@@ -1207,9 +1221,9 @@ function DiffModal({
                     }[entry.status];
 
                     const statusIcon = {
-                      added: <PlusIcon className="w-3.5 h-3.5 text-green-400" />,
-                      removed: <MinusIcon className="w-3.5 h-3.5 text-red-400" />,
-                      changed: <ArrowRight className="w-3.5 h-3.5 text-amber-400" />,
+                      added: <PlusIcon className="w-3.5 h-3.5 text-green-600 dark:text-green-400" />,
+                      removed: <MinusIcon className="w-3.5 h-3.5 text-red-600 dark:text-red-400" />,
+                      changed: <ArrowRight className="w-3.5 h-3.5 text-amber-600 dark:text-amber-400" />,
                       same: <Equal className="w-3.5 h-3.5 text-bambu-gray-dark" />,
                     }[entry.status];
 
@@ -1223,7 +1237,7 @@ function DiffModal({
                         </td>
                         <td className="p-3">
                           <span className={`text-sm font-mono break-all ${
-                            entry.status === 'removed' ? 'text-red-300' :
+                            entry.status === 'removed' ? 'text-red-700 dark:text-red-300' :
                             entry.status === 'changed' ? 'text-white' : 'text-bambu-gray'
                           }`}>
                             {formatValue(entry.left)}
@@ -1231,7 +1245,7 @@ function DiffModal({
                         </td>
                         <td className="p-3">
                           <span className={`text-sm font-mono break-all ${
-                            entry.status === 'added' ? 'text-green-300' :
+                            entry.status === 'added' ? 'text-green-700 dark:text-green-300' :
                             entry.status === 'changed' ? 'text-white' : 'text-bambu-gray'
                           }`}>
                             {formatValue(entry.right)}
@@ -1825,7 +1839,7 @@ function CreatePresetModal({
             >
               <Code className="w-4 h-4" />
               JSON
-              {jsonError && <AlertCircle className="w-3 h-3 text-red-400" />}
+              {jsonError && <AlertCircle className="w-3 h-3 text-red-600 dark:text-red-400" />}
             </button>
             <div className="flex-1 max-[640px]:hidden" />
             <button
@@ -1894,7 +1908,7 @@ function CreatePresetModal({
                 <div>
                   <div className="flex items-center justify-between mb-3">
                     <h3 className="text-sm font-medium text-white flex items-center gap-2">
-                      <Sparkles className="w-4 h-4 text-amber-400" />
+                      <Sparkles className="w-4 h-4 text-amber-600 dark:text-amber-400" />
                       {t('profiles.templates.title')}
                     </h3>
                     {Object.keys(settingsObj).filter(k => k !== 'inherits').length > 0 && (
@@ -2141,7 +2155,7 @@ function CreatePresetModal({
                               </div>
                               <button
                                 onClick={() => updateField(key, undefined)}
-                                className="p-1 text-bambu-gray hover:text-red-400 transition-colors"
+                                className="p-1 text-bambu-gray hover:text-red-600 dark:hover:text-red-400 transition-colors"
                               >
                                 <X className="w-4 h-4" />
                               </button>
@@ -2188,7 +2202,7 @@ function CreatePresetModal({
             {activeTab === 'json' && (
               <div className="space-y-2">
                 {jsonError && (
-                  <div className="flex items-center gap-2 text-red-400 text-sm">
+                  <div className="flex items-center gap-2 text-red-700 dark:text-red-400 text-sm">
                     <AlertCircle className="w-4 h-4" />
                     {jsonError}
                   </div>
@@ -2578,7 +2592,7 @@ function CloudProfilesView({
         <div className="mb-4 p-3 bg-blue-500/10 border border-blue-500/30 rounded-lg">
           <div className="flex items-center justify-between">
             <div className="flex items-center gap-4">
-              <GitCompare className="w-5 h-5 text-blue-400" />
+              <GitCompare className="w-5 h-5 text-blue-600 dark:text-blue-400" />
               <span className="text-white font-medium">{t('profiles.cloudView.compareMode')}</span>
               <span className="text-bambu-gray">
                 {compareSelection[0]
@@ -2655,7 +2669,7 @@ function CloudProfilesView({
           {/* Filament Column */}
           <div>
             <div className="flex items-center gap-2 mb-3 px-1">
-              <Droplet className="w-4 h-4 text-amber-400" />
+              <Droplet className="w-4 h-4 text-amber-600 dark:text-amber-400" />
               <h3 className="text-sm font-medium text-bambu-gray">{t('profiles.cloudView.columns.filament')}</h3>
               <span className="text-xs text-bambu-gray-dark">
                 ({filteredPresets.filter(p => p.type === 'filament').length})
@@ -2686,7 +2700,7 @@ function CloudProfilesView({
           {/* Process Column */}
           <div>
             <div className="flex items-center gap-2 mb-3 px-1">
-              <Settings2 className="w-4 h-4 text-blue-400" />
+              <Settings2 className="w-4 h-4 text-blue-600 dark:text-blue-400" />
               <h3 className="text-sm font-medium text-bambu-gray">{t('profiles.cloudView.columns.process')}</h3>
               <span className="text-xs text-bambu-gray-dark">
                 ({filteredPresets.filter(p => p.type === 'process').length})
@@ -2717,7 +2731,7 @@ function CloudProfilesView({
           {/* Printer Column */}
           <div>
             <div className="flex items-center gap-2 mb-3 px-1">
-              <PrinterIcon className="w-4 h-4 text-purple-400" />
+              <PrinterIcon className="w-4 h-4 text-purple-600 dark:text-purple-400" />
               <h3 className="text-sm font-medium text-bambu-gray">{t('profiles.cloudView.columns.printer')}</h3>
               <span className="text-xs text-bambu-gray-dark">
                 ({filteredPresets.filter(p => p.type === 'printer').length})
@@ -2855,11 +2869,14 @@ export function ProfilesPage() {
   }
 
   return (
-    <div className="p-6 lg:p-8">
+    <div className="p-4 md:p-8">
       {/* Page Header */}
       <div className="mb-6">
-        <h1 className="text-2xl font-bold text-white">{t('profiles.title')}</h1>
-        <p className="text-bambu-gray">{t('profiles.subtitle')}</p>
+        <h1 className="text-2xl font-bold text-white flex items-center gap-3">
+          <Cloud className="w-7 h-7 text-bambu-green" />
+          {t('profiles.title')}
+        </h1>
+        <p className="text-bambu-gray mt-1">{t('profiles.subtitle')}</p>
       </div>
 
       {/* Tab Navigation */}
@@ -2873,7 +2890,18 @@ export function ProfilesPage() {
           }`}
         >
           <Cloud className="w-4 h-4" />
-          {t('profiles.tabs.cloud')}
+          {t('profiles.tabs.bambuCloud')}
+        </button>
+        <button
+          onClick={() => setActiveTab('orca_cloud')}
+          className={`flex items-center gap-2 px-4 py-3 text-sm font-medium transition-colors border-b-2 -mb-px ${
+            activeTab === 'orca_cloud'
+              ? 'text-bambu-green border-bambu-green'
+              : 'text-bambu-gray hover:text-white border-transparent'
+          }`}
+        >
+          <Cloud className="w-4 h-4" />
+          {t('profiles.tabs.orcaCloud')}
         </button>
         <button
           onClick={() => setActiveTab('local')}
@@ -2909,6 +2937,13 @@ export function ProfilesPage() {
                 <div className="w-2 h-2 rounded-full bg-bambu-green animate-pulse" />
                 <span className="text-sm text-bambu-gray">
                   {t('profiles.connectedAs')} <span className="text-white">{status.email}</span>
+                  {status.region && (
+                    <span className="ml-2 px-2 py-0.5 text-xs rounded bg-bambu-dark-tertiary text-bambu-gray">
+                      {status.region === 'china'
+                        ? t('profiles.login.regionChina')
+                        : t('profiles.login.regionGlobal')}
+                    </span>
+                  )}
                 </span>
               </div>
               <Button
@@ -2921,6 +2956,20 @@ export function ProfilesPage() {
                 <LogOut className="w-4 h-4" />
                 {t('profiles.logout')}
               </Button>
+            </div>
+          )}
+
+          {/* A stored token Bambu has stopped accepting logs the user out of the
+              cloud without them doing anything, so the login form reappearing
+              needs an explanation — otherwise it reads as Bambuddy losing the
+              session for no reason. */}
+          {status?.sign_in_expired && (
+            <div className="flex items-start gap-3 p-3 mb-6 rounded-lg border border-yellow-500/40 bg-yellow-500/10">
+              <AlertTriangle className="w-5 h-5 shrink-0 text-yellow-400 mt-0.5" />
+              <div className="text-sm">
+                <p className="text-white font-medium">{t('profiles.signInExpiredTitle')}</p>
+                <p className="text-bambu-gray">{t('profiles.signInExpiredBody')}</p>
+              </div>
             </div>
           )}
 
@@ -2948,6 +2997,9 @@ export function ProfilesPage() {
           )}
         </>
       )}
+
+      {/* Orca Cloud Profiles Tab */}
+      {activeTab === 'orca_cloud' && <OrcaCloudView />}
 
       {/* Local Profiles Tab */}
       {activeTab === 'local' && <LocalProfilesView />}

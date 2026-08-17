@@ -38,6 +38,7 @@ import {
 } from 'lucide-react';
 import { api } from '../api/client';
 import type { MaintenanceStatus, PrinterMaintenanceOverview, MaintenanceType, Permission } from '../api/client';
+import { getMaintenanceWikiUrl } from '../utils/maintenanceWikiUrls';
 import { Card, CardContent } from '../components/Card';
 import { Button } from '../components/Button';
 import { Toggle } from '../components/Toggle';
@@ -125,101 +126,6 @@ function formatIntervalLabel(value: number, type: 'hours' | 'days', t?: TFunctio
   return `${value}h`;
 }
 
-// Get Bambu Lab wiki URL for a maintenance task based on printer model
-function getMaintenanceWikiUrl(typeName: string, printerModel: string | null): string | null {
-  const model = (printerModel || '').toUpperCase().replace(/[- ]/g, '');
-
-  // Helper to match model families
-  const isX1 = model.includes('X1');
-  const isP1 = model.includes('P1');
-  const isA1Mini = model.includes('A1MINI');
-  const isA1 = model.includes('A1') && !isA1Mini;
-  const isH2D = model.includes('H2D');
-  const isH2C = model.includes('H2C');
-  const isH2S = model.includes('H2S');
-  const isH2 = isH2D || isH2C || isH2S;
-  const isP2S = model.includes('P2S');
-
-  switch (typeName) {
-    case 'Lubricate Steel Rods':
-      // P2S has hardened steel rods
-      if (isP2S) return 'https://wiki.bambulab.com/en/p2s/maintenance/lubricate-x-y-z-axis';
-      return null;
-
-    case 'Clean Steel Rods':
-      // P2S has hardened steel rods
-      if (isP2S) return 'https://wiki.bambulab.com/en/p2s/maintenance/lubricate-x-y-z-axis';
-      return null;
-
-    case 'Lubricate Linear Rails':
-      // A1 and H2 series have linear rails
-      if (isA1Mini) return 'https://wiki.bambulab.com/en/a1-mini/maintenance/lubricate-y-axis';
-      if (isA1) return 'https://wiki.bambulab.com/en/a1/maintenance/lubricate-y-axis';
-      if (isH2) return 'https://wiki.bambulab.com/en/h2/maintenance/x-axis-lubrication';
-      return null;
-
-    case 'Clean Nozzle/Hotend':
-      if (isX1 || isP1) return 'https://wiki.bambulab.com/en/x1/troubleshooting/nozzle-clog';
-      if (isA1Mini || isA1) return 'https://wiki.bambulab.com/en/a1-mini/troubleshooting/nozzle-clog';
-      if (isH2) return 'https://wiki.bambulab.com/en/h2/maintenance/nozzl-cold-pull-maintenance-and-cleaning';
-      if (isP2S) return 'https://wiki.bambulab.com/en/p2s/maintenance/cold-pull-maintenance-hotend';
-      return 'https://wiki.bambulab.com/en/x1/troubleshooting/nozzle-clog';
-
-    case 'Check Belt Tension':
-      if (isX1) return 'https://wiki.bambulab.com/en/x1/maintenance/belt-tension';
-      if (isP1) return 'https://wiki.bambulab.com/en/p1/maintenance/p1p-maintenance';
-      if (isA1Mini) return 'https://wiki.bambulab.com/en/a1-mini/maintenance/belt_tension';
-      if (isA1) return 'https://wiki.bambulab.com/en/a1/maintenance/belt_tension';
-      if (isH2D) return 'https://wiki.bambulab.com/en/h2/maintenance/belt-tension';
-      if (isH2C) return 'https://wiki.bambulab.com/en/h2c/maintenance/belt-tension';
-      if (isH2S) return 'https://wiki.bambulab.com/en/h2s/maintenance/belt-tension';
-      if (isP2S) return 'https://wiki.bambulab.com/en/p2s/maintenance/belt-tension';
-      return 'https://wiki.bambulab.com/en/x1/maintenance/belt-tension';
-
-    case 'Clean Carbon Rods':
-      // X1, P1 series have carbon rods
-      if (isX1 || isP1) return 'https://wiki.bambulab.com/en/general/carbon-rods-clearance';
-      return null;
-
-    case 'Clean Linear Rails':
-      // A1 and H2 series have linear rails
-      if (isA1Mini) return 'https://wiki.bambulab.com/en/a1-mini/maintenance/lubricate-y-axis';
-      if (isA1) return 'https://wiki.bambulab.com/en/a1/maintenance/lubricate-y-axis';
-      if (isH2) return 'https://wiki.bambulab.com/en/h2/maintenance/x-axis-lubrication';
-      return null;
-
-    case 'Clean Build Plate':
-      // Same for all printers
-      return 'https://wiki.bambulab.com/en/filament-acc/acc/pei-plate-clean-guide';
-
-    case 'Check PTFE Tube':
-      if (isX1 || isP1) return 'https://wiki.bambulab.com/en/x1/maintenance/replace-ptfe-tube';
-      if (isA1Mini || isA1) return 'https://wiki.bambulab.com/en/a1-mini/maintenance/ptfe-tube';
-      if (isH2D) return 'https://wiki.bambulab.com/en/h2/maintenance/replace-ptfe-tube-on-h2d-printer';
-      if (isH2S) return 'https://wiki.bambulab.com/en/h2s/maintenance/replace-ptfe-tube-on-h2s-printer';
-      if (isH2C) return 'https://wiki.bambulab.com/en/h2/maintenance/replace-ptfe-tube-on-h2d-printer'; // H2C uses H2D guide
-      if (isP2S) return 'https://wiki.bambulab.com/en/x1/maintenance/replace-ptfe-tube'; // P2S uses similar PTFE
-      return 'https://wiki.bambulab.com/en/x1/maintenance/replace-ptfe-tube';
-
-    case 'Replace HEPA Filter':
-    case 'HEPA Filter':
-    case 'Replace Carbon Filter':
-    case 'Carbon Filter':
-      if (isH2) return 'https://wiki.bambulab.com/en/h2/maintenance/replace-smoke-purifier-air-filte';
-      // X1/P1 use the activated carbon filter
-      return 'https://wiki.bambulab.com/en/x1/maintenance/replace-carbon-filter';
-
-    case 'Lubricate Left Nozzle Rail':
-    case 'Left Nozzle Rail':
-      // H2 series specific - dual nozzle system
-      if (isH2) return 'https://wiki.bambulab.com/en/h2/maintenance/x-axis-lubrication';
-      return null;
-
-    default:
-      // Custom maintenance types don't have wiki URLs
-      return null;
-  }
-}
 
 // Maintenance item card - cleaner, more visual design
 function MaintenanceCard({
@@ -253,8 +159,8 @@ function MaintenanceCard({
 
   const getStatusColor = () => {
     if (!item.enabled) return 'text-bambu-gray';
-    if (item.is_due) return 'text-red-400';
-    if (item.is_warning) return 'text-amber-400';
+    if (item.is_due) return 'text-red-700 dark:text-red-400';
+    if (item.is_warning) return 'text-amber-700 dark:text-amber-400';
     return 'text-bambu-green';
   };
 
@@ -427,13 +333,13 @@ function PrinterSection({
             <h2 className="text-xl font-semibold text-white">{overview.printer_name}</h2>
             <div className="flex items-center gap-2">
               {overview.due_count > 0 && (
-                <span className="px-2.5 py-1 bg-red-500/20 text-red-400 text-xs font-medium rounded-full flex items-center gap-1.5">
+                <span className="px-2.5 py-1 bg-red-100 text-red-700 dark:bg-red-500/20 dark:text-red-400 text-xs font-medium rounded-full flex items-center gap-1.5">
                   <AlertTriangle className="w-3 h-3" />
                   {t('maintenance.overdueCount', { count: overview.due_count })}
                 </span>
               )}
               {overview.warning_count > 0 && (
-                <span className="px-2.5 py-1 bg-amber-500/20 text-amber-400 text-xs font-medium rounded-full flex items-center gap-1.5">
+                <span className="px-2.5 py-1 bg-amber-100 text-amber-700 dark:bg-amber-500/20 dark:text-amber-400 text-xs font-medium rounded-full flex items-center gap-1.5">
                   <Clock className="w-3 h-3" />
                   {t('maintenance.dueSoonCount', { count: overview.warning_count })}
                 </span>
@@ -511,14 +417,14 @@ function PrinterSection({
               }`}>
                 {(() => {
                   const Icon = getIcon(nextTask.maintenance_type_icon);
-                  return <Icon className={`w-4 h-4 ${nextTask.is_due ? 'text-red-400' : 'text-amber-400'}`} />;
+                  return <Icon className={`w-4 h-4 ${nextTask.is_due ? 'text-red-600 dark:text-red-400' : 'text-amber-600 dark:text-amber-400'}`} />;
                 })()}
               </div>
               <div>
-                <div className={`text-sm font-medium ${nextTask.is_due ? 'text-red-400' : 'text-amber-400'}`}>
+                <div className={`text-sm font-medium ${nextTask.is_due ? 'text-red-700 dark:text-red-400' : 'text-amber-700 dark:text-amber-400'}`}>
                   {nextTask.maintenance_type_name}
                 </div>
-                <div className={`text-xs ${nextTask.is_due ? 'text-red-400/70' : 'text-amber-400/70'}`}>
+                <div className={`text-xs ${nextTask.is_due ? 'text-red-700/80 dark:text-red-400/70' : 'text-amber-700/80 dark:text-amber-400/70'}`}>
                   {nextTask.is_due ? t('common.overdue') : t('maintenance.dueSoon')}
                 </div>
               </div>
@@ -830,7 +736,7 @@ function SettingsSection({
                     ))}
                   </div>
                   {selectedPrinters.size === 0 && (
-                    <p className="text-xs text-orange-400 mt-1">{t('maintenance.selectAtLeastOnePrinter')}</p>
+                    <p className="text-xs text-orange-700 dark:text-orange-400 mt-1">{t('maintenance.selectAtLeastOnePrinter')}</p>
                   )}
                 </div>
                 <div className="mt-4 flex justify-end gap-2">
@@ -872,7 +778,7 @@ function SettingsSection({
                     }}
                     disabled={!hasPermission('maintenance:delete')}
                     title={!hasPermission('maintenance:delete') ? t('maintenance.noPermissionDeleteTypes') : undefined}
-                    className={`p-2 rounded-lg hover:bg-bambu-dark text-bambu-gray hover:text-red-400 transition-colors ${!hasPermission('maintenance:delete') ? 'opacity-50 cursor-not-allowed' : ''}`}
+                    className={`p-2 rounded-lg hover:bg-bambu-dark text-bambu-gray hover:text-red-600 dark:hover:text-red-400 transition-colors ${!hasPermission('maintenance:delete') ? 'opacity-50 cursor-not-allowed' : ''}`}
                   >
                     <Trash2 className="w-4 h-4" />
                   </button>
@@ -981,7 +887,7 @@ function SettingsSection({
                     className={`px-2 py-1 rounded-lg border transition-colors flex items-center gap-1 ${
                       assignedPrinters.length > 0
                         ? 'border-bambu-green/50 bg-bambu-green/10 text-bambu-green hover:bg-bambu-green/20'
-                        : 'border-orange-400/50 bg-orange-400/10 text-orange-400 hover:bg-orange-400/20'
+                        : 'border-orange-300 bg-orange-50 text-orange-700 hover:bg-orange-100 dark:border-orange-400/50 dark:bg-orange-400/10 dark:text-orange-400 dark:hover:bg-orange-400/20'
                     }`}
                     title={t('maintenance.printersAssignedClick', { count: assignedPrinters.length })}
                   >
@@ -1005,7 +911,7 @@ function SettingsSection({
                     }}
                     disabled={!hasPermission('maintenance:delete')}
                     title={!hasPermission('maintenance:delete') ? t('maintenance.noPermissionDeleteTypes') : undefined}
-                    className={`p-2 rounded-lg hover:bg-bambu-dark text-bambu-gray hover:text-red-400 transition-colors ${!hasPermission('maintenance:delete') ? 'opacity-50 cursor-not-allowed' : ''}`}
+                    className={`p-2 rounded-lg hover:bg-bambu-dark text-bambu-gray hover:text-red-600 dark:hover:text-red-400 transition-colors ${!hasPermission('maintenance:delete') ? 'opacity-50 cursor-not-allowed' : ''}`}
                   >
                     <Trash2 className="w-4 h-4" />
                   </button>
@@ -1016,7 +922,7 @@ function SettingsSection({
                   <div className="mt-3 pt-3 border-t border-bambu-dark-tertiary">
                     <p className="text-xs text-bambu-gray mb-2">{t('maintenance.assignedToPrinters')}</p>
                     {assignedPrinters.length === 0 ? (
-                      <p className="text-xs text-orange-400">{t('maintenance.noPrintersAssigned')}</p>
+                      <p className="text-xs text-orange-700 dark:text-orange-400">{t('maintenance.noPrintersAssigned')}</p>
                     ) : (
                       <div className="flex flex-wrap gap-1 mb-2">
                         {assignedPrinters.map(p => (
@@ -1029,7 +935,7 @@ function SettingsSection({
                               onClick={() => p.itemId && onRemoveItem(p.itemId)}
                               disabled={!hasPermission('maintenance:delete')}
                               title={!hasPermission('maintenance:delete') ? t('maintenance.noPermissionRemovePrinter') : t('maintenance.removeFromPrinter')}
-                              className={`ml-1 ${hasPermission('maintenance:delete') ? 'hover:text-red-400' : 'opacity-50 cursor-not-allowed'}`}
+                              className={`ml-1 ${hasPermission('maintenance:delete') ? 'hover:text-red-600 dark:hover:text-red-400' : 'opacity-50 cursor-not-allowed'}`}
                             >
                               ×
                             </button>
@@ -1222,7 +1128,11 @@ export function MaintenancePage() {
   // directly in onAddType callback
 
   const updateTypeMutation = useMutation({
-    mutationFn: ({ id, data }: { id: number; data: Partial<{ name: string; default_interval_hours: number; interval_type: 'hours' | 'days'; icon: string }> }) =>
+    // `wiki_url` is part of `MaintenanceTypeCreate` and reaches the API
+    // correctly at runtime (the api helper takes `Partial<MaintenanceTypeCreate>`),
+    // but the inline shape on this mutation used to omit it — making the
+    // type lie about what the payload carries (#1596 nit).
+    mutationFn: ({ id, data }: { id: number; data: Partial<{ name: string; default_interval_hours: number; interval_type: 'hours' | 'days'; icon: string; wiki_url: string | null }> }) =>
       api.updateMaintenanceType(id, data),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['maintenanceTypes'] });
@@ -1321,13 +1231,16 @@ export function MaintenancePage() {
     <div className="p-4 md:p-8">
       {/* Header */}
       <div className="mb-6">
-        <h1 className="text-2xl font-bold text-white">{t('maintenance.title')}</h1>
-        <p className="text-bambu-gray text-sm mt-1">
+        <h1 className="text-2xl font-bold text-white flex items-center gap-3">
+          <Wrench className="w-7 h-7 text-bambu-green" />
+          {t('maintenance.title')}
+        </h1>
+        <p className="text-bambu-gray mt-1">
           {activeTab === 'status' ? (
             <>
-              {totalDue > 0 && <span className="text-red-400">{t('maintenance.dueCount', { count: totalDue })}</span>}
+              {totalDue > 0 && <span className="text-red-700 dark:text-red-400">{t('maintenance.dueCount', { count: totalDue })}</span>}
               {totalDue > 0 && totalWarning > 0 && ' · '}
-              {totalWarning > 0 && <span className="text-amber-400">{t('maintenance.warningCount', { count: totalWarning })}</span>}
+              {totalWarning > 0 && <span className="text-amber-700 dark:text-amber-400">{t('maintenance.warningCount', { count: totalWarning })}</span>}
               {totalDue === 0 && totalWarning === 0 && <span className="text-bambu-green">{t('maintenance.allOk')}</span>}
             </>
           ) : (

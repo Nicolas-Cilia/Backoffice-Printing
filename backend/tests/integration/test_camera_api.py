@@ -106,6 +106,80 @@ class TestCameraAPI:
         mock_process1.terminate.assert_called_once()
         mock_process2.terminate.assert_not_called()
 
+    @pytest.mark.asyncio
+    @pytest.mark.integration
+    async def test_stop_camera_stream_handles_fanout_stream_id(self, async_client: AsyncClient, printer_factory):
+        """Stop must terminate streams keyed with the deterministic
+        ``{printer_id}-fanout`` id used by the fan-out broadcaster (#1089).
+        Regression guard against the prefix-match drifting away from the
+        broadcaster's stream-id convention.
+        """
+        printer = await printer_factory()
+        mock_process = MagicMock()
+        mock_process.returncode = None
+        mock_process.pid = 99996
+        mock_process.terminate = MagicMock()
+        mock_process.wait = AsyncMock()
+
+        with patch(
+            "backend.app.api.routes.camera._active_streams",
+            {f"{printer.id}-fanout": mock_process},
+        ):
+            response = await async_client.post(f"/api/v1/printers/{printer.id}/camera/stop")
+
+        assert response.status_code == 200
+        assert response.json()["stopped"] == 1
+        mock_process.terminate.assert_called_once()
+
+    @pytest.mark.asyncio
+    @pytest.mark.integration
+    async def test_stop_camera_stream_invokes_broadcaster_shutdown(self, async_client: AsyncClient, printer_factory):
+        """Stop must call ``shutdown_broadcaster`` so subscribers wake up via
+        the upstream-gone sentinel rather than stalling on the queue (#1089)."""
+        printer = await printer_factory()
+
+        with patch(
+            "backend.app.api.routes.camera.shutdown_broadcaster",
+            AsyncMock(return_value=False),
+        ) as mock_shutdown:
+            response = await async_client.post(f"/api/v1/printers/{printer.id}/camera/stop")
+
+        assert response.status_code == 200
+        mock_shutdown.assert_awaited_once_with(f"printer-{printer.id}")
+
+    @pytest.mark.asyncio
+    @pytest.mark.integration
+    async def test_stop_camera_stream_skips_shutdown_when_subscribers_remain(
+        self, async_client: AsyncClient, printer_factory
+    ):
+        """Reference-count guard: when other viewers are still subscribed to the
+        broadcaster, /camera/stop must NOT force-shutdown — otherwise closing
+        the embedded viewer kills the cam-wall tile of the same printer.
+        Natural cleanup tears it down when the last HTTP connection closes.
+        """
+        printer = await printer_factory()
+
+        mock_shutdown = AsyncMock(return_value=True)
+        mock_process = MagicMock()
+        mock_process.returncode = None
+        mock_process.pid = 88888
+        mock_process.terminate = MagicMock()
+        mock_process.wait = AsyncMock()
+
+        with (
+            patch("backend.app.api.routes.camera.get_subscriber_count", return_value=2),
+            patch("backend.app.api.routes.camera.shutdown_broadcaster", mock_shutdown),
+            patch("backend.app.api.routes.camera._active_streams", {f"{printer.id}-abc": mock_process}),
+        ):
+            response = await async_client.post(f"/api/v1/printers/{printer.id}/camera/stop")
+
+        assert response.status_code == 200
+        result = response.json()
+        assert result["stopped"] == 0
+        assert result.get("skipped") is True
+        mock_shutdown.assert_not_awaited()
+        mock_process.terminate.assert_not_called()
+
     # ========================================================================
     # Camera Test Endpoint
     # ========================================================================
@@ -148,6 +222,56 @@ class TestCameraAPI:
         assert response.status_code == 200
         result = response.json()
         assert result["success"] is False
+
+    # ========================================================================
+    # Camera Diagnose Endpoint (#1395 follow-up)
+    # ========================================================================
+
+    @pytest.mark.asyncio
+    @pytest.mark.integration
+    async def test_camera_diagnose_printer_not_found(self, async_client: AsyncClient):
+        response = await async_client.post("/api/v1/printers/99999/camera/diagnose")
+        assert response.status_code == 404
+
+    @pytest.mark.asyncio
+    @pytest.mark.integration
+    async def test_camera_diagnose_returns_structured_result(self, async_client: AsyncClient, printer_factory):
+        """Endpoint returns the per-stage shape the frontend modal renders."""
+        from backend.app.services.camera_diagnose import (
+            CameraDiagnoseResult,
+            CameraDiagnoseStage,
+        )
+
+        printer = await printer_factory()
+
+        fake = CameraDiagnoseResult(
+            printer_id=printer.id,
+            protocol="rtsp",
+            port=322,
+            profile="P2S",
+            overall_status="failed",
+            stages=[
+                CameraDiagnoseStage(name="tcp_reachable", status="ok", duration_ms=12),
+                CameraDiagnoseStage(name="first_frame", status="failed", duration_ms=15123, code="no_frame"),
+            ],
+            summary_code="no_frame",
+        )
+        with patch(
+            "backend.app.services.camera_diagnose.diagnose_camera",
+            new_callable=AsyncMock,
+            return_value=fake,
+        ):
+            response = await async_client.post(f"/api/v1/printers/{printer.id}/camera/diagnose")
+
+        assert response.status_code == 200
+        body = response.json()
+        assert body["printer_id"] == printer.id
+        assert body["protocol"] == "rtsp"
+        assert body["profile"] == "P2S"
+        assert body["overall_status"] == "failed"
+        assert body["summary_code"] == "no_frame"
+        assert [s["name"] for s in body["stages"]] == ["tcp_reachable", "first_frame"]
+        assert body["stages"][1]["code"] == "no_frame"
 
     # ========================================================================
     # Camera Snapshot Endpoint
@@ -197,6 +321,35 @@ class TestCameraAPI:
 
         assert response.status_code == 503
         assert "Failed to capture" in response.json()["detail"]
+
+    @pytest.mark.asyncio
+    @pytest.mark.integration
+    async def test_camera_snapshot_reuses_buffered_frame_when_stream_active(
+        self, async_client: AsyncClient, printer_factory
+    ):
+        """#1271: /camera/snapshot must reuse the broadcaster's buffered frame
+        when a live stream is running, instead of opening a second concurrent
+        RTSP socket. On printers with strict single-connection enforcement (e.g.
+        X2D firmware 01.01.00.00) opening a second socket kicks the live stream.
+        """
+        printer = await printer_factory()
+        fake_jpeg = b"\xff\xd8\xff\xe0\x00\x10JFIF\x00\x01\x01\x00\x00\x01\x00\x01\x00\x00"
+
+        # Simulate a running broadcaster: one active stream entry + buffered frame.
+        active_streams = {f"{printer.id}-fanout": MagicMock()}
+        last_frames = {printer.id: fake_jpeg}
+
+        with (
+            patch("backend.app.api.routes.camera._active_streams", active_streams),
+            patch("backend.app.api.routes.camera._last_frames", last_frames),
+            patch("backend.app.api.routes.camera.capture_camera_frame", new_callable=AsyncMock) as mock_capture,
+        ):
+            response = await async_client.get(f"/api/v1/printers/{printer.id}/camera/snapshot")
+
+        assert response.status_code == 200
+        assert response.content == fake_jpeg
+        # The fresh-capture path must NOT have been taken — that's the whole point.
+        mock_capture.assert_not_called()
 
     @pytest.mark.asyncio
     @pytest.mark.integration
@@ -389,6 +542,138 @@ class TestCameraAPI:
         assert result["success"] is True
         assert "index" in result
 
+    # ------------------------------------------------------------------
+    # Regression: #1359 — the manual UI check/calibrate routes must derive
+    # use_external from the printer's external_camera_enabled setting when
+    # the caller omits the flag. Otherwise the UI calibrates against the
+    # built-in camera while the runtime auto-check at print start uses the
+    # external one, producing a permanent "build plate not empty".
+    # ------------------------------------------------------------------
+
+    @pytest.mark.asyncio
+    @pytest.mark.integration
+    async def test_check_plate_defaults_use_external_when_external_camera_enabled(
+        self, async_client: AsyncClient, printer_factory
+    ):
+        """Omitting use_external on a printer with external camera enabled
+        must call the service with use_external=True."""
+        printer = await printer_factory(
+            external_camera_enabled=True,
+            external_camera_url="http://192.168.1.50/mjpeg",
+            external_camera_type="mjpeg",
+        )
+
+        mock_result = MagicMock()
+        mock_result.to_dict.return_value = {
+            "is_empty": True,
+            "confidence": 0.95,
+            "difference_percent": 0.5,
+            "message": "Plate appears empty",
+            "has_debug_image": False,
+            "needs_calibration": False,
+        }
+        mock_result.debug_image = None
+
+        mock_detector = MagicMock()
+        mock_detector.get_calibration_count.return_value = 0
+        mock_detector.MAX_REFERENCES = 5
+
+        with (
+            patch("backend.app.services.plate_detection.is_plate_detection_available", return_value=True),
+            patch("backend.app.services.plate_detection.check_plate_empty", new_callable=AsyncMock) as mock_check,
+            patch("backend.app.services.plate_detection.PlateDetector", return_value=mock_detector),
+        ):
+            mock_check.return_value = mock_result
+            response = await async_client.get(f"/api/v1/printers/{printer.id}/camera/check-plate")
+
+        assert response.status_code == 200
+        assert mock_check.await_args.kwargs["use_external"] is True
+
+    @pytest.mark.asyncio
+    @pytest.mark.integration
+    async def test_check_plate_defaults_use_external_false_when_external_camera_disabled(
+        self, async_client: AsyncClient, printer_factory
+    ):
+        """Omitting use_external on a printer without an external camera
+        must call the service with use_external=False (built-in)."""
+        printer = await printer_factory()  # external_camera_enabled defaults to False
+
+        mock_result = MagicMock()
+        mock_result.to_dict.return_value = {
+            "is_empty": True,
+            "confidence": 0.95,
+            "difference_percent": 0.5,
+            "message": "Plate appears empty",
+            "has_debug_image": False,
+            "needs_calibration": False,
+        }
+        mock_result.debug_image = None
+
+        mock_detector = MagicMock()
+        mock_detector.get_calibration_count.return_value = 0
+        mock_detector.MAX_REFERENCES = 5
+
+        with (
+            patch("backend.app.services.plate_detection.is_plate_detection_available", return_value=True),
+            patch("backend.app.services.plate_detection.check_plate_empty", new_callable=AsyncMock) as mock_check,
+            patch("backend.app.services.plate_detection.PlateDetector", return_value=mock_detector),
+        ):
+            mock_check.return_value = mock_result
+            response = await async_client.get(f"/api/v1/printers/{printer.id}/camera/check-plate")
+
+        assert response.status_code == 200
+        assert mock_check.await_args.kwargs["use_external"] is False
+
+    @pytest.mark.asyncio
+    @pytest.mark.integration
+    async def test_calibrate_plate_defaults_use_external_when_external_camera_enabled(
+        self, async_client: AsyncClient, printer_factory
+    ):
+        """Calibrating with use_external omitted on an external-camera-enabled
+        printer captures the reference from the external camera — matching
+        what the runtime check at print start will compare against (#1359)."""
+        printer = await printer_factory(
+            external_camera_enabled=True,
+            external_camera_url="http://192.168.1.50/mjpeg",
+            external_camera_type="mjpeg",
+        )
+
+        with (
+            patch("backend.app.services.plate_detection.is_plate_detection_available", return_value=True),
+            patch("backend.app.services.plate_detection.calibrate_plate", new_callable=AsyncMock) as mock_calibrate,
+        ):
+            mock_calibrate.return_value = (True, "Calibration saved (1/5 references)", 0)
+            response = await async_client.post(f"/api/v1/printers/{printer.id}/camera/plate-detection/calibrate")
+
+        assert response.status_code == 200
+        assert mock_calibrate.await_args.kwargs["use_external"] is True
+
+    @pytest.mark.asyncio
+    @pytest.mark.integration
+    async def test_calibrate_plate_explicit_use_external_false_overrides_default(
+        self, async_client: AsyncClient, printer_factory
+    ):
+        """An explicit use_external=false from the caller still wins even
+        when the printer has an external camera configured, so power users
+        can force a built-in-camera reference if they ever need to."""
+        printer = await printer_factory(
+            external_camera_enabled=True,
+            external_camera_url="http://192.168.1.50/mjpeg",
+            external_camera_type="mjpeg",
+        )
+
+        with (
+            patch("backend.app.services.plate_detection.is_plate_detection_available", return_value=True),
+            patch("backend.app.services.plate_detection.calibrate_plate", new_callable=AsyncMock) as mock_calibrate,
+        ):
+            mock_calibrate.return_value = (True, "Calibration saved (1/5 references)", 0)
+            response = await async_client.post(
+                f"/api/v1/printers/{printer.id}/camera/plate-detection/calibrate?use_external=false"
+            )
+
+        assert response.status_code == 200
+        assert mock_calibrate.await_args.kwargs["use_external"] is False
+
     @pytest.mark.asyncio
     @pytest.mark.integration
     async def test_delete_calibration_printer_not_found(self, async_client: AsyncClient):
@@ -526,3 +811,29 @@ class TestCameraAPI:
         assert response.status_code == 200
         result = response.json()
         assert result["cameras"] == []
+
+
+class TestCameraStreamPoolHygiene:
+    """Regression guard for the camera-stream DB-connection leak (issue #2572)."""
+
+    def test_camera_stream_does_not_hold_a_get_db_session(self):
+        """The MJPEG stream endpoint must NOT take a ``Depends(get_db)`` session.
+
+        ``get_db`` is a ``yield`` dependency, so its session stays open until the
+        response body is fully consumed — for a live MJPEG stream that is the
+        whole time the browser tab is open (hours), pinning one pooled DB
+        connection per open camera tab per printer. The endpoint fetches the
+        printer in a short-lived ``async with async_session()`` instead and
+        releases the connection before streaming. If someone re-adds a
+        ``Depends(get_db)`` param, this fails.
+        """
+        import inspect
+
+        from backend.app.api.routes.camera import camera_stream, get_db
+
+        for name, param in inspect.signature(camera_stream).parameters.items():
+            dependency = getattr(param.default, "dependency", None)
+            assert dependency is not get_db, (
+                f"camera_stream re-introduced a get_db-held session via parameter {name!r} — "
+                "it would stay open for the entire stream (issue #2572)"
+            )

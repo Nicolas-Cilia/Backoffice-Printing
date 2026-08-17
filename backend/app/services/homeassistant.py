@@ -187,17 +187,40 @@ class HomeAssistantService:
 
     @staticmethod
     def _validate_url(url: str) -> str | None:
-        """Validate HA URL scheme and block dangerous destinations."""
+        """Normalise a caller-supplied HA URL, or return None if it is unsafe.
+
+        The stored ``ha_url`` setting is already validated at the schema layer
+        (``LAN_SERVICE_URL_SETTINGS`` in schemas/settings.py), but
+        ``test_connection`` takes its URL straight from the request body, so
+        the same policy has to be applied here.
+
+        Delegates to ``_url_safety.assert_safe_lan_service_url`` rather than
+        the string blocklist this replaces. That blocklist only knew three
+        literal hostnames plus a ``169.254.`` prefix and never parsed the
+        hostname as an IP, so it let through the Alibaba (100.100.100.200)
+        and AWS-IPv6 (fd00:ec2::254) metadata endpoints, numeric-encoded
+        loopback, multicast, and IPv4-mapped IPv6 encodings of the IMDS
+        address it did know about.
+
+        Loopback and RFC-1918 remain permitted — Home Assistant is a
+        LAN-resident service by design, and the shared guard is documented
+        that way.
+        """
+        from backend.app.api.routes._url_safety import assert_safe_lan_service_url
+
         try:
-            parsed = urlparse(url)
+            assert_safe_lan_service_url(url, label="Home Assistant URL")
         except ValueError:
             return None
-        if parsed.scheme not in ("http", "https") or not parsed.hostname:
+        # Guard passed, so the scheme is http/https and a hostname is present;
+        # re-parse only to drop query/fragment and normalise the authority.
+        parsed = urlparse(url)
+        if not parsed.hostname:
             return None
-        blocked = ("169.254.169.254", "metadata.google.internal", "0.0.0.0")  # nosec B104
-        if parsed.hostname.lower() in blocked or (parsed.hostname or "").startswith("169.254."):
-            return None
-        return f"{parsed.scheme}://{parsed.hostname}" + (f":{parsed.port}" if parsed.port else "") + (parsed.path or "")
+        # urlparse strips the brackets off an IPv6 literal, so they have to go
+        # back on or the rebuilt URL is unparseable ("http://fd00::1:8123").
+        host = f"[{parsed.hostname}]" if ":" in parsed.hostname else parsed.hostname
+        return f"{parsed.scheme.lower()}://{host}" + (f":{parsed.port}" if parsed.port else "") + (parsed.path or "")
 
     async def test_connection(self, url: str, token: str) -> dict:
         """Test connection to Home Assistant.
@@ -237,8 +260,15 @@ class HomeAssistantService:
     async def list_entities(self, url: str, token: str, search: str | None = None) -> list[dict]:
         """List available entities from HA.
 
-        By default, returns switch/light/input_boolean domains.
-        When search is provided, searches ALL entities by entity_id or friendly_name.
+        Always filters to switch/light/input_boolean/script — the only domains
+        the SmartPlugBase.ha_entity_id pattern accepts. When a search query is
+        provided it narrows the same domain-filtered list by entity_id or
+        friendly_name substring (case-insensitive).
+
+        Previously search bypassed the domain filter, which let users pick a
+        sensor.* or binary_sensor.* entity from the dropdown that the backend
+        schema would then reject with the cryptic Pydantic pattern error
+        (#1388). Picking what you can't save isn't a useful UX.
 
         Returns list of entity dicts with:
             - entity_id: str
@@ -246,8 +276,9 @@ class HomeAssistantService:
             - state: str
             - domain: str
         """
-        # Default domains for smart plug control
-        default_domains = {"switch", "light", "input_boolean", "script"}
+        # Allowed domains for smart plug control — must mirror the regex in
+        # backend/app/schemas/smart_plug.py:17 (SmartPlugBase.ha_entity_id).
+        allowed_domains = {"switch", "light", "input_boolean", "script"}
 
         try:
             async with httpx.AsyncClient(timeout=self.timeout) as client:
@@ -265,14 +296,13 @@ class HomeAssistantService:
                     domain = entity_id.split(".")[0] if "." in entity_id else ""
                     friendly_name = entity.get("attributes", {}).get("friendly_name", entity_id)
 
-                    # If searching, match against entity_id or friendly_name
-                    if search_lower:
-                        if search_lower not in entity_id.lower() and search_lower not in friendly_name.lower():
-                            continue
-                    else:
-                        # No search: filter to default domains only
-                        if domain not in default_domains:
-                            continue
+                    if domain not in allowed_domains:
+                        continue
+
+                    if search_lower and (
+                        search_lower not in entity_id.lower() and search_lower not in friendly_name.lower()
+                    ):
+                        continue
 
                     entities.append(
                         {

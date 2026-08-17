@@ -14,6 +14,7 @@ const mockStats = {
   total_prints: 150,
   successful_prints: 140,
   failed_prints: 10,
+  cancelled_prints: 0,
   total_print_time_hours: 500.5,
   total_filament_grams: 5500,
   total_cost: 125.50,
@@ -164,7 +165,7 @@ describe('StatsPage', () => {
       render(<StatsPage />);
 
       await waitFor(() => {
-        expect(screen.getByText('Dashboard')).toBeInTheDocument();
+        expect(screen.getByText('Statistics')).toBeInTheDocument();
       });
     });
 
@@ -210,8 +211,41 @@ describe('StatsPage', () => {
 
       await waitFor(() => {
         expect(screen.getByText('Success Rate')).toBeInTheDocument();
-        // Success rate: 140/(140+10) = 93%
+        // Success rate: 140 / 150 total = 93%
         expect(screen.getByText('93%')).toBeInTheDocument();
+      });
+    });
+
+    it('excludes cancelled prints from the rate denominator and surfaces them in the breakdown (#1390)', async () => {
+      // 40 completed, 20 failed (printer-detected), 40 user-cancelled out of
+      // 100 total. The earlier fix divided by total_prints and reported 40%,
+      // which conflated user intent with print quality — cancelling a roll
+      // because you changed your mind shouldn't be counted against the
+      // printer's success rate. New behaviour: gauge = 40 / (40 + 20) = 67%;
+      // cancelled count still visible in the row breakdown so the missing
+      // 40 prints don't silently disappear.
+      server.use(
+        http.get('/api/v1/archives/stats', () =>
+          HttpResponse.json({
+            ...mockStats,
+            total_prints: 100,
+            successful_prints: 40,
+            failed_prints: 20,
+            cancelled_prints: 35,
+          }),
+        ),
+      );
+      render(<StatsPage />);
+
+      await waitFor(() => {
+        expect(screen.getByText('Success Rate')).toBeInTheDocument();
+        expect(screen.getByText('67%')).toBeInTheDocument();
+        // Cancelled count surfaces in the breakdown so the missing prints
+        // aren't silently swallowed (was the original bug in #1390). Pick a
+        // value distinct from successful_prints/failed_prints to keep the
+        // getByText query unambiguous.
+        expect(screen.getByText('Cancelled:')).toBeInTheDocument();
+        expect(screen.getByText('35')).toBeInTheDocument();
       });
     });
   });
@@ -256,6 +290,49 @@ describe('StatsPage', () => {
 
       await waitFor(() => {
         expect(screen.getByText('Failure Analysis')).toBeInTheDocument();
+      });
+    });
+
+    it('translates camelCase failure-reason keys instead of rendering them raw (#1687 follow-up)', async () => {
+      // The widget groups by the raw PrintLogEntry.failure_reason column.
+      // The new editor stores camelCase keys (`filamentRunout`), so the widget
+      // must translate them — otherwise users see the literal key text.
+      server.use(
+        http.get('/api/v1/archives/analysis/failures', () => {
+          return HttpResponse.json({
+            ...mockFailureAnalysis,
+            failures_by_reason: { filamentRunout: 2, cloggedNozzle: 1 },
+          });
+        }),
+      );
+
+      render(<StatsPage />);
+
+      await waitFor(() => {
+        expect(screen.getByText('Filament runout')).toBeInTheDocument();
+        expect(screen.getByText('Clogged nozzle')).toBeInTheDocument();
+      });
+      expect(screen.queryByText('filamentRunout')).not.toBeInTheDocument();
+      expect(screen.queryByText('cloggedNozzle')).not.toBeInTheDocument();
+    });
+
+    it('renders legacy translated-text failure reasons unchanged (#1687 follow-up)', async () => {
+      // Old rows from before the key/value migration stored the translated
+      // text. The defaultValue fallback in the t() call must surface them
+      // as-is rather than turning them into the literal key string.
+      server.use(
+        http.get('/api/v1/archives/analysis/failures', () => {
+          return HttpResponse.json({
+            ...mockFailureAnalysis,
+            failures_by_reason: { 'Custom legacy reason': 4 },
+          });
+        }),
+      );
+
+      render(<StatsPage />);
+
+      await waitFor(() => {
+        expect(screen.getByText('Custom legacy reason')).toBeInTheDocument();
       });
     });
 
@@ -353,6 +430,48 @@ describe('StatsPage', () => {
       });
     });
 
+    it('Longest Print excludes failed prints (#1390)', async () => {
+      // After slim started populating actual_time_seconds for non-completed
+      // rows (so Printer Stats By Time would match Quick Stats), a failed
+      // print's elapsed duration could outrank successful prints in the
+      // Records widget. RecordsWidget gates "Longest Print" on
+      // status === 'completed' to preserve the pre-fix semantic.
+      server.use(
+        http.get('/api/v1/archives/slim', () =>
+          HttpResponse.json([
+            {
+              id: 10, created_at: '2024-02-01T10:00:00Z',
+              started_at: '2024-02-01T10:00:00Z', completed_at: null,
+              print_name: 'Aborted 25h Marathon', status: 'failed',
+              printer_id: 1, filament_type: 'PLA', filament_color: '#000000',
+              filament_used_grams: 50, actual_time_seconds: 90000,
+              print_time_seconds: 86400, cost: 1.50, quantity: 1,
+            },
+            {
+              id: 11, created_at: '2024-02-02T10:00:00Z',
+              started_at: '2024-02-02T10:00:00Z',
+              completed_at: '2024-02-02T18:00:00Z',
+              print_name: 'Successful 8h Print', status: 'completed',
+              printer_id: 1, filament_type: 'PLA', filament_color: '#FF0000',
+              filament_used_grams: 80, actual_time_seconds: 28800,
+              print_time_seconds: 27000, cost: 2.40, quantity: 1,
+            },
+          ]),
+        ),
+      );
+      render(<StatsPage />);
+
+      // Wait for the records widget itself to render.
+      await waitFor(() => {
+        expect(screen.getByText('Longest Print')).toBeInTheDocument();
+      });
+      // The failed 25h print must not surface as any record — its presence
+      // anywhere here would mean the status gate regressed.
+      expect(screen.queryByText('Aborted 25h Marathon')).not.toBeInTheDocument();
+      // The completed 8h print is the only candidate left, so it wins.
+      expect(screen.getAllByText('Successful 8h Print').length).toBeGreaterThan(0);
+    });
+
     it('shows heaviest print record', async () => {
       render(<StatsPage />);
 
@@ -367,6 +486,46 @@ describe('StatsPage', () => {
       await waitFor(() => {
         expect(screen.getByText('Most Expensive')).toBeInTheDocument();
       });
+    });
+
+    it('Most Expensive includes per-print energy cost (#1432)', async () => {
+      // Cheap filament + expensive heated-chamber print must outrank a
+      // pricier-filament print once measured energy cost is added in.
+      server.use(
+        http.get('/api/v1/archives/slim', () =>
+          HttpResponse.json([
+            {
+              id: 20, created_at: '2024-03-01T10:00:00Z',
+              started_at: '2024-03-01T10:00:00Z',
+              completed_at: '2024-03-01T14:00:00Z',
+              print_name: 'PLA Filament Heavy', status: 'completed',
+              printer_id: 1, filament_type: 'PLA', filament_color: '#00FF00',
+              filament_used_grams: 200, actual_time_seconds: 14400,
+              print_time_seconds: 14000, cost: 5.00,
+              energy_kwh: null, energy_cost: null, quantity: 1,
+            },
+            {
+              id: 21, created_at: '2024-03-02T10:00:00Z',
+              started_at: '2024-03-02T10:00:00Z',
+              completed_at: '2024-03-02T20:00:00Z',
+              print_name: 'ABS Energy Hog', status: 'completed',
+              printer_id: 1, filament_type: 'ABS', filament_color: '#FF0000',
+              filament_used_grams: 100, actual_time_seconds: 36000,
+              print_time_seconds: 35000, cost: 4.00,
+              energy_kwh: 8.5, energy_cost: 2.55, quantity: 1,
+            },
+          ]),
+        ),
+      );
+
+      render(<StatsPage />);
+
+      await waitFor(() => {
+        expect(screen.getByText('Most Expensive')).toBeInTheDocument();
+      });
+      // 4.00 + 2.55 = 6.55 beats 5.00 flat
+      expect(screen.getByText('$6.55')).toBeInTheDocument();
+      expect(screen.getAllByText('ABS Energy Hog').length).toBeGreaterThan(0);
     });
 
     it('shows success streak record', async () => {
@@ -409,6 +568,57 @@ describe('StatsPage', () => {
       // Auth is disabled in our test setup (default), so user filter should not appear
       // The filter requires authEnabled && hasPermission('stats:filter_by_user')
       expect(screen.queryByText('All Users')).not.toBeInTheDocument();
+    });
+  });
+
+  describe('energy warming-up indicator (#941)', () => {
+    it('does not show a warning icon when energy data is available', async () => {
+      render(<StatsPage />);
+
+      await waitFor(() => {
+        expect(screen.getByText('Energy Used')).toBeInTheDocument();
+      });
+
+      const energyLabel = screen.getByText('Energy Used').closest('div');
+      expect(energyLabel?.querySelector('svg[aria-label]')).toBeNull();
+    });
+
+    it('shows a warning icon with tooltip next to energy stats when warming up', async () => {
+      server.use(
+        http.get('/api/v1/archives/stats', () => {
+          return HttpResponse.json({ ...mockStats, energy_data_warming_up: true });
+        })
+      );
+
+      render(<StatsPage />);
+
+      await waitFor(() => {
+        expect(screen.getByText('Energy Used')).toBeInTheDocument();
+      });
+
+      // Both Energy Used and Energy Cost labels get a warning icon with the
+      // tooltip accessible via aria-label.
+      const icons = await screen.findAllByLabelText(/still collecting hourly snapshots/i);
+      expect(icons.length).toBe(2);
+    });
+
+    it('does not decorate other stats with the energy warming-up warning', async () => {
+      server.use(
+        http.get('/api/v1/archives/stats', () => {
+          return HttpResponse.json({ ...mockStats, energy_data_warming_up: true });
+        })
+      );
+
+      render(<StatsPage />);
+
+      await waitFor(() => {
+        expect(screen.getByText('Total Prints')).toBeInTheDocument();
+      });
+
+      const totalPrints = screen.getByText('Total Prints').closest('div');
+      expect(totalPrints?.querySelector('svg[aria-label]')).toBeNull();
+      const printTime = screen.getByText('Print Time').closest('div');
+      expect(printTime?.querySelector('svg[aria-label]')).toBeNull();
     });
   });
 });

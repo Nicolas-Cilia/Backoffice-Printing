@@ -1,0 +1,65 @@
+# Optional slicer-API sidecar stack for Bambuddy.
+#
+# Both services are HTTP wrappers around a slicer CLI: the same Node code
+# (`maziggy/orca-slicer-api`, `bambuddy/profile-resolver` branch) bundled
+# with a different binary in each image. Bambuddy talks to them via the
+# URLs configured in Settings -> Slicer.
+#
+#   bambu-studio-api  → host port 3001 (BambuStudio CLI)
+#   orca-slicer-api   → host port 3003 (OrcaSlicer CLI)
+#
+# Bambuddy's virtual-printer feature reserves host ports 3000 and 3002,
+# which is why the OrcaSlicer sidecar sits on 3003. Override either port
+# in `.env` (see `.env.example`) if you don't run Bambuddy on this host.
+#
+# Usage:
+#   cd slicer-api/
+#   docker compose up -d                       # starts OrcaSlicer only
+#   docker compose --profile bambu up -d       # starts both
+#
+# First start pulls pre-built images from GHCR (~110 MB OrcaSlicer,
+# ~220 MB BambuStudio). No local build, no git in the BuildKit worker,
+# works on QNAP / Synology / Container Station out of the box.
+#
+# Both images are linux/amd64 only. OrcaSlicer's ARM64 path is on hold
+# pending an upstream extraction fix; BambuStudio doesn't publish ARM64
+# at all.
+
+services:
+  orca-slicer-api:
+    image: ghcr.io/maziggy/orca-slicer-api:${SIDECAR_TAG:-latest}
+    container_name: orca-slicer-api
+    restart: unless-stopped
+    ports:
+      - "${ORCA_API_PORT:-3003}:3000"
+    volumes:
+      - ./data/orca:/app/data
+    environment:
+      NODE_ENV: production
+      PORT: "3000"
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:3000/health"]
+      interval: 30s
+      timeout: 5s
+      start_period: 10s
+      retries: 3
+
+  bambu-studio-api:
+    image: ghcr.io/maziggy/bambu-studio-api:${SIDECAR_TAG:-latest}
+    container_name: bambu-studio-api
+    restart: unless-stopped
+    ports:
+      - "${BAMBU_API_PORT:-3001}:3000"
+    volumes:
+      - ./data/bambu:/app/data
+    environment:
+      NODE_ENV: production
+      PORT: "3000"
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:3000/health"]
+      interval: 30s
+      timeout: 5s
+      start_period: 10s
+      retries: 3
+    profiles:
+      - bambu

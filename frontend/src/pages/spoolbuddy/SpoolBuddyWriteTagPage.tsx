@@ -2,16 +2,19 @@ import { useState, useEffect, useCallback, useMemo } from 'react';
 import { useOutletContext } from 'react-router-dom';
 import { useQuery } from '@tanstack/react-query';
 import { useTranslation } from 'react-i18next';
+import { useToast } from '../../contexts/ToastContext';
 import type { SpoolBuddyOutletContext } from '../../components/spoolbuddy/SpoolBuddyLayout';
 import {
   api,
   spoolbuddyApi,
+  type BuiltinFilament,
   type InventorySpool,
   type LocalPreset,
   type SlicerSetting,
   type SpoolCatalogEntry,
 } from '../../api/client';
 import { getCurrencySymbol } from '../../utils/currency';
+import { getSwatchStyle } from '../../utils/colors';
 import { FilamentSection } from '../../components/spool-form/FilamentSection';
 import { ColorSection } from '../../components/spool-form/ColorSection';
 import { AdditionalSection } from '../../components/spool-form/AdditionalSection';
@@ -21,10 +24,13 @@ import { defaultFormData, validateForm } from '../../components/spool-form/types
 import {
   buildFilamentOptions,
   extractBrandsFromPresets,
+  fetchPrinterCalibrations,
   findPresetOption,
   loadRecentColors,
+  pairedOptions,
   parsePresetName,
   saveRecentColor,
+  withCurrentValue,
 } from '../../components/spool-form/utils';
 import { MATERIALS } from '../../components/spool-form/constants';
 
@@ -34,6 +40,7 @@ const SIMPLE_COMMON_MATERIALS = ['PLA', 'PETG', 'ABS', 'ASA', 'TPU', 'PA', 'PC',
 
 export function SpoolBuddyWriteTagPage() {
   const { t } = useTranslation();
+  const { showToast } = useToast();
   const { sbState } = useOutletContext<SpoolBuddyOutletContext>();
 
   const [activeTab, setActiveTab] = useState<Tab>('existing');
@@ -45,11 +52,30 @@ export function SpoolBuddyWriteTagPage() {
   const [tagOnReader, setTagOnReader] = useState(false);
   const [tagUid, setTagUid] = useState<string | null>(null);
 
+  // Detect Spoolman mode — when the user has Spoolman as their inventory
+  // backend, every read/write on this page must go to /spoolman/inventory/*
+  // routes instead of /inventory/*. Without this branching, the picker
+  // shows internal spools (which the user never created in Spoolman mode)
+  // and the write-tag write path lands at the wrong backend (#1439).
+  const { data: spoolmanSettings } = useQuery({
+    queryKey: ['spoolman-settings'],
+    queryFn: api.getSpoolmanSettings,
+    staleTime: 5 * 60 * 1000,
+  });
+  const spoolmanModeReady = spoolmanSettings !== undefined;
+  const spoolmanMode =
+    spoolmanSettings?.spoolman_enabled === 'true' && !!spoolmanSettings?.spoolman_url;
 
   const { data: spools = [], refetch: refetchSpools } = useQuery({
-    queryKey: ['inventory-spools'],
-    queryFn: () => api.getSpools(false),
+    queryKey: [spoolmanMode ? 'spoolman-inventory-spools' : 'inventory-spools', 'write-tag'],
+    queryFn: () =>
+      spoolmanMode ? api.getSpoolmanInventorySpools(false) : api.getSpools(false),
     refetchInterval: 10000,
+    // Wait until we know which backend to talk to — otherwise the first
+    // render fires getSpools (default spoolmanMode=false) and getSpoolman*
+    // (after settings resolve), wasting one request and briefly showing
+    // the wrong inventory.
+    enabled: spoolmanModeReady,
   });
 
   const { data: devices = [] } = useQuery({
@@ -163,7 +189,12 @@ export function SpoolBuddyWriteTagPage() {
     setWriteStatus('writing');
     setWriteMessage(t('spoolbuddy.writeTag.waiting', 'Waiting for SpoolBuddy...'));
     try {
-      await spoolbuddyApi.writeTag(device.device_id, selectedSpool.id);
+      const resp = await spoolbuddyApi.writeTag(device.device_id, selectedSpool.id);
+      if (resp?.warnings?.length) {
+        for (const w of resp.warnings) {
+          showToast(w, 'warning');
+        }
+      }
     } catch {
       setWriteStatus('error');
       setWriteMessage(t('spoolbuddy.writeTag.queueFailed', 'Failed to queue write command'));
@@ -185,11 +216,19 @@ export function SpoolBuddyWriteTagPage() {
     setWriteStatus('idle');
     setWriteMessage('');
     try {
-      await api.linkTagToSpool(selectedSpool.id, {
-        tag_uid: '',
-        tray_uuid: '',
-        data_origin: 'manual',
-      });
+      if (spoolmanMode) {
+        // Spoolman variant doesn't accept data_origin (managed Spoolman-side).
+        await api.linkTagToSpoolmanSpool(selectedSpool.id, {
+          tag_uid: '',
+          tray_uuid: '',
+        });
+      } else {
+        await api.linkTagToSpool(selectedSpool.id, {
+          tag_uid: '',
+          tray_uuid: '',
+          data_origin: 'manual',
+        });
+      }
       await refetchSpools();
       setSelectedSpool(null);
       setWriteStatus('success');
@@ -247,6 +286,7 @@ export function SpoolBuddyWriteTagPage() {
               currencySymbol={currencySymbol}
               onCreated={handleSpoolCreated}
               selectedSpool={selectedSpool}
+              spoolmanMode={spoolmanMode}
               t={t}
             />
           ) : (
@@ -326,7 +366,6 @@ function SpoolListItem({ spool, selected, showTag, onClick }: {
   showTag: boolean;
   onClick: () => void;
 }) {
-  const color = spool.rgba ? `#${spool.rgba.slice(0, 6)}` : '#666';
   const remaining = Math.max(0, spool.label_weight - spool.weight_used);
   const pct = spool.label_weight > 0 ? Math.round((remaining / spool.label_weight) * 100) : 0;
 
@@ -339,10 +378,11 @@ function SpoolListItem({ spool, selected, showTag, onClick }: {
           : 'bg-bambu-dark-secondary hover:bg-bambu-dark-tertiary border border-transparent'
       }`}
     >
-      {/* Color dot */}
+      {/* Color dot — uses getSwatchStyle so transparent (Clear) spools render
+          a checkerboard instead of collapsing to solid black (#1545). */}
       <div
         className="w-8 h-8 rounded-full shrink-0 border border-white/10"
-        style={{ backgroundColor: color }}
+        style={spool.rgba ? getSwatchStyle(spool.rgba) : { backgroundColor: '#666' }}
       />
 
       {/* Info */}
@@ -351,6 +391,7 @@ function SpoolListItem({ spool, selected, showTag, onClick }: {
           <span className="text-sm font-medium text-white truncate">
             {spool.brand ? `${spool.brand} ` : ''}{spool.material}{spool.subtype ? ` ${spool.subtype}` : ''}
           </span>
+          <span className="text-[10px] font-mono text-zinc-500 shrink-0">#{spool.id}</span>
         </div>
         <div className="flex items-center gap-2 text-xs text-zinc-400">
           {spool.color_name && <span>{spool.color_name}</span>}
@@ -375,12 +416,26 @@ type NewSpoolSubTab = 'filament' | 'pa-profile';
 type NewSpoolViewMode = 'simple' | 'full';
 
 // --- New spool touch form (mirrors Add Spool fields/options in kiosk-friendly layout) ---
-function NewSpoolTouchForm({ currencySymbol, onCreated, selectedSpool, t }: {
+function NewSpoolTouchForm({ currencySymbol, onCreated, selectedSpool, spoolmanMode, t }: {
   currencySymbol: string;
   onCreated: (spool: InventorySpool) => void;
   selectedSpool: InventorySpool | null;
+  spoolmanMode: boolean;
   t: (key: string, fallback: string) => string;
 }) {
+  // Read inventory + settings from the shared react-query cache to drive the
+  // category autocomplete and low-stock-threshold placeholder. #729
+  // Spoolman-mode branched: see comment on the parent page's spools query.
+  const { data: allSpoolsForForm = [] } = useQuery({
+    queryKey: [spoolmanMode ? 'spoolman-inventory-spools' : 'inventory-spools', 'write-tag-form'],
+    queryFn: () =>
+      spoolmanMode ? api.getSpoolmanInventorySpools(true) : api.getSpools(true),
+  });
+  const { data: settingsForForm } = useQuery({
+    queryKey: ['settings'],
+    queryFn: api.getSettings,
+  });
+
   const [viewMode, setViewMode] = useState<NewSpoolViewMode>('simple');
   const [activeSubTab, setActiveSubTab] = useState<NewSpoolSubTab>('filament');
   const [formData, setFormData] = useState<SpoolFormData>(defaultFormData);
@@ -394,6 +449,7 @@ function NewSpoolTouchForm({ currencySymbol, onCreated, selectedSpool, t }: {
   const [loadingCloudPresets, setLoadingCloudPresets] = useState(false);
   const [cloudPresets, setCloudPresets] = useState<SlicerSetting[]>([]);
   const [localPresets, setLocalPresets] = useState<LocalPreset[]>([]);
+  const [builtinFilaments, setBuiltinFilaments] = useState<BuiltinFilament[]>([]);
   const [spoolCatalog, setSpoolCatalog] = useState<SpoolCatalogEntry[]>([]);
   const [colorCatalog, setColorCatalog] = useState<
     { manufacturer: string; color_name: string; hex_color: string; material: string | null }[]
@@ -410,6 +466,10 @@ function NewSpoolTouchForm({ currencySymbol, onCreated, selectedSpool, t }: {
   }, []);
 
   useEffect(() => {
+    // ``cancelled`` guards every state setter so an async fetch that
+    // resolves after view-mode change / unmount can't setState on a
+    // torn-down component. Same shape as SpoolFormModal's cleanup.
+    let cancelled = false;
     const fetchData = async () => {
       // Only load full data when in full view mode
       if (viewMode !== 'full') {
@@ -418,21 +478,41 @@ function NewSpoolTouchForm({ currencySymbol, onCreated, selectedSpool, t }: {
 
       setLoadingCloudPresets(true);
       try {
-        const status = await api.getCloudStatus();
-        setCloudAuthenticated(status.is_authenticated);
-        if (status.is_authenticated) {
-          const presets = await api.getFilamentPresets();
-          setCloudPresets(presets);
-        }
+        // Fetch Bambu + Orca in parallel; merge their filament lists into
+        // ``cloudPresets`` because ``OrcaProfileMeta`` is structurally
+        // identical to ``SlicerSetting`` (same fields, same semantics).
+        // Same shape as SpoolFormModal — see that for the rationale.
+        const [bambuResult, orcaResult] = await Promise.allSettled([
+          (async () => {
+            const status = await api.getCloudStatus();
+            if (!status.is_authenticated) return { connected: false, presets: [] as SlicerSetting[] };
+            const presets = await api.getFilamentPresets();
+            return { connected: true, presets };
+          })(),
+          (async () => {
+            const status = await api.orcaCloudStatus();
+            if (!status.connected) return { connected: false, presets: [] as SlicerSetting[] };
+            const list = await api.orcaCloudListProfiles();
+            return { connected: true, presets: list.filament as unknown as SlicerSetting[] };
+          })(),
+        ]);
+        if (cancelled) return;
+        const bambuConnected = bambuResult.status === 'fulfilled' && bambuResult.value.connected;
+        const orcaConnected = orcaResult.status === 'fulfilled' && orcaResult.value.connected;
+        const bambuPresets = bambuResult.status === 'fulfilled' ? bambuResult.value.presets : [];
+        const orcaPresets = orcaResult.status === 'fulfilled' ? orcaResult.value.presets : [];
+        setCloudAuthenticated(bambuConnected || orcaConnected);
+        setCloudPresets([...bambuPresets, ...orcaPresets]);
       } catch {
-        setCloudAuthenticated(false);
+        if (!cancelled) setCloudAuthenticated(false);
       } finally {
-        setLoadingCloudPresets(false);
+        if (!cancelled) setLoadingCloudPresets(false);
       }
 
-      api.getSpoolCatalog().then(setSpoolCatalog).catch(() => undefined);
-      api.getColorCatalog().then(setColorCatalog).catch(() => undefined);
-      api.getLocalPresets().then(r => setLocalPresets(r.filament)).catch(() => undefined);
+      api.getSpoolCatalog().then((d) => { if (!cancelled) setSpoolCatalog(d); }).catch(() => undefined);
+      api.getColorCatalog().then((d) => { if (!cancelled) setColorCatalog(d); }).catch(() => undefined);
+      api.getLocalPresets().then(r => { if (!cancelled) setLocalPresets(r.filament); }).catch(() => undefined);
+      api.getBuiltinFilaments().then((d) => { if (!cancelled) setBuiltinFilaments(d); }).catch(() => undefined);
 
       try {
         const printers = await api.getPrinters();
@@ -444,31 +524,22 @@ function NewSpoolTouchForm({ currencySymbol, onCreated, selectedSpool, t }: {
           const connected = status?.connected ?? false;
           let calibrations: PrinterWithCalibrations['calibrations'] = [];
           if (connected) {
-            try {
-              const kRes = await api.getKProfiles(printer.id);
-              calibrations = kRes.profiles.map(p => ({
-                cali_idx: p.slot_id,
-                filament_id: p.filament_id,
-                setting_id: p.setting_id || '',
-                name: p.name,
-                k_value: parseFloat(p.k_value) || 0,
-                n_coef: parseFloat(p.n_coef) || 0,
-                extruder_id: p.extruder_id,
-                nozzle_diameter: p.nozzle_diameter,
-              }));
-            } catch {
-              // ignore per-printer unsupported profile endpoints
-            }
+            // Fetch across every installed nozzle so dual-nozzle printers
+            // surface both the 0.4mm and 0.6mm K-profiles, not just 0.4 (#2618).
+            calibrations = await fetchPrinterCalibrations(printer.id, status);
           }
           results.push({ printer: { ...printer, connected }, calibrations });
         }
-        setPrintersWithCalibrations(results);
+        if (!cancelled) setPrintersWithCalibrations(results);
       } catch {
         // ignore calibration loading errors on kiosk form
       }
     };
 
     fetchData();
+    return () => {
+      cancelled = true;
+    };
   }, [viewMode]);
 
   useEffect(() => {
@@ -478,8 +549,8 @@ function NewSpoolTouchForm({ currencySymbol, onCreated, selectedSpool, t }: {
   }, [printersWithCalibrations]);
 
   const filamentOptions = useMemo(
-    () => buildFilamentOptions(cloudPresets, new Set(), localPresets),
-    [cloudPresets, localPresets],
+    () => buildFilamentOptions(cloudPresets, new Set(), localPresets, builtinFilaments),
+    [cloudPresets, localPresets, builtinFilaments],
   );
 
   const selectedPresetOption = useMemo(
@@ -544,21 +615,28 @@ function NewSpoolTouchForm({ currencySymbol, onCreated, selectedSpool, t }: {
     return map;
   }, [brandMaterialPairs]);
 
-  const availableBrands = useMemo(() => {
-    if (!formData.material) return baseAvailableBrands;
-    const materialKey = formData.material.toLowerCase();
-    const brandKeys = materialToBrands.get(materialKey);
-    if (!brandKeys || brandKeys.size === 0) return baseAvailableBrands;
-    return baseAvailableBrands.filter(brand => brandKeys.has(brand.toLowerCase()));
-  }, [baseAvailableBrands, formData.material, materialToBrands]);
+  // #1905: offer every known brand/material and rank the catalog-paired ones
+  // first, rather than filtering the others out — same behaviour as the
+  // Inventory spool form, which this page mirrors field for field.
+  const availableBrands = useMemo(
+    () => withCurrentValue(baseAvailableBrands, formData.brand),
+    [baseAvailableBrands, formData.brand],
+  );
 
-  const availableMaterials = useMemo(() => {
-    if (!formData.brand) return baseAvailableMaterials;
-    const brandKey = formData.brand.toLowerCase();
-    const materialKeys = brandToMaterials.get(brandKey);
-    if (!materialKeys || materialKeys.size === 0) return baseAvailableMaterials;
-    return baseAvailableMaterials.filter(material => materialKeys.has(material.toLowerCase()));
-  }, [baseAvailableMaterials, formData.brand, brandToMaterials]);
+  const availableMaterials = useMemo(
+    () => withCurrentValue(baseAvailableMaterials, formData.material),
+    [baseAvailableMaterials, formData.material],
+  );
+
+  const suggestedBrands = useMemo(
+    () => pairedOptions(availableBrands, formData.material, materialToBrands),
+    [availableBrands, formData.material, materialToBrands],
+  );
+
+  const suggestedMaterials = useMemo(
+    () => pairedOptions(availableMaterials, formData.brand, brandToMaterials),
+    [availableMaterials, formData.brand, brandToMaterials],
+  );
 
   const updateField = <K extends keyof SpoolFormData>(key: K, value: SpoolFormData[K]) => {
     setFormData(prev => ({ ...prev, [key]: value }));
@@ -572,9 +650,10 @@ function NewSpoolTouchForm({ currencySymbol, onCreated, selectedSpool, t }: {
   };
 
   const saveKProfiles = async (spoolId: number) => {
+    const save = spoolmanMode ? api.saveSpoolmanKProfiles : api.saveSpoolKProfiles;
     if (selectedProfiles.size === 0) {
       try {
-        await api.saveSpoolKProfiles(spoolId, []);
+        await save(spoolId, []);
       } catch {
         // ignore
       }
@@ -606,7 +685,7 @@ function NewSpoolTouchForm({ currencySymbol, onCreated, selectedSpool, t }: {
     }
 
     if (profiles.length > 0) {
-      await api.saveSpoolKProfiles(spoolId, profiles);
+      await save(spoolId, profiles);
     }
   };
 
@@ -626,6 +705,8 @@ function NewSpoolTouchForm({ currencySymbol, onCreated, selectedSpool, t }: {
       brand: formData.brand || null,
       color_name: formData.color_name || null,
       rgba: formData.rgba || null,
+      extra_colors: formData.extra_colors || null,
+      effect_type: formData.effect_type || null,
       label_weight: formData.label_weight,
       core_weight: formData.core_weight,
       core_weight_catalog_id: formData.core_weight_catalog_id,
@@ -645,18 +726,31 @@ function NewSpoolTouchForm({ currencySymbol, onCreated, selectedSpool, t }: {
       tag_type: null,
       last_scale_weight: null,
       last_weighed_at: null,
+      category: formData.category.trim() || null,
+      low_stock_threshold_pct: formData.low_stock_threshold_pct,
     };
 
     setCreating(true);
     try {
       if (quantity > 1) {
-        const created = await api.bulkCreateSpools(payload, quantity);
+        // Spoolman bulk returns SpoolmanBulkCreateResult (207-style envelope);
+        // internal bulk returns InventorySpool[]. Mirrors SpoolFormModal's
+        // duck-typed handling so partial failures surface as a warning toast.
+        const raw = spoolmanMode
+          ? await api.bulkCreateSpoolmanInventorySpools(payload, quantity)
+          : await api.bulkCreateSpools(payload, quantity);
+        const created: InventorySpool[] =
+          spoolmanMode && raw && typeof raw === 'object' && 'created' in raw
+            ? (raw as { created: InventorySpool[] }).created
+            : (raw as InventorySpool[]);
         for (const spool of created) {
           await saveKProfiles(spool.id);
         }
         if (created.length > 0) onCreated(created[0]);
       } else {
-        const created = await api.createSpool(payload);
+        const created = spoolmanMode
+          ? await api.createSpoolmanInventorySpool(payload)
+          : await api.createSpool(payload);
         await saveKProfiles(created.id);
         onCreated(created);
       }
@@ -700,7 +794,7 @@ function NewSpoolTouchForm({ currencySymbol, onCreated, selectedSpool, t }: {
           <div className="flex flex-col items-center justify-center h-full p-6 text-center bg-bambu-dark-secondary border border-bambu-dark-tertiary rounded-lg">
             <div
               className="w-12 h-12 rounded-full mb-4 border border-white/10"
-              style={{ backgroundColor: selectedSpool.rgba ? `#${selectedSpool.rgba.slice(0, 6)}` : '#666' }}
+              style={selectedSpool.rgba ? getSwatchStyle(selectedSpool.rgba) : { backgroundColor: '#666' }}
             />
             <p className="text-white font-medium">
               {selectedSpool.brand ? `${selectedSpool.brand} ` : ''}{selectedSpool.material}
@@ -828,7 +922,10 @@ function NewSpoolTouchForm({ currencySymbol, onCreated, selectedSpool, t }: {
               filamentOptions={filamentOptions}
               availableBrands={availableBrands}
               availableMaterials={availableMaterials}
+              suggestedBrands={suggestedBrands}
+              suggestedMaterials={suggestedMaterials}
               quickAdd={quickAdd}
+              detailsRequired={!quickAdd}
               quantity={quantity}
               onQuantityChange={setQuantity}
               errors={errors}
@@ -847,6 +944,10 @@ function NewSpoolTouchForm({ currencySymbol, onCreated, selectedSpool, t }: {
               updateField={updateField}
               spoolCatalog={spoolCatalog}
               currencySymbol={currencySymbol}
+              availableCategories={Array.from(new Set(
+                allSpoolsForForm.map((s) => s.category?.trim()).filter((c): c is string => !!c),
+              )).sort((a, b) => a.localeCompare(b))}
+              globalLowStockThreshold={settingsForForm?.low_stock_threshold ?? 20}
             />
           </div>
         ) : (
@@ -884,7 +985,7 @@ function NewSpoolTouchForm({ currencySymbol, onCreated, selectedSpool, t }: {
         <div className="flex flex-col items-center justify-center p-4 text-center bg-bambu-dark-secondary border border-bambu-dark-tertiary rounded-lg">
           <div
             className="w-12 h-12 rounded-full mb-4 border border-white/10"
-            style={{ backgroundColor: selectedSpool.rgba ? `#${selectedSpool.rgba.slice(0, 6)}` : '#666' }}
+            style={selectedSpool.rgba ? getSwatchStyle(selectedSpool.rgba) : { backgroundColor: '#666' }}
           />
           <p className="text-white font-medium">
             {selectedSpool.brand ? `${selectedSpool.brand} ` : ''}{selectedSpool.material}
@@ -999,8 +1100,10 @@ function NfcStatusPanel({ writeStatus, writeMessage, selectedSpool, tagOnReader,
     );
   }
 
-  // Spool selected — show summary + write button
-  const spoolColor = selectedSpool.rgba ? `#${selectedSpool.rgba.slice(0, 6)}` : '#666';
+  // Spool selected — show summary + write button. Use getSwatchStyle so
+  // transparent (Clear) spools render a checkerboard rather than collapsing
+  // to solid black (#1545).
+  const spoolColorStyle = selectedSpool.rgba ? getSwatchStyle(selectedSpool.rgba) : { backgroundColor: '#666' };
 
   return (
     <div className="flex flex-col items-center text-center space-y-4 w-full">
@@ -1035,7 +1138,7 @@ function NfcStatusPanel({ writeStatus, writeMessage, selectedSpool, tagOnReader,
       {/* Selected spool summary */}
       <div className="w-full bg-bambu-dark-secondary rounded-lg p-3 space-y-2">
         <div className="flex items-center gap-3">
-          <div className="w-8 h-8 rounded-full border border-white/10 shrink-0" style={{ backgroundColor: spoolColor }} />
+          <div className="w-8 h-8 rounded-full border border-white/10 shrink-0" style={spoolColorStyle} />
           <div className="text-left min-w-0">
             <p className="text-white text-sm font-medium truncate">
               {selectedSpool.brand ? `${selectedSpool.brand} ` : ''}{selectedSpool.material}

@@ -319,14 +319,20 @@ export function formatTimeOnly(
  * @param remainingMinutes - Minutes until completion
  * @param timeFormat - Time format setting ('system', '12h', '24h')
  * @param t - Optional i18n translation function
+ * @param baseTime - Instant to count from, in epoch ms. Defaults to the current
+ *   clock. Callers that render an ETA for something not yet started must pass a
+ *   value that changes over time, or the string freezes at first render: it is
+ *   only recomputed when the component re-renders, which does not happen while
+ *   the underlying data is unchanged (#2740).
  * @returns Formatted ETA string (e.g., "3:45 PM", "Tomorrow 9:30 AM", "Wed 2:00 PM")
  */
 export function formatETA(
   remainingMinutes: number,
   timeFormat: TimeFormat = 'system',
-  t?: (key: string) => string
+  t?: (key: string) => string,
+  baseTime?: number
 ): string {
-  const now = new Date();
+  const now = baseTime != null ? new Date(baseTime) : new Date();
   const eta = new Date(now.getTime() + remainingMinutes * 60 * 1000);
 
   const today = new Date(now);
@@ -442,4 +448,24 @@ export function formatDurationFromHours(hours: number): string {
   const h = Math.floor(hours);
   const m = Math.round((hours - h) * 60);
   return m > 0 ? `${h}h ${m}m` : `${h}h`;
+}
+
+/**
+ * Build a YYYY-MM-DD key for a date, evaluated in the user's local timezone.
+ *
+ * The naive `iso.split('T')[0]` shortcut gives the UTC date, which buckets
+ * an evening print in a negative-UTC-offset region (e.g. CDT) onto the
+ * following day. Stats / heatmap bucketing is a presentation concern and
+ * the browser knows the user's tz, so we format with the local getters
+ * here. Use `toLocaleDateString` for *displaying* a date — this helper is
+ * for *keying* buckets, where the value needs to be a stable comparable
+ * string regardless of locale conventions.
+ */
+export function localDateKey(input: string | Date): string {
+  const date = typeof input === 'string' ? parseUTCDate(input) : input;
+  if (!date) return '';
+  const y = date.getFullYear();
+  const m = String(date.getMonth() + 1).padStart(2, '0');
+  const d = String(date.getDate()).padStart(2, '0');
+  return `${y}-${m}-${d}`;
 }

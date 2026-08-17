@@ -10,6 +10,19 @@ function isTrayEmpty(tray: AMSTray): boolean {
   return !tray.tray_type || tray.tray_type === '';
 }
 
+// Mirror of PrintersPage.getEmptySlotKind (#1694, #2527): 'physical' when
+// firmware confirms no spool, 'reset' when a spool is present but has no
+// tray_type (= loaded, slot just unconfigured — e.g. a non-RFID spool).
+// tray_exist_bits (exists) is authoritative when present; otherwise fall back
+// to the state=9/10 heuristic.
+function getEmptySlotKind(tray: AMSTray): 'physical' | 'reset' | null {
+  if (tray.tray_type) return null;
+  if (tray.exists === true) return 'reset';
+  if (tray.exists === false) return 'physical';
+  const state = tray.state ?? null;
+  return state === 9 || state === 10 ? 'physical' : 'reset';
+}
+
 function getAmsName(id: number): string {
   if (id <= 3) return `AMS ${String.fromCharCode(65 + id)}`;
   if (id >= 128 && id <= 135) return `AMS HT ${String.fromCharCode(65 + id - 128)}`;
@@ -147,6 +160,7 @@ interface SpoolSlotProps {
 
 function SpoolSlot({ tray, slotIndex, isActive, fillOverride, spoolmanFill, onClick }: SpoolSlotProps) {
   const isEmpty = isTrayEmpty(tray);
+  const emptyKind = getEmptySlotKind(tray);
   const color = trayColorToCSS(tray.tray_color);
   const amsFill = tray.remain !== null && tray.remain !== undefined && tray.remain >= 0 ? tray.remain : null;
   // If inventory says 0% but AMS reports positive remain, prefer AMS (#676)
@@ -158,6 +172,7 @@ function SpoolSlot({ tray, slotIndex, isActive, fillOverride, spoolmanFill, onCl
     <div
       className={`relative flex flex-col items-center p-2.5 rounded-lg transition-all ${isActive ? 'ring-2 ring-bambu-green' : ''} ${onClick ? 'cursor-pointer hover:bg-white/5' : ''}`}
       onClick={onClick}
+      title={onClick ? `AMS Slot ${slotIndex + 1}` : undefined}
     >
       {/* Spool visualization */}
       <div className="relative w-16 h-16 mb-1">
@@ -180,8 +195,11 @@ function SpoolSlot({ tray, slotIndex, isActive, fillOverride, spoolmanFill, onCl
       </div>
 
       {/* Material type */}
-      <span className="text-sm text-white/70 truncate max-w-full">
-        {isEmpty ? 'Empty' : tray.tray_type || 'Unknown'}
+      <span
+        className="text-sm text-white/70 truncate max-w-full"
+        title={emptyKind === 'reset' ? 'Spool loaded — slot not configured' : undefined}
+      >
+        {isEmpty ? (emptyKind === 'reset' ? '?' : 'Empty') : tray.tray_type || 'Unknown'}
       </span>
 
       {/* Fill level bar */}

@@ -1,5 +1,5 @@
 import { useState, useRef, useCallback, useMemo, useEffect } from 'react';
-import { useSearchParams } from 'react-router-dom';
+import { Link, useNavigate, useSearchParams } from 'react-router-dom';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { useTranslation } from 'react-i18next';
 import {
@@ -14,6 +14,7 @@ import {
   FolderPlus,
   FileBox,
   Clock,
+  CalendarClock,
   HardDrive,
   File,
   MoveRight,
@@ -31,15 +32,17 @@ import {
   Unlink,
   Archive as ArchiveIcon,
   Briefcase,
+  Cog,
+  Play,
   Printer,
   Pencil,
-  Play,
   Image,
   User,
   Box,
   RefreshCw,
   Lock,
   FolderSymlink,
+  Tag as TagIcon,
 } from 'lucide-react';
 import { api } from '../api/client';
 import type {
@@ -56,11 +59,18 @@ import { Button } from '../components/Button';
 import { ConfirmModal } from '../components/ConfirmModal';
 import { PrintModal } from '../components/PrintModal';
 import { ModelViewerModal } from '../components/ModelViewerModal';
+import { SliceModal } from '../components/SliceModal';
+import { RunWithPipelineModal } from '../components/RunWithPipelineModal';
+import { BulkTagsPickerModal } from '../components/BulkTagsPickerModal';
 import { FileUploadModal } from '../components/FileUploadModal';
+import { FolderReadmePanel } from '../components/FolderReadmePanel';
+import { LibraryTagsModal } from '../components/LibraryTagsModal';
+import { PurgeOldFilesModal } from '../components/PurgeOldFilesModal';
 import { useToast } from '../contexts/ToastContext';
 import { useIsMobile } from '../hooks/useIsMobile';
+import { usePageFileDrop } from '../hooks/usePageFileDrop';
 import { useAuth } from '../contexts/AuthContext';
-import { formatDuration, parseUTCDate } from '../utils/date';
+import { formatDuration, parseUTCDate, formatDate } from '../utils/date';
 import { formatFileSize } from '../utils/file';
 
 type SortField = 'name' | 'date' | 'size' | 'type' | 'prints';
@@ -217,6 +227,18 @@ function ExternalFolderModal({ onClose, onSave, isLoading, t }: ExternalFolderMo
   );
 }
 
+// FAT32/exFAT-illegal chars rejected by Bambu Studio (#1540). Mirrors the
+// backend validator in backend/app/utils/filename.py — keep in sync.
+const INVALID_FILENAME_CHARS = '<>:"/\\|?*';
+
+function findInvalidFilenameChar(name: string): string | null {
+  for (const ch of name) {
+    if (INVALID_FILENAME_CHARS.includes(ch)) return ch;
+    if (ch.charCodeAt(0) < 0x20) return ch;
+  }
+  return null;
+}
+
 // Rename Modal
 interface RenameModalProps {
   type: 'file' | 'folder';
@@ -234,8 +256,14 @@ function RenameModal({ type, currentName, onClose, onSave, isLoading, t }: Renam
   const baseName = type === 'file' && fileExtension ? currentName.slice(0, -fileExtension.length) : currentName;
   const [name, setName] = useState(baseName);
 
+  const invalidChar = type === 'file' ? findInvalidFilenameChar(name) : null;
+  const filenameError = invalidChar
+    ? t('fileManager.invalidFilenameChar', { char: invalidChar })
+    : null;
+
   const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault();
+    if (filenameError) return;
     const fullName = type === 'file' ? name.trim() + fileExtension : name.trim();
     if (name.trim() && fullName !== currentName) {
       onSave(fullName);
@@ -253,7 +281,7 @@ function RenameModal({ type, currentName, onClose, onSave, isLoading, t }: Renam
             <label className="block text-sm font-medium text-white mb-1">
               {t('common.name')}
             </label>
-            <div className="flex items-center bg-bambu-dark border border-bambu-dark-tertiary rounded focus-within:border-bambu-green">
+            <div className={`flex items-center bg-bambu-dark border rounded focus-within:border-bambu-green ${filenameError ? 'border-red-500' : 'border-bambu-dark-tertiary'}`}>
               <input
                 type="text"
                 value={name}
@@ -266,12 +294,15 @@ function RenameModal({ type, currentName, onClose, onSave, isLoading, t }: Renam
                 <span className="pr-3 text-bambu-gray text-sm select-none whitespace-nowrap">{fileExtension}</span>
               )}
             </div>
+            {filenameError && (
+              <p className="mt-1 text-xs text-red-700 dark:text-red-400">{filenameError}</p>
+            )}
           </div>
           <div className="flex justify-end gap-2 pt-2">
             <Button type="button" variant="secondary" onClick={onClose}>
               {t('common.cancel')}
             </Button>
-            <Button type="submit" disabled={!name.trim() || name.trim() === baseName || isLoading}>
+            <Button type="submit" disabled={!name.trim() || name.trim() === baseName || !!filenameError || isLoading}>
               {isLoading ? <Loader2 className="w-4 h-4 animate-spin" /> : t('common.rename')}
             </Button>
           </div>
@@ -373,6 +404,7 @@ function LinkFolderModal({ folder, onClose, onLink, isLoading, t }: LinkFolderMo
   const { data: projects } = useQuery({
     queryKey: ['projects'],
     queryFn: () => api.getProjects(),
+    select: (rows) => [...rows].sort((a, b) => a.name.localeCompare(b.name)),
   });
 
   const { data: archives } = useQuery({
@@ -525,16 +557,29 @@ interface FolderTreeItemProps {
   onRename: (folder: LibraryFolderTree) => void;
   depth?: number;
   wrapNames?: boolean;
+  defaultExpanded?: boolean;
+  showModified?: boolean;
   hasPermission: (permission: Permission) => boolean;
   t: TFunction;
 }
 
-function FolderTreeItem({ folder, selectedFolderId, onSelect, onDelete, onLink, onRename, depth = 0, wrapNames = false, hasPermission, t }: FolderTreeItemProps) {
-  const [expanded, setExpanded] = useState(true);
+function FolderTreeItem({ folder, selectedFolderId, onSelect, onDelete, onLink, onRename, depth = 0, wrapNames = false, defaultExpanded = true, showModified = false, hasPermission, t }: FolderTreeItemProps) {
+  const [expanded, setExpanded] = useState(defaultExpanded);
   const [showActions, setShowActions] = useState(false);
   const hasChildren = folder.children.length > 0;
   const isLinked = folder.project_id || folder.archive_id;
   const isExternal = folder.is_external;
+  // #1781: users with only library:delete_own may delete empty, unlinked,
+  // non-external folders. The backend enforces the same rule and additionally
+  // counts trashed files (invisible here), so a 403 can still come back.
+  const canDeleteFolder =
+    hasPermission('library:delete_all') ||
+    (hasPermission('library:delete_own') && folder.file_count === 0 && !hasChildren && !isExternal && !isLinked);
+  const deleteDisabledTooltip = canDeleteFolder
+    ? undefined
+    : hasPermission('library:delete_own') && !isExternal && !isLinked
+      ? t('fileManager.onlyEmptyFoldersDeletable')
+      : t('fileManager.noPermissionDeleteFolder');
 
   return (
     <div>
@@ -561,16 +606,29 @@ function FolderTreeItem({ folder, selectedFolderId, onSelect, onDelete, onLink, 
           <div className="w-4.5" />
         )}
         {isExternal ? (
-          <FolderSymlink className="w-4 h-4 text-purple-400 flex-shrink-0" />
+          <FolderSymlink className="w-4 h-4 text-purple-600 dark:text-purple-400 flex-shrink-0" />
         ) : (
           <FolderOpen className="w-4 h-4 text-bambu-green flex-shrink-0" />
         )}
-        <span className={`text-sm flex-1 min-w-0 ${wrapNames ? 'break-all' : 'truncate'}`} title={folder.name}>{folder.name}</span>
+        <div className="flex-1 min-w-0">
+          <span className={`block text-sm ${wrapNames ? 'break-all' : 'truncate'}`} title={folder.name}>{folder.name}</span>
+          {/* #2680 follow-up: the same toolbar toggle that shows dates on file
+              cards also shows them here. This is `latest_activity_at` — the
+              newest timestamp among the folder itself, its files and its
+              subfolders (the value "sort by recent activity" orders on) — not
+              the folder's own on-disk mtime, hence the distinct label. */}
+          {showModified && folder.latest_activity_at && (
+            <span className="mt-0.5 flex items-center gap-1 text-xs text-bambu-gray" title={t('fileManager.lastActivity')}>
+              <CalendarClock className="w-3 h-3 flex-shrink-0" />
+              <span className="truncate">{formatDate(folder.latest_activity_at)}</span>
+            </span>
+          )}
+        </div>
         {/* Link indicator - clickable to change link */}
         {isLinked && (
           <button
             onClick={(e) => { e.stopPropagation(); onLink(folder); }}
-            className="flex-shrink-0 flex items-center gap-1 text-xs px-1.5 py-0.5 rounded bg-blue-500/20 text-blue-400 hover:bg-blue-500/30 transition-colors"
+            className="flex-shrink-0 flex items-center gap-1 text-xs px-1.5 py-0.5 rounded bg-blue-100 dark:bg-blue-500/20 text-blue-700 dark:text-blue-400 hover:bg-blue-200 dark:hover:bg-blue-500/30 transition-colors"
             title={`${folder.project_name ? `Project: ${folder.project_name}` : `Archive: ${folder.archive_name}`} (click to change)`}
           >
             <Link2 className="w-3 h-3" />
@@ -584,7 +642,7 @@ function FolderTreeItem({ folder, selectedFolderId, onSelect, onDelete, onLink, 
         {/* Read-only indicator for external folders */}
         {isExternal && folder.external_readonly && (
           <span title={t('fileManager.readOnly')}>
-            <Lock className="w-3 h-3 text-amber-400 flex-shrink-0" />
+            <Lock className="w-3 h-3 text-amber-600 dark:text-amber-400 flex-shrink-0" />
           </span>
         )}
         {folder.file_count > 0 && (
@@ -636,11 +694,11 @@ function FolderTreeItem({ folder, selectedFolderId, onSelect, onDelete, onLink, 
                 </button>
                 <button
                   className={`w-full px-3 py-1.5 text-left text-sm flex items-center gap-2 ${
-                    hasPermission('library:delete_all') ? 'text-red-400 hover:bg-bambu-dark' : 'text-bambu-gray cursor-not-allowed'
+                    canDeleteFolder ? 'text-red-700 dark:text-red-400 hover:bg-bambu-dark' : 'text-bambu-gray cursor-not-allowed'
                   }`}
-                  onClick={() => { if (hasPermission('library:delete_all')) { onDelete(folder.id); setShowActions(false); } }}
-                  disabled={!hasPermission('library:delete_all')}
-                  title={!hasPermission('library:delete_all') ? t('fileManager.noPermissionDeleteFolder') : undefined}
+                  onClick={() => { if (canDeleteFolder) { onDelete(folder.id); setShowActions(false); } }}
+                  disabled={!canDeleteFolder}
+                  title={deleteDisabledTooltip}
                 >
                   <Trash2 className="w-3.5 h-3.5" />
                   {t('common.delete')}
@@ -664,6 +722,8 @@ function FolderTreeItem({ folder, selectedFolderId, onSelect, onDelete, onLink, 
               onRename={onRename}
               depth={depth + 1}
               wrapNames={wrapNames}
+              defaultExpanded={defaultExpanded}
+              showModified={showModified}
               hasPermission={hasPermission}
               t={t}
             />
@@ -677,7 +737,15 @@ function FolderTreeItem({ folder, selectedFolderId, onSelect, onDelete, onLink, 
 // Helper to check if a file is sliced (printable)
 function isSlicedFilename(filename: string): boolean {
   const lower = filename.toLowerCase();
-  return lower.endsWith('.gcode') || lower.includes('.gcode.');
+  return lower.endsWith('.gcode') || lower.endsWith('.gcode.3mf');
+}
+
+// Files that can be fed to the slicer sidecar (model geometry inputs).
+// Excludes .gcode.* (already sliced) and any other non-model formats.
+function isSliceableFilename(filename: string): boolean {
+  const lower = filename.toLowerCase();
+  if (lower.endsWith('.gcode') || lower.endsWith('.gcode.3mf')) return false;
+  return lower.endsWith('.stl') || lower.endsWith('.3mf') || lower.endsWith('.step') || lower.endsWith('.stp');
 }
 
 // File Card
@@ -688,19 +756,23 @@ interface FileCardProps {
   onSelect: (id: number) => void;
   onDelete: (id: number) => void;
   onDownload: (id: number) => void;
-  onAddToQueue?: (id: number) => void;
   onPrint?: (file: LibraryFileListItem) => void;
+  onSlice?: (file: LibraryFileListItem) => void;
+  onRunPipeline?: (file: LibraryFileListItem) => void;
+  useSlicerApi?: boolean;
   onPreview3d?: (file: LibraryFileListItem) => void;
   onRename?: (file: LibraryFileListItem) => void;
   onGenerateThumbnail?: (file: LibraryFileListItem) => void;
+  onTagClick?: (tagId: number) => void;
   thumbnailVersion?: number;
   hasPermission: (permission: Permission) => boolean;
   canModify: (resource: 'queue' | 'archives' | 'library', action: 'update' | 'delete' | 'reprint', createdById: number | null | undefined) => boolean;
   authEnabled: boolean;
+  showModified: boolean;
   t: TFunction;
 }
 
-function FileCard({ file, isSelected, isMobile, onSelect, onDelete, onDownload, onAddToQueue, onPrint, onPreview3d, onRename, onGenerateThumbnail, thumbnailVersion, hasPermission, canModify, authEnabled, t }: FileCardProps) {
+function FileCard({ file, isSelected, isMobile, onSelect, onDelete, onDownload, onPrint, onSlice, onRunPipeline, useSlicerApi, onPreview3d, onRename, onGenerateThumbnail, onTagClick, thumbnailVersion, hasPermission, canModify, authEnabled, showModified, t }: FileCardProps) {
   const [showActions, setShowActions] = useState(false);
 
   return (
@@ -726,7 +798,9 @@ function FileCard({ file, isSelected, isMobile, onSelect, onDelete, onDownload, 
         {/* File type badge */}
         <div className={`absolute top-2 right-2 text-xs px-1.5 py-0.5 rounded font-medium ${
           file.file_type === '3mf' ? 'bg-bambu-green/90 text-white'
-          : file.file_type === 'gcode' ? 'bg-blue-500/90 text-white'
+          // Sliced output — share the gcode blue so users see at a glance
+          // that the file is already sliced and ready to print (#1543).
+          : file.file_type === 'gcode' || file.file_type === 'gcode.3mf' ? 'bg-blue-500/90 text-white'
           : file.file_type === 'stl' ? 'bg-purple-500/90 text-white'
           : 'bg-bambu-gray/90 text-white'
         }`}>
@@ -765,6 +839,30 @@ function FileCard({ file, isSelected, isMobile, onSelect, onDelete, onDownload, 
             {file.created_by_username}
           </div>
         )}
+        {/* #2680: last-modified date, toggled from the toolbar. Uses the real
+            on-disk mtime when known, else the DB created_at. */}
+        {showModified && (
+          <div className="mt-1 text-xs text-bambu-gray flex items-center gap-1" title={t('fileManager.lastModified')}>
+            <CalendarClock className="w-3 h-3" />
+            {formatDate(file.fs_modified_at ?? file.created_at)}
+          </div>
+        )}
+        {(file.tags?.length ?? 0) > 0 && (
+          <div className="mt-2 flex flex-wrap gap-1" onClick={(e) => e.stopPropagation()}>
+            {file.tags!.map((tg) => (
+              <button
+                key={tg.id}
+                type="button"
+                onClick={() => onTagClick?.(tg.id)}
+                className="inline-flex items-center gap-0.5 px-1.5 py-0.5 rounded-full text-[10px] bg-bambu-green/10 text-bambu-green hover:bg-bambu-green/20 transition-colors max-w-full"
+                title={tg.name}
+              >
+                <TagIcon className="w-2.5 h-2.5 flex-shrink-0" />
+                <span className="truncate">{tg.name}</span>
+              </button>
+            ))}
+          </div>
+        )}
       </div>
 
       {/* Actions - always visible on mobile, hover on desktop */}
@@ -782,30 +880,43 @@ function FileCard({ file, isSelected, isMobile, onSelect, onDelete, onDownload, 
               {onPrint && isSlicedFilename(file.filename) && (
                 <button
                   className={`w-full px-3 py-1.5 text-left text-sm flex items-center gap-2 ${
-                    hasPermission('printers:control') ? 'text-bambu-green hover:bg-bambu-dark' : 'text-bambu-gray cursor-not-allowed'
+                    hasPermission('queue:create') ? 'text-bambu-green hover:bg-bambu-dark' : 'text-bambu-gray cursor-not-allowed'
                   }`}
-                  onClick={() => { if (hasPermission('printers:control')) { onPrint(file); setShowActions(false); } }}
-                  disabled={!hasPermission('printers:control')}
-                  title={!hasPermission('printers:control') ? t('fileManager.noPermissionPrint') : undefined}
+                  onClick={() => { if (hasPermission('queue:create')) { onPrint(file); setShowActions(false); } }}
+                  disabled={!hasPermission('queue:create')}
+                  title={!hasPermission('queue:create') ? t('fileManager.noPermissionAddToQueue') : undefined}
                 >
                   <Printer className="w-3.5 h-3.5" />
                   {t('common.print')}
                 </button>
               )}
-              {onAddToQueue && isSlicedFilename(file.filename) && (
+              {onSlice && useSlicerApi && isSliceableFilename(file.filename) && (
                 <button
                   className={`w-full px-3 py-1.5 text-left text-sm flex items-center gap-2 ${
-                    hasPermission('queue:create') ? 'text-white hover:bg-bambu-dark' : 'text-bambu-gray cursor-not-allowed'
+                    hasPermission('library:upload') ? 'text-white hover:bg-bambu-dark' : 'text-bambu-gray cursor-not-allowed'
                   }`}
-                  onClick={() => { if (hasPermission('queue:create')) { onAddToQueue(file.id); setShowActions(false); } }}
-                  disabled={!hasPermission('queue:create')}
-                  title={!hasPermission('queue:create') ? t('fileManager.noPermissionAddToQueue') : undefined}
+                  onClick={() => { if (hasPermission('library:upload')) { onSlice(file); setShowActions(false); } }}
+                  disabled={!hasPermission('library:upload')}
+                  title={!hasPermission('library:upload') ? t('fileManager.noPermissionSlice') : undefined}
                 >
-                  <Clock className="w-3.5 h-3.5" />
-                  {t('fileManager.schedulePrint')}
+                  <Cog className="w-3.5 h-3.5" />
+                  {t('slice.action')}
                 </button>
               )}
-              {onPreview3d && (file.file_type === '3mf' || file.file_type === 'gcode' || file.file_type === 'stl') && (
+              {onRunPipeline && useSlicerApi && isSliceableFilename(file.filename) && (
+                <button
+                  className={`w-full px-3 py-1.5 text-left text-sm flex items-center gap-2 ${
+                    hasPermission('pipelines:run') ? 'text-white hover:bg-bambu-dark' : 'text-bambu-gray cursor-not-allowed'
+                  }`}
+                  onClick={() => { if (hasPermission('pipelines:run')) { onRunPipeline(file); setShowActions(false); } }}
+                  disabled={!hasPermission('pipelines:run')}
+                  title={!hasPermission('pipelines:run') ? t('library.runWithPipeline.noPermission') : undefined}
+                >
+                  <Play className="w-3.5 h-3.5" />
+                  {t('library.runWithPipeline.actionLabel')}
+                </button>
+              )}
+              {onPreview3d && (file.file_type === '3mf' || file.file_type === 'gcode' || file.file_type === 'stl' || file.file_type === 'gcode.3mf') && (
                 <button
                   className={`w-full px-3 py-1.5 text-left text-sm flex items-center gap-2 ${
                     hasPermission('library:read') ? 'text-white hover:bg-bambu-dark' : 'text-bambu-gray cursor-not-allowed'
@@ -857,7 +968,7 @@ function FileCard({ file, isSelected, isMobile, onSelect, onDelete, onDownload, 
               )}
               <button
                 className={`w-full px-3 py-1.5 text-left text-sm flex items-center gap-2 ${
-                  canModify('library', 'delete', file.created_by_id) ? 'text-red-400 hover:bg-bambu-dark' : 'text-bambu-gray cursor-not-allowed'
+                  canModify('library', 'delete', file.created_by_id) ? 'text-red-700 dark:text-red-400 hover:bg-bambu-dark' : 'text-bambu-gray cursor-not-allowed'
                 }`}
                 onClick={() => { if (canModify('library', 'delete', file.created_by_id)) { onDelete(file.id); setShowActions(false); } }}
                 disabled={!canModify('library', 'delete', file.created_by_id)}
@@ -889,6 +1000,7 @@ export function FileManagerPage() {
   const { showToast } = useToast();
   const { hasPermission, hasAnyPermission, canModify, authEnabled } = useAuth();
   const [searchParams] = useSearchParams();
+  const navigate = useNavigate();
 
   // Read folder ID from URL query parameter
   const folderIdFromUrl = searchParams.get('folder');
@@ -896,16 +1008,30 @@ export function FileManagerPage() {
 
   // State
   const [selectedFolderId, setSelectedFolderId] = useState<number | null>(initialFolderId);
+  // Which top-level pseudo-view the sidebar shows when no specific folder is
+  // selected: "internal" = files in Bambuddy's managed storage, "external" =
+  // combined view across every linked external folder (#1621). Per-folder
+  // selection bypasses this (selectedFolderId !== null disables the filter).
+  const [topLevelView, setTopLevelView] = useState<'internal' | 'external'>('internal');
   const [selectedFiles, setSelectedFiles] = useState<number[]>([]);
   const [showNewFolderModal, setShowNewFolderModal] = useState(false);
   const [showExternalFolderModal, setShowExternalFolderModal] = useState(false);
   const [showMoveModal, setShowMoveModal] = useState(false);
   const [showUploadModal, setShowUploadModal] = useState(false);
+  const [droppedFiles, setDroppedFiles] = useState<File[]>([]);
+  const [showPurgeModal, setShowPurgeModal] = useState(false);
+  // Tag UI state (#1268). selectedTagIds is the AND-style filter applied to
+  // the listing; setting it bypasses folder scoping on the server so
+  // "every toy" works regardless of which folder is currently selected.
+  const [showTagsModal, setShowTagsModal] = useState(false);
+  const [showBulkTagsModal, setShowBulkTagsModal] = useState(false);
+  const [selectedTagIds, setSelectedTagIds] = useState<number[]>([]);
   const [linkFolder, setLinkFolder] = useState<LibraryFolderTree | null>(null);
   const [deleteConfirm, setDeleteConfirm] = useState<{ type: 'file' | 'folder' | 'bulk'; id: number; count?: number } | null>(null);
   const [printFile, setPrintFile] = useState<LibraryFileListItem | null>(null);
-  const [printMultiFile, setPrintMultiFile] = useState<LibraryFileListItem | null>(null);
-  const [scheduleFile, setScheduleFile] = useState<LibraryFileListItem | null>(null);
+  const [sliceFile, setSliceFile] = useState<LibraryFileListItem | null>(null);
+  // Slicer Pipelines (#1425 PR B) — file gets "Run with pipeline" action.
+  const [runPipelineFile, setRunPipelineFile] = useState<LibraryFileListItem | null>(null);
   const [renameItem, setRenameItem] = useState<{ type: 'file' | 'folder'; id: number; name: string } | null>(null);
   const [thumbnailVersions, setThumbnailVersions] = useState<Record<number, number>>({});
   const [viewerFile, setViewerFile] = useState<LibraryFileListItem | null>(null);
@@ -914,6 +1040,20 @@ export function FileManagerPage() {
   });
   const [wrapFolderNames, setWrapFolderNames] = useState(() => {
     return localStorage.getItem('library-wrap-folders') === 'true';
+  });
+  const [collapseFoldersByDefault, setCollapseFoldersByDefault] = useState(() => {
+    return localStorage.getItem('library-collapse-folders') === 'true';
+  });
+  // Folder tree sort (#1770). 'name' = alphabetical (the prior behaviour);
+  // 'activity' = most recent file activity inside the folder first. Persisted
+  // independently from the file-side sort so each can be tuned to taste.
+  const [folderSortField, setFolderSortField] = useState<'name' | 'activity'>(() => {
+    const saved = localStorage.getItem('library-folder-sort-field');
+    return saved === 'activity' ? 'activity' : 'name';
+  });
+  const [folderSortDirection, setFolderSortDirection] = useState<'asc' | 'desc'>(() => {
+    const saved = localStorage.getItem('library-folder-sort-direction');
+    return saved === 'desc' ? 'desc' : 'asc';
   });
 
   // Resizable sidebar state
@@ -974,6 +1114,10 @@ export function FileManagerPage() {
     const saved = localStorage.getItem('library-sort-direction');
     return (saved as SortDirection) || 'asc';
   });
+  // Show/hide the last-modified date on each file card (#2680). Persisted.
+  const [showModified, setShowModified] = useState<boolean>(
+    () => localStorage.getItem('library-show-modified') === 'true'
+  );
 
   // Mobile detection for touch-friendly UI
   const isMobile = useIsMobile();
@@ -997,9 +1141,114 @@ export function FileManagerPage() {
     queryFn: () => api.getLibraryFolders(),
   });
 
+  // Recursive folder tree sort (#1770). Applies the same comparator to the
+  // top-level list AND to each level of `children`, so sort order is uniform
+  // at every depth of nesting. When sorting by activity, the comparator falls
+  // back to a created-at fallback for folders with no files (`latest_activity_at`
+  // is null) so they stay grouped at the end / start of the bucket instead of
+  // randomly interspersed.
+  const sortedFolders = useMemo(() => {
+    if (!folders) return folders;
+    const sortLevel = (items: LibraryFolderTree[]): LibraryFolderTree[] => {
+      const sorted = [...items].sort((a, b) => {
+        let comparison = 0;
+        if (folderSortField === 'name') {
+          comparison = a.name.localeCompare(b.name);
+        } else {
+          // activity: newest first on 'desc', oldest first on 'asc'.
+          // Folders with no activity timestamp sort to the end regardless
+          // of direction so an empty folder doesn't elbow a recently-used one.
+          const aTs = a.latest_activity_at ? new Date(a.latest_activity_at).getTime() : null;
+          const bTs = b.latest_activity_at ? new Date(b.latest_activity_at).getTime() : null;
+          if (aTs === null && bTs === null) {
+            comparison = a.name.localeCompare(b.name);
+          } else if (aTs === null) {
+            return 1;
+          } else if (bTs === null) {
+            return -1;
+          } else {
+            comparison = aTs - bTs;
+          }
+        }
+        return folderSortDirection === 'asc' ? comparison : -comparison;
+      });
+      return sorted.map((f) => ({ ...f, children: sortLevel(f.children) }));
+    };
+    return sortLevel(folders);
+  }, [folders, folderSortField, folderSortDirection]);
+
+  // Trash count for the header badge (#1008). Empty/error are silently treated
+  // as zero so a broken trash endpoint doesn't break the File Manager.
+  const { data: trashCount } = useQuery({
+    queryKey: ['library-trash-count'],
+    queryFn: async () => {
+      try {
+        const res = await api.listLibraryTrash(1, 0);
+        return res.total;
+      } catch {
+        return 0;
+      }
+    },
+    staleTime: 30_000,
+  });
+
+  // #1268: when a folder is selected and the user has typed a search query,
+  // ask the server to expand the result to every descendant folder so the
+  // client-side filter can match files in subfolders too. Without this the
+  // listing is just the immediate children and "robot.3mf" two levels deep
+  // is invisible from the parent. Only kicks in for folder-scoped views —
+  // root and the internal/external pseudo-nodes already return the union.
+  const searchExpandsSubfolders = selectedFolderId !== null && searchQuery.trim().length > 0;
+  // The tag filter overrides folder scoping server-side (#1268 design call),
+  // so the FE query key includes it as a peer of folder/topLevelView. Sorted
+  // so the cache hits regardless of the order tags were toggled.
+  const tagFilterKey = useMemo(() => [...selectedTagIds].sort((a, b) => a - b), [selectedTagIds]);
+  // Tag catalog — needed to resolve names for the active-filter chip bar.
+  // Cheap query, shared with LibraryTagsModal / BulkTagsPickerModal via the
+  // same queryKey so they all invalidate together on tag CRUD.
+  const { data: tagCatalog = [] } = useQuery({
+    queryKey: ['library-tags'],
+    queryFn: api.getLibraryTags,
+  });
+  const tagsById = useMemo(() => {
+    const map = new Map<number, string>();
+    for (const t of tagCatalog) map.set(t.id, t.name);
+    return map;
+  }, [tagCatalog]);
+  // Prune the active filter when a tag is removed from the catalog so the
+  // listing never stalls on a phantom id. Skipped while the catalog query is
+  // still settling (empty array on first paint) — otherwise the user's filter
+  // gets cleared the moment the page mounts.
+  useEffect(() => {
+    if (tagCatalog.length === 0) return;
+    setSelectedTagIds((prev) => {
+      const next = prev.filter((id) => tagsById.has(id));
+      return next.length === prev.length ? prev : next;
+    });
+  }, [tagCatalog.length, tagsById]);
+
+  const toggleTagFilter = useCallback((tagId: number) => {
+    setSelectedTagIds((prev) =>
+      prev.includes(tagId) ? prev.filter((id) => id !== tagId) : [...prev, tagId],
+    );
+  }, []);
+
   const { data: files, isLoading: filesLoading } = useQuery({
-    queryKey: ['library-files', selectedFolderId],
-    queryFn: () => api.getLibraryFiles(selectedFolderId, selectedFolderId === null),
+    queryKey: ['library-files', selectedFolderId, topLevelView, searchExpandsSubfolders, tagFilterKey],
+    // When a specific folder is selected we list its contents directly; when
+    // no folder is selected the topLevelView pseudo-node decides whether the
+    // server scopes the result to internal-managed-storage files or to the
+    // union of every external folder (#1621). include_root stays false so the
+    // listing still descends into subfolders (regression guard from #1499).
+    queryFn: () =>
+      api.getLibraryFiles(
+        selectedFolderId,
+        false,
+        undefined,
+        selectedFolderId === null ? topLevelView : undefined,
+        searchExpandsSubfolders,
+        tagFilterKey,
+      ),
   });
 
   const { data: stats } = useQuery({
@@ -1057,7 +1306,11 @@ export function FileManagerPage() {
           comparison = (a.print_name || a.filename).localeCompare(b.print_name || b.filename);
           break;
         case 'date':
-          comparison = (parseUTCDate(a.created_at)?.getTime() ?? 0) - (parseUTCDate(b.created_at)?.getTime() ?? 0);
+          // #2680: sort by real on-disk mtime (matches `ls -t`), falling back to
+          // the DB created_at for managed uploads that have no filesystem mtime.
+          comparison =
+            (parseUTCDate(a.fs_modified_at ?? a.created_at)?.getTime() ?? 0) -
+            (parseUTCDate(b.fs_modified_at ?? b.created_at)?.getTime() ?? 0);
           break;
         case 'size':
           comparison = a.file_size - b.file_size;
@@ -1146,6 +1399,7 @@ export function FileManagerPage() {
       queryClient.invalidateQueries({ queryKey: ['library-files'] });
       queryClient.invalidateQueries({ queryKey: ['library-folders'] });
       queryClient.invalidateQueries({ queryKey: ['library-stats'] });
+      queryClient.invalidateQueries({ queryKey: ['library-trash-count'] });
       setSelectedFiles((prev) => prev.filter((id) => id !== deleteConfirm?.id));
       setDeleteConfirm(null);
       showToast(t('fileManager.toast.fileDeleted'), 'success');
@@ -1162,6 +1416,7 @@ export function FileManagerPage() {
       queryClient.invalidateQueries({ queryKey: ['library-files'] });
       queryClient.invalidateQueries({ queryKey: ['library-folders'] });
       queryClient.invalidateQueries({ queryKey: ['library-stats'] });
+      queryClient.invalidateQueries({ queryKey: ['library-trash-count'] });
       showToast(t('fileManager.toast.filesDeleted', { count: fileIds.length }), 'success');
       setSelectedFiles([]);
       setDeleteConfirm(null);
@@ -1312,6 +1567,20 @@ export function FileManagerPage() {
     queryClient.invalidateQueries({ queryKey: ['library-stats'] });
   };
 
+  // Page-wide drag-and-drop upload (#1510). Disabled when the user lacks
+  // library:upload so a non-uploader can't accidentally show the overlay,
+  // and also disabled while the upload modal itself is open so drags into
+  // the modal's own drop zone don't bubble up and flash the page overlay
+  // behind it.
+  const canUpload = hasPermission('library:upload');
+  const { isDraggingOver, dragHandlers } = usePageFileDrop({
+    disabled: !canUpload || showUploadModal,
+    onFiles: (files) => {
+      setDroppedFiles(files);
+      setShowUploadModal(true);
+    },
+  });
+
   const handleDownload = (id: number) => {
     api.downloadLibraryFile(id).catch((err) => {
       console.error('Library file download failed:', err);
@@ -1353,17 +1622,29 @@ export function FileManagerPage() {
   }, [selectedFolderId, folders]);
 
   return (
-    <div className="p-4 md:p-8 min-h-[calc(100vh-64px)] lg:h-[calc(100vh-64px)] flex flex-col">
+    <div
+      className="p-4 md:p-8 min-h-[calc(100vh-64px)] lg:h-[calc(100vh-64px)] flex flex-col relative"
+      {...dragHandlers}
+    >
+      {/* Drag & Drop Overlay — page-wide file upload (#1510) */}
+      {isDraggingOver && (
+        <div className="fixed inset-0 z-50 bg-bambu-dark/90 flex items-center justify-center pointer-events-none">
+          <div className="border-4 border-dashed border-bambu-green rounded-xl p-12 text-center">
+            <Upload className="w-16 h-16 mx-auto mb-4 text-bambu-green" />
+            <p className="text-2xl font-semibold text-white mb-2">{t('fileManager.dropFilesHere')}</p>
+            <p className="text-bambu-gray">{t('fileManager.releaseToUpload')}</p>
+          </div>
+        </div>
+      )}
+
       {/* Header */}
       <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 mb-6">
         <div>
           <h1 className="text-2xl font-bold text-white flex items-center gap-3">
-            <div className="p-2.5 bg-bambu-green/10 rounded-xl">
-              <FolderOpen className="w-6 h-6 text-bambu-green" />
-            </div>
+            <FolderOpen className="w-7 h-7 text-bambu-green" />
             {t('fileManager.title')}
           </h1>
-          <p className="text-sm text-bambu-gray mt-2 ml-14">
+          <p className="text-bambu-gray mt-1">
             {t('fileManager.subtitle')}
           </p>
         </div>
@@ -1421,6 +1702,39 @@ export function FileManagerPage() {
             {t('fileManager.newFolder')}
           </Button>
           <Button
+            variant="secondary"
+            onClick={() => setShowTagsModal(true)}
+            title={t('fileManager.tags.manageTitle')}
+          >
+            <TagIcon className="w-4 h-4 mr-2" />
+            {t('fileManager.tags.manage')}
+          </Button>
+          {hasPermission('library:purge') && (
+            <Button
+              variant="secondary"
+              onClick={() => setShowPurgeModal(true)}
+              title={t('libraryPurge.headerTooltip')}
+            >
+              <Trash2 className="w-4 h-4 mr-2" />
+              {t('libraryPurge.headerButton')}
+            </Button>
+          )}
+          {(hasAnyPermission('library:delete_own', 'library:delete_all')) && (
+            <Link
+              to="/files/trash"
+              className="inline-flex items-center px-3 py-1.5 text-sm rounded bg-bambu-dark-secondary text-bambu-gray hover:text-white hover:bg-bambu-dark transition-colors"
+              title={t('libraryTrash.headerTooltip')}
+            >
+              <Trash2 className="w-4 h-4 mr-2" />
+              {t('libraryTrash.headerButton')}
+              {typeof trashCount === 'number' && trashCount > 0 && (
+                <span className="ml-1.5 px-1.5 py-0.5 text-xs rounded-full bg-bambu-green/20 text-bambu-green">
+                  {trashCount}
+                </span>
+              )}
+            </Link>
+          )}
+          <Button
             onClick={() => setShowUploadModal(true)}
             disabled={!hasPermission('library:upload')}
             title={!hasPermission('library:upload') ? t('fileManager.noPermissionUpload') : undefined}
@@ -1453,12 +1767,12 @@ export function FileManagerPage() {
             <span className="text-white font-medium">{stats.total_files}</span>
           </div>
           <div className="flex items-center gap-2 text-sm">
-            <FolderOpen className="w-4 h-4 text-blue-400" />
+            <FolderOpen className="w-4 h-4 text-blue-600 dark:text-blue-400" />
             <span className="text-bambu-gray">{t('fileManager.folders')}:</span>
             <span className="text-white font-medium">{stats.total_folders}</span>
           </div>
           <div className="flex items-center gap-2 text-sm">
-            <HardDrive className="w-4 h-4 text-amber-400" />
+            <HardDrive className="w-4 h-4 text-amber-600 dark:text-amber-400" />
             <span className="text-bambu-gray">{t('fileManager.size')}:</span>
             <span className="text-white font-medium">{formatFileSize(stats.total_size_bytes)}</span>
           </div>
@@ -1476,12 +1790,23 @@ export function FileManagerPage() {
         {/* Mobile folder selector */}
         <div className="lg:hidden">
           <select
-            value={selectedFolderId ?? ''}
-            onChange={(e) => setSelectedFolderId(e.target.value ? parseInt(e.target.value, 10) : null)}
+            value={selectedFolderId !== null ? String(selectedFolderId) : `__top:${topLevelView}`}
+            onChange={(e) => {
+              const v = e.target.value;
+              if (v.startsWith('__top:')) {
+                setSelectedFolderId(null);
+                setTopLevelView(v.slice('__top:'.length) as 'internal' | 'external');
+              } else {
+                setSelectedFolderId(parseInt(v, 10));
+              }
+            }}
             className="w-full bg-bambu-dark-secondary border border-bambu-dark-tertiary rounded-lg px-3 py-2.5 text-white focus:outline-none focus:border-bambu-green"
           >
-            <option value="">📁 {t('fileManager.allFiles')}</option>
-            {folders && (() => {
+            <option value="__top:internal">📁 {t('fileManager.allFiles')}</option>
+            {folders?.some((f) => f.is_external) && (
+              <option value="__top:external">🔗 {t('fileManager.allExternal')}</option>
+            )}
+            {sortedFolders && (() => {
               // Flatten folder tree for mobile selector
               const flattenFolders = (items: LibraryFolderTree[], depth = 0): { id: number; name: string; fileCount: number; depth: number }[] => {
                 const result: { id: number; name: string; fileCount: number; depth: number }[] = [];
@@ -1493,7 +1818,7 @@ export function FileManagerPage() {
                 }
                 return result;
               };
-              return flattenFolders(folders).map((folder) => (
+              return flattenFolders(sortedFolders).map((folder) => (
                 <option key={folder.id} value={folder.id}>
                   {'│ '.repeat(folder.depth)}📂 {folder.name} {folder.fileCount > 0 ? `(${folder.fileCount})` : ''}
                 </option>
@@ -1532,40 +1857,113 @@ export function FileManagerPage() {
           </div>
           <div className="p-3 border-b border-bambu-dark-tertiary flex items-center justify-between">
             <h2 className="text-sm font-medium text-white">{t('fileManager.folders')}</h2>
-            <button
-              onClick={() => {
-                const newValue = !wrapFolderNames;
-                setWrapFolderNames(newValue);
-                localStorage.setItem('library-wrap-folders', String(newValue));
-              }}
-              className={`text-xs px-1.5 py-0.5 rounded transition-colors ${
-                wrapFolderNames
-                  ? 'bg-bambu-green/20 text-bambu-green'
-                  : 'text-bambu-gray hover:text-white hover:bg-bambu-dark'
-              }`}
-              title={wrapFolderNames ? t('fileManager.disableTextWrapping') : t('fileManager.enableTextWrapping')}
-            >
-              {t('fileManager.wrap')}
-            </button>
+            <div className="flex items-center gap-1">
+              {/* Folder tree sort (#1770). Dropdown drives the comparator;
+                  direction button flips asc/desc. Both persist to localStorage
+                  on change so the choice survives reloads. */}
+              <select
+                value={folderSortField}
+                onChange={(e) => {
+                  const v = e.target.value === 'activity' ? 'activity' : 'name';
+                  setFolderSortField(v);
+                  localStorage.setItem('library-folder-sort-field', v);
+                }}
+                className="text-xs px-1 py-0.5 rounded bg-bambu-dark border border-bambu-dark-tertiary text-bambu-gray focus:outline-none focus:border-bambu-green"
+                title={t('fileManager.folderSort')}
+                aria-label={t('fileManager.folderSort')}
+              >
+                <option value="name">{t('fileManager.folderSortByName')}</option>
+                <option value="activity">{t('fileManager.folderSortByActivity')}</option>
+              </select>
+              <button
+                onClick={() => {
+                  const newValue = folderSortDirection === 'asc' ? 'desc' : 'asc';
+                  setFolderSortDirection(newValue);
+                  localStorage.setItem('library-folder-sort-direction', newValue);
+                }}
+                className="text-bambu-gray hover:text-white hover:bg-bambu-dark p-1 rounded transition-colors"
+                title={folderSortDirection === 'asc' ? t('fileManager.ascending') : t('fileManager.descending')}
+                aria-label={folderSortDirection === 'asc' ? t('fileManager.ascending') : t('fileManager.descending')}
+              >
+                {folderSortDirection === 'asc' ? <SortAsc className="w-3.5 h-3.5" /> : <SortDesc className="w-3.5 h-3.5" />}
+              </button>
+              <button
+                onClick={() => {
+                  const newValue = !collapseFoldersByDefault;
+                  setCollapseFoldersByDefault(newValue);
+                  localStorage.setItem('library-collapse-folders', String(newValue));
+                }}
+                className={`text-xs px-1.5 py-0.5 rounded transition-colors ${
+                  collapseFoldersByDefault
+                    ? 'bg-bambu-green/20 text-bambu-green'
+                    : 'text-bambu-gray hover:text-white hover:bg-bambu-dark'
+                }`}
+                title={collapseFoldersByDefault ? t('fileManager.expandFoldersByDefault') : t('fileManager.collapseFoldersByDefault')}
+              >
+                {t('fileManager.collapse')}
+              </button>
+              <button
+                onClick={() => {
+                  const newValue = !wrapFolderNames;
+                  setWrapFolderNames(newValue);
+                  localStorage.setItem('library-wrap-folders', String(newValue));
+                }}
+                className={`text-xs px-1.5 py-0.5 rounded transition-colors ${
+                  wrapFolderNames
+                    ? 'bg-bambu-green/20 text-bambu-green'
+                    : 'text-bambu-gray hover:text-white hover:bg-bambu-dark'
+                }`}
+                title={wrapFolderNames ? t('fileManager.disableTextWrapping') : t('fileManager.enableTextWrapping')}
+              >
+                {t('fileManager.wrap')}
+              </button>
+            </div>
           </div>
           <div className="flex-1 overflow-y-auto p-2">
-            {/* All Files (root) */}
+            {/* All Files = the user's own uploaded / managed-storage files
+                only. External folders are surfaced separately below to keep
+                a linked NAS from drowning the user's own uploads (#1621). */}
             <div
               className={`flex items-center gap-2 px-2 py-1.5 rounded cursor-pointer transition-colors ${
-                selectedFolderId === null
+                selectedFolderId === null && topLevelView === 'internal'
                   ? 'bg-bambu-green/20 text-bambu-green'
                   : 'hover:bg-bambu-dark text-white'
               }`}
-              onClick={() => setSelectedFolderId(null)}
+              onClick={() => {
+                setSelectedFolderId(null);
+                setTopLevelView('internal');
+              }}
             >
               <FileBox className="w-4 h-4" />
               <span className="text-sm">{t('fileManager.allFiles')}</span>
             </div>
 
-            {/* Folder tree */}
-            {folders?.map((folder) => (
+            {/* External (combined) — only shown when at least one external
+                folder is linked. Single folder users don't need a combined
+                view; clicking the individual folder is just as fast. */}
+            {folders?.some((f) => f.is_external) && (
+              <div
+                className={`flex items-center gap-2 px-2 py-1.5 rounded cursor-pointer transition-colors ${
+                  selectedFolderId === null && topLevelView === 'external'
+                    ? 'bg-bambu-green/20 text-bambu-green'
+                    : 'hover:bg-bambu-dark text-white'
+                }`}
+                onClick={() => {
+                  setSelectedFolderId(null);
+                  setTopLevelView('external');
+                }}
+              >
+                <FolderSymlink className="w-4 h-4 text-purple-600 dark:text-purple-400" />
+                <span className="text-sm">{t('fileManager.allExternal')}</span>
+              </div>
+            )}
+
+            {/* Folder tree — re-key on the collapse toggle so flipping it
+                remounts every FolderTreeItem, which re-reads defaultExpanded
+                and makes the preference take effect immediately. */}
+            {sortedFolders?.map((folder) => (
               <FolderTreeItem
-                key={folder.id}
+                key={`${folder.id}-${collapseFoldersByDefault ? 'c' : 'e'}`}
                 folder={folder}
                 selectedFolderId={selectedFolderId}
                 onSelect={setSelectedFolderId}
@@ -1573,6 +1971,8 @@ export function FileManagerPage() {
                 onLink={setLinkFolder}
                 onRename={(f) => setRenameItem({ type: 'folder', id: f.id, name: f.name })}
                 wrapNames={wrapFolderNames}
+                defaultExpanded={!collapseFoldersByDefault}
+                showModified={showModified}
                 hasPermission={hasPermission}
                 t={t}
               />
@@ -1580,17 +1980,63 @@ export function FileManagerPage() {
           </div>
         </div>
 
-        {/* Files area */}
+        {/* Files area + README rail (#2520 item 2). On wide screens the
+            README docks as a collapsible right-hand column (rendered after
+            the files column, below) so it no longer steals vertical space
+            from the file list; on narrow screens it stacks above the list
+            via `order-first` and the page itself scrolls. */}
+        <div className="flex-1 flex flex-col lg:flex-row min-w-0 min-h-0 gap-4 lg:gap-6">
         <div className="flex-1 flex flex-col min-w-0 min-h-0">
+          {/* Tag filter rail (#1268). Lists every catalog tag as a togglable
+              chip — active chips are filled green and show an X, inactive
+              chips are outlined and toggle ON when clicked. Clicking an active
+              chip removes it from the filter. Hidden entirely when the
+              catalog is empty so brand-new installs don't see a stray rail. */}
+          {tagCatalog.length > 0 && (
+            <div className="mb-3 flex flex-wrap items-center gap-2 p-2 sm:p-3 bg-bambu-dark-secondary rounded-lg border border-bambu-dark-tertiary">
+              <span className="text-xs text-bambu-gray font-medium shrink-0">
+                {t('fileManager.tags.filterLabel')}
+              </span>
+              {tagCatalog.map((tg) => {
+                const active = selectedTagIds.includes(tg.id);
+                return (
+                  <button
+                    key={tg.id}
+                    type="button"
+                    onClick={() => toggleTagFilter(tg.id)}
+                    className={
+                      active
+                        ? 'inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-xs bg-bambu-green/20 text-bambu-green border border-bambu-green/40 hover:bg-bambu-green/30 transition-colors'
+                        : 'inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-xs bg-bambu-dark text-bambu-gray border border-bambu-dark-tertiary hover:text-white hover:border-bambu-green/40 transition-colors'
+                    }
+                    title={tg.name}
+                  >
+                    <TagIcon className="w-3 h-3" />
+                    <span>{tg.name}</span>
+                    {active && <X className="w-3 h-3" />}
+                  </button>
+                );
+              })}
+              {selectedTagIds.length > 0 && (
+                <button
+                  type="button"
+                  onClick={() => setSelectedTagIds([])}
+                  className="ml-auto text-xs text-bambu-gray hover:text-white shrink-0"
+                >
+                  {t('fileManager.tags.clearAll')}
+                </button>
+              )}
+            </div>
+          )}
           {/* External folder info bar */}
           {selectedFolder?.is_external && (
-            <div className="flex items-center gap-3 mb-4 p-3 bg-purple-500/10 border border-purple-500/30 rounded-lg">
-              <FolderSymlink className="w-5 h-5 text-purple-400 flex-shrink-0" />
+            <div className="flex items-center gap-3 mb-4 p-3 bg-purple-50 dark:bg-purple-500/10 border border-purple-300 dark:border-purple-500/30 rounded-lg">
+              <FolderSymlink className="w-5 h-5 text-purple-600 dark:text-purple-400 flex-shrink-0" />
               <div className="flex-1 min-w-0">
                 <div className="flex items-center gap-2">
-                  <span className="text-sm font-medium text-purple-300">{t('fileManager.externalFolder')}</span>
+                  <span className="text-sm font-medium text-purple-700 dark:text-purple-300">{t('fileManager.externalFolder')}</span>
                   {selectedFolder.external_readonly && (
-                    <span className="text-xs px-1.5 py-0.5 rounded bg-amber-500/20 text-amber-400 flex items-center gap-1">
+                    <span className="text-xs px-1.5 py-0.5 rounded bg-amber-100 dark:bg-amber-500/20 text-amber-700 dark:text-amber-400 flex items-center gap-1">
                       <Lock className="w-3 h-3" />
                       {t('fileManager.readOnly')}
                     </span>
@@ -1629,6 +2075,14 @@ export function FileManagerPage() {
                   onChange={(e) => setSearchQuery(e.target.value)}
                   className="w-full pl-9 pr-3 py-1.5 bg-bambu-dark border border-bambu-dark-tertiary rounded text-sm text-white placeholder-bambu-gray focus:outline-none focus:border-bambu-green"
                 />
+                {searchExpandsSubfolders && (
+                  <span
+                    className="absolute -bottom-4 left-0 text-[10px] text-bambu-gray whitespace-nowrap"
+                    title={t('fileManager.searchSubfoldersHint')}
+                  >
+                    {t('fileManager.searchSubfoldersHint')}
+                  </span>
+                )}
               </div>
 
               {/* Type filter */}
@@ -1708,6 +2162,20 @@ export function FileManagerPage() {
                     <SortDesc className="w-4 h-4 text-white" />
                   )}
                 </button>
+                <button
+                  onClick={() => setShowModified((v) => {
+                    const next = !v;
+                    localStorage.setItem('library-show-modified', String(next));
+                    return next;
+                  })}
+                  className={`p-1.5 rounded bg-bambu-dark border transition-colors ${
+                    showModified ? 'border-bambu-green text-bambu-green' : 'border-bambu-dark-tertiary text-white hover:border-bambu-green'
+                  }`}
+                  title={showModified ? t('fileManager.hideModified') : t('fileManager.showModified')}
+                  aria-pressed={showModified}
+                >
+                  <CalendarClock className="w-4 h-4" />
+                </button>
               </div>
 
               {/* Results count */}
@@ -1754,27 +2222,12 @@ export function FileManagerPage() {
                       <Button
                         variant="primary"
                         size="sm"
-                        onClick={() => setPrintMultiFile(selectedSlicedFiles[0])}
-                        disabled={!hasPermission('printers:control')}
-                        title={!hasPermission('printers:control') ? t('fileManager.noPermissionPrint') : undefined}
-                      >
-                        <Play className="w-4 h-4 sm:mr-1" />
-                        <span className="hidden sm:inline">{t('common.print')}</span>
-                      </Button>
-                    )}
-                    {selectedSlicedFiles.length === 1 && (
-                      <Button
-                        variant="secondary"
-                        size="sm"
-                        // Note: Schedule dialog (PrintModal) is designed for single file at a time
-                        // but supports scheduling to multiple printers. This provides more control
-                        // over scheduling options compared to the previous bulk queue mutation.
-                        onClick={() => setScheduleFile(selectedSlicedFiles[0])}
+                        onClick={() => setPrintFile(selectedSlicedFiles[0])}
                         disabled={!hasPermission('queue:create')}
                         title={!hasPermission('queue:create') ? t('fileManager.noPermissionAddToQueue') : undefined}
                       >
-                        <Clock className="w-4 h-4 sm:mr-1" />
-                        <span className="hidden sm:inline">{t('fileManager.schedulePrint')}</span>
+                        <Printer className="w-4 h-4 sm:mr-1" />
+                        <span className="hidden sm:inline">{t('common.print')}</span>
                       </Button>
                     )}
                     <Button
@@ -1786,6 +2239,16 @@ export function FileManagerPage() {
                     >
                       <MoveRight className="w-4 h-4 sm:mr-1" />
                       <span className="hidden sm:inline">{t('common.move')}</span>
+                    </Button>
+                    <Button
+                      variant="secondary"
+                      size="sm"
+                      onClick={() => setShowBulkTagsModal(true)}
+                      disabled={!hasAnyPermission('library:update_own', 'library:update_all')}
+                      title={!hasAnyPermission('library:update_own', 'library:update_all') ? t('fileManager.tags.noPermission') : t('fileManager.tags.bulkTooltip')}
+                    >
+                      <TagIcon className="w-4 h-4 sm:mr-1" />
+                      <span className="hidden sm:inline">{t('fileManager.tags.tagAction')}</span>
                     </Button>
                     <Button
                       variant="danger"
@@ -1831,12 +2294,18 @@ export function FileManagerPage() {
                 <FileBox className="w-12 h-12 text-bambu-gray/50" />
               </div>
               <h3 className="text-lg font-medium text-white mb-2">
-                {selectedFolderId !== null ? t('fileManager.folderIsEmpty') : t('fileManager.noFilesYet')}
+                {selectedFolderId !== null
+                  ? t('fileManager.folderIsEmpty')
+                  : topLevelView === 'external'
+                    ? t('fileManager.externalIsEmpty')
+                    : t('fileManager.noFilesYet')}
               </h3>
               <p className="text-bambu-gray text-center max-w-md mb-6">
                 {selectedFolderId !== null
                   ? t('fileManager.folderEmptyDescription')
-                  : t('fileManager.noFilesDescription')}
+                  : topLevelView === 'external'
+                    ? t('fileManager.externalEmptyDescription')
+                    : t('fileManager.noFilesDescription')}
               </p>
               <Button
                 onClick={() => setShowUploadModal(true)}
@@ -1873,40 +2342,62 @@ export function FileManagerPage() {
                     onSelect={handleFileSelect}
                     onDelete={(id) => setDeleteConfirm({ type: 'file', id })}
                     onDownload={handleDownload}
-                    onAddToQueue={(id) => {
-                      const file = files?.find(f => f.id === id);
-                      if (file) setScheduleFile(file);
-                    }}
                     onPrint={setPrintFile}
-                    onPreview3d={setViewerFile}
+                    onSlice={setSliceFile}
+                    onRunPipeline={setRunPipelineFile}
+                    useSlicerApi={settings?.use_slicer_api ?? false}
+                    onPreview3d={(f) => {
+                      // Sliced files (.gcode / .gcode.3mf) open the same
+                      // full-page gcode viewer the archive card uses, so
+                      // the two paths feel consistent. STL / source 3MF
+                      // continue to use the in-app 3D model viewer modal.
+                      if (isSlicedFilename(f.filename)) {
+                        navigate(`/gcode-viewer?library_file=${f.id}`);
+                      } else {
+                        setViewerFile(f);
+                      }
+                    }}
                     onRename={(f) => setRenameItem({ type: 'file', id: f.id, name: f.filename })}
                     onGenerateThumbnail={(f) => singleThumbnailMutation.mutate(f.id)}
+                    onTagClick={toggleTagFilter}
                     thumbnailVersion={thumbnailVersions[file.id]}
                     hasPermission={hasPermission}
                     canModify={canModify}
                     authEnabled={authEnabled}
+                    showModified={showModified}
                   />
                 ))}
               </div>
             </div>
           ) : (
             <div className="flex-1 lg:overflow-y-auto">
-              <div className="bg-bambu-dark-secondary rounded-lg border border-bambu-dark-tertiary overflow-hidden">
-                {/* List header - hidden on mobile, show simplified on small screens */}
-                <div className={`hidden sm:grid ${authEnabled ? 'grid-cols-[auto_1fr_120px_100px_100px_100px_80px]' : 'grid-cols-[auto_1fr_100px_100px_100px_80px]'} gap-4 px-4 py-2 bg-bambu-dark-secondary border-b border-bambu-dark-tertiary text-xs text-bambu-gray font-medium`}>
+              {/* The wrapper has overflow-x-auto so a narrow viewport scrolls
+                  horizontally instead of clipping the actions column off the
+                  right edge. The previous `overflow-hidden` was there for the
+                  rounded corners but also swallowed any content the actions
+                  column couldn't fit (#1325 follow-up reported in chat). */}
+              <div className="bg-bambu-dark-secondary rounded-lg border border-bambu-dark-tertiary overflow-x-auto">
+                {/* List header - hidden on mobile, show simplified on small screens.
+                    Trailing actions column is fixed at 220px (sliced 3MF = 7 icons
+                    ~220px). It used to be `min-content`, but header + body are sibling
+                    grids that compute `min-content` independently — the header's empty
+                    trailing div resolved to 0px, leaving body columns shifted left of
+                    their headers. Fixed width keeps header and body in lockstep. */}
+                <div className={`hidden sm:grid ${authEnabled ? 'grid-cols-[auto_1fr_120px_100px_100px_100px_minmax(0,200px)_220px]' : 'grid-cols-[auto_1fr_100px_100px_100px_minmax(0,200px)_220px]'} gap-4 px-4 py-2 bg-bambu-dark-secondary border-b border-bambu-dark-tertiary text-xs text-bambu-gray font-medium`}>
                   <div className="w-6" />
                   <div>{t('common.name')}</div>
                   {authEnabled && <div>{t('fileManager.uploadedBy', { defaultValue: 'Uploaded By' })}</div>}
                   <div>{t('common.type')}</div>
                   <div>{t('fileManager.size')}</div>
                   <div>{t('fileManager.prints')}</div>
+                  <div>{t('fileManager.tags.title')}</div>
                   <div />
                 </div>
                 {/* List rows */}
                 {filteredAndSortedFiles.map((file) => (
                   <div
                     key={file.id}
-                    className={`grid ${authEnabled ? 'grid-cols-[auto_1fr_120px_100px_100px_100px_80px]' : 'grid-cols-[auto_1fr_100px_100px_100px_80px]'} gap-4 px-4 py-3 items-center border-b border-bambu-dark-tertiary last:border-b-0 cursor-pointer hover:bg-bambu-dark/50 transition-colors ${
+                    className={`grid ${authEnabled ? 'grid-cols-[auto_1fr_120px_100px_100px_100px_minmax(0,200px)_220px]' : 'grid-cols-[auto_1fr_100px_100px_100px_minmax(0,200px)_220px]'} gap-4 px-4 py-3 items-center border-b border-bambu-dark-tertiary last:border-b-0 cursor-pointer hover:bg-bambu-dark/50 transition-colors ${
                       selectedFiles.includes(file.id) ? 'bg-bambu-green/10' : ''
                     }`}
                     onClick={() => handleFileSelect(file.id)}
@@ -1950,6 +2441,14 @@ export function FileManagerPage() {
                       </div>
                       <div className="min-w-0">
                         <div className="text-sm text-white truncate">{file.print_name || file.filename}</div>
+                        {/* #2680: last-modified date under the name, toggled from
+                            the toolbar. Real on-disk mtime when known, else created_at. */}
+                        {showModified && (
+                          <div className="text-xs text-bambu-gray flex items-center gap-1 mt-0.5" title={t('fileManager.lastModified')}>
+                            <CalendarClock className="w-3 h-3 flex-shrink-0" />
+                            <span className="truncate">{formatDate(file.fs_modified_at ?? file.created_at)}</span>
+                          </div>
+                        )}
                       </div>
                     </div>
                     {/* Uploaded By - only show when auth is enabled */}
@@ -1969,8 +2468,8 @@ export function FileManagerPage() {
                     <div>
                       <span className={`text-xs px-1.5 py-0.5 rounded font-medium ${
                         file.file_type === '3mf' ? 'bg-bambu-green/20 text-bambu-green'
-                        : file.file_type === 'gcode' ? 'bg-blue-500/20 text-blue-400'
-                        : file.file_type === 'stl' ? 'bg-purple-500/20 text-purple-400'
+                        : (file.file_type === 'gcode' || file.file_type === 'gcode.3mf') ? 'bg-blue-100 dark:bg-blue-500/20 text-blue-700 dark:text-blue-400'
+                        : file.file_type === 'stl' ? 'bg-purple-100 dark:bg-purple-500/20 text-purple-700 dark:text-purple-400'
                         : 'bg-bambu-gray/20 text-bambu-gray'
                       }`}>
                         {file.file_type.toUpperCase()}
@@ -1980,43 +2479,86 @@ export function FileManagerPage() {
                     <div className="text-sm text-bambu-gray">{formatFileSize(file.file_size)}</div>
                     {/* Prints */}
                     <div className="text-sm text-bambu-gray">{file.print_count > 0 ? `${file.print_count}x` : '-'}</div>
+                    {/* Tags (#1268) — clickable chips push into the active
+                        filter; minmax(0,200px) on the column lets the cell
+                        shrink/wrap on narrow viewports without pushing the
+                        Actions cell off-screen. */}
+                    <div className="min-w-0" onClick={(e) => e.stopPropagation()}>
+                      {!file.tags || file.tags.length === 0 ? (
+                        <span className="text-xs text-bambu-gray/50">-</span>
+                      ) : (
+                        <div className="flex flex-wrap gap-1">
+                          {file.tags.map((tg) => (
+                            <button
+                              key={tg.id}
+                              type="button"
+                              onClick={() => toggleTagFilter(tg.id)}
+                              className="inline-flex items-center gap-0.5 px-1.5 py-0.5 rounded-full text-[10px] bg-bambu-green/10 text-bambu-green hover:bg-bambu-green/20 transition-colors max-w-full"
+                              title={tg.name}
+                            >
+                              <TagIcon className="w-2.5 h-2.5 flex-shrink-0" />
+                              <span className="truncate">{tg.name}</span>
+                            </button>
+                          ))}
+                        </div>
+                      )}
+                    </div>
                     {/* Actions */}
                     <div className="flex items-center gap-1" onClick={(e) => e.stopPropagation()}>
                       {isSlicedFilename(file.filename) && (
                         <>
                           <button
-                            onClick={() => hasPermission('printers:control') && setPrintFile(file)}
+                            onClick={() => hasPermission('queue:create') && setPrintFile(file)}
                             className={`p-1.5 rounded transition-colors ${
-                              hasPermission('printers:control')
+                              hasPermission('queue:create')
                                 ? 'hover:bg-bambu-dark text-bambu-gray hover:text-bambu-green'
                                 : 'text-bambu-gray/50 cursor-not-allowed'
                             }`}
-                            title={hasPermission('printers:control') ? t('common.print') : t('fileManager.noPermissionPrint')}
-                            disabled={!hasPermission('printers:control')}
+                            title={hasPermission('queue:create') ? t('common.print') : t('fileManager.noPermissionAddToQueue')}
+                            disabled={!hasPermission('queue:create')}
                           >
                             <Printer className="w-4 h-4" />
                           </button>
-                          <button
-                            onClick={() => {
-                              if (hasPermission('queue:create')) {
-                                setScheduleFile(file);
-                              }
-                            }}
-                            className={`p-1.5 rounded transition-colors ${
-                              hasPermission('queue:create')
-                                ? 'hover:bg-bambu-dark text-bambu-gray hover:text-white'
-                                : 'text-bambu-gray/50 cursor-not-allowed'
-                            }`}
-                            title={hasPermission('queue:create') ? t('fileManager.schedulePrint') : t('fileManager.noPermissionAddToQueue')}
-                            disabled={!hasPermission('queue:create')}
-                          >
-                            <Clock className="w-4 h-4" />
-                          </button>
                         </>
                       )}
-                      {(file.file_type === '3mf' || file.file_type === 'gcode' || file.file_type === 'stl') && (
+                      {(settings?.use_slicer_api ?? false) && isSliceableFilename(file.filename) && (
                         <button
-                          onClick={() => hasPermission('library:read') && setViewerFile(file)}
+                          onClick={() => hasPermission('library:upload') && setSliceFile(file)}
+                          className={`p-1.5 rounded transition-colors ${
+                            hasPermission('library:upload')
+                              ? 'hover:bg-bambu-dark text-bambu-gray hover:text-bambu-green'
+                              : 'text-bambu-gray/50 cursor-not-allowed'
+                          }`}
+                          title={hasPermission('library:upload') ? t('slice.action') : t('fileManager.noPermissionSlice')}
+                          disabled={!hasPermission('library:upload')}
+                        >
+                          <Cog className="w-4 h-4" />
+                        </button>
+                      )}
+                      {(settings?.use_slicer_api ?? false) && isSliceableFilename(file.filename) && (
+                        <button
+                          onClick={() => hasPermission('pipelines:run') && setRunPipelineFile(file)}
+                          className={`p-1.5 rounded transition-colors ${
+                            hasPermission('pipelines:run')
+                              ? 'hover:bg-bambu-dark text-bambu-gray hover:text-bambu-green'
+                              : 'text-bambu-gray/50 cursor-not-allowed'
+                          }`}
+                          title={hasPermission('pipelines:run') ? t('library.runWithPipeline.actionLabel', 'Run with pipeline') : t('library.runWithPipeline.noPermission', 'You do not have permission to run pipelines')}
+                          disabled={!hasPermission('pipelines:run')}
+                        >
+                          <Play className="w-4 h-4" />
+                        </button>
+                      )}
+                      {(file.file_type === '3mf' || file.file_type === 'gcode' || file.file_type === 'gcode.3mf' || file.file_type === 'stl') && (
+                        <button
+                          onClick={() => {
+                            if (!hasPermission('library:read')) return;
+                            if (isSlicedFilename(file.filename)) {
+                              navigate(`/gcode-viewer?library_file=${file.id}`);
+                            } else {
+                              setViewerFile(file);
+                            }
+                          }}
                           className={`p-1.5 rounded transition-colors ${
                             hasPermission('library:read')
                               ? 'hover:bg-bambu-dark text-bambu-gray hover:text-bambu-green'
@@ -2070,7 +2612,7 @@ export function FileManagerPage() {
                         onClick={() => canModify('library', 'delete', file.created_by_id) && setDeleteConfirm({ type: 'file', id: file.id })}
                         className={`p-1.5 rounded transition-colors ${
                           canModify('library', 'delete', file.created_by_id)
-                            ? 'hover:bg-bambu-dark text-bambu-gray hover:text-red-400'
+                            ? 'hover:bg-bambu-dark text-bambu-gray hover:text-red-700 dark:hover:text-red-400'
                             : 'text-bambu-gray/50 cursor-not-allowed'
                         }`}
                         title={canModify('library', 'delete', file.created_by_id) ? t('common.delete') : t('fileManager.noPermissionDeleteFile')}
@@ -2084,6 +2626,10 @@ export function FileManagerPage() {
               </div>
             </div>
           )}
+        </div>
+          {/* README rail — collapsible right column on lg+, stacks on top
+              on mobile. See the files-area wrapper comment above (#2520). */}
+          {selectedFolderId !== null && <FolderReadmePanel folderId={selectedFolderId} />}
         </div>
       </div>
 
@@ -2122,10 +2668,34 @@ export function FileManagerPage() {
       {showUploadModal && (
         <FileUploadModal
           folderId={selectedFolderId}
-          onClose={() => setShowUploadModal(false)}
+          onClose={() => {
+            setShowUploadModal(false);
+            setDroppedFiles([]);
+          }}
           onUploadComplete={handleUploadComplete}
+          initialFiles={droppedFiles.length > 0 ? droppedFiles : undefined}
         />
       )}
+
+      {showPurgeModal && (
+        <PurgeOldFilesModal onClose={() => setShowPurgeModal(false)} />
+      )}
+
+      <LibraryTagsModal
+        open={showTagsModal}
+        onClose={() => setShowTagsModal(false)}
+        onPickTag={(tagId) => {
+          if (!selectedTagIds.includes(tagId)) {
+            setSelectedTagIds((prev) => [...prev, tagId]);
+          }
+        }}
+      />
+
+      <BulkTagsPickerModal
+        open={showBulkTagsModal}
+        fileIds={selectedFiles}
+        onClose={() => setShowBulkTagsModal(false)}
+      />
 
       {linkFolder && (
         <LinkFolderModal
@@ -2164,46 +2734,31 @@ export function FileManagerPage() {
 
       {printFile && (
         <PrintModal
-          mode="reprint"
+          mode="create"
           libraryFileId={printFile.id}
           archiveName={printFile.print_name || printFile.filename}
           onClose={() => setPrintFile(null)}
           onSuccess={() => {
             setPrintFile(null);
-            queryClient.invalidateQueries({ queryKey: ['library-files'] });
-            queryClient.invalidateQueries({ queryKey: ['archives'] });
-          }}
-        />
-      )}
-
-      {printMultiFile && (
-        <PrintModal
-          mode="reprint"
-          libraryFileId={printMultiFile.id}
-          archiveName={printMultiFile.print_name || printMultiFile.filename}
-          onClose={() => setPrintMultiFile(null)}
-          onSuccess={() => {
-            setPrintMultiFile(null);
-            setSelectedFiles([]);
-            queryClient.invalidateQueries({ queryKey: ['library-files'] });
-            queryClient.invalidateQueries({ queryKey: ['archives'] });
-          }}
-        />
-      )}
-
-      {scheduleFile && (
-        <PrintModal
-          mode="add-to-queue"
-          libraryFileId={scheduleFile.id}
-          archiveName={scheduleFile.print_name || scheduleFile.filename}
-          onClose={() => setScheduleFile(null)}
-          onSuccess={() => {
-            setScheduleFile(null);
             setSelectedFiles([]);
             queryClient.invalidateQueries({ queryKey: ['library-files'] });
             queryClient.invalidateQueries({ queryKey: ['queue'] });
             queryClient.invalidateQueries({ queryKey: ['archives'] });
           }}
+        />
+      )}
+
+      {sliceFile && (
+        <SliceModal
+          source={{ kind: 'libraryFile', id: sliceFile.id, filename: sliceFile.filename }}
+          onClose={() => setSliceFile(null)}
+        />
+      )}
+
+      {runPipelineFile && (
+        <RunWithPipelineModal
+          source={{ kind: 'libraryFile', id: runPipelineFile.id, filename: runPipelineFile.filename }}
+          onClose={() => setRunPipelineFile(null)}
         />
       )}
 
@@ -2213,6 +2768,17 @@ export function FileManagerPage() {
           title={viewerFile.print_name || viewerFile.filename}
           fileType={viewerFile.file_type}
           onClose={() => setViewerFile(null)}
+          onSliceWithBambuddy={
+            // Only offer in-app slicing on files the SliceModal can actually
+            // handle (matches the file-row Cog visibility check at :2127).
+            isSliceableFilename(viewerFile.filename) && hasPermission('library:upload')
+              ? () => {
+                  const f = viewerFile;
+                  setViewerFile(null);
+                  setSliceFile(f);
+                }
+              : undefined
+          }
         />
       )}
 

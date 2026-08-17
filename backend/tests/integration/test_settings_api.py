@@ -485,8 +485,9 @@ class TestSettingsAPI:
         response = await async_client.get("/api/v1/settings/")
         result = response.json()
 
-        assert result["default_bed_levelling"] is True
-        assert result["default_flow_cali"] is False
+        # bed_levelling / flow_cali are tri-state, defaulting to "auto".
+        assert result["default_bed_levelling"] == "auto"
+        assert result["default_flow_cali"] == "auto"
         assert result["default_vibration_cali"] is True
         assert result["default_layer_inspect"] is False
         assert result["default_timelapse"] is False
@@ -494,12 +495,12 @@ class TestSettingsAPI:
     @pytest.mark.asyncio
     @pytest.mark.integration
     async def test_update_default_print_options(self, async_client: AsyncClient):
-        """Verify default print options can be updated."""
+        """Verify default print options can be updated (tri-state + booleans)."""
         response = await async_client.put(
             "/api/v1/settings/",
             json={
-                "default_bed_levelling": False,
-                "default_flow_cali": True,
+                "default_bed_levelling": "off",
+                "default_flow_cali": "on",
                 "default_vibration_cali": False,
                 "default_layer_inspect": True,
                 "default_timelapse": True,
@@ -508,11 +509,28 @@ class TestSettingsAPI:
 
         assert response.status_code == 200
         result = response.json()
-        assert result["default_bed_levelling"] is False
-        assert result["default_flow_cali"] is True
+        assert result["default_bed_levelling"] == "off"
+        assert result["default_flow_cali"] == "on"
         assert result["default_vibration_cali"] is False
         assert result["default_layer_inspect"] is True
         assert result["default_timelapse"] is True
+
+    @pytest.mark.asyncio
+    @pytest.mark.integration
+    async def test_default_print_options_legacy_bool_coerced(self, async_client: AsyncClient):
+        """Old clients sending booleans for the tri-state options still work.
+
+        The TriState validator maps true->"on", false->"off" on input so a
+        pre-upgrade frontend never writes an invalid value.
+        """
+        response = await async_client.put(
+            "/api/v1/settings/",
+            json={"default_bed_levelling": False, "default_flow_cali": True},
+        )
+        assert response.status_code == 200
+        result = response.json()
+        assert result["default_bed_levelling"] == "off"
+        assert result["default_flow_cali"] == "on"
 
     @pytest.mark.asyncio
     @pytest.mark.integration
@@ -521,14 +539,14 @@ class TestSettingsAPI:
         await async_client.put(
             "/api/v1/settings/",
             json={
-                "default_bed_levelling": False,
+                "default_bed_levelling": "on",
                 "default_timelapse": True,
             },
         )
 
         response = await async_client.get("/api/v1/settings/")
         result = response.json()
-        assert result["default_bed_levelling"] is False
+        assert result["default_bed_levelling"] == "on"
         assert result["default_timelapse"] is True
 
     @pytest.mark.asyncio
@@ -539,21 +557,21 @@ class TestSettingsAPI:
         await async_client.put(
             "/api/v1/settings/",
             json={
-                "default_bed_levelling": False,
-                "default_flow_cali": True,
+                "default_bed_levelling": "off",
+                "default_flow_cali": "on",
             },
         )
 
         # Update only one
         response = await async_client.put(
             "/api/v1/settings/",
-            json={"default_bed_levelling": True},
+            json={"default_bed_levelling": "auto"},
         )
 
         assert response.status_code == 200
         result = response.json()
-        assert result["default_bed_levelling"] is True
-        assert result["default_flow_cali"] is True  # Should remain from previous update
+        assert result["default_bed_levelling"] == "auto"
+        assert result["default_flow_cali"] == "on"  # Should remain from previous update
 
     # ========================================================================
     # Home Assistant environment variable tests
@@ -800,6 +818,65 @@ class TestSettingsAPI:
         assert result["ha_enabled"] is True
         assert result["ha_url"] == "http://192.168.1.100:8123"
         assert result["ha_token"] == "my-long-lived-token"
+
+
+class TestOpenInSlicerOverride:
+    """Per #1329, the desktop 'Open in Slicer' target can diverge from the API
+    sidecar slicer. The new `open_in_slicer` setting is None by default (frontend
+    inherits from `preferred_slicer`); setting it to 'orcaslicer' or 'bambu_studio'
+    overrides only the desktop URI handoff, not the in-app SliceModal."""
+
+    @pytest.mark.asyncio
+    @pytest.mark.integration
+    async def test_open_in_slicer_default_is_null(self, async_client: AsyncClient):
+        response = await async_client.get("/api/v1/settings/")
+        assert response.status_code == 200
+        # Default null so existing installs behave identically — the frontend
+        # then falls back to preferred_slicer.
+        assert response.json()["open_in_slicer"] is None
+
+    @pytest.mark.asyncio
+    @pytest.mark.integration
+    async def test_open_in_slicer_override_persists(self, async_client: AsyncClient):
+        # Set preferred_slicer=bambu_studio (API sidecar) but
+        # open_in_slicer=orcaslicer (desktop). Exactly the reporter's case:
+        # slice via Bambu Studio sidecar, open files locally in OrcaSlicer.
+        response = await async_client.put(
+            "/api/v1/settings/",
+            json={"preferred_slicer": "bambu_studio", "open_in_slicer": "orcaslicer"},
+        )
+        assert response.status_code == 200
+        body = response.json()
+        assert body["preferred_slicer"] == "bambu_studio"
+        assert body["open_in_slicer"] == "orcaslicer"
+
+        # Persisted across a fresh GET.
+        get_resp = await async_client.get("/api/v1/settings/")
+        assert get_resp.json()["preferred_slicer"] == "bambu_studio"
+        assert get_resp.json()["open_in_slicer"] == "orcaslicer"
+
+    @pytest.mark.asyncio
+    @pytest.mark.integration
+    async def test_open_in_slicer_can_be_cleared_to_null(self, async_client: AsyncClient):
+        # Reset path: user picks an override, then later goes back to "Same as
+        # API slicer". The literal string "None" the PUT path writes for a
+        # None value must be normalized back to a real null on GET — otherwise
+        # the frontend can't distinguish "explicit override absent" from
+        # "explicit override set to a bogus value".
+        await async_client.put(
+            "/api/v1/settings/",
+            json={"open_in_slicer": "orcaslicer"},
+        )
+        response = await async_client.put(
+            "/api/v1/settings/",
+            json={"open_in_slicer": None},
+        )
+        assert response.status_code == 200
+        assert response.json()["open_in_slicer"] is None
+
+        # And a fresh GET also sees it as null, not the literal string "None".
+        get_resp = await async_client.get("/api/v1/settings/")
+        assert get_resp.json()["open_in_slicer"] is None
 
 
 class TestSimplifiedBackupRestore:

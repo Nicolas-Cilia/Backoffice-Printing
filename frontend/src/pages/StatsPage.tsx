@@ -6,6 +6,7 @@ import {
   Clock,
   CheckCircle,
   XCircle,
+  Ban,
   DollarSign,
   Target,
   Zap,
@@ -20,6 +21,7 @@ import {
   Calendar,
   ChevronDown,
   Users,
+  BarChart3,
 } from 'lucide-react';
 import {
   BarChart,
@@ -129,29 +131,50 @@ function QuickStatsWidget({
     total_cost: number;
     total_energy_kwh: number;
     total_energy_cost: number;
+    energy_data_warming_up?: boolean;
   } | undefined;
   currency: string;
 }) {
   const { t } = useTranslation();
 
+  const warmingUp = stats?.energy_data_warming_up === true;
+  const warmingUpTooltip = warmingUp ? t('stats.energyWarmingUpTooltip') : undefined;
+
   const items = [
     { icon: Package, color: 'text-bambu-green', label: t('stats.totalPrints'), value: `${stats?.total_prints || 0}` },
-    { icon: Clock, color: 'text-blue-400', label: t('stats.printTime'), value: `${stats?.total_print_time_hours?.toFixed(1) ?? '0'}h` },
-    { icon: Package, color: 'text-orange-400', label: t('stats.filamentUsed'), value: formatWeight(stats?.total_filament_grams || 0) },
-    { icon: DollarSign, color: 'text-green-400', label: t('stats.filamentCost'), value: `${currency} ${stats?.total_cost?.toFixed(2) ?? '0.00'}` },
-    { icon: Zap, color: 'text-yellow-400', label: t('stats.energyUsed'), value: `${stats?.total_energy_kwh?.toFixed(3) ?? '0.000'} kWh` },
-    { icon: DollarSign, color: 'text-yellow-500', label: t('stats.energyCost'), value: `${currency} ${stats?.total_energy_cost?.toFixed(2) ?? '0.00'}` },
+    { icon: Clock, color: 'text-blue-600 dark:text-blue-400', label: t('stats.printTime'), value: `${stats?.total_print_time_hours?.toFixed(1) ?? '0'}h` },
+    { icon: Package, color: 'text-orange-600 dark:text-orange-400', label: t('stats.filamentUsed'), value: formatWeight(stats?.total_filament_grams || 0) },
+    { icon: DollarSign, color: 'text-green-600 dark:text-green-400', label: t('stats.filamentCost'), value: `${currency} ${stats?.total_cost?.toFixed(2) ?? '0.00'}` },
+    {
+      icon: Zap,
+      color: 'text-yellow-600 dark:text-yellow-400',
+      label: t('stats.energyUsed'),
+      value: `${stats?.total_energy_kwh?.toFixed(3) ?? '0.000'} kWh`,
+      warning: warmingUp,
+      tooltip: warmingUpTooltip,
+    },
+    {
+      icon: DollarSign,
+      color: 'text-yellow-500',
+      label: t('stats.energyCost'),
+      value: `${currency} ${stats?.total_energy_cost?.toFixed(2) ?? '0.00'}`,
+      warning: warmingUp,
+      tooltip: warmingUpTooltip,
+    },
   ];
 
   return (
     <div className="grid grid-cols-2 sm:grid-cols-3 gap-4">
       {items.map((item) => (
-        <div key={item.label} className="flex items-start gap-3">
+        <div key={item.label} className="flex items-start gap-3" title={item.tooltip}>
           <div className={`p-2 rounded-lg bg-bambu-dark ${item.color}`}>
             <item.icon className="w-5 h-5" />
           </div>
           <div>
-            <p className="text-xs text-bambu-gray">{item.label}</p>
+            <p className="text-xs text-bambu-gray flex items-center gap-1">
+              {item.label}
+              {item.warning && <AlertTriangle className="w-3 h-3 text-yellow-600 dark:text-yellow-400" aria-label={item.tooltip} />}
+            </p>
             <p className="text-xl font-bold text-white">{item.value}</p>
           </div>
         </div>
@@ -169,15 +192,20 @@ function SuccessRateWidget({
     total_prints: number;
     successful_prints: number;
     failed_prints: number;
+    cancelled_prints?: number;
     prints_by_printer: Record<string, number>;
   } | undefined;
   printerMap: Map<string, string>;
   size?: 1 | 2 | 4;
 }) {
   const { t } = useTranslation();
-  const completedAndFailed = (stats?.successful_prints || 0) + (stats?.failed_prints || 0);
-  const successRate = completedAndFailed
-    ? Math.round((stats!.successful_prints / completedAndFailed) * 100)
+  // Denominator is completed + failed only — a user/system-cancelled print is
+  // neither a quality success nor a quality failure, so including it would
+  // silently lower the rate whenever the user stopped a job. The cancelled
+  // count is still shown in the breakdown below so it doesn't vanish (#1390).
+  const outcomePrints = (stats?.successful_prints || 0) + (stats?.failed_prints || 0);
+  const successRate = outcomePrints
+    ? Math.round(((stats?.successful_prints || 0) / outcomePrints) * 100)
     : 0;
 
   // Scale gauge size based on widget size
@@ -223,6 +251,11 @@ function SuccessRateWidget({
             <XCircle className="w-4 h-4 text-status-error flex-shrink-0" />
             <span className="text-sm text-bambu-gray">{t('stats.failed')}</span>
             <span className="text-sm text-white font-medium">{stats?.failed_prints || 0}</span>
+          </div>
+          <div className="flex items-center gap-2">
+            <Ban className="w-4 h-4 text-status-warning flex-shrink-0" />
+            <span className="text-sm text-bambu-gray">{t('stats.cancelled')}</span>
+            <span className="text-sm text-white font-medium">{stats?.cancelled_prints || 0}</span>
           </div>
         </div>
         {/* Show per-printer breakdown when expanded */}
@@ -319,7 +352,7 @@ function TimeAccuracyWidget({
         </svg>
         <div className="absolute inset-0 flex flex-col items-center justify-center">
           <span className={`font-bold text-white ${size >= 2 ? 'text-2xl' : 'text-xl'}`}>{accuracy.toFixed(0)}%</span>
-          <span className={`text-xs ${deviation >= 0 ? 'text-blue-400' : 'text-orange-400'}`}>
+          <span className={`text-xs ${deviation >= 0 ? 'text-blue-700 dark:text-blue-400' : 'text-orange-700 dark:text-orange-400'}`}>
             {deviation >= 0 ? '+' : ''}{deviation.toFixed(0)}%
           </span>
         </div>
@@ -338,7 +371,7 @@ function TimeAccuracyWidget({
                 </span>
                 <span className={`font-medium ${
                   acc >= 95 && acc <= 105 ? 'text-status-ok' :
-                  acc > 105 ? 'text-blue-400' : 'text-status-warning'
+                  acc > 105 ? 'text-blue-700 dark:text-blue-400' : 'text-status-warning'
                 }`}>
                   {acc.toFixed(0)}%
                 </span>
@@ -781,7 +814,9 @@ function FailureAnalysisWidget({ size = 1, dateFrom, dateTo, createdById }: {
             {topReasons.map(([reason, count]) => (
               <div key={reason} className="flex items-center justify-between text-sm">
                 <span className={`text-white truncate ${size === 4 ? 'max-w-[200px]' : 'max-w-[160px]'}`}>
-                  {reason || t('common.unknown')}
+                  {reason
+                    ? t(`editArchive.failureReasons.${reason}`, { defaultValue: reason })
+                    : t('common.unknown')}
                 </span>
                 <span className="text-bambu-gray ml-2">{count}</span>
               </div>
@@ -823,10 +858,16 @@ function RecordsWidget({ archives, currency }: { archives: ArchiveSlim[]; curren
       return { archive: best, value: bestVal };
     };
 
-    const longest = findMax(a => a.actual_time_seconds);
+    // Only completed prints qualify as the "longest" record. Pre-#1390 this
+    // happened implicitly because the slim endpoint returned null
+    // actual_time_seconds for non-completed rows; that gate moved up to the
+    // backend so failed/cancelled prints now carry their elapsed duration
+    // (Quick Stats Print Time needs that), but a partially-completed 20-hour
+    // run shouldn't outrank a successful 18-hour print here.
+    const longest = findMax(a => (a.status === 'completed' ? a.actual_time_seconds : null));
     if (longest.archive) {
       result.push({
-        icon: Clock, iconColor: 'text-blue-400', label: t('stats.longestPrint'),
+        icon: Clock, iconColor: 'text-blue-600 dark:text-blue-400', label: t('stats.longestPrint'),
         value: formatDuration(longest.value),
         detail: longest.archive.print_name || null,
       });
@@ -835,16 +876,18 @@ function RecordsWidget({ archives, currency }: { archives: ArchiveSlim[]; curren
     const heaviest = findMax(a => a.filament_used_grams);
     if (heaviest.archive) {
       result.push({
-        icon: Package, iconColor: 'text-orange-400', label: t('stats.heaviestPrint'),
+        icon: Package, iconColor: 'text-orange-600 dark:text-orange-400', label: t('stats.heaviestPrint'),
         value: formatWeight(heaviest.value),
         detail: heaviest.archive.print_name || null,
       });
     }
 
-    const costliest = findMax(a => a.cost);
+    // Filament + measured energy (#1432); prints without a smart plug have
+    // energy_cost null and compete on filament cost alone.
+    const costliest = findMax(a => (a.cost ?? 0) + (a.energy_cost ?? 0));
     if (costliest.archive) {
       result.push({
-        icon: DollarSign, iconColor: 'text-green-400', label: t('stats.mostExpensivePrint'),
+        icon: DollarSign, iconColor: 'text-green-600 dark:text-green-400', label: t('stats.mostExpensivePrint'),
         value: `${currency}${costliest.value.toFixed(2)}`,
         detail: costliest.archive.print_name || null,
       });
@@ -868,7 +911,7 @@ function RecordsWidget({ archives, currency }: { archives: ArchiveSlim[]; curren
     if (busiestCount > 1) {
       result.push({
         icon: Calendar,
-        iconColor: 'text-purple-400',
+        iconColor: 'text-purple-600 dark:text-purple-400',
         label: t('stats.busiestDay'),
         value: `${busiestCount} ${t('common.prints')}`,
         detail: (() => { const [y, m, d] = busiestDay.split('-').map(Number); return new Date(y, m - 1, d).toLocaleDateString(undefined, { month: 'short', day: 'numeric', year: 'numeric' }); })(),
@@ -887,7 +930,7 @@ function RecordsWidget({ archives, currency }: { archives: ArchiveSlim[]; curren
     if (streak > 0) {
       result.push({
         icon: Zap,
-        iconColor: 'text-yellow-400',
+        iconColor: 'text-yellow-600 dark:text-yellow-400',
         label: t('stats.successStreak'),
         value: `${streak}`,
         detail: streak === 1 ? t('stats.streakPrint') : t('stats.streakPrints', { count: streak }),
@@ -1127,10 +1170,13 @@ export function StatsPage() {
       <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4 mb-6">
         <div>
           <div className="flex items-center gap-2">
-            <h1 className="text-2xl font-bold text-white">{t('stats.title')}</h1>
+            <h1 className="text-2xl font-bold text-white flex items-center gap-3">
+              <BarChart3 className="w-7 h-7 text-bambu-green" />
+              {t('stats.title')}
+            </h1>
             {isRefetching && <Loader2 className="w-5 h-5 text-bambu-green animate-spin" />}
           </div>
-          <p className="text-bambu-gray">{t('stats.subtitle')}</p>
+          <p className="text-bambu-gray mt-1">{t('stats.subtitle')}</p>
         </div>
         <div className="flex items-center gap-2 flex-wrap">
           {/* Hidden widgets button - toggles panel in Dashboard */}

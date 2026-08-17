@@ -8,6 +8,21 @@ import pytest
 from httpx import AsyncClient
 
 
+@pytest.fixture(autouse=True)
+def _enable_external_roots(monkeypatch, tmp_path):
+    """Permit pytest's ``tmp_path`` tree as a valid external root.
+
+    After the GHSA-r2qv I1 fix, external folders are opt-in via the
+    ``BAMBUDDY_EXTERNAL_ROOTS`` env var (empty by default → feature
+    disabled). The test suite's external dirs live under pytest's
+    per-session ``tmp_path`` root, which is a subtree of the OS tmp
+    dir, so allowlisting the parent of ``tmp_path`` lets every test
+    folder fixture pass the new validator. Autouse so individual tests
+    don't have to know the env var exists.
+    """
+    monkeypatch.setenv("BAMBUDDY_EXTERNAL_ROOTS", str(tmp_path.parent))
+
+
 class TestExternalFolderCreation:
     """Tests for POST /library/folders/external."""
 
@@ -53,11 +68,18 @@ class TestExternalFolderCreation:
 
     @pytest.mark.asyncio
     @pytest.mark.integration
-    async def test_create_external_folder_nonexistent_path(self, async_client: AsyncClient, db_session):
-        """Verify 400 for non-existent path."""
+    async def test_create_external_folder_nonexistent_path(self, async_client: AsyncClient, db_session, tmp_path):
+        """Verify 400 for non-existent path within an allowed root.
+
+        After GHSA-r2qv I1 the allowlist check runs before the existence
+        check, so the test path must be inside ``BAMBUDDY_EXTERNAL_ROOTS``
+        (= ``tmp_path.parent`` per ``_enable_external_roots``) to actually
+        exercise the existence branch rather than the allowlist branch.
+        """
+        bad_path = tmp_path / "nonexistent" / "subdir"
         data = {
             "name": "Bad Path",
-            "external_path": "/nonexistent/path/that/does/not/exist",
+            "external_path": str(bad_path),
         }
         response = await async_client.post("/api/v1/library/folders/external", json=data)
         assert response.status_code == 400
@@ -65,15 +87,24 @@ class TestExternalFolderCreation:
 
     @pytest.mark.asyncio
     @pytest.mark.integration
-    async def test_create_external_folder_system_dir_blocked(self, async_client: AsyncClient, db_session):
-        """Verify system directories are blocked."""
+    async def test_create_external_folder_outside_allowlist_blocked(self, async_client: AsyncClient, db_session):
+        """Paths outside ``BAMBUDDY_EXTERNAL_ROOTS`` are rejected (GHSA-r2qv I1).
+
+        Prior behaviour was a denylist (``/proc``, ``/sys``, ``/dev``, etc);
+        anything not enumerated passed, including ``/data`` containing
+        other users' archives. The allowlist replacement defaults to the
+        empty set; this test confirms that a path outside the (tmp-path)
+        allowlist set up by ``_enable_external_roots`` is rejected.
+        ``/proc`` is the canonical example of a system directory that
+        any operator allowlist would never legitimately include.
+        """
         data = {
             "name": "System",
             "external_path": "/proc",
         }
         response = await async_client.post("/api/v1/library/folders/external", json=data)
         assert response.status_code == 400
-        assert "system directory" in response.json()["detail"].lower()
+        assert "not within an allowed external root" in response.json()["detail"].lower()
 
     @pytest.mark.asyncio
     @pytest.mark.integration
@@ -125,6 +156,26 @@ class TestExternalFolderCreation:
         assert ext_folder["external_readonly"] is True
 
 
+def find_folder_in_tree(folders: list, name: str) -> dict | None:
+    """Recursively search a folder tree for a folder by name."""
+    for f in folders:
+        if f["name"] == name:
+            return f
+        result = find_folder_in_tree(f.get("children", []), name)
+        if result:
+            return result
+    return None
+
+
+def collect_folder_names(folders: list) -> list[str]:
+    """Recursively collect all folder names from a tree."""
+    names = []
+    for f in folders:
+        names.append(f["name"])
+        names.extend(collect_folder_names(f.get("children", [])))
+    return names
+
+
 class TestExternalFolderScan:
     """Tests for POST /library/folders/{id}/scan."""
 
@@ -158,14 +209,34 @@ class TestExternalFolderScan:
     @pytest.mark.asyncio
     @pytest.mark.integration
     async def test_scan_discovers_files(self, async_client: AsyncClient, db_session, external_folder):
-        """Verify scan discovers supported files."""
+        """Verify scan discovers supported files and creates subfolders."""
         response = await async_client.post(f"/api/v1/library/folders/{external_folder['id']}/scan")
         assert response.status_code == 200
         result = response.json()
-        # Should find: benchy.3mf, bracket.stl, print.gcode, subfolder/nested.stl
+        # Should find: benchy.3mf, bracket.stl, print.gcode (root) + subfolder/nested.stl
         # Should skip: readme.txt (unsupported), .hidden.3mf (hidden)
         assert result["added"] == 4
         assert result["removed"] == 0
+
+        # Root folder should have 3 files (nested.stl is in subfolder)
+        response = await async_client.get(f"/api/v1/library/files?folder_id={external_folder['id']}")
+        root_files = response.json()
+        assert len(root_files) == 3
+        root_filenames = {f["filename"] for f in root_files}
+        assert root_filenames == {"benchy.3mf", "bracket.stl", "print.gcode"}
+
+        # Subfolder should exist in the tree and contain nested.stl
+        response = await async_client.get("/api/v1/library/folders")
+        folders = response.json()
+        subfolder = find_folder_in_tree(folders, "subfolder")
+        assert subfolder is not None
+        assert subfolder["is_external"] is True
+        assert subfolder["parent_id"] == external_folder["id"]
+
+        response = await async_client.get(f"/api/v1/library/files?folder_id={subfolder['id']}")
+        sub_files = response.json()
+        assert len(sub_files) == 1
+        assert sub_files[0]["filename"] == "nested.stl"
 
     @pytest.mark.asyncio
     @pytest.mark.integration
@@ -173,7 +244,7 @@ class TestExternalFolderScan:
         """Verify hidden files are skipped by default."""
         await async_client.post(f"/api/v1/library/folders/{external_folder['id']}/scan")
 
-        # List files in folder
+        # List files in root folder
         response = await async_client.get(f"/api/v1/library/files?folder_id={external_folder['id']}")
         assert response.status_code == 200
         files = response.json()
@@ -226,6 +297,104 @@ class TestExternalFolderScan:
 
     @pytest.mark.asyncio
     @pytest.mark.integration
+    async def test_scan_indexes_pre_existing_markdown(
+        self, async_client: AsyncClient, db_session, external_folder, external_dir
+    ):
+        """Scan should index a README.md already on disk (#2520 item 1).
+
+        Markdown dropped into the folder by external tools (not the Upload
+        dialog) must be picked up so the Folder Readme panel can show it.
+        """
+        (external_dir / "README.md").write_text("# Fishing Floats\n\nDescription.")
+
+        response = await async_client.post(f"/api/v1/library/folders/{external_folder['id']}/scan")
+        assert response.status_code == 200
+        # 4 supported files from the fixture + the new README.md
+        assert response.json()["added"] == 5
+
+        response = await async_client.get(f"/api/v1/library/files?folder_id={external_folder['id']}")
+        root_filenames = {f["filename"] for f in response.json()}
+        assert "README.md" in root_filenames
+
+        # Readme panel can now resolve it.
+        response = await async_client.get(f"/api/v1/library/folders/{external_folder['id']}/readme")
+        assert response.status_code == 200
+        assert response.json()["filename"] == "README.md"
+        assert "Fishing Floats" in response.json()["content"]
+
+    @pytest.mark.asyncio
+    @pytest.mark.integration
+    async def test_scan_preserves_uploaded_markdown(self, async_client: AsyncClient, db_session, tmp_path):
+        """Scanning must not delete an uploaded README.md (#2520 destructive-cleanup bug).
+
+        Before the fix, .md was absent from _SCANNABLE_EXTENSIONS, so an
+        uploaded markdown record was never re-found during the walk and the
+        cleanup pass purged it — the Readme panel then 404'd and hid.
+        """
+        import io
+
+        writable_dir = tmp_path / "writable"
+        writable_dir.mkdir()
+        response = await async_client.post(
+            "/api/v1/library/folders/external",
+            json={"name": "Writable", "external_path": str(writable_dir), "readonly": False},
+        )
+        folder = response.json()
+
+        upload = await async_client.post(
+            f"/api/v1/library/files?folder_id={folder['id']}",
+            files={"file": ("README.md", io.BytesIO(b"# Model\n\nHello"), "text/markdown")},
+        )
+        assert upload.status_code in (200, 201)
+
+        # Panel works before the scan.
+        readme = await async_client.get(f"/api/v1/library/folders/{folder['id']}/readme")
+        assert readme.status_code == 200
+
+        # The scan that used to nuke the record.
+        scan = await async_client.post(f"/api/v1/library/folders/{folder['id']}/scan")
+        assert scan.status_code == 200
+        assert scan.json()["removed"] == 0
+
+        # Record and panel survive.
+        readme = await async_client.get(f"/api/v1/library/folders/{folder['id']}/readme")
+        assert readme.status_code == 200
+        assert readme.json()["filename"] == "README.md"
+
+    @pytest.mark.asyncio
+    @pytest.mark.integration
+    async def test_scan_preserves_non_scannable_file_on_disk(self, async_client: AsyncClient, db_session, tmp_path):
+        """Cleanup must gate on disk presence, not scannable-extension membership (#2520).
+
+        Any uploaded file whose extension is outside _SCANNABLE_EXTENSIONS
+        (here a .txt) stays on disk, so its DB record must survive a scan
+        rather than being treated as deleted.
+        """
+        import io
+
+        writable_dir = tmp_path / "writable_txt"
+        writable_dir.mkdir()
+        response = await async_client.post(
+            "/api/v1/library/folders/external",
+            json={"name": "Writable Txt", "external_path": str(writable_dir), "readonly": False},
+        )
+        folder = response.json()
+
+        upload = await async_client.post(
+            f"/api/v1/library/files?folder_id={folder['id']}",
+            files={"file": ("notes.txt", io.BytesIO(b"keep me"), "text/plain")},
+        )
+        assert upload.status_code in (200, 201)
+
+        scan = await async_client.post(f"/api/v1/library/folders/{folder['id']}/scan")
+        assert scan.status_code == 200
+        assert scan.json()["removed"] == 0
+
+        files = await async_client.get(f"/api/v1/library/files?folder_id={folder['id']}")
+        assert "notes.txt" in {f["filename"] for f in files.json()}
+
+    @pytest.mark.asyncio
+    @pytest.mark.integration
     async def test_scan_non_external_folder_fails(self, async_client: AsyncClient, db_session):
         """Verify scan fails on regular (non-external) folder."""
         # Create a regular folder
@@ -240,14 +409,275 @@ class TestExternalFolderScan:
     @pytest.mark.asyncio
     @pytest.mark.integration
     async def test_scan_files_marked_external(self, async_client: AsyncClient, db_session, external_folder):
-        """Verify scanned files have is_external=True."""
+        """Verify scanned files have is_external=True in root and subfolders."""
         await async_client.post(f"/api/v1/library/folders/{external_folder['id']}/scan")
 
+        # Check root folder files
         response = await async_client.get(f"/api/v1/library/files?folder_id={external_folder['id']}")
         files = response.json()
         assert len(files) > 0
         for f in files:
             assert f["is_external"] is True
+
+        # Check subfolder files
+        response = await async_client.get("/api/v1/library/folders")
+        folders = response.json()
+        subfolder = find_folder_in_tree(folders, "subfolder")
+        assert subfolder is not None
+        response = await async_client.get(f"/api/v1/library/files?folder_id={subfolder['id']}")
+        sub_files = response.json()
+        for f in sub_files:
+            assert f["is_external"] is True
+
+    @pytest.mark.asyncio
+    @pytest.mark.integration
+    async def test_scan_creates_nested_subfolders(self, async_client: AsyncClient, db_session, external_dir):
+        """Verify deeply nested directories create correct folder hierarchy."""
+        # Create nested structure: deep/nested/dir/model.stl
+        deep = external_dir / "deep" / "nested" / "dir"
+        deep.mkdir(parents=True)
+        (deep / "model.stl").write_bytes(b"deepstl")
+
+        data = {
+            "name": "Nested Test",
+            "external_path": str(external_dir),
+            "readonly": True,
+            "show_hidden": False,
+        }
+        response = await async_client.post("/api/v1/library/folders/external", json=data)
+        root = response.json()
+
+        response = await async_client.post(f"/api/v1/library/folders/{root['id']}/scan")
+        assert response.status_code == 200
+
+        # Verify folder chain: root -> deep -> nested -> dir
+        response = await async_client.get("/api/v1/library/folders")
+        all_folders = response.json()
+
+        deep = find_folder_in_tree(all_folders, "deep")
+        assert deep is not None
+        assert deep["parent_id"] == root["id"]
+        assert deep["is_external"] is True
+
+        nested = find_folder_in_tree(all_folders, "nested")
+        assert nested is not None
+        assert nested["parent_id"] == deep["id"]
+
+        dir_folder = find_folder_in_tree(all_folders, "dir")
+        assert dir_folder is not None
+        assert dir_folder["parent_id"] == nested["id"]
+
+        # model.stl should be in the "dir" folder
+        response = await async_client.get(f"/api/v1/library/files?folder_id={dir_folder['id']}")
+        files = response.json()
+        assert len(files) == 1
+        assert files[0]["filename"] == "model.stl"
+
+    @pytest.mark.asyncio
+    @pytest.mark.integration
+    async def test_scan_skips_hidden_directories(self, async_client: AsyncClient, db_session, external_dir):
+        """Verify hidden directories are skipped when show_hidden=False."""
+        hidden_dir = external_dir / ".hidden_dir"
+        hidden_dir.mkdir()
+        (hidden_dir / "secret.stl").write_bytes(b"secret")
+
+        data = {
+            "name": "Hidden Dir Test",
+            "external_path": str(external_dir),
+            "readonly": True,
+            "show_hidden": False,
+        }
+        response = await async_client.post("/api/v1/library/folders/external", json=data)
+        root = response.json()
+
+        response = await async_client.post(f"/api/v1/library/folders/{root['id']}/scan")
+        result = response.json()
+        # Should find 4 files (root 3 + subfolder/nested.stl) but NOT .hidden_dir/secret.stl
+        assert result["added"] == 4
+
+        # No ".hidden_dir" folder should be created
+        response = await async_client.get("/api/v1/library/folders")
+        folder_names = collect_folder_names(response.json())
+        assert ".hidden_dir" not in folder_names
+
+    @pytest.mark.asyncio
+    @pytest.mark.integration
+    async def test_scan_removes_deleted_subfolder(
+        self, async_client: AsyncClient, db_session, external_folder, external_dir
+    ):
+        """Verify scan removes empty subfolder entries when directory deleted from disk."""
+        await async_client.post(f"/api/v1/library/folders/{external_folder['id']}/scan")
+
+        # Verify subfolder exists
+        response = await async_client.get("/api/v1/library/folders")
+        subfolder = find_folder_in_tree(response.json(), "subfolder")
+        assert subfolder is not None
+
+        # Delete the subfolder from disk
+        import shutil
+
+        shutil.rmtree(external_dir / "subfolder")
+
+        # Re-scan
+        response = await async_client.post(f"/api/v1/library/folders/{external_folder['id']}/scan")
+        result = response.json()
+        assert result["removed"] == 1  # nested.stl removed
+
+        # Subfolder should be cleaned up (empty + directory gone)
+        response = await async_client.get("/api/v1/library/folders")
+        subfolder = find_folder_in_tree(response.json(), "subfolder")
+        assert subfolder is None
+
+    @pytest.mark.asyncio
+    @pytest.mark.integration
+    async def test_scan_subfolder_inherits_readonly(
+        self, async_client: AsyncClient, db_session, external_folder, external_dir
+    ):
+        """Verify created subfolders inherit external_readonly from parent."""
+        await async_client.post(f"/api/v1/library/folders/{external_folder['id']}/scan")
+
+        response = await async_client.get("/api/v1/library/folders")
+        subfolder = find_folder_in_tree(response.json(), "subfolder")
+        assert subfolder is not None
+        assert subfolder["external_readonly"] is True
+
+
+class TestExternalFolderModifiedTime:
+    """Filesystem mtime capture + recursive activity sort (#2680).
+
+    The folder tree's "sort by recent activity" and the file pane's date sort
+    must track the real on-disk mtime (``ls -t``), not the DB ``updated_at`` (the
+    scan instant, identical across a bulk scan).
+    """
+
+    @staticmethod
+    def _set_mtime(path: Path, epoch: float) -> None:
+        os.utime(path, (epoch, epoch))
+
+    @pytest.fixture
+    async def make_folder(self, async_client, db_session):
+        async def _make(ext_dir: Path, name: str = "MTime Test") -> dict:
+            data = {
+                "name": name,
+                "external_path": str(ext_dir),
+                "readonly": True,
+                "show_hidden": False,
+            }
+            resp = await async_client.post("/api/v1/library/folders/external", json=data)
+            assert resp.status_code == 200
+            return resp.json()
+
+        return _make
+
+    @pytest.mark.asyncio
+    @pytest.mark.integration
+    async def test_scan_captures_file_fs_mtime(self, async_client, db_session, tmp_path, make_folder):
+        """Each scanned file carries its real on-disk mtime, not the scan time."""
+        ext = tmp_path / "prints"
+        ext.mkdir()
+        old = ext / "old.3mf"
+        new = ext / "new.3mf"
+        old.write_bytes(b"a")
+        new.write_bytes(b"b")
+        # old.3mf modified 2021-01-01, new.3mf modified 2024-01-01.
+        self._set_mtime(old, 1609459200.0)  # 2021-01-01T00:00:00Z
+        self._set_mtime(new, 1704067200.0)  # 2024-01-01T00:00:00Z
+
+        folder = await make_folder(ext)
+        await async_client.post(f"/api/v1/library/folders/{folder['id']}/scan")
+
+        resp = await async_client.get(f"/api/v1/library/files?folder_id={folder['id']}")
+        files = {f["filename"]: f for f in resp.json()}
+        assert files["old.3mf"]["fs_modified_at"] is not None
+        assert files["new.3mf"]["fs_modified_at"] is not None
+        # The real mtime, not "now": the 2021 file must predate the 2024 file.
+        assert files["old.3mf"]["fs_modified_at"] < files["new.3mf"]["fs_modified_at"]
+        assert files["old.3mf"]["fs_modified_at"].startswith("2021")
+        assert files["new.3mf"]["fs_modified_at"].startswith("2024")
+
+    @pytest.mark.asyncio
+    @pytest.mark.integration
+    async def test_rescan_refreshes_changed_file_mtime(self, async_client, db_session, tmp_path, make_folder):
+        """A file edited over the mount re-sorts on the next scan (#2680)."""
+        ext = tmp_path / "prints"
+        ext.mkdir()
+        f = ext / "part.3mf"
+        f.write_bytes(b"a")
+        self._set_mtime(f, 1609459200.0)  # 2021
+
+        folder = await make_folder(ext)
+        await async_client.post(f"/api/v1/library/folders/{folder['id']}/scan")
+
+        # File touched later (samba edit); re-scan must pick up the new mtime.
+        self._set_mtime(f, 1704067200.0)  # 2024
+        await async_client.post(f"/api/v1/library/folders/{folder['id']}/scan")
+
+        resp = await async_client.get(f"/api/v1/library/files?folder_id={folder['id']}")
+        got = resp.json()[0]
+        assert got["fs_modified_at"].startswith("2024")
+
+    @pytest.mark.asyncio
+    @pytest.mark.integration
+    async def test_recursive_activity_bubbles_deep_file_to_root(self, async_client, db_session, tmp_path, make_folder):
+        """A freshly-added deep file lifts every ancestor's activity (#2680).
+
+        ``a`` holds only an OLD file directly but a NEW file three levels down;
+        ``b`` holds a MIDDLE-aged file directly. Recursive bubble must rank ``a``
+        (newest descendant) ahead of ``b`` even though a's own direct file and
+        directory are older.
+        """
+        root = tmp_path / "root"
+        deep = root / "a" / "x" / "y"
+        deep.mkdir(parents=True)
+        (root / "b").mkdir()
+
+        a_direct = root / "a" / "shallow.3mf"
+        deep_file = deep / "deep.3mf"
+        b_direct = root / "b" / "mid.3mf"
+        for p, data in ((a_direct, b"1"), (deep_file, b"2"), (b_direct, b"3")):
+            p.write_bytes(data)
+
+        self._set_mtime(a_direct, 1609459200.0)  # 2021 (oldest)
+        self._set_mtime(b_direct, 1656633600.0)  # 2022-07 (middle)
+        self._set_mtime(deep_file, 1704067200.0)  # 2024 (newest, deep under a)
+        # Directory mtimes are all old so only the deep FILE can lift branch a.
+        for d in (root, root / "a", root / "a" / "x", deep, root / "b"):
+            self._set_mtime(d, 1609459200.0)
+
+        folder = await make_folder(root)
+        await async_client.post(f"/api/v1/library/folders/{folder['id']}/scan")
+
+        tree = (await async_client.get("/api/v1/library/folders")).json()
+        top = find_folder_in_tree(tree, folder["name"])
+        assert top is not None
+        children = {c["name"]: c for c in top["children"]}
+        assert "a" in children and "b" in children
+        # Branch a's activity == the deep 2024 file; b's == its 2022 file.
+        assert children["a"]["latest_activity_at"] > children["b"]["latest_activity_at"]
+        assert children["a"]["latest_activity_at"].startswith("2024")
+        # The root itself bubbles up to the newest descendant anywhere inside it.
+        assert top["latest_activity_at"].startswith("2024")
+
+    @pytest.mark.asyncio
+    @pytest.mark.integration
+    async def test_scan_captures_folder_fs_mtime(self, async_client, db_session, tmp_path, make_folder):
+        """An empty-but-recently-touched subfolder still carries a real mtime."""
+        root = tmp_path / "root"
+        sub = root / "sub"
+        sub.mkdir(parents=True)
+        # A file so the subfolder survives the empty-subfolder cleanup.
+        (sub / "keep.3mf").write_bytes(b"a")
+        self._set_mtime(sub / "keep.3mf", 1609459200.0)  # 2021
+        self._set_mtime(sub, 1704067200.0)  # dir touched 2024
+
+        folder = await make_folder(root)
+        await async_client.post(f"/api/v1/library/folders/{folder['id']}/scan")
+
+        tree = (await async_client.get("/api/v1/library/folders")).json()
+        subfolder = find_folder_in_tree(tree, "sub")
+        assert subfolder is not None
+        # Dir mtime (2024) beats the single 2021 file → folder activity is 2024.
+        assert subfolder["latest_activity_at"].startswith("2024")
 
 
 class TestExternalFolderProtections:
@@ -376,3 +806,430 @@ class TestExternalFolderProtections:
         )
         assert response.status_code == 403
         assert "read-only" in response.json()["detail"].lower()
+
+
+class TestExternalFolderWritableUpload:
+    """Tests for upload write-through to writable external folders (#1112).
+
+    Before the fix, uploads to writable external folders silently landed in the
+    internal library dir while the DB row pointed at the external folder —
+    files were invisible when the mount was viewed from another machine.
+    """
+
+    @pytest.fixture
+    def external_dir(self, tmp_path):
+        ext_dir = tmp_path / "writable_share"
+        ext_dir.mkdir()
+        return ext_dir
+
+    @pytest.fixture
+    async def writable_folder(self, async_client, db_session, external_dir):
+        data = {
+            "name": "Writable NAS",
+            "external_path": str(external_dir),
+            "readonly": False,
+        }
+        response = await async_client.post("/api/v1/library/folders/external", json=data)
+        assert response.status_code == 200
+        return response.json()
+
+    @pytest.mark.asyncio
+    @pytest.mark.integration
+    async def test_upload_lands_on_external_mount(
+        self, async_client: AsyncClient, db_session, writable_folder, external_dir
+    ):
+        """Bytes are written to ``<external_path>/<filename>``, not the internal library dir."""
+        import io
+
+        content = b"hello-external-world"
+        response = await async_client.post(
+            f"/api/v1/library/files?folder_id={writable_folder['id']}",
+            files={"file": ("upload.stl", io.BytesIO(content), "application/octet-stream")},
+        )
+        assert response.status_code == 200, response.text
+
+        on_disk = external_dir / "upload.stl"
+        assert on_disk.exists(), "file must be written to the external mount"
+        assert on_disk.read_bytes() == content
+
+    @pytest.mark.asyncio
+    @pytest.mark.integration
+    async def test_upload_persists_correct_db_shape(
+        self, async_client: AsyncClient, db_session, writable_folder, external_dir
+    ):
+        """DB row must have ``is_external=True`` and ``file_path`` = absolute external path,
+        so scan-dedupe and deletion behaviour match scanned files."""
+        import io
+        import zipfile
+
+        from backend.app.models.library import LibraryFile
+
+        # #1401 hardened the library upload route to reject .3mf files that
+        # aren't valid ZIP containers. This test asserts external-folder
+        # DB shape, not the upload validator, so feed it a minimal real zip
+        # rather than placeholder bytes.
+        zip_buf = io.BytesIO()
+        with zipfile.ZipFile(zip_buf, "w", zipfile.ZIP_DEFLATED) as zf:
+            zf.writestr("placeholder.txt", "")
+        zip_buf.seek(0)
+
+        response = await async_client.post(
+            f"/api/v1/library/files?folder_id={writable_folder['id']}",
+            files={"file": ("model.3mf", zip_buf, "application/octet-stream")},
+        )
+        assert response.status_code == 200
+        file_id = response.json()["id"]
+
+        row = await db_session.get(LibraryFile, file_id)
+        await db_session.refresh(row)
+        assert row.is_external is True
+        assert row.file_path == str((external_dir / "model.3mf").resolve())
+
+    @pytest.mark.asyncio
+    @pytest.mark.integration
+    async def test_upload_filename_collision_returns_409(
+        self, async_client: AsyncClient, db_session, writable_folder, external_dir
+    ):
+        """Re-uploading a filename that already exists on the mount must 409,
+        not silently overwrite — matches scan's treatment of external files as
+        externally-owned bytes."""
+        import io
+
+        (external_dir / "already.stl").write_bytes(b"prior")
+        response = await async_client.post(
+            f"/api/v1/library/files?folder_id={writable_folder['id']}",
+            files={"file": ("already.stl", io.BytesIO(b"new"), "application/octet-stream")},
+        )
+        assert response.status_code == 409
+        assert (external_dir / "already.stl").read_bytes() == b"prior"
+
+    @pytest.mark.asyncio
+    @pytest.mark.integration
+    async def test_upload_to_missing_external_path_returns_400(
+        self, async_client: AsyncClient, db_session, writable_folder, external_dir
+    ):
+        """If the external mount has gone away between folder-create and
+        upload, fail loud rather than silently misroute to internal storage."""
+        import io
+        import shutil
+
+        shutil.rmtree(external_dir)
+
+        response = await async_client.post(
+            f"/api/v1/library/files?folder_id={writable_folder['id']}",
+            files={"file": ("x.stl", io.BytesIO(b"x"), "application/octet-stream")},
+        )
+        assert response.status_code == 400
+        assert "not accessible" in response.json()["detail"].lower()
+
+    @pytest.mark.asyncio
+    @pytest.mark.integration
+    async def test_upload_rejects_path_traversal_filename(
+        self, async_client: AsyncClient, db_session, writable_folder, external_dir
+    ):
+        """A malicious filename like ``../escape.stl`` must not write outside
+        the external folder. Defence-in-depth — FastAPI already strips these
+        on parse, but the resolve-and-relative_to guard is the final gate."""
+        import io
+
+        response = await async_client.post(
+            f"/api/v1/library/files?folder_id={writable_folder['id']}",
+            files={"file": ("../escape.stl", io.BytesIO(b"x"), "application/octet-stream")},
+        )
+        # Either a 400 from our traversal guard or a 200 with basename-stripped
+        # filename inside the external dir — both prove nothing escaped.
+        if response.status_code == 200:
+            assert not (external_dir.parent / "escape.stl").exists()
+            assert (external_dir / "escape.stl").exists() or (external_dir / "..escape.stl").exists()
+        else:
+            assert response.status_code in (400, 422)
+            assert not (external_dir.parent / "escape.stl").exists()
+
+    @pytest.mark.asyncio
+    @pytest.mark.integration
+    async def test_zip_to_writable_external_folder_rejected(
+        self, async_client: AsyncClient, db_session, writable_folder
+    ):
+        """Extract-zip into writable external folders isn't supported (nested
+        subfolder creation on the mount is a separate design). Users are
+        pointed at the Scan flow instead."""
+        import io
+        import zipfile
+
+        buf = io.BytesIO()
+        with zipfile.ZipFile(buf, "w") as zf:
+            zf.writestr("a/b/c.stl", b"x")
+        buf.seek(0)
+
+        response = await async_client.post(
+            f"/api/v1/library/files/extract-zip?folder_id={writable_folder['id']}",
+            files={"file": ("test.zip", buf, "application/zip")},
+        )
+        assert response.status_code == 400
+        assert "scan" in response.json()["detail"].lower()
+
+    @pytest.mark.asyncio
+    @pytest.mark.integration
+    async def test_non_external_upload_unchanged(self, async_client: AsyncClient, db_session):
+        """Uploads with no folder_id (root) keep the existing internal-storage behaviour."""
+        import io
+
+        from backend.app.models.library import LibraryFile
+
+        response = await async_client.post(
+            "/api/v1/library/files",
+            files={"file": ("root.stl", io.BytesIO(b"x"), "application/octet-stream")},
+        )
+        assert response.status_code == 200
+        file_id = response.json()["id"]
+        row = await db_session.get(LibraryFile, file_id)
+        await db_session.refresh(row)
+        assert row.is_external is False
+        # Internal storage: file_path is UUID-scoped, stored as a relative path.
+        assert not row.file_path.startswith("/")
+
+
+class TestCrossBoundaryMove:
+    """#1112 follow-up: moving files between managed and external folders
+    must physically relocate the bytes, not just shuffle the DB ``folder_id``.
+
+    Pre-fix symptom (reported by @Carter3DP after testing 0.2.4b1): a file
+    moved from a managed folder to a NAS-backed external folder showed up
+    in Bambuddy's UI under the external folder but was never written to
+    the NAS — so the SMB mount and Bambuddy disagreed about what was
+    actually there.
+    """
+
+    @pytest.fixture
+    def external_dir(self, tmp_path):
+        ext_dir = tmp_path / "writable_share"
+        ext_dir.mkdir()
+        return ext_dir
+
+    @pytest.fixture
+    async def writable_folder(self, async_client, db_session, external_dir):
+        data = {"name": "Writable NAS", "external_path": str(external_dir), "readonly": False}
+        response = await async_client.post("/api/v1/library/folders/external", json=data)
+        assert response.status_code == 200
+        return response.json()
+
+    @pytest.fixture
+    async def readonly_folder(self, async_client, db_session, tmp_path):
+        ro_dir = tmp_path / "ro_share"
+        ro_dir.mkdir()
+        (ro_dir / "stranded.gcode").write_text("G28")
+        data = {"name": "Read-only NAS", "external_path": str(ro_dir), "readonly": True}
+        response = await async_client.post("/api/v1/library/folders/external", json=data)
+        assert response.status_code == 200
+        # Populate via scan so the file gets a DB row with is_external=True.
+        scan = await async_client.post(f"/api/v1/library/folders/{response.json()['id']}/scan")
+        assert scan.status_code == 200
+        return response.json()
+
+    @pytest.mark.asyncio
+    @pytest.mark.integration
+    async def test_managed_to_external_relocates_bytes(
+        self, async_client: AsyncClient, db_session, writable_folder, external_dir
+    ):
+        """The actual #1112 fix: managed → external must write the bytes
+        to the NAS mount AND drop them from internal storage. Pre-fix the
+        DB row flipped to the new folder but the bytes stayed put."""
+        import io
+
+        from backend.app.api.routes.library import to_absolute_path
+        from backend.app.models.library import LibraryFile
+
+        upload = await async_client.post(
+            "/api/v1/library/files",
+            files={"file": ("ship_me.stl", io.BytesIO(b"original-bytes"), "application/octet-stream")},
+        )
+        assert upload.status_code == 200
+        file_id = upload.json()["id"]
+
+        # Snapshot the pre-move on-disk path so we can verify it's gone after.
+        pre = await db_session.get(LibraryFile, file_id)
+        await db_session.refresh(pre)
+        managed_disk_path = to_absolute_path(pre.file_path)
+        assert managed_disk_path is not None and managed_disk_path.exists()
+
+        response = await async_client.post(
+            "/api/v1/library/files/move",
+            json={"file_ids": [file_id], "folder_id": writable_folder["id"]},
+        )
+        assert response.status_code == 200, response.text
+        body = response.json()
+        assert body["moved"] == 1
+        assert body["skipped"] == 0
+
+        # Bytes are on the NAS mount.
+        on_nas = external_dir / "ship_me.stl"
+        assert on_nas.exists()
+        assert on_nas.read_bytes() == b"original-bytes"
+
+        # Internal copy is gone.
+        assert not managed_disk_path.exists(), "managed source must be removed after the move"
+
+        # DB row matches reality.
+        await db_session.refresh(pre)
+        assert pre.is_external is True
+        assert pre.folder_id == writable_folder["id"]
+        assert pre.file_path == str(on_nas.resolve())
+
+    @pytest.mark.asyncio
+    @pytest.mark.integration
+    async def test_external_to_managed_relocates_bytes(
+        self, async_client: AsyncClient, db_session, writable_folder, external_dir
+    ):
+        """Symmetric direction: external → managed copies the bytes into
+        internal storage with a UUID name, deletes the source on the
+        mount, and recomputes the file hash (since scan stores
+        ``file_hash=None`` for external rows)."""
+        import io
+
+        from backend.app.models.library import LibraryFile
+
+        # Plant a file on the writable mount and let upload give it a row.
+        upload = await async_client.post(
+            f"/api/v1/library/files?folder_id={writable_folder['id']}",
+            files={"file": ("relocate_me.stl", io.BytesIO(b"nas-bytes"), "application/octet-stream")},
+        )
+        assert upload.status_code == 200
+        file_id = upload.json()["id"]
+        ext_disk = external_dir / "relocate_me.stl"
+        assert ext_disk.exists()
+
+        response = await async_client.post(
+            "/api/v1/library/files/move",
+            json={"file_ids": [file_id], "folder_id": None},
+        )
+        assert response.status_code == 200
+        assert response.json()["moved"] == 1
+
+        db_session.expire_all()
+        row = await db_session.get(LibraryFile, file_id)
+        assert row.is_external is False
+        assert row.folder_id is None
+        assert not row.file_path.startswith("/"), "managed file_path must be relative"
+        assert not ext_disk.exists(), "external source must be removed after the move"
+        # Hash filled in for the now-managed row so future dedup works.
+        assert row.file_hash is not None and len(row.file_hash) == 64
+
+    @pytest.mark.asyncio
+    @pytest.mark.integration
+    async def test_managed_to_external_collision_skips_with_reason(
+        self, async_client: AsyncClient, db_session, writable_folder, external_dir
+    ):
+        """A name collision on the target external mount must skip the
+        move with a structured reason — not silently overwrite a file
+        that's already on the NAS."""
+        import io
+
+        # Pre-existing file on the mount with the same name as the upload.
+        (external_dir / "duplicate.stl").write_bytes(b"pre-existing")
+
+        upload = await async_client.post(
+            "/api/v1/library/files",
+            files={"file": ("duplicate.stl", io.BytesIO(b"new-bytes"), "application/octet-stream")},
+        )
+        assert upload.status_code == 200
+        file_id = upload.json()["id"]
+
+        response = await async_client.post(
+            "/api/v1/library/files/move",
+            json={"file_ids": [file_id], "folder_id": writable_folder["id"]},
+        )
+        assert response.status_code == 200
+        body = response.json()
+        assert body["moved"] == 0
+        assert body["skipped"] == 1
+        reasons = body["skipped_reasons"]
+        assert len(reasons) == 1
+        assert reasons[0]["file_id"] == file_id
+        assert reasons[0]["code"] == "name_collision"
+        # Pre-existing target file is intact.
+        assert (external_dir / "duplicate.stl").read_bytes() == b"pre-existing"
+
+    @pytest.mark.asyncio
+    @pytest.mark.integration
+    async def test_external_readonly_source_skips(self, async_client: AsyncClient, db_session, readonly_folder):
+        """A read-only mount allows reading but not deletes, and a move
+        is semantically a delete on the source. Skip with
+        ``source_readonly`` so the file isn't duplicated by half-moving."""
+        listing = await async_client.get(f"/api/v1/library/files?folder_id={readonly_folder['id']}")
+        assert listing.status_code == 200
+        ext_file_id = listing.json()[0]["id"]
+
+        response = await async_client.post(
+            "/api/v1/library/files/move",
+            json={"file_ids": [ext_file_id], "folder_id": None},
+        )
+        assert response.status_code == 200
+        body = response.json()
+        assert body["moved"] == 0
+        assert body["skipped"] == 1
+        assert body["skipped_reasons"][0]["code"] == "source_readonly"
+
+    @pytest.mark.asyncio
+    @pytest.mark.integration
+    async def test_managed_to_managed_remains_db_only(self, async_client: AsyncClient, db_session):
+        """Same-boundary moves (managed → managed) keep the existing
+        DB-only fast path — no shutil.copy, no UUID rename. The original
+        file_path stays the same, only ``folder_id`` changes."""
+        import io
+
+        from backend.app.models.library import LibraryFile
+
+        sub = await async_client.post(
+            "/api/v1/library/folders",
+            json={"name": "subfolder", "parent_id": None},
+        )
+        assert sub.status_code == 200
+        target_id = sub.json()["id"]
+
+        upload = await async_client.post(
+            "/api/v1/library/files",
+            files={"file": ("part.stl", io.BytesIO(b"x"), "application/octet-stream")},
+        )
+        assert upload.status_code == 200
+        file_id = upload.json()["id"]
+        pre = await db_session.get(LibraryFile, file_id)
+        await db_session.refresh(pre)
+        original_path = pre.file_path
+
+        response = await async_client.post(
+            "/api/v1/library/files/move",
+            json={"file_ids": [file_id], "folder_id": target_id},
+        )
+        assert response.status_code == 200
+        assert response.json()["moved"] == 1
+
+        db_session.expire_all()
+        post = await db_session.get(LibraryFile, file_id)
+        assert post.folder_id == target_id
+        assert post.is_external is False
+        assert post.file_path == original_path  # bytes never moved
+
+    @pytest.mark.asyncio
+    @pytest.mark.integration
+    async def test_skipped_reasons_field_present_even_when_empty(self, async_client: AsyncClient, db_session):
+        """Backwards-compatible response shape: ``skipped_reasons`` is
+        always present (empty list when nothing skipped) so frontend
+        code can treat it as the source of truth without optional-chain
+        gymnastics."""
+        import io
+
+        upload = await async_client.post(
+            "/api/v1/library/files",
+            files={"file": ("trivial.stl", io.BytesIO(b"x"), "application/octet-stream")},
+        )
+        assert upload.status_code == 200
+        file_id = upload.json()["id"]
+
+        response = await async_client.post(
+            "/api/v1/library/files/move",
+            json={"file_ids": [file_id], "folder_id": None},
+        )
+        assert response.status_code == 200
+        body = response.json()
+        assert "skipped_reasons" in body
+        assert body["skipped_reasons"] == []

@@ -1,6 +1,21 @@
 from datetime import datetime
 
-from pydantic import BaseModel
+from pydantic import BaseModel, field_validator
+
+
+def _validate_project_url(value: str | None) -> str | None:
+    """Reject anything that isn't an http(s) URL — the URL is rendered as a
+    clickable `<a href>` so a `javascript:` / `data:` / `file:` value would be
+    an XSS vector even with React's default escaping (#1155)."""
+    if value is None:
+        return value
+    trimmed = value.strip()
+    if not trimmed:
+        return None
+    lowered = trimmed.lower()
+    if not (lowered.startswith("http://") or lowered.startswith("https://")):
+        raise ValueError("url must start with http:// or https://")
+    return trimmed
 
 
 class ProjectCreate(BaseModel):
@@ -11,12 +26,19 @@ class ProjectCreate(BaseModel):
     color: str | None = None
     target_count: int | None = None
     target_parts_count: int | None = None
+    target_sets: int | None = None  # Copies-per-file target (#1897)
     notes: str | None = None
     tags: str | None = None
     due_date: datetime | None = None
     priority: str = "normal"
     budget: float | None = None
     parent_id: int | None = None  # For sub-projects
+    url: str | None = None
+
+    @field_validator("url")
+    @classmethod
+    def _check_url(cls, v: str | None) -> str | None:
+        return _validate_project_url(v)
 
 
 class ProjectUpdate(BaseModel):
@@ -28,12 +50,19 @@ class ProjectUpdate(BaseModel):
     status: str | None = None  # active, completed, archived
     target_count: int | None = None
     target_parts_count: int | None = None
+    target_sets: int | None = None  # Copies-per-file target (#1897)
     notes: str | None = None
     tags: str | None = None
     due_date: datetime | None = None
     priority: str | None = None
     budget: float | None = None
     parent_id: int | None = None
+    url: str | None = None
+
+    @field_validator("url")
+    @classmethod
+    def _check_url(cls, v: str | None) -> str | None:
+        return _validate_project_url(v)
 
 
 class ProjectStats(BaseModel):
@@ -81,6 +110,7 @@ class ProjectResponse(BaseModel):
     status: str
     target_count: int | None
     target_parts_count: int | None = None
+    target_sets: int | None = None  # Copies-per-file target (#1897)
     notes: str | None = None
     attachments: list | None = None
     tags: str | None = None
@@ -95,9 +125,18 @@ class ProjectResponse(BaseModel):
     created_at: datetime
     updated_at: datetime
     stats: ProjectStats | None = None
+    url: str | None = None
+    cover_image_filename: str | None = None
 
     class Config:
         from_attributes = True
+
+
+class ProjectFileProgress(BaseModel):
+    """Completed-run count for one library file inside a project (#1897)."""
+
+    file_id: int
+    completed_count: int
 
 
 class ArchivePreview(BaseModel):
@@ -121,7 +160,15 @@ class ProjectListResponse(BaseModel):
     status: str
     target_count: int | None
     target_parts_count: int | None = None
+    target_sets: int | None = None  # Copies-per-file target (#1897); the shared edit dialog needs it
     budget: float | None = None
+    # The edit dialog is shared with the project detail page and seeds its fields
+    # from whichever project object it is handed, so the list payload has to carry
+    # everything the dialog edits — otherwise a save from the list view submits a
+    # blank tags field and a default priority over the stored values (#2536).
+    tags: str | None = None
+    due_date: datetime | None = None
+    priority: str = "normal"
     created_at: datetime
     # Quick stats
     archive_count: int = 0  # Number of print jobs
@@ -132,6 +179,9 @@ class ProjectListResponse(BaseModel):
     progress_percent: float | None = None
     # Preview of archives (up to 5)
     archives: list[ArchivePreview] = []
+    # #1155: card-level metadata
+    url: str | None = None
+    cover_image_filename: str | None = None
 
     class Config:
         from_attributes = True
@@ -237,6 +287,7 @@ class ProjectExport(BaseModel):
     status: str
     target_count: int | None
     target_parts_count: int | None
+    target_sets: int | None = None
     notes: str | None
     tags: str | None
     due_date: datetime | None
@@ -255,6 +306,7 @@ class ProjectImport(BaseModel):
     status: str = "active"
     target_count: int | None = None
     target_parts_count: int | None = None
+    target_sets: int | None = None
     notes: str | None = None
     tags: str | None = None
     due_date: datetime | None = None

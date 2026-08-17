@@ -7,10 +7,14 @@ import shutil
 import socket
 import struct
 import subprocess
+import sys
 
 logger = logging.getLogger(__name__)
 
-# Interfaces to exclude from selection
+# Interfaces to exclude from selection (Linux only — Windows adapter names
+# don't follow these prefixes and there's no equivalent uniform Windows
+# exclude list worth hard-coding; the psutil path filters on address class
+# (loopback, link-local) and interface up-state instead).
 EXCLUDED_INTERFACE_PREFIXES = ("lo", "docker", "br-", "veth", "virbr")
 
 # Resolve full path to `ip` command (may not be in PATH for service users)
@@ -22,12 +26,92 @@ def _is_excluded(name: str) -> bool:
     return any(name.startswith(prefix) for prefix in EXCLUDED_INTERFACE_PREFIXES)
 
 
+def _get_network_interfaces_psutil() -> list[dict]:
+    """Non-Linux path (Windows, macOS, BSD): enumerate interfaces via psutil.
+
+    The ioctl request numbers in the Linux path (SIOCGIFADDR 0x8915,
+    SIOCGIFNETMASK 0x891B) and the sockaddr layout they return are
+    Linux-specific. On macOS/BSD ``fcntl`` still imports, so those ioctls
+    don't raise ImportError — they raise ``OSError`` per interface and the
+    Linux path silently returns an empty list (no VP bind interfaces).
+    Windows has no ``fcntl``/``ip`` at all. psutil is already a Bambuddy dep
+    (``psutil>=6.0.0``) and gives cross-platform name + IPv4 + netmask in one
+    call, so we use it for everything that isn't Linux.
+
+    Filters: IPv4 only (matches the Linux path), skip loopback and
+    link-local (169.254.0.0/16), skip interfaces psutil reports as down.
+    No name-based exclusion — users may legitimately want to bind a VP to a
+    Hyper-V / WSL / Tailscale / utun virtual adapter.
+    """
+    try:
+        import psutil
+    except ImportError:
+        logger.warning("psutil not available, interface detection unavailable on this platform")
+        return []
+
+    interfaces = []
+    try:
+        addrs_by_iface = psutil.net_if_addrs()
+        stats_by_iface = psutil.net_if_stats()
+    except Exception as e:
+        logger.error("psutil failed to enumerate interfaces: %s", e)
+        return []
+
+    for name, addrs in addrs_by_iface.items():
+        stats = stats_by_iface.get(name)
+        if stats is not None and not stats.isup:
+            continue
+
+        for addr in addrs:
+            if addr.family != socket.AF_INET:
+                continue
+            ip = addr.address
+            netmask = addr.netmask
+            if not ip or not netmask:
+                continue
+
+            try:
+                ip_obj = ipaddress.IPv4Address(ip)
+            except ValueError:
+                continue
+            if ip_obj.is_loopback or ip_obj.is_link_local:
+                continue
+
+            try:
+                network = ipaddress.IPv4Network(f"{ip}/{netmask}", strict=False)
+            except ValueError:
+                continue
+
+            interfaces.append(
+                {
+                    "name": name,
+                    "ip": ip,
+                    "netmask": netmask,
+                    "subnet": str(network),
+                }
+            )
+            # First IPv4 per interface is enough; matches Linux ioctl which
+            # returns only the primary IP (aliases land via get_all_interface_ips
+            # on Linux, which has no Windows analogue worth replicating).
+            break
+
+    return interfaces
+
+
 def get_network_interfaces() -> list[dict]:
     """Get all network interfaces with their IPs and subnets.
 
     Returns:
         List of dicts with name, ip, netmask, subnet, broadcast
     """
+    # Only Linux has the SIOCGIFADDR/SIOCGIFNETMASK ioctls + sockaddr layout the
+    # path below relies on. Windows lacks fcntl entirely; macOS/BSD have fcntl but
+    # different ioctl numbers, so the ioctl path there fails per-interface and
+    # returns an empty list (breaking the VP bind-interface dropdown on macOS).
+    # Route everything non-Linux to the cross-platform psutil path.
+    if not sys.platform.startswith("linux"):
+        return _get_network_interfaces_psutil()
+
     interfaces = []
 
     try:

@@ -113,12 +113,17 @@ async def set_kprofile(
     if not client or not client.state.connected:
         raise HTTPException(400, "Printer not connected")
 
-    # Detect H2D by serial number prefix
-    is_h2d = printer.serial_number.startswith("094")
+    # Detect dual-nozzle for the in-place edit format. Runtime detection from
+    # device.extruder.info beats serial-prefix heuristics — H2S shares prefix
+    # "094" with H2D but is single-nozzle (#1386). Model name is the fallback
+    # for the brief window after connect before push data arrives.
+    from backend.app.utils.printer_models import is_dual_nozzle_model
 
-    if is_edit and is_h2d:
-        # H2D in-place edit: use cali_idx with slot_id=0 and empty setting_id
-        logger.info("[API] H2D in-place edit: cali_idx=%s", profile.slot_id)
+    is_dual_nozzle = client._is_dual_nozzle or is_dual_nozzle_model(printer.model)
+
+    if is_edit and is_dual_nozzle:
+        # Dual-nozzle in-place edit: use cali_idx with slot_id=0 and empty setting_id
+        logger.info("[API] Dual-nozzle in-place edit: cali_idx=%s", profile.slot_id)
         success = client.set_kprofile(
             filament_id=profile.filament_id,
             name=profile.name,
@@ -131,7 +136,7 @@ async def set_kprofile(
             cali_idx=profile.slot_id,  # Pass the original slot for in-place edit
         )
     elif is_edit:
-        # Non-H2D edit: use delete + add approach
+        # Single-nozzle edit: use delete + add approach
         logger.info("[API] Edit: deleting existing profile slot_id=%s", profile.slot_id)
         delete_success = client.delete_kprofile(
             cali_idx=profile.slot_id,
@@ -143,6 +148,9 @@ async def set_kprofile(
         )
         if not delete_success:
             raise HTTPException(500, "Failed to delete existing K-profile for edit")
+        ok, detail = await client.await_cali_ack(delete_success)
+        if not ok:
+            raise HTTPException(500, f"Printer rejected the K-profile edit: {detail}")
 
         # Wait for printer to process the delete before adding
         await asyncio.sleep(0.5)
@@ -173,6 +181,13 @@ async def set_kprofile(
 
     if not success:
         raise HTTPException(500, "Failed to send K-profile command")
+
+    # The printer answers extrusion_cali_set with result/reason, echoing our
+    # sequence_id. Until #2718 that answer was logged at DEBUG and discarded,
+    # so a rejected write was reported to the user as saved.
+    ok, detail = await client.await_cali_ack(success)
+    if not ok:
+        raise HTTPException(500, f"Printer rejected the K-profile: {detail}")
 
     message = "K-profile updated successfully" if is_edit else "K-profile added successfully"
     return {"success": True, "message": message}
@@ -234,6 +249,10 @@ async def set_kprofiles_batch(
     if not success:
         raise HTTPException(500, "Failed to send K-profiles batch command")
 
+    ok, detail = await client.await_cali_ack(success)
+    if not ok:
+        raise HTTPException(500, f"Printer rejected the K-profiles: {detail}")
+
     return {"success": True, "message": f"Added {len(profiles)} K-profiles"}
 
 
@@ -277,6 +296,10 @@ async def delete_kprofile(
 
     if not success:
         raise HTTPException(500, "Failed to send K-profile delete command")
+
+    ok, detail = await client.await_cali_ack(success)
+    if not ok:
+        raise HTTPException(500, f"Printer rejected the delete: {detail}")
 
     # Wait for printer to process the delete before frontend refetches
     await asyncio.sleep(0.5)

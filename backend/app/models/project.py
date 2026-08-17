@@ -16,12 +16,23 @@ class Project(Base):
     description: Mapped[str | None] = mapped_column(Text, nullable=True)
     color: Mapped[str | None] = mapped_column(String(20), nullable=True)  # Hex color for UI
     status: Mapped[str] = mapped_column(String(20), default="active")  # active, completed, archived
+
+    # External link rendered as a clickable icon next to the project name (#1155).
+    url: Mapped[str | None] = mapped_column(String(2048), nullable=True)
+    # Filename of the cover photo inside the project's attachments dir; serves as
+    # the card's hero image when set (#1155). The file lives alongside other
+    # attachments but is tracked here separately so users can manage one without
+    # the other.
+    cover_image_filename: Mapped[str | None] = mapped_column(String(255), nullable=True)
     target_count: Mapped[int | None] = mapped_column(
         Integer, nullable=True
     )  # Optional target number of prints (plates)
     target_parts_count: Mapped[int | None] = mapped_column(
         Integer, nullable=True
     )  # Optional target number of parts/objects
+    # Optional copies-per-file target (#1897): every printable file in the
+    # project's linked folders should be printed this many times ("sets").
+    target_sets: Mapped[int | None] = mapped_column(Integer, nullable=True)
 
     # Phase 2: Rich text notes (HTML from WYSIWYG editor)
     notes: Mapped[str | None] = mapped_column(Text, nullable=True)

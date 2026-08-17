@@ -505,6 +505,270 @@ class TestPreferLowestFilament:
         assert result == [254]  # Should pick external spool (10%) over AMS (80%)
 
 
+class TestPreferLowestInventoryOverride:
+    """Tests for the #1508 inventory-aware sort: when the user has bound a
+    Bambuddy inventory spool to an AMS slot, that spool's remaining weight
+    becomes the sort signal instead of the MQTT ``remain`` percentage.
+
+    The fix is two-tier: inventory-tracked spools always sort before
+    MQTT-only ones, then ascending by remaining within each tier, then
+    ascending by AMS slot position. See
+    ``print_scheduler._prefer_lowest_sort_key`` for the rationale.
+    """
+
+    @pytest.fixture
+    def scheduler(self):
+        return PrintScheduler()
+
+    def test_inventory_override_beats_mqtt_remain(self, scheduler):
+        """Slot 4's inventory shows 50 g remaining; slot 1's clone has 950 g.
+        MQTT ``remain`` is -1 for both (non-RFID spools), so without the
+        override the sort collapses to AMS-slot order and slot 1 wins.
+        With the override slot 4 (the original, nearly empty) wins. This is
+        the literal reporter scenario in #1508.
+        """
+        required = [{"slot_id": 1, "type": "PLA", "color": "#FF0000"}]
+        loaded = [
+            {
+                "type": "PLA",
+                "color": "#FF0000",
+                "ams_id": 0,
+                "tray_id": 0,
+                "global_tray_id": 0,
+                "remain": -1,
+            },
+            {
+                "type": "PLA",
+                "color": "#FF0000",
+                "ams_id": 0,
+                "tray_id": 3,
+                "global_tray_id": 3,
+                "remain": -1,
+            },
+        ]
+        # Slot 1 (gtid 0) is the fresh clone at 950 g; slot 4 (gtid 3) is the
+        # nearly-empty original at 50 g.
+        overrides = {0: 950.0, 3: 50.0}
+        result = scheduler._match_filaments_to_slots(
+            required, loaded, prefer_lowest=True, inventory_remain_overrides=overrides
+        )
+        assert result == [3]
+
+    def test_inventory_override_with_zero_grams_still_wins(self, scheduler):
+        """An inventory-tracked spool at 0 g must still sort first within
+        its tier — the user wants to finish what's left (or be told there's
+        a deficit) rather than skip to the fresh one. The clamp-to-101
+        legacy logic only fires on negative values, so 0 g stays 0.0.
+        """
+        required = [{"slot_id": 1, "type": "PLA", "color": "#FF0000"}]
+        loaded = [
+            {
+                "type": "PLA",
+                "color": "#FF0000",
+                "ams_id": 0,
+                "tray_id": 0,
+                "global_tray_id": 0,
+                "remain": -1,
+            },
+            {
+                "type": "PLA",
+                "color": "#FF0000",
+                "ams_id": 0,
+                "tray_id": 1,
+                "global_tray_id": 1,
+                "remain": -1,
+            },
+        ]
+        overrides = {0: 500.0, 1: 0.0}
+        result = scheduler._match_filaments_to_slots(
+            required, loaded, prefer_lowest=True, inventory_remain_overrides=overrides
+        )
+        assert result == [1]
+
+    def test_inventory_tier_beats_mqtt_tier_regardless_of_value(self, scheduler):
+        """Mixed mode: one slot is inventory-tracked at 800 g (high), the
+        other has only a MQTT remain of 10 (very low). The inventory tier
+        wins because the user has explicitly told us to manage that slot —
+        unit-mixing across tiers is intentional and resolved by the tier
+        flag, not value comparison.
+        """
+        required = [{"slot_id": 1, "type": "PLA", "color": "#FF0000"}]
+        loaded = [
+            {
+                "type": "PLA",
+                "color": "#FF0000",
+                "ams_id": 0,
+                "tray_id": 0,
+                "global_tray_id": 0,
+                "remain": 10,
+            },
+            {
+                "type": "PLA",
+                "color": "#FF0000",
+                "ams_id": 0,
+                "tray_id": 1,
+                "global_tray_id": 1,
+                "remain": -1,
+            },
+        ]
+        overrides = {1: 800.0}  # only slot 2 has an inventory binding
+        result = scheduler._match_filaments_to_slots(
+            required, loaded, prefer_lowest=True, inventory_remain_overrides=overrides
+        )
+        assert result == [1]
+
+    def test_two_tracked_spools_tied_at_same_grams_lower_slot_wins(self, scheduler):
+        """Two inventory-tracked spools with genuinely equal remaining
+        weight — slot tie-breaker decides. Lower AMS slot wins to match
+        the user's mental model of "use the lower slot first when equal."
+        """
+        required = [{"slot_id": 1, "type": "PLA", "color": "#FF0000"}]
+        loaded = [
+            {
+                "type": "PLA",
+                "color": "#FF0000",
+                "ams_id": 0,
+                "tray_id": 1,
+                "global_tray_id": 1,
+                "remain": -1,
+            },
+            {
+                "type": "PLA",
+                "color": "#FF0000",
+                "ams_id": 0,
+                "tray_id": 0,
+                "global_tray_id": 0,
+                "remain": -1,
+            },
+        ]
+        overrides = {0: 500.0, 1: 500.0}
+        result = scheduler._match_filaments_to_slots(
+            required, loaded, prefer_lowest=True, inventory_remain_overrides=overrides
+        )
+        assert result == [0]
+
+    def test_no_override_falls_back_to_mqtt_remain(self, scheduler):
+        """When no slots are inventory-bound the override map is empty
+        and behaviour is identical to the pre-#1508 MQTT-only sort.
+        Regression guard for the un-tracked-spool case.
+        """
+        required = [{"slot_id": 1, "type": "PLA", "color": "#FF0000"}]
+        loaded = [
+            {
+                "type": "PLA",
+                "color": "#FF0000",
+                "ams_id": 0,
+                "tray_id": 0,
+                "global_tray_id": 0,
+                "remain": 80,
+            },
+            {
+                "type": "PLA",
+                "color": "#FF0000",
+                "ams_id": 0,
+                "tray_id": 1,
+                "global_tray_id": 1,
+                "remain": 30,
+            },
+        ]
+        result = scheduler._match_filaments_to_slots(
+            required, loaded, prefer_lowest=True, inventory_remain_overrides={}
+        )
+        assert result == [1]
+
+    def test_no_override_unknown_remain_sorts_after_known(self, scheduler):
+        """In the no-binding case, ``remain = -1`` (non-RFID, unknown) must
+        still sort *after* a slot the printer knows something about — the
+        legacy sentinel-101 behaviour is preserved.
+        """
+        required = [{"slot_id": 1, "type": "PLA", "color": "#FF0000"}]
+        loaded = [
+            {
+                "type": "PLA",
+                "color": "#FF0000",
+                "ams_id": 0,
+                "tray_id": 0,
+                "global_tray_id": 0,
+                "remain": -1,
+            },
+            {
+                "type": "PLA",
+                "color": "#FF0000",
+                "ams_id": 0,
+                "tray_id": 1,
+                "global_tray_id": 1,
+                "remain": 50,
+            },
+        ]
+        result = scheduler._match_filaments_to_slots(
+            required, loaded, prefer_lowest=True, inventory_remain_overrides=None
+        )
+        assert result == [1]
+
+    def test_external_with_negative_ams_id_does_not_outrank_ams_on_tie(self, scheduler):
+        """``_build_loaded_filaments`` emits external/VT trays with
+        ``ams_id = -1``. A naive ``ams_id * 4 + tray_id`` slot-priority
+        formula would compute -4 for an external and 0 for AMS slot 0 —
+        flipping the legacy stable-sort baseline (which kept AMS first
+        because it's emitted before externals). When ``remain`` ties
+        between the two, AMS slot 0 must still win.
+        """
+        required = [{"slot_id": 1, "type": "PLA", "color": "#FF0000"}]
+        loaded = [
+            {
+                "type": "PLA",
+                "color": "#FF0000",
+                "ams_id": 0,
+                "tray_id": 0,
+                "global_tray_id": 0,
+                "remain": -1,
+                "is_external": False,
+            },
+            {
+                "type": "PLA",
+                "color": "#FF0000",
+                "ams_id": -1,
+                "tray_id": 0,
+                "global_tray_id": 254,
+                "remain": -1,
+                "is_external": True,
+            },
+        ]
+        result = scheduler._match_filaments_to_slots(
+            required, loaded, prefer_lowest=True, inventory_remain_overrides=None
+        )
+        assert result == [0]
+
+    def test_ams_ht_does_not_outrank_regular_ams_on_tie(self, scheduler):
+        """AMS-HT units use ``ams_id`` >= 128 with a single tray. On a tied
+        ``remain`` value, regular AMS slot 0 (slot_priority 0) must beat
+        AMS-HT (slot_priority 1000+).
+        """
+        required = [{"slot_id": 1, "type": "PLA", "color": "#FF0000"}]
+        loaded = [
+            {
+                "type": "PLA",
+                "color": "#FF0000",
+                "ams_id": 0,
+                "tray_id": 0,
+                "global_tray_id": 0,
+                "remain": 50,
+            },
+            {
+                "type": "PLA",
+                "color": "#FF0000",
+                "ams_id": 128,
+                "tray_id": 0,
+                "global_tray_id": 128,
+                "remain": 50,
+            },
+        ]
+        result = scheduler._match_filaments_to_slots(
+            required, loaded, prefer_lowest=True, inventory_remain_overrides=None
+        )
+        assert result == [0]
+
+
 class TestBuildLoadedFilamentsTrayInfoIdx:
     """Test tray_info_idx extraction in _build_loaded_filaments."""
 
@@ -763,6 +1027,61 @@ class TestExtractNozzleMappingFrom3mf:
         )
         result = extract_nozzle_mapping_from_3mf(zf)
         assert result is None
+        zf.close()
+
+    def test_single_active_under_report_with_multi_group_falls_through(self):
+        """#1825: extruder_nozzle_stats under-reports the second nozzle, but the
+        slice genuinely uses two extruders (group_id 0 and 1). The shortcut must
+        NOT fire — the parser has to honour the per-filament group_id assignment.
+
+        H2D HT-AMS scenario from the report: physical_extruder_map ['1','0'],
+        extruder_nozzle_stats ['Standard#1','Standard#0'] (sum==1), but ASA is
+        group_id 0 (→ LEFT) and PETG is group_id 1 (→ RIGHT). Before the fix
+        the shortcut collapsed both onto LEFT; now group_id wins.
+        """
+        slice_info = """<?xml version="1.0" encoding="UTF-8"?>
+        <config>
+          <plate>
+            <filament id="1" type="ASA"  color="#FF0000" used_g="5.0" group_id="0"/>
+            <filament id="2" type="PETG" color="#00FF00" used_g="3.0" group_id="1"/>
+          </plate>
+        </config>"""
+        zf = _make_3mf_zip(
+            {
+                "physical_extruder_map": ["1", "0"],
+                "extruder_nozzle_stats": ["Standard#1", "Standard#0"],
+            },
+            slice_info_xml=slice_info,
+        )
+        result = extract_nozzle_mapping_from_3mf(zf)
+        # group_id 0 → physical_extruder_map[0] = 1 (LEFT)
+        # group_id 1 → physical_extruder_map[1] = 0 (RIGHT)
+        assert result == {1: 1, 2: 0}
+        zf.close()
+
+    def test_single_active_with_single_group_still_uses_shortcut(self):
+        """When stats report one active extruder AND the slice is truly
+        single-group, the shortcut is still correct and must continue to fire
+        (preserves the #851 behaviour for genuine single-nozzle prints made on
+        a multi-nozzle printer where only one nozzle is installed).
+        """
+        slice_info = """<?xml version="1.0" encoding="UTF-8"?>
+        <config>
+          <plate>
+            <filament id="1" type="PLA" color="#FF0000" used_g="5.0" group_id="0"/>
+            <filament id="2" type="PLA" color="#00FF00" used_g="3.0" group_id="0"/>
+          </plate>
+        </config>"""
+        zf = _make_3mf_zip(
+            {
+                "physical_extruder_map": ["1", "0"],
+                "extruder_nozzle_stats": ["Standard#1", "Standard#0"],
+            },
+            slice_info_xml=slice_info,
+        )
+        result = extract_nozzle_mapping_from_3mf(zf)
+        # Only extruder index 0 is active → physical_extruder_map[0] = 1 (LEFT)
+        assert result == {1: 1, 2: 1}
         zf.close()
 
 
@@ -1182,3 +1501,50 @@ class TestX1CModel:
         ]
         result = scheduler._match_filaments_to_slots(required, loaded)
         assert result == [5, 7]
+
+
+class TestFtsNozzleBypass:
+    """#2186: with a Filament Track Switch (FTS) installed, the per-nozzle hard
+    filter in the dispatch mapping must be skipped so a spool loaded in the OTHER
+    nozzle's AMS can be routed to the requested nozzle. Without an FTS the filter
+    still applies (cross-nozzle assignment fails on the printer).
+    """
+
+    @pytest.fixture
+    def scheduler(self):
+        return PrintScheduler()
+
+    def _repro_loaded(self):
+        # Mirrors the reporter's H2C: AMS-A (id 0) on the LEFT extruder (1) holds
+        # the black PLA the model wants; AMS-B (id 1) on the RIGHT extruder (0)
+        # holds a red PLA.
+        return [
+            {"type": "PLA", "color": "#000000", "global_tray_id": 1, "extruder_id": 1},  # AMS-A slot2 black, LEFT
+            {"type": "PLA", "color": "#FF0000", "global_tray_id": 6, "extruder_id": 0},  # AMS-B slot3 red, RIGHT
+        ]
+
+    def test_fts_routes_correct_colour_from_other_nozzle(self, scheduler):
+        """Model wants black PLA on the RIGHT nozzle; the black spool sits on the
+        LEFT AMS. With FTS the nozzle filter is skipped, so it picks the black spool
+        (gtid 1) — not the wrong-colour red already on the right (gtid 6).
+        Reproduces #2186 (b3 fed red instead of black)."""
+        required = [{"slot_id": 1, "type": "PLA", "color": "#000000", "nozzle_id": 0}]
+        result = scheduler._match_filaments_to_slots(required, self._repro_loaded(), fts_installed=True)
+        assert result == [1]  # black PLA from AMS-A, routed to the right nozzle by the FTS
+
+    def test_without_fts_nozzle_filter_still_applies(self, scheduler):
+        """No FTS: cross-nozzle assignment isn't possible, so a RIGHT-nozzle request
+        is restricted to right-side trays and matches the red PLA by type. Correct
+        non-FTS behaviour — and exactly why #2186 needed the FTS bypass."""
+        required = [{"slot_id": 1, "type": "PLA", "color": "#000000", "nozzle_id": 0}]
+        result = scheduler._match_filaments_to_slots(required, self._repro_loaded(), fts_installed=False)
+        assert result == [6]  # only the right-side PLA is eligible
+
+    def test_fts_flag_is_noop_without_nozzle_id(self, scheduler):
+        """Single-nozzle 3MFs carry no nozzle_id, so the per-nozzle filter never
+        runs and the FTS flag changes nothing — the exact-colour match wins either
+        way. (Single-nozzle printers also never have an FTS.)"""
+        required = [{"slot_id": 1, "type": "PLA", "color": "#000000"}]
+        for fts in (True, False):
+            result = scheduler._match_filaments_to_slots(required, self._repro_loaded(), fts_installed=fts)
+            assert result == [1]  # exact black match, no nozzle involved

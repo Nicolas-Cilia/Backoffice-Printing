@@ -41,12 +41,11 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       contents: read
-      security-events: write
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
 
       - name: Set up Python
-        uses: actions/setup-python@v5
+        uses: actions/setup-python@v6
         with:
           python-version: ${{ env.PYTHON_VERSION }}
 
@@ -55,59 +54,86 @@ jobs:
 
       - name: Run Bandit
         run: |
+          # Human-readable findings in the job log, plus SARIF kept as an artifact.
+          # Uploading SARIF to GitHub code scanning needs Advanced Security on a
+          # private repo, which this fork does not have — see the artifact step.
+          bandit -r backend/ --severity-level medium || true
           bandit -r backend/ -f sarif -o bandit-results.sarif --severity-level medium || true
 
-      - name: Upload Bandit results to GitHub Security
-        uses: github/codeql-action/upload-sarif@v4
+      - name: Upload Bandit results
         if: always()
+        uses: actions/upload-artifact@v7
         with:
-          sarif_file: bandit-results.sarif
-          category: bandit
+          name: bandit-results
+          path: bandit-results.sarif
+          retention-days: 30
 
   trivy:
     name: Container Security Scan (Trivy)
     runs-on: ubuntu-latest
     permissions:
       contents: read
-      security-events: write
+    env:
+      # Keep the image scan and the config scan on one pinned Trivy version.
+      # Stay reasonably current: Trivy's vulnerability DB schema moves, and old
+      # binaries eventually stop being able to read it.
+      TRIVY_IMAGE: aquasec/trivy:0.74.0
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
 
       - name: Build Docker image
         run: docker build -t bambuddy:security-scan .
 
+      # Trivy runs from its official container rather than via
+      # aquasecurity/trivy-action. That action installs the binary with
+      # aquasecurity/trivy@main's contrib/install.sh, which downloads from
+      # get.trivy.dev — and that endpoint only serves recent releases. The
+      # pinned v0.69.1 now 404s there, which install.sh swallows and turns into
+      # a bare "exit code 1" before any scan runs. Docker Hub keeps old tags, so
+      # pulling the published image is not exposed to that retention window.
+      # It also drops the action's bundled actions/cache, the source of the
+      # Node 20 deprecation warning.
       - name: Run Trivy vulnerability scanner
-        uses: aquasecurity/trivy-action@v0.35.0
-        with:
-          image-ref: 'bambuddy:security-scan'
-          format: 'sarif'
-          output: 'trivy-results.sarif'
-          severity: 'CRITICAL,HIGH,MEDIUM'
-          version: 'v0.69.1'
-
-      - name: Upload Trivy results to GitHub Security
-        uses: github/codeql-action/upload-sarif@v4
-        if: always() && hashFiles('trivy-results.sarif') != ''
-        with:
-          sarif_file: trivy-results.sarif
-          category: trivy
+        run: |
+          mkdir -p trivy-out "$HOME/.cache/trivy"
+          docker run --rm \
+            -v /var/run/docker.sock:/var/run/docker.sock \
+            -v "$PWD/trivy-out:/out" \
+            -v "$HOME/.cache/trivy:/root/.cache/trivy" \
+            "$TRIVY_IMAGE" image \
+              --severity CRITICAL,HIGH,MEDIUM \
+              --format sarif --output /out/trivy-results.sarif \
+              bambuddy:security-scan
+          # Same scan again as a table, so findings are readable in the job log.
+          docker run --rm \
+            -v /var/run/docker.sock:/var/run/docker.sock \
+            -v "$HOME/.cache/trivy:/root/.cache/trivy" \
+            "$TRIVY_IMAGE" image \
+              --severity CRITICAL,HIGH,MEDIUM \
+              bambuddy:security-scan || true
 
       - name: Run Trivy for Dockerfile/IaC
-        uses: aquasecurity/trivy-action@v0.35.0
-        with:
-          scan-type: 'config'
-          scan-ref: '.'
-          format: 'sarif'
-          output: 'trivy-config-results.sarif'
-          severity: 'CRITICAL,HIGH,MEDIUM'
-          version: 'v0.69.1'
+        if: always()
+        run: |
+          mkdir -p trivy-out "$HOME/.cache/trivy"
+          docker run --rm \
+            -v "$PWD:/workspace" \
+            -v "$PWD/trivy-out:/out" \
+            -v "$HOME/.cache/trivy:/root/.cache/trivy" \
+            "$TRIVY_IMAGE" config \
+              --severity CRITICAL,HIGH,MEDIUM \
+              --format sarif --output /out/trivy-config-results.sarif \
+              /workspace
 
-      - name: Upload Trivy config results
-        uses: github/codeql-action/upload-sarif@v4
-        if: always() && hashFiles('trivy-config-results.sarif') != ''
+      # Uploading to GitHub code scanning needs Advanced Security on a private
+      # repo, which this fork does not have, so results are kept as artifacts.
+      - name: Upload Trivy results
+        if: always()
+        uses: actions/upload-artifact@v7
         with:
-          sarif_file: trivy-config-results.sarif
-          category: trivy-config
+          name: trivy-results
+          path: trivy-out/
+          retention-days: 30
 
   backend-audit:
     name: Backend Security Audit
@@ -116,38 +142,48 @@ jobs:
       contents: read
       issues: write
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
 
       - name: Set up Python
-        uses: actions/setup-python@v5
+        uses: actions/setup-python@v6
         with:
           python-version: ${{ env.PYTHON_VERSION }}
 
       - name: Install dependencies
         run: |
-          python -m pip install --upgrade pip
+          # Upgrade setuptools too: the runner's Python toolcache ships an old
+          # setuptools that trips pip-audit (PYSEC-2026-3447, fixed in 83.0.0).
+          # A fix exists, so we upgrade rather than --ignore-vuln.
+          python -m pip install --upgrade pip setuptools
           pip install -r requirements.txt
           pip install pip-audit
 
       - name: Run pip-audit
         id: pip-audit
         run: |
-          # CVE-2026-4539: low-severity ReDoS in Pygments AdlLexer (indirect dep via mkdocs-material/pytest/rich).
-          # No fix available yet. Remove --ignore-vuln once Pygments releases a patched version.
-          pip-audit --desc on --format json --output pip-audit-results.json --ignore-vuln CVE-2026-4539 || echo "vulnerabilities_found=true" >> $GITHUB_OUTPUT
-          pip-audit --desc on --ignore-vuln CVE-2026-4539 || true
+          # CVE-2025-45768 (PYSEC-2025-183 / GHSA-65pc-fj4g-8rjx): disputed by PyJWT maintainers.
+          # Advisory says "key length is chosen by the application that uses the library" — no
+          # PyJWT fix exists or will exist. Bambuddy is safe: backend/app/core/auth.py:184 uses
+          # secrets.token_urlsafe(64) (~86 chars of entropy) for auto-generated secrets and
+          # rejects file-loaded secrets shorter than 32 chars at :177. Keep ignored permanently.
+          pip-audit --desc on --format json --output pip-audit-results.json \
+            --ignore-vuln CVE-2025-45768 \
+            || echo "vulnerabilities_found=true" >> $GITHUB_OUTPUT
+          pip-audit --desc on \
+            --ignore-vuln CVE-2025-45768 \
+            || true
 
       - name: Upload audit results
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: pip-audit-results
           path: pip-audit-results.json
           retention-days: 30
 
       - name: Create or close pip security issue
-        if: always()
-        uses: actions/github-script@v7
+        if: always() && (github.event_name == 'schedule' || github.event_name == 'workflow_dispatch')
+        uses: actions/github-script@v9
         with:
           script: |
             const fs = require('fs');
@@ -264,10 +300,10 @@ jobs:
       contents: read
       issues: write
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
 
       - name: Set up Node.js
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@v6
         with:
           node-version: ${{ env.NODE_VERSION }}
           cache: 'npm'
@@ -298,13 +334,46 @@ jobs:
               }
             }
             const vulns = results.vulnerabilities || {};
+            // Documented advisory exceptions (keyed by GHSA id) - see ci.yml for the
+            // full rationale and the matching hard gate. GHSA-qwww-vcr4-c8h2: React
+            // Router RSC-mode CSRF, not reachable from Bambuddy's BrowserRouter SPA
+            // (@react-router/server not installed); react-router/-dom pinned to 7.18.1
+            // (the most-patched 7.x), no non-major fix exists. Auto-surfaces again if a
+            // non-major fix ships.
+            const ALLOWLIST = new Set(['GHSA-qwww-vcr4-c8h2']);
+            function advisoryIds(name, seen) {
+              seen = seen || new Set();
+              if (seen.has(name)) return new Set();
+              seen.add(name);
+              const ids = new Set();
+              for (const item of (vulns[name] || {}).via || []) {
+                if (item && typeof item === 'object') {
+                  const url = item.url || '';
+                  if (url.includes('/advisories/')) ids.add(url.split('/').pop());
+                } else if (typeof item === 'string') {
+                  for (const id of advisoryIds(item, seen)) ids.add(id);
+                }
+              }
+              return ids;
+            }
+            function fixIsMajor(info) {
+              const fa = info.fixAvailable;
+              return fa && typeof fa === 'object' && fa.isSemVerMajor;
+            }
+            function exempt(name, info) {
+              const ids = advisoryIds(name);
+              return ids.size > 0 && [...ids].every(id => ALLOWLIST.has(id)) && fixIsMajor(info);
+            }
             const filtered = {};
+            const flagged = {};
             for (const [name, info] of Object.entries(vulns)) {
-              if (prodDeps.has(name)) filtered[name] = info;
+              if (!prodDeps.has(name)) continue;
+              filtered[name] = info;
+              if (!exempt(name, info)) flagged[name] = info;
             }
             results.vulnerabilities = filtered;
             fs.writeFileSync('npm-audit-results.json', JSON.stringify(results, null, 2));
-            const count = Object.keys(filtered).length;
+            const count = Object.keys(flagged).length;
             console.log(count > 0
               ? count + ' production vulnerabilities found'
               : 'No production vulnerabilities (filtered ' + Object.keys(vulns).length + ' npm-internal entries)');
@@ -314,15 +383,15 @@ jobs:
 
       - name: Upload audit results
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: npm-audit-results
           path: frontend/npm-audit-results.json
           retention-days: 30
 
       - name: Create or close npm security issue
-        if: always()
-        uses: actions/github-script@v7
+        if: always() && (github.event_name == 'schedule' || github.event_name == 'workflow_dispatch')
+        uses: actions/github-script@v9
         with:
           script: |
             const fs = require('fs');

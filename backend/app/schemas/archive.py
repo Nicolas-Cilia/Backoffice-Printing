@@ -27,7 +27,7 @@ class ArchiveDuplicate(BaseModel):
 
     id: int
     print_name: str | None
-    created_at: datetime
+    created_at: datetime | None
     match_type: str  # "exact" (hash match) or "similar" (name match)
 
 
@@ -55,6 +55,7 @@ class ArchiveResponse(BaseModel):
     object_count: int | None = None
 
     print_name: str | None
+    plate_id: int | None = None  # Selected plate of a multi-plate 3MF (#2603)
     print_time_seconds: int | None  # Estimated time from slicer
     actual_time_seconds: int | None = None  # Computed from started_at/completed_at
     # Percentage: 100 = perfect, >100 = faster than estimated
@@ -66,6 +67,7 @@ class ArchiveResponse(BaseModel):
     total_layers: int | None = None
     nozzle_diameter: float | None
     bed_temperature: int | None
+    bed_type: str | None = None  # e.g. "Cool Plate", "Textured PEI Plate" (from 3MF curr_bed_type)
     nozzle_temperature: int | None
 
     sliced_for_model: str | None = None  # Printer model this file was sliced for
@@ -93,11 +95,20 @@ class ArchiveResponse(BaseModel):
     energy_kwh: float | None = None
     energy_cost: float | None = None
 
-    created_at: datetime
+    created_at: datetime | None
 
     # User tracking (Issue #206)
     created_by_id: int | None = None
     created_by_username: str | None = None
+
+    # Per-archive run aggregates (#1378). Computed from PrintLogEntry — one
+    # row per actual print event — so reprints contribute to these counters
+    # without overwriting the source archive's first-run data.
+    run_count: int = 0
+    last_run_at: datetime | None = None
+    total_filament_actual_grams: float | None = None
+    successful_run_count: int = 0
+    failed_run_count: int = 0
 
     @model_validator(mode="after")
     def compute_object_count(self) -> "ArchiveResponse":
@@ -126,8 +137,10 @@ class ArchiveSlim(BaseModel):
     started_at: datetime | None
     completed_at: datetime | None
     cost: float | None
+    energy_kwh: float | None = None
+    energy_cost: float | None = None
     quantity: int = 1
-    created_at: datetime
+    created_at: datetime | None
 
     class Config:
         from_attributes = True
@@ -137,6 +150,10 @@ class ArchiveStats(BaseModel):
     total_prints: int
     successful_prints: int
     failed_prints: int
+    # User/system-stopped prints (PrintLogEntry.status in stopped/cancelled/
+    # skipped). Defaulted so older clients that don't send this field still
+    # validate against historical fixtures.
+    cancelled_prints: int = 0
     total_print_time_hours: float
     total_filament_grams: float
     total_cost: float
@@ -149,6 +166,10 @@ class ArchiveStats(BaseModel):
     # Energy stats
     total_energy_kwh: float = 0.0
     total_energy_cost: float = 0.0
+    # Set when the date-range query in "total consumption" mode is running on
+    # incomplete snapshot history — e.g. right after a fresh upgrade before the
+    # hourly snapshot loop has built up a baseline. Frontend shows a tooltip.
+    energy_data_warming_up: bool = False
 
 
 class ProjectPageImage(BaseModel):
@@ -201,24 +222,3 @@ class ProjectPageUpdate(BaseModel):
     copyright: str | None = None
     profile_title: str | None = None
     profile_description: str | None = None
-
-
-class ReprintRequest(BaseModel):
-    """Request body for reprinting an archive."""
-
-    # Plate selection for multi-plate 3MF files
-    # If not specified, auto-detects from file (legacy behavior for single-plate files)
-    plate_id: int | None = None
-    plate_name: str | None = None
-
-    # AMS slot mapping: list of tray IDs for each filament slot in the 3MF
-    # Global tray ID = (ams_id * 4) + slot_id, external = 254
-    ams_mapping: list[int] | None = None
-
-    # Print options
-    bed_levelling: bool = True
-    flow_cali: bool = False
-    vibration_cali: bool = True
-    layer_inspect: bool = False
-    timelapse: bool = False
-    use_ams: bool = True  # Not exposed in UI, but needed for API

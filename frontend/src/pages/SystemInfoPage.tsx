@@ -21,10 +21,14 @@ import {
   Download,
   Headphones,
   FolderOpen,
+  Stethoscope,
+  HeartPulse,
 } from 'lucide-react';
-import { api, supportApi } from '../api/client';
+import { api, supportApi, type Printer as PrinterModel } from '../api/client';
 import { Card } from '../components/Card';
 import { LogViewer } from '../components/LogViewer';
+import { ConnectionDiagnosticModal } from '../components/ConnectionDiagnostic';
+import { SystemHealthPanel } from '../components/SystemHealthPanel';
 import { formatDateTime, type TimeFormat } from '../utils/date';
 
 function formatBytes(bytes: number): string {
@@ -98,6 +102,7 @@ export function SystemInfoPage() {
   const [bundleError, setBundleError] = useState<string | null>(null);
   const [bundleDownloading, setBundleDownloading] = useState(false);
   const [debugToggling, setDebugToggling] = useState(false);
+  const [diagnosticPrinter, setDiagnosticPrinter] = useState<PrinterModel | null>(null);
 
   const { data: systemInfo, isLoading, refetch, isFetching } = useQuery({
     queryKey: ['systemInfo'],
@@ -120,6 +125,21 @@ export function SystemInfoPage() {
   const { data: libraryStats } = useQuery({
     queryKey: ['library-stats'],
     queryFn: api.getLibraryStats,
+  });
+
+  const { data: allPrinters } = useQuery({
+    queryKey: ['printers'],
+    queryFn: api.getPrinters,
+  });
+
+  const {
+    data: systemHealth,
+    refetch: refetchHealth,
+    isFetching: healthFetching,
+  } = useQuery({
+    queryKey: ['systemHealth'],
+    queryFn: api.getSystemHealth,
+    staleTime: 60 * 1000,
   });
 
   const timeFormat: TimeFormat = settings?.time_format || 'system';
@@ -240,7 +260,7 @@ export function SystemInfoPage() {
                     ? t('support.debugLoggingEnabled', 'Capturing detailed logs')
                     : t('support.debugLoggingDisabled', 'Normal logging level')}
                   {debugLoggingState?.enabled && debugLoggingState.duration_seconds !== null && (
-                    <span className="text-amber-400 ml-2">
+                    <span className="text-amber-700 dark:text-amber-400 ml-2">
                       ({Math.floor(debugLoggingState.duration_seconds / 60)}m {debugLoggingState.duration_seconds % 60}s)
                     </span>
                   )}
@@ -252,7 +272,7 @@ export function SystemInfoPage() {
               disabled={debugToggling}
               className={`px-4 py-2 rounded-lg font-medium transition-colors flex items-center gap-2 ${
                 debugLoggingState?.enabled
-                  ? 'bg-amber-500/20 text-amber-400 hover:bg-amber-500/30'
+                  ? 'bg-amber-100 text-amber-700 hover:bg-amber-200 dark:bg-amber-500/20 dark:text-amber-400 dark:hover:bg-amber-500/30'
                   : 'bg-bambu-green/20 text-bambu-green hover:bg-bambu-green/30'
               } disabled:opacity-50`}
             >
@@ -283,13 +303,34 @@ export function SystemInfoPage() {
               title={!debugLoggingState?.enabled ? t('support.enableDebugFirst', 'Enable debug logging first') : undefined}
             >
               {bundleDownloading && <Loader2 className="w-4 h-4 animate-spin" />}
-              {t('common.download', 'Download')}
+              {bundleDownloading
+                ? t('support.bundleGenerating', 'Generating...')
+                : t('common.download', 'Download')}
             </button>
           </div>
 
+          {/* Progress indicator — bundle generation now runs connection +
+              virtual-printer diagnostics and the log-health scan before
+              writing the ZIP (#1506 follow-up), so the wait is longer than
+              a pure file-export. List what's running so it's not opaque. */}
+          {bundleDownloading && (
+            <div className="p-3 bg-bambu-dark-tertiary/40 rounded-lg space-y-1">
+              <p className="text-sm font-medium text-white flex items-center gap-2">
+                <Loader2 className="w-3.5 h-3.5 animate-spin text-bambu-green" />
+                {t('support.bundleGenerating', 'Generating...')}
+              </p>
+              <ul className="text-xs text-bambu-gray list-disc list-inside space-y-0.5 pl-1">
+                <li>{t('support.bundleStepConnection', 'Running printer connectivity checks')}</li>
+                <li>{t('support.bundleStepVirtualPrinters', 'Running virtual-printer setup checks')}</li>
+                <li>{t('support.bundleStepLogScan', 'Scanning recent logs for known issues')}</li>
+                <li>{t('support.bundleStepBuild', 'Building the support bundle ZIP')}</li>
+              </ul>
+            </div>
+          )}
+
           {/* Error message */}
           {bundleError && (
-            <div className="p-3 bg-red-500/20 border border-red-500/30 rounded-lg text-red-400 text-sm">
+            <div className="p-3 bg-red-100 border border-red-300 rounded-lg text-red-700 dark:bg-red-500/20 dark:border-red-500/30 dark:text-red-400 text-sm">
               {bundleError}
             </div>
           )}
@@ -298,7 +339,7 @@ export function SystemInfoPage() {
           {!debugLoggingState?.enabled && (
             <div className="p-4 bg-bambu-dark-tertiary/50 rounded-lg">
               <p className="text-sm text-bambu-gray">
-                <span className="text-amber-400 font-medium">{t('support.instructions', 'To report an issue:')}</span>
+                <span className="text-amber-700 dark:text-amber-400 font-medium">{t('support.instructions', 'To report an issue:')}</span>
                 <br />
                 1. {t('support.step1', 'Enable debug logging')}
                 <br />
@@ -333,7 +374,7 @@ export function SystemInfoPage() {
                 </ul>
               </div>
               <div>
-                <p className="text-red-400 font-medium mb-1">{t('support.notCollected', 'NOT collected:')}</p>
+                <p className="text-red-700 dark:text-red-400 font-medium mb-1">{t('support.notCollected', 'NOT collected:')}</p>
                 <ul className="text-bambu-gray space-y-0.5">
                   <li>• {t('support.notItem1', 'Printer names and serial numbers')}</li>
                   <li>• {t('support.notItem2', 'Access codes and passwords')}</li>
@@ -353,6 +394,60 @@ export function SystemInfoPage() {
           {/* Log Viewer */}
           <LogViewer />
         </div>
+      </Section>
+
+      {/* Connection Diagnostic */}
+      <Section title={t('diagnostic.sectionTitle', 'Connection Diagnostic')} icon={Stethoscope}>
+        <p className="text-sm text-bambu-gray mb-4">
+          {t(
+            'diagnostic.sectionDescription',
+            "Check why a printer won't connect or won't print — port reachability, LAN developer mode, Docker network mode, and credentials.",
+          )}
+        </p>
+        {allPrinters && allPrinters.length > 0 ? (
+          <div className="space-y-2">
+            {allPrinters.map((printer) => (
+              <div
+                key={printer.id}
+                className="flex items-center justify-between p-3 bg-bambu-dark rounded-lg"
+              >
+                <div className="min-w-0">
+                  <span className="font-medium text-white">{printer.name}</span>
+                  <span className="text-sm text-bambu-gray ml-2">{printer.ip_address}</span>
+                </div>
+                <button
+                  onClick={() => setDiagnosticPrinter(printer)}
+                  className="flex items-center gap-2 px-3 py-1.5 text-sm bg-bambu-dark-secondary hover:bg-bambu-dark-tertiary text-white rounded-lg transition-colors flex-shrink-0"
+                >
+                  <Stethoscope className="w-4 h-4" />
+                  {t('diagnostic.runButton', 'Run diagnostic')}
+                </button>
+              </div>
+            ))}
+          </div>
+        ) : (
+          <p className="text-bambu-gray">{t('diagnostic.noPrinters', 'No printers configured.')}</p>
+        )}
+      </Section>
+
+      {/* System Health */}
+      <Section title={t('systemHealth.sectionTitle')} icon={HeartPulse}>
+        <div className="flex items-start justify-between gap-3 mb-3">
+          <p className="text-sm text-bambu-gray">{t('systemHealth.sectionDescription')}</p>
+          <button
+            onClick={() => refetchHealth()}
+            disabled={healthFetching}
+            className="flex items-center gap-2 px-3 py-1.5 text-sm bg-bambu-dark-secondary hover:bg-bambu-dark-tertiary text-white rounded-lg transition-colors flex-shrink-0 disabled:opacity-50"
+          >
+            <RefreshCw className={`w-4 h-4 ${healthFetching ? 'animate-spin' : ''}`} />
+            {t('systemHealth.rescan')}
+          </button>
+        </div>
+        {systemHealth ? (
+          <SystemHealthPanel result={systemHealth} />
+        ) : (
+          <p className="text-sm text-bambu-gray">{t('common.loading')}</p>
+        )}
       </Section>
 
       {/* Database Stats */}
@@ -461,7 +556,7 @@ export function SystemInfoPage() {
                       printer.state === 'RUNNING'
                         ? 'bg-bambu-green/20 text-bambu-green'
                         : printer.state === 'IDLE'
-                        ? 'bg-blue-500/20 text-blue-400'
+                        ? 'bg-blue-100 text-blue-700 dark:bg-blue-500/20 dark:text-blue-400'
                         : 'bg-bambu-dark-tertiary'
                     }`}
                   >
@@ -581,6 +676,14 @@ export function SystemInfoPage() {
           />
         </div>
       </Section>
+
+      {diagnosticPrinter && (
+        <ConnectionDiagnosticModal
+          printerId={diagnosticPrinter.id}
+          printerName={diagnosticPrinter.name}
+          onClose={() => setDiagnosticPrinter(null)}
+        />
+      )}
     </div>
   );
 }

@@ -1,20 +1,33 @@
 import { useState, useEffect, useCallback, useRef, useMemo } from 'react';
 import { NavLink, Outlet, useNavigate, useLocation } from 'react-router-dom';
-import { Printer, Archive, Calendar, BarChart3, Cloud, Settings, Sun, Moon, ChevronLeft, ChevronRight, Keyboard, Github, GripVertical, ArrowUpCircle, Wrench, FolderKanban, FolderOpen, X, Menu, Info, Plug, Bug, LogOut, Key, Loader2, Disc3, ShieldAlert, Bell, type LucideIcon } from 'lucide-react';
+import { Printer, ListOrdered, BarChart3, Cloud, Settings, Sun, Moon, Monitor, ChevronLeft, ChevronRight, Keyboard, Github, ArrowUpCircle, Wrench, FolderKanban, FolderOpen, X, Menu, Info, Plug, Bug, LogOut, Key, Loader2, Disc3, ShieldAlert, Bell, type LucideIcon } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
 import { useTheme } from '../contexts/ThemeContext';
 import { KeyboardShortcutsModal } from './KeyboardShortcutsModal';
+import { InstallAppButton } from './InstallAppButton';
 import { SwitchbarPopover } from './SwitchbarPopover';
 import { useQuery, useQueries } from '@tanstack/react-query';
-import { api, supportApi, pendingUploadsApi, type Permission } from '../api/client';
+import { api, supportApi, type Permission } from '../api/client';
 import { getIconByName } from './IconPicker';
 import { useIsSidebarCompact } from '../hooks/useIsSidebarCompact';
+import { useColorCatalogVersion } from '../hooks/useColorCatalogVersion';
+import { useSponsorPrompt } from '../hooks/useSponsorPrompt';
+import { useUnknownTagPrompt } from '../hooks/useUnknownTagPrompt';
+import { UnknownSpoolModal } from './UnknownSpoolModal';
 import { useAuth } from '../contexts/AuthContext';
 import { useToast } from '../contexts/ToastContext';
 import { Card, CardHeader, CardContent } from './Card';
 import { parseUTCDate } from '../utils/date';
 import { Button } from './Button';
 import { BugReportBubble } from './BugReportBubble';
+import {
+  getHiddenSidebarSystemItemIds,
+  getSidebarOrder,
+  isExternalSidebarItemId,
+  saveHiddenSidebarSystemItemIds,
+  saveSidebarOrder,
+  SIDEBAR_LAYOUT_CHANGED_EVENT,
+} from '../utils/sidebarLayout';
 
 
 interface NavItem {
@@ -25,43 +38,21 @@ interface NavItem {
 }
 
 export const defaultNavItems: NavItem[] = [
-  // Primary workflow items
   { id: 'printers', to: '/', icon: Printer, labelKey: 'nav.printers' },
-  { id: 'archives', to: '/archives', icon: Archive, labelKey: 'nav.archives' },
-  { id: 'queue', to: '/queue', icon: Calendar, labelKey: 'nav.queue' },
-  { id: 'stats', to: '/stats', icon: BarChart3, labelKey: 'nav.stats' },
+  { id: 'inventory', to: '/inventory', icon: Disc3, labelKey: 'nav.inventory' },
+  { id: 'queue', to: '/queue', icon: ListOrdered, labelKey: 'nav.queue' },
+  { id: 'projects', to: '/projects', icon: FolderKanban, labelKey: 'nav.projects' },
+  { id: 'files', to: '/files', icon: FolderOpen, labelKey: 'nav.files' },
   { id: 'profiles', to: '/profiles', icon: Cloud, labelKey: 'nav.profiles' },
   { id: 'maintenance', to: '/maintenance', icon: Wrench, labelKey: 'nav.maintenance' },
-  { id: 'projects', to: '/projects', icon: FolderKanban, labelKey: 'nav.projects' },
-  { id: 'inventory', to: '/inventory', icon: Disc3, labelKey: 'nav.inventory' },
-  { id: 'files', to: '/files', icon: FolderOpen, labelKey: 'nav.files' },
-  // User-account features: kept adjacent to Settings intentionally
+  { id: 'stats', to: '/stats', icon: BarChart3, labelKey: 'nav.stats' },
+  // User-account feature: gated in isHidden() on advanced auth + user_notifications
+  // + the notifications:user_email permission. Kept adjacent to Settings
+  // intentionally. Do not drop this entry — without it the /notifications page
+  // is orphaned (route + page still exist but no nav link) (#1901).
   { id: 'notifications', to: '/notifications', icon: Bell, labelKey: 'nav.notifications' },
   { id: 'settings', to: '/settings', icon: Settings, labelKey: 'nav.settings' },
 ];
-
-// Get unified sidebar order from localStorage
-function getSidebarOrder(): string[] {
-  const stored = localStorage.getItem('sidebarOrder');
-  if (stored) {
-    try {
-      return JSON.parse(stored);
-    } catch {
-      return defaultNavItems.map(i => i.id);
-    }
-  }
-  return defaultNavItems.map(i => i.id);
-}
-
-// Save unified sidebar order to localStorage
-function saveSidebarOrder(order: string[]) {
-  localStorage.setItem('sidebarOrder', JSON.stringify(order));
-}
-
-// Check if an ID is an external link
-function isExternalLinkId(id: string): boolean {
-  return id.startsWith('ext-');
-}
 
 // Get default view from localStorage
 export function getDefaultView(): string {
@@ -79,6 +70,16 @@ export function Layout() {
   const { mode, toggleMode } = useTheme();
   const { t } = useTranslation();
   const isSidebarCompact = useIsSidebarCompact();
+
+  // Theme toggle: mode → icon and tooltip
+  const ThemeIcon = { dark: Sun, light: Monitor, system: Moon }[mode];
+  const themeSwitchTitle = t({ dark: 'nav.switchToLight', light: 'nav.switchToSystem', system: 'nav.switchToDark' }[mode]);
+
+  // Re-render Layout (and the page rendered inside <Outlet />) whenever the
+  // backend color catalog is (re)populated, so pages that mounted before the
+  // catalog fetched — and cached HSL-fallback color names during their first
+  // render — refresh with the real catalog names. See #857.
+  useColorCatalogVersion();
   const { user, authEnabled, logout, hasPermission } = useAuth();
   const { showToast } = useToast();
   const [showChangePasswordModal, setShowChangePasswordModal] = useState(false);
@@ -91,9 +92,9 @@ export function Layout() {
   const [mobileDrawerOpen, setMobileDrawerOpen] = useState(false);
   const [showShortcuts, setShowShortcuts] = useState(false);
   const [showSwitchbar, setShowSwitchbar] = useState(false);
-  const [sidebarOrder, setSidebarOrder] = useState<string[]>(getSidebarOrder);
-  const [draggedId, setDraggedId] = useState<string | null>(null);
-  const [dragOverId, setDragOverId] = useState<string | null>(null);
+  const defaultSidebarOrder = useMemo(() => defaultNavItems.map(i => i.id), []);
+  const [sidebarOrder, setSidebarOrder] = useState<string[]>(() => getSidebarOrder(defaultNavItems.map(i => i.id)));
+  const [hiddenSystemItemIds, setHiddenSystemItemIds] = useState<string[]>(getHiddenSidebarSystemItemIds);
   const hasRedirected = useRef(false);
   const [dismissedUpdateVersion, setDismissedUpdateVersion] = useState<string | null>(() =>
     sessionStorage.getItem('dismissedUpdateVersion')
@@ -117,6 +118,13 @@ export function Layout() {
     staleTime: 5 * 60 * 1000, // 5 minutes
   });
 
+  // Sponsor-prompt toast — fires once per session post-auth if a milestone is eligible.
+  useSponsorPrompt(settings?.currency ?? 'EUR');
+
+  // Unknown-spool prompt — surfaces a confirmation modal when the AMS reports a
+  // tag with no inventory match (only when `auto_add_unknown_rfid` is off).
+  const unknownSpool = useUnknownTagPrompt();
+
   // Fetch default sidebar order via a public endpoint (no settings:read needed)
   const { data: defaultSidebarData } = useQuery({
     queryKey: ['default-sidebar-order'],
@@ -139,10 +147,16 @@ export function Layout() {
       if (!Array.isArray(orderArr) || orderArr.length === 0) return;
       // Filter to valid sidebar item IDs only
       const validIds = new Set(defaultNavItems.map(i => i.id));
-      const filtered = orderArr.filter((id: string) => typeof id === 'string' && (validIds.has(id) || isExternalLinkId(id)));
+      const filtered = orderArr.filter((id: string) => typeof id === 'string' && (validIds.has(id) || isExternalSidebarItemId(id)));
       if (filtered.length > 0) {
         setSidebarOrder(filtered);
         saveSidebarOrder(filtered);
+        const hiddenIds = Array.isArray(parsed) ? [] : parsed.hiddenSystemItemIds;
+        if (Array.isArray(hiddenIds)) {
+          const filteredHiddenIds = hiddenIds.filter((id: string) => typeof id === 'string' && validIds.has(id) && id !== 'settings');
+          setHiddenSystemItemIds(filteredHiddenIds);
+          saveHiddenSidebarSystemItemIds(filteredHiddenIds);
+        }
         localStorage.setItem(appliedKey, '1');
       }
     } catch (e) {
@@ -150,7 +164,8 @@ export function Layout() {
     }
   }, [defaultSidebarData?.default_sidebar_order, setSidebarOrder, user, authEnabled]);
 
-  // Check advanced auth status for conditional nav items
+  // Check advanced auth status — the notifications nav item is gated on it
+  // (rendered only when authEnabled && advanced_auth_enabled && user_notifications_enabled).
   const { data: advancedAuthStatus } = useQuery({
     queryKey: ['advancedAuthStatus'],
     queryFn: api.getAdvancedAuthStatus,
@@ -208,16 +223,6 @@ export function Layout() {
   });
   const pendingQueueCount = queueItems?.length ?? 0;
 
-  // Fetch pending uploads count for archive badge (virtual printer review items)
-  const { data: pendingUploadsData } = useQuery({
-    queryKey: ['pending-uploads', 'count'],
-    queryFn: pendingUploadsApi.getCount,
-    staleTime: 5 * 1000, // 5 seconds
-    refetchInterval: 5 * 1000, // Refresh every 5 seconds
-    refetchOnWindowFocus: true,
-  });
-  const pendingUploadsCount = pendingUploadsData?.count ?? 0;
-
   // Check if any printer with pending queue items needs plate clearing
   const queuePrinterIds = useMemo(() => {
     const ids = new Set<number>();
@@ -238,7 +243,7 @@ export function Layout() {
   const needsClearPlate = printerStatusQueries.some(result => {
     const status = result.data;
     if (!status) return false;
-    return (status.state === 'FINISH' || status.state === 'FAILED') && !status.plate_cleared;
+    return !!status.awaiting_plate_clear;
   });
 
   // Calculate debug duration client-side for real-time updates
@@ -267,22 +272,41 @@ export function Layout() {
     const result: string[] = [];
     const seen = new Set<string>();
 
-    // Map nav item IDs to the permission required to see them
-    const navPermissions: Record<string, Permission> = {
-      archives: 'archives:read',
-      queue: 'queue:read',
+    // Map nav item IDs to the permission(s) required to see them. Resources
+    // that ship in three tiers (legacy `*:read` + granular `*:read_own` /
+    // `*:read_all`) list all three: the default Operators group is seeded
+    // with `_own` only, so gating on the legacy alone hides the entry from
+    // every non-admin user even though the underlying API accepts their
+    // request (#1755).
+    const navPermissions: Record<string, Permission | Permission[]> = {
+      queue: ['queue:read', 'queue:read_own', 'queue:read_all'],
       stats: 'stats:read',
       profiles: 'kprofiles:read',
       maintenance: 'maintenance:read',
       projects: 'projects:read',
       inventory: 'inventory:read',
-      files: 'library:read',
+      files: ['library:read', 'library:read_own', 'library:read_all'],
       settings: 'settings:read',
+      // The user-email-preferences API requires notifications:user_email, so
+      // gate the nav item on the same permission (both default groups —
+      // Administrators and Operators — hold it). The advanced-auth /
+      // user_notifications enablement gate is applied separately below.
       notifications: 'notifications:user_email',
     };
 
     const isHidden = (id: string) => {
-      if (authEnabled && id in navPermissions && !hasPermission(navPermissions[id])) return true;
+      // User-toggled hide (#1673) wins first — cheapest check, explicit intent.
+      if (hiddenSystemItemIds.includes(id)) return true;
+      // Permission gate accepts Permission | Permission[] so resources with
+      // granular `*:read_own` / `*:read_all` tiers (default Operators group)
+      // don't get hidden from users who only hold the granular variant (#1755).
+      if (authEnabled && id in navPermissions) {
+        const required = navPermissions[id];
+        const granted = Array.isArray(required)
+          ? required.some((p) => hasPermission(p))
+          : hasPermission(required);
+        if (!granted) return true;
+      }
       // notifications nav item also requires advanced auth to be enabled and user_notifications_enabled setting
       if (id === 'notifications' && (!authEnabled || !advancedAuthStatus?.advanced_auth_enabled || (settings?.user_notifications_enabled === false))) return true;
       return false;
@@ -318,62 +342,14 @@ export function Layout() {
     return result;
   })();
 
-  // Unified drag handlers
-  const handleDragStart = (e: React.DragEvent, id: string) => {
-    setDraggedId(id);
-    e.dataTransfer.effectAllowed = 'move';
-    e.dataTransfer.setData('text/plain', id);
-  };
-
-  const handleDragOver = (e: React.DragEvent, id: string) => {
-    e.preventDefault();
-    e.dataTransfer.dropEffect = 'move';
-    setDragOverId(id);
-  };
-
-  const handleDragLeave = () => {
-    setDragOverId(null);
-  };
-
-  const handleDrop = (e: React.DragEvent, targetId: string) => {
-    e.preventDefault();
-    if (draggedId === null || draggedId === targetId) {
-      setDraggedId(null);
-      setDragOverId(null);
-      return;
-    }
-
-    const currentOrder = [...orderedSidebarIds];
-    const draggedIndex = currentOrder.indexOf(draggedId);
-    const targetIndex = currentOrder.indexOf(targetId);
-
-    if (draggedIndex === -1 || targetIndex === -1) {
-      setDraggedId(null);
-      setDragOverId(null);
-      return;
-    }
-
-    // Reorder
-    currentOrder.splice(draggedIndex, 1);
-    currentOrder.splice(targetIndex, 0, draggedId);
-
-    // Save to localStorage and update state
-    setSidebarOrder(currentOrder);
-    saveSidebarOrder(currentOrder);
-
-    setDraggedId(null);
-    setDragOverId(null);
-  };
-
-  const handleDragEnd = () => {
-    setDraggedId(null);
-    setDragOverId(null);
-  };
-
-  // Show update banner if update available and not dismissed for this version
+  // Show update banner if update available and not dismissed for this version.
+  // Suppressed when running as a Home Assistant addon — HA Supervisor surfaces
+  // its own update notification in the HA UI, so the in-app banner is duplicate
+  // noise that links to a page that just says "update via HA."
   const showUpdateBanner = updateCheck?.update_available &&
     updateCheck.latest_version &&
-    updateCheck.latest_version !== dismissedUpdateVersion;
+    updateCheck.latest_version !== dismissedUpdateVersion &&
+    !updateCheck.is_ha_addon;
 
   const dismissUpdateBanner = () => {
     if (updateCheck?.latest_version) {
@@ -396,6 +372,19 @@ export function Layout() {
   useEffect(() => {
     localStorage.setItem('sidebarExpanded', String(sidebarExpanded));
   }, [sidebarExpanded]);
+
+  useEffect(() => {
+    const refreshSidebarLayout = () => {
+      setSidebarOrder(getSidebarOrder(defaultSidebarOrder));
+      setHiddenSystemItemIds(getHiddenSidebarSystemItemIds());
+    };
+    window.addEventListener(SIDEBAR_LAYOUT_CHANGED_EVENT, refreshSidebarLayout);
+    window.addEventListener('storage', refreshSidebarLayout);
+    return () => {
+      window.removeEventListener(SIDEBAR_LAYOUT_CHANGED_EVENT, refreshSidebarLayout);
+      window.removeEventListener('storage', refreshSidebarLayout);
+    };
+  }, [defaultSidebarOrder]);
 
   // Close compact drawer on navigation
   useEffect(() => {
@@ -438,7 +427,7 @@ export function Layout() {
         const id = orderedSidebarIds[keyNum - 1];
         e.preventDefault();
 
-        if (isExternalLinkId(id)) {
+        if (isExternalSidebarItemId(id)) {
           // External link
           const extLink = extLinksMap.get(id);
           if (extLink?.open_in_new_tab) {
@@ -487,8 +476,8 @@ export function Layout() {
             <Menu className="w-6 h-6 text-white" />
           </button>
           <img
-            src={mode === 'dark' ? '/img/bambuddy_logo_dark_transparent.png' : '/img/bambuddy_logo_light.png'}
-            alt="Bambuddy"
+            src="/img/backoffice_printing_logo.png"
+            alt="Backoffice Printing"
             className="h-8 ml-3"
           />
         </header>
@@ -513,8 +502,8 @@ export function Layout() {
         {/* Logo */}
         <div className={`border-b border-bambu-dark-tertiary flex items-center justify-center ${isSidebarCompact || sidebarExpanded ? 'p-4' : 'p-2'}`}>
           <img
-            src={mode === 'dark' ? '/img/bambuddy_logo_dark_transparent.png' : '/img/bambuddy_logo_light.png'}
-            alt="Bambuddy"
+            src="/img/backoffice_printing_logo.png"
+            alt="Backoffice Printing"
             className={isSidebarCompact || sidebarExpanded ? 'h-16 w-auto' : 'h-8 w-8 object-cover object-left'}
           />
         </div>
@@ -523,7 +512,7 @@ export function Layout() {
         <nav className="flex-1 p-2 overflow-y-auto">
           <ul className="space-y-2">
             {orderedSidebarIds.map((id) => {
-              const isExternal = isExternalLinkId(id);
+              const isExternal = isExternalSidebarItemId(id);
 
               if (isExternal) {
                 // Render external link
@@ -532,22 +521,7 @@ export function Layout() {
 
                 const LinkIcon = link.custom_icon ? null : getIconByName(link.icon);
                 return (
-                  <li
-                    key={id}
-                    draggable
-                    onDragStart={(e) => handleDragStart(e, id)}
-                    onDragOver={(e) => handleDragOver(e, id)}
-                    onDragLeave={handleDragLeave}
-                    onDrop={(e) => handleDrop(e, id)}
-                    onDragEnd={handleDragEnd}
-                    className={`relative ${
-                      draggedId === id ? 'opacity-50' : ''
-                    } ${
-                      dragOverId === id && draggedId !== id
-                        ? 'before:absolute before:left-0 before:right-0 before:top-0 before:h-0.5 before:bg-bambu-green'
-                        : ''
-                    }`}
-                  >
+                  <li key={id}>
                     {link.open_in_new_tab ? (
                       <a
                         href={link.url}
@@ -556,12 +530,9 @@ export function Layout() {
                         className={`flex items-center ${isSidebarCompact || sidebarExpanded ? 'gap-3 px-4' : 'justify-center px-2'} py-3 rounded-lg transition-colors group text-bambu-gray-light hover:bg-bambu-dark-tertiary hover:text-white`}
                         title={!isSidebarCompact && !sidebarExpanded ? link.name : undefined}
                       >
-                        {sidebarExpanded && !isSidebarCompact && (
-                          <GripVertical className="w-4 h-4 flex-shrink-0 opacity-0 group-hover:opacity-50 cursor-grab active:cursor-grabbing -ml-1" />
-                        )}
                         {link.custom_icon ? (
                           <img
-                            src={`/api/v1/external-links/${link.id}/icon`}
+                            src={api.getExternalLinkIconUrl(link.id)}
                             alt=""
                             className="w-5 h-5 flex-shrink-0"
                           />
@@ -582,12 +553,9 @@ export function Layout() {
                         }
                         title={!isSidebarCompact && !sidebarExpanded ? link.name : undefined}
                       >
-                        {sidebarExpanded && !isSidebarCompact && (
-                          <GripVertical className="w-4 h-4 flex-shrink-0 opacity-0 group-hover:opacity-50 cursor-grab active:cursor-grabbing -ml-1" />
-                        )}
                         {link.custom_icon ? (
                           <img
-                            src={`/api/v1/external-links/${link.id}/icon`}
+                            src={api.getExternalLinkIconUrl(link.id)}
                             alt=""
                             className="w-5 h-5 flex-shrink-0"
                           />
@@ -606,28 +574,12 @@ export function Layout() {
 
                 const { to, icon: Icon, labelKey } = navItem;
                 const showQueueBadge = id === 'queue' && pendingQueueCount > 0;
-                const showArchiveBadge = id === 'archives' && pendingUploadsCount > 0;
-                const badgeCount = showQueueBadge ? pendingQueueCount : showArchiveBadge ? pendingUploadsCount : 0;
-                const showBadge = showQueueBadge || showArchiveBadge;
+                const badgeCount = showQueueBadge ? pendingQueueCount : 0;
+                const showBadge = showQueueBadge;
                 const showClearPlateDot = id === 'printers' && needsClearPlate;
 
                 return (
-                  <li
-                    key={id}
-                    draggable
-                    onDragStart={(e) => handleDragStart(e, id)}
-                    onDragOver={(e) => handleDragOver(e, id)}
-                    onDragLeave={handleDragLeave}
-                    onDrop={(e) => handleDrop(e, id)}
-                    onDragEnd={handleDragEnd}
-                    className={`relative ${
-                      draggedId === id ? 'opacity-50' : ''
-                    } ${
-                      dragOverId === id && draggedId !== id
-                        ? 'before:absolute before:left-0 before:right-0 before:top-0 before:h-0.5 before:bg-bambu-green'
-                        : ''
-                    }`}
-                  >
+                  <li key={id}>
                     <NavLink
                       to={to}
                       className={({ isActive }) =>
@@ -639,18 +591,13 @@ export function Layout() {
                       }
                       title={!isSidebarCompact && !sidebarExpanded ? t(labelKey) : undefined}
                     >
-                      {sidebarExpanded && !isSidebarCompact && (
-                        <GripVertical className="w-4 h-4 flex-shrink-0 opacity-0 group-hover:opacity-50 cursor-grab active:cursor-grabbing -ml-1" />
-                      )}
                       <div className="relative">
                         <Icon className="w-5 h-5 flex-shrink-0" />
                         {showClearPlateDot && (
                           <span className="absolute -top-0.5 -right-0.5 w-2.5 h-2.5 bg-yellow-500 rounded-full border-2 border-bambu-dark-secondary" />
                         )}
                         {showBadge && (
-                          <span className={`absolute -top-1.5 -right-1.5 min-w-[18px] h-[18px] px-1 flex items-center justify-center text-[10px] font-bold rounded-full ${
-                            showArchiveBadge ? 'bg-blue-500 text-white' : 'bg-yellow-500 text-black'
-                          }`}>
+                          <span className="absolute -top-1.5 -right-1.5 min-w-[18px] h-[18px] px-1 flex items-center justify-center text-[10px] font-bold rounded-full bg-yellow-500 text-black">
                             {badgeCount > 99 ? '99+' : badgeCount}
                           </span>
                         )}
@@ -721,6 +668,7 @@ export function Layout() {
                     <Info className="w-5 h-5" />
                   </span>
                 )}
+                <InstallAppButton />
                 <a
                   href="https://github.com/maziggy/bambuddy"
                   target="_blank"
@@ -740,9 +688,9 @@ export function Layout() {
                 <button
                   onClick={toggleMode}
                   className="p-2 rounded-lg hover:bg-bambu-dark-tertiary transition-colors text-bambu-gray-light hover:text-white"
-                  title={mode === 'dark' ? t('nav.switchToLight') : t('nav.switchToDark')}
+                  title={themeSwitchTitle}
                 >
-                  {mode === 'dark' ? <Sun className="w-5 h-5" /> : <Moon className="w-5 h-5" />}
+                  <ThemeIcon className="w-5 h-5" />
                 </button>
                 {authEnabled && user && (
                   <>
@@ -825,6 +773,7 @@ export function Layout() {
                   <Info className="w-5 h-5" />
                 </span>
               )}
+              <InstallAppButton />
               <a
                 href="https://github.com/maziggy/bambuddy"
                 target="_blank"
@@ -844,9 +793,9 @@ export function Layout() {
               <button
                 onClick={toggleMode}
                 className="p-2 rounded-lg hover:bg-bambu-dark-tertiary transition-colors text-bambu-gray-light hover:text-white"
-                title={mode === 'dark' ? t('nav.switchToLight') : t('nav.switchToDark')}
+                title={themeSwitchTitle}
               >
-                {mode === 'dark' ? <Sun className="w-5 h-5" /> : <Moon className="w-5 h-5" />}
+                <ThemeIcon className="w-5 h-5" />
               </button>
               {authEnabled && user && (
                 <>
@@ -877,20 +826,20 @@ export function Layout() {
       }`}>
         {/* Debug logging indicator */}
         {debugLoggingState?.enabled && (
-          <div className="bg-amber-500/20 border-b border-amber-500/30 px-4 py-2 flex items-center justify-between">
+          <div className="bg-amber-100 dark:bg-amber-500/20 border-b border-amber-300 dark:border-amber-500/30 px-4 py-2 flex items-center justify-between">
             <div className="flex items-center gap-2 text-sm">
               <Bug className="w-4 h-4 text-amber-500 animate-pulse" />
-              <span className="text-amber-200">
+              <span className="text-amber-800 dark:text-amber-200">
                 {t('support.debugLoggingActive', { defaultValue: 'Debug logging is active' })}
                 {debugDuration !== null && (
-                  <span className="text-amber-300/70 ml-2">
+                  <span className="text-amber-700/80 dark:text-amber-300/70 ml-2">
                     ({Math.floor(debugDuration / 60)}m {debugDuration % 60}s)
                   </span>
                 )}
               </span>
               <button
                 onClick={() => navigate('/system')}
-                className="text-amber-400 hover:text-amber-300 font-medium underline ml-2"
+                className="text-amber-700 dark:text-amber-400 hover:text-amber-900 dark:hover:text-amber-300 font-medium underline ml-2"
               >
                 {t('support.manageLogs', { defaultValue: 'Manage' })}
               </button>
@@ -898,10 +847,10 @@ export function Layout() {
           </div>
         )}
         {devModeWarnings && devModeWarnings.length > 0 && (
-          <div className="bg-orange-500/20 border-b border-orange-500/30 px-4 py-2 flex items-center justify-between">
+          <div className="bg-orange-100 dark:bg-orange-500/20 border-b border-orange-300 dark:border-orange-500/30 px-4 py-2 flex items-center justify-between">
             <div className="flex items-center gap-2 text-sm">
               <ShieldAlert className="w-4 h-4 text-orange-500" />
-              <span className="text-orange-200">
+              <span className="text-orange-800 dark:text-orange-200">
                 {t('printers.developerModeWarning', {
                   names: devModeWarnings.map(w => w.name).join(', '),
                   defaultValue: `Developer LAN mode is not enabled on: ${devModeWarnings.map(w => w.name).join(', ')}. Some features may not work.`
@@ -909,7 +858,7 @@ export function Layout() {
               </span>
               <a href="https://wiki.bambulab.com/en/knowledge-sharing/enable-developer-mode"
                  target="_blank" rel="noopener noreferrer"
-                 className="text-orange-400 hover:text-orange-300 font-medium underline ml-2">
+                 className="text-orange-700 dark:text-orange-400 hover:text-orange-900 dark:hover:text-orange-300 font-medium underline ml-2">
                 {t('printers.howToEnable', { defaultValue: 'How to enable' })}
               </a>
             </div>
@@ -945,12 +894,19 @@ export function Layout() {
         <Outlet />
       </main>
 
+      <UnknownSpoolModal
+        prompt={unknownSpool.prompt}
+        isPending={unknownSpool.isPending}
+        onConfirm={unknownSpool.confirm}
+        onCancel={unknownSpool.cancel}
+      />
+
       {/* Keyboard Shortcuts Modal */}
       {showShortcuts && (
         <KeyboardShortcutsModal
           onClose={() => setShowShortcuts(false)}
           sidebarItems={orderedSidebarIds.map(id => {
-            if (isExternalLinkId(id)) {
+            if (isExternalSidebarItemId(id)) {
               const extLink = extLinksMap.get(id);
               return extLink ? { type: 'external' as const, label: extLink.name } : null;
             } else {
@@ -971,7 +927,7 @@ export function Layout() {
                   <path strokeLinecap="round" strokeLinejoin="round" d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z" />
                 </svg>
               </div>
-              <h2 className="text-xl font-bold text-yellow-400 mb-2">
+              <h2 className="text-xl font-bold text-yellow-700 dark:text-yellow-400 mb-2">
                 {t('plateAlert.title')}
               </h2>
               <p className="text-lg text-white mb-2">
@@ -1024,6 +980,16 @@ export function Layout() {
             </CardHeader>
             <CardContent>
               <div className="space-y-4">
+                <input
+                  type="text"
+                  name="username"
+                  autoComplete="username"
+                  value={user?.username ?? ''}
+                  readOnly
+                  hidden
+                  aria-hidden="true"
+                  tabIndex={-1}
+                />
                 <div>
                   <label className="block text-sm font-medium text-white mb-2">
                     {t('changePassword.currentPassword')}
@@ -1069,7 +1035,7 @@ export function Layout() {
                     minLength={6}
                   />
                   {changePasswordData.confirmPassword && changePasswordData.newPassword !== changePasswordData.confirmPassword && (
-                    <p className="text-red-400 text-xs mt-1">{t('changePassword.passwordsDoNotMatch')}</p>
+                    <p className="text-red-700 dark:text-red-400 text-xs mt-1">{t('changePassword.passwordsDoNotMatch')}</p>
                   )}
                 </div>
               </div>

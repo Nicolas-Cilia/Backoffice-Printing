@@ -12,6 +12,12 @@ class PrintArchive(Base):
     id: Mapped[int] = mapped_column(primary_key=True)
     printer_id: Mapped[int | None] = mapped_column(ForeignKey("printers.id"), nullable=True)
     project_id: Mapped[int | None] = mapped_column(ForeignKey("projects.id", ondelete="SET NULL"), nullable=True)
+    # Which library file this run was dispatched from (#1897). Set by the queue
+    # scheduler when it archives a library-file print; older rows are matched by
+    # content_hash/filename instead. SET NULL so deleting a file keeps history.
+    library_file_id: Mapped[int | None] = mapped_column(
+        ForeignKey("library_files.id", ondelete="SET NULL"), nullable=True
+    )
 
     # File info
     filename: Mapped[str] = mapped_column(String(255))
@@ -20,6 +26,22 @@ class PrintArchive(Base):
     content_hash: Mapped[str | None] = mapped_column(String(64))  # SHA256 hash for duplicate detection
     thumbnail_path: Mapped[str | None] = mapped_column(String(500))
     timelapse_path: Mapped[str | None] = mapped_column(String(500))
+    # True when Bambuddy forced timelapse recording on for this print so the
+    # finish-photo extractor (#1397) could pull the post-park-pre-drop frame.
+    # The cleanup path uses this to know the timelapse should be deleted
+    # both locally and on the printer's SD after extraction — the user
+    # didn't opt in to a timelapse recording.
+    bambuddy_forced_timelapse: Mapped[bool] = mapped_column(Boolean, default=False, server_default="0")
+    # Video filenames present in the printer's /timelapse directory when this
+    # print started (#2704). The printer writes its video only at print end, so
+    # anything not in this list belongs to this print — a comparison that needs
+    # no clock, which matters because a LAN-only printer can't reach Bambu's NTP
+    # server and its filename timestamps are arbitrarily wrong. Persisted (not
+    # just held in memory) so the diff survives a restart and so the manual
+    # "Scan for Timelapse" button can use it instead of guessing from
+    # timestamps. NULL for archives predating this, and for baselines taken at
+    # completion time, which are useless by construction.
+    timelapse_baseline: Mapped[list | None] = mapped_column(JSON, nullable=True)
     source_3mf_path: Mapped[str | None] = mapped_column(String(500))  # Original project 3MF from slicer
     f3d_path: Mapped[str | None] = mapped_column(String(500))  # Fusion 360 design file
 
@@ -33,6 +55,7 @@ class PrintArchive(Base):
     total_layers: Mapped[int | None] = mapped_column(Integer)
     nozzle_diameter: Mapped[float | None] = mapped_column(Float)
     bed_temperature: Mapped[int | None] = mapped_column(Integer)
+    bed_type: Mapped[str | None] = mapped_column(String(64))  # e.g. "Cool Plate", "Textured PEI Plate"
     nozzle_temperature: Mapped[int | None] = mapped_column(Integer)
 
     # Printer model this file was sliced for (extracted from 3MF metadata)
@@ -42,6 +65,20 @@ class PrintArchive(Base):
     status: Mapped[str] = mapped_column(String(20), default="completed")
     started_at: Mapped[datetime | None] = mapped_column(DateTime)
     completed_at: Mapped[datetime | None] = mapped_column(DateTime)
+
+    # Printer-assigned subtask identifier from MQTT. Used to resume the same
+    # archive row across a backend restart during a long-running print (#972):
+    # if the same subtask_id reappears after restart, we know it's the same
+    # print and keep the original row instead of cancel-then-create.
+    subtask_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
+
+    # Which plate of a multi-plate 3MF this print was for (1-based), copied from
+    # the queue item at dispatch (#2603). A whole multi-plate 3MF is uploaded
+    # under one filename with no plate suffix, so the parser can't recover the
+    # selected plate and extra_data holds all-plates aggregate metadata; without
+    # this the history UI can't tell which plate was printed and falls back to
+    # Plate 1. NULL for archives with no specific selected plate.
+    plate_id: Mapped[int | None] = mapped_column(Integer, nullable=True)
 
     # Extended metadata (JSON blob for flexibility)
     extra_data: Mapped[dict | None] = mapped_column(JSON)
@@ -65,9 +102,19 @@ class PrintArchive(Base):
     # Energy tracking
     energy_kwh: Mapped[float | None] = mapped_column(Float)  # Energy consumed in kWh
     energy_cost: Mapped[float | None] = mapped_column(Float)  # Cost of energy consumed
+    # Plug lifetime counter captured at print start; delta at print end becomes energy_kwh.
+    # Persisted so per-print tracking survives backend restarts mid-print (#941).
+    energy_start_kwh: Mapped[float | None] = mapped_column(Float)
 
     # Timestamps
     created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
+    # Soft-delete sentinel (#1343). When non-null, the UI hides this archive
+    # from listings (its files have already been removed from disk) but the
+    # stats endpoint keeps counting it — deleting nine of ten Benchies no
+    # longer wipes their filament / time / cost contribution from Quick Stats.
+    # The opt-in "Also remove from statistics" checkbox in the delete dialog
+    # bypasses the soft-delete path and hard-deletes the row.
+    deleted_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True, default=None, index=True)
 
     # User tracking (who uploaded/created this archive)
     created_by_id: Mapped[int | None] = mapped_column(ForeignKey("users.id", ondelete="SET NULL"), nullable=True)

@@ -26,17 +26,46 @@ class User(Base):
     id: Mapped[int] = mapped_column(primary_key=True)
     username: Mapped[str] = mapped_column(String(100), unique=True, index=True)
     email: Mapped[str | None] = mapped_column(String(255), unique=True, index=True, nullable=True)
-    password_hash: Mapped[str] = mapped_column(String(255))
+    password_hash: Mapped[str | None] = mapped_column(String(255), nullable=True)
     role: Mapped[str] = mapped_column(
         String(20), default="user"
     )  # "admin" or "user" (legacy, kept for backward compat)
+    auth_source: Mapped[str] = mapped_column(String(20), default="local")  # "local", "ldap", or "oidc"
     is_active: Mapped[bool] = mapped_column(default=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
     updated_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now(), onupdate=func.now())
 
+    # Set whenever the local password is changed/reset — used to invalidate JWTs
+    # issued before the change (M-R7-B).  NULL means no password change recorded yet.
+    password_changed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
     # Per-user Bambu Cloud credentials (when auth is enabled, each user has their own)
     cloud_token: Mapped[str | None] = mapped_column(String(500), nullable=True, default=None)
     cloud_email: Mapped[str | None] = mapped_column(String(255), nullable=True, default=None)
+    # "global" or "china"; NULL treated as "global" for legacy rows.
+    cloud_region: Mapped[str | None] = mapped_column(String(10), nullable=True, default=None)
+    # Set when Bambu answers 401 to a call made with ``cloud_token`` — the token
+    # has expired or been revoked. NULL means "not known to be dead". The token
+    # itself is kept: clearing it would lose the email/region we show on the
+    # re-login form, and a token can only be replaced by signing in again anyway.
+    # Bambu's token is opaque and carries no expiry we can read, and Bambuddy
+    # does not persist the refresh token, so this flag is the *only* record that
+    # a stored credential has stopped working (#2562 follow-up).
+    cloud_token_invalid_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True, default=None)
+
+    # Per-user Orca Cloud credentials. Unlike Bambu Cloud, Orca uses Supabase PKCE
+    # with short-lived access tokens (1h) and rotating single-use refresh tokens,
+    # so we store the refresh token + expiry alongside the access token.
+    orca_cloud_token: Mapped[str | None] = mapped_column(String(2000), nullable=True, default=None)
+    orca_cloud_refresh_token: Mapped[str | None] = mapped_column(String(128), nullable=True, default=None)
+    orca_cloud_expires_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True, default=None)
+    orca_cloud_email: Mapped[str | None] = mapped_column(String(255), nullable=True, default=None)
+    orca_cloud_user_id: Mapped[str | None] = mapped_column(String(64), nullable=True, default=None)
+    # Transient PKCE state held between /orca-cloud/auth/start and /orca-cloud/auth/finish.
+    # Cleared on successful finish; expires after 10 minutes if the user abandons the flow.
+    orca_cloud_pending_verifier: Mapped[str | None] = mapped_column(String(64), nullable=True, default=None)
+    orca_cloud_pending_state: Mapped[str | None] = mapped_column(String(32), nullable=True, default=None)
+    orca_cloud_pending_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True, default=None)
 
     # Relationship to groups through association table
     groups: Mapped[list[Group]] = relationship(

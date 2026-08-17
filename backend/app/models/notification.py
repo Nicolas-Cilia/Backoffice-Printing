@@ -70,6 +70,7 @@ class NotificationProvider(Base):
     # Event triggers - printer status
     on_printer_offline = Column(Boolean, default=False)
     on_printer_error = Column(Boolean, default=False)  # AMS issues, etc.
+    on_ai_failure_detection = Column(Boolean, default=False)  # Obico spaghetti / failure detection (#1794)
     on_filament_low = Column(Boolean, default=False)
     on_maintenance_due = Column(Boolean, default=False)  # Maintenance reminder
 
@@ -83,10 +84,16 @@ class NotificationProvider(Base):
 
     # Event triggers - Build plate detection
     on_plate_not_empty = Column(Boolean, default=True)  # Objects detected on plate before print
+    # Off by default: fires after every print, alongside the print-complete alert (#2525)
+    on_plate_clear_required = Column(Boolean, default=False)  # Print ended, queue gated until plate is confirmed clear
 
     # Event triggers - Bed cooled after print
     on_bed_cooled = Column(Boolean, default=False)  # Bed cooled below threshold after print
     on_first_layer_complete = Column(Boolean, default=False)  # First layer finished printing
+
+    # Event triggers - Inventory stock alerts
+    on_stock_reorder_alert = Column(Boolean, default=False)  # SKU hits reorder point
+    on_stock_break_alert = Column(Boolean, default=False)  # Stock will run out before replenishment
 
     # Event triggers - Print queue
     on_queue_job_added = Column(Boolean, default=False)  # Job added to queue
