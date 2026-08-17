@@ -1,4 +1,4 @@
-import { useState, useRef, type DragEvent } from 'react';
+import { useState, useRef, useEffect, type DragEvent } from 'react';
 import { useTranslation } from 'react-i18next';
 import {
   Upload,
@@ -36,9 +36,11 @@ interface FileUploadModalProps {
   validateFile?: (file: File) => string | undefined;
   /** Restrict file picker to specific file types (e.g. ".gcode,.gcode.3mf") */
   accept?: string;
+  /** Pre-seed the modal with files (e.g. from a page-wide drop) on first mount. */
+  initialFiles?: File[];
 }
 
-export function FileUploadModal({ folderId, onClose, onUploadComplete, onFileUploaded, autoUpload, validateFile, accept }: FileUploadModalProps) {
+export function FileUploadModal({ folderId, onClose, onUploadComplete, onFileUploaded, autoUpload, validateFile, accept, initialFiles }: FileUploadModalProps) {
   const { t } = useTranslation();
   const [files, setFiles] = useState<UploadFile[]>([]);
   const [isDragging, setIsDragging] = useState(false);
@@ -112,7 +114,17 @@ export function FileUploadModal({ folderId, onClose, onUploadComplete, onFileUpl
 
     setIsUploading(false);
     onUploadComplete();
-    onClose();
+    // #1401: don't auto-close if any file ended with an error — the user
+    // needs to see the rejection message (e.g. "raw .gcode upload"), not
+    // have the modal vanish before they can read it. Closing happens via
+    // the X / Close button instead, after the user has seen what failed.
+    setFiles((prev) => {
+      const anyFailed = prev.some((f) => f.status === 'error');
+      if (!anyFailed) {
+        onClose();
+      }
+      return prev;
+    });
   };
 
   const addFiles = (newFiles: File[]) => {
@@ -142,6 +154,18 @@ export function FileUploadModal({ folderId, onClose, onUploadComplete, onFileUpl
   const removeFile = (index: number) => {
     setFiles((prev) => prev.filter((_, i) => i !== index));
   };
+
+  // Seed once on mount when the parent passed initialFiles (page-wide drop).
+  // The ref/list shape means a subsequent re-render with the same files won't
+  // double-add — only the first non-empty initialFiles arg ever flows through.
+  const seededInitialRef = useRef(false);
+  useEffect(() => {
+    if (seededInitialRef.current) return;
+    if (!initialFiles || initialFiles.length === 0) return;
+    seededInitialRef.current = true;
+    addFiles(initialFiles);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   const hasZipFiles = files.some((f) => f.isZip && f.status === 'pending');
   const hasStlFiles = files.some((f) => f.file.name.toLowerCase().endsWith('.stl') && f.status === 'pending');
@@ -191,12 +215,12 @@ export function FileUploadModal({ folderId, onClose, onUploadComplete, onFileUpl
 
           {/* ZIP Options */}
           {hasZipFiles && (
-            <div className="p-3 bg-blue-500/10 border border-blue-500/30 rounded-lg">
+            <div className="p-3 bg-blue-50 dark:bg-blue-500/10 border border-blue-300 dark:border-blue-500/30 rounded-lg">
               <div className="flex items-start gap-3">
-                <ArchiveIcon className="w-5 h-5 text-blue-400 mt-0.5 flex-shrink-0" />
+                <ArchiveIcon className="w-5 h-5 text-blue-600 dark:text-blue-400 mt-0.5 flex-shrink-0" />
                 <div className="flex-1">
-                  <p className="text-sm text-blue-300 font-medium">{t('fileManager.zipFilesDetected')}</p>
-                  <p className="text-xs text-blue-300/70 mt-1">
+                  <p className="text-sm text-blue-700 dark:text-blue-300 font-medium">{t('fileManager.zipFilesDetected')}</p>
+                  <p className="text-xs text-blue-700/80 dark:text-blue-300/70 mt-1">
                     {t('fileManager.zipExtractOptions')}
                   </p>
                   <label className="flex items-center gap-2 mt-2 cursor-pointer">
@@ -224,12 +248,12 @@ export function FileUploadModal({ folderId, onClose, onUploadComplete, onFileUpl
 
           {/* 3MF File Info */}
           {has3mfFiles && (
-            <div className="p-3 bg-purple-500/10 border border-purple-500/30 rounded-lg">
+            <div className="p-3 bg-purple-50 dark:bg-purple-500/10 border border-purple-300 dark:border-purple-500/30 rounded-lg">
               <div className="flex items-start gap-3">
-                <Printer className="w-5 h-5 text-purple-400 mt-0.5 flex-shrink-0" />
+                <Printer className="w-5 h-5 text-purple-600 dark:text-purple-400 mt-0.5 flex-shrink-0" />
                 <div className="flex-1">
-                  <p className="text-sm text-purple-300 font-medium">{t('fileManager.threemfDetected')}</p>
-                  <p className="text-xs text-purple-300/70 mt-1">
+                  <p className="text-sm text-purple-700 dark:text-purple-300 font-medium">{t('fileManager.threemfDetected')}</p>
+                  <p className="text-xs text-purple-700/80 dark:text-purple-300/70 mt-1">
                     {t('fileManager.threemfExtractionInfo')}
                   </p>
                 </div>
@@ -272,7 +296,7 @@ export function FileUploadModal({ folderId, onClose, onUploadComplete, onFileUpl
                   className="flex items-center gap-3 p-2 bg-bambu-dark rounded-lg"
                 >
                   {uploadFile.isZip ? (
-                    <ArchiveIcon className="w-4 h-4 text-blue-400 flex-shrink-0" />
+                    <ArchiveIcon className="w-4 h-4 text-blue-600 dark:text-blue-400 flex-shrink-0" />
                   ) : (
                     <File className="w-4 h-4 text-bambu-gray flex-shrink-0" />
                   )}
@@ -281,12 +305,19 @@ export function FileUploadModal({ folderId, onClose, onUploadComplete, onFileUpl
                     <p className="text-xs text-bambu-gray">
                       {(uploadFile.file.size / 1024 / 1024).toFixed(2)} MB
                       {uploadFile.isZip && uploadFile.status === 'pending' && (
-                        <span className="text-blue-400 ml-2">• {t('fileManager.willBeExtracted')}</span>
+                        <span className="text-blue-700 dark:text-blue-400 ml-2">• {t('fileManager.willBeExtracted')}</span>
                       )}
                       {uploadFile.extractedCount !== undefined && (
-                        <span className="text-green-400 ml-2">• {t('fileManager.filesExtracted', { count: uploadFile.extractedCount })}</span>
+                        <span className="text-green-700 dark:text-green-400 ml-2">• {t('fileManager.filesExtracted', { count: uploadFile.extractedCount })}</span>
                       )}
                     </p>
+                    {/* #1401: errors render inline rather than as a hover-only
+                        title. The backend's rejection messages explain the
+                        actual fix (re-export as .gcode.3mf) — useless if the
+                        user can't read them. */}
+                    {uploadFile.status === 'error' && uploadFile.error && (
+                      <p className="text-xs text-red-700 dark:text-red-400 mt-1 break-words">{uploadFile.error}</p>
+                    )}
                   </div>
                   {uploadFile.status === 'pending' && (
                     <button
@@ -314,10 +345,10 @@ export function FileUploadModal({ folderId, onClose, onUploadComplete, onFileUpl
 
           {/* Compatibility Error */}
           {uploadError && (
-            <div className="p-3 bg-red-500/10 border border-red-500/30 rounded-lg">
+            <div className="p-3 bg-red-50 dark:bg-red-500/10 border border-red-300 dark:border-red-500/30 rounded-lg">
               <div className="flex items-start gap-3">
-                <XCircle className="w-5 h-5 text-red-400 mt-0.5 flex-shrink-0" />
-                <p className="text-sm text-red-300">{uploadError}</p>
+                <XCircle className="w-5 h-5 text-red-600 dark:text-red-400 mt-0.5 flex-shrink-0" />
+                <p className="text-sm text-red-700 dark:text-red-300">{uploadError}</p>
               </div>
             </div>
           )}

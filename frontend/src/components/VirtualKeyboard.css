@@ -47,7 +47,7 @@
 }
 
 .simple-keyboard.vkb-theme .hg-button:active {
-  background: #00ae42;
+  background: #07bcec;
   color: #fff;
 }
 
@@ -77,6 +77,6 @@
 
 /* Active shift/caps indicator */
 .simple-keyboard.vkb-theme .hg-activeButton {
-  background: #00ae42;
+  background: #07bcec;
   color: #fff;
 }

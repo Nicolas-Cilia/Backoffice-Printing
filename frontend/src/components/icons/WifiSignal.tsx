@@ -20,7 +20,7 @@ export function WifiSignal({ signal, className = "w-4 h-4" }: WifiSignalProps) {
     else bars = 1;
   }
 
-  const activeColor = "#00ae42";  // bambu-green
+  const activeColor = "#07bcec";  // bambu-green
   const inactiveColor = "#4a4a4a";  // dark gray
 
   return (

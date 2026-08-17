@@ -1,4 +1,5 @@
 import { useState, useRef } from 'react';
+import { createPortal } from 'react-dom';
 import { useTranslation } from 'react-i18next';
 import { useNavigate } from 'react-router-dom';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
@@ -19,6 +20,9 @@ import {
   MoreVertical,
   Download,
   Upload,
+  ExternalLink,
+  Image as ImageIcon,
+  X,
 } from 'lucide-react';
 import { api } from '../api/client';
 import type { ProjectListItem, ProjectCreate, ProjectUpdate, ProjectImport, Permission } from '../api/client';
@@ -57,38 +61,95 @@ export function ProjectModal({ project, onClose, onSave, isLoading, currencySymb
   const [color, setColor] = useState(project?.color || PROJECT_COLORS[0]);
   const [targetCount, setTargetCount] = useState(project?.target_count?.toString() || '');
   const [targetPartsCount, setTargetPartsCount] = useState(project?.target_parts_count?.toString() || '');
+  const [targetSets, setTargetSets] = useState(project?.target_sets?.toString() || '');
   const [status, setStatus] = useState(project?.status || 'active');
-  const [tags, setTags] = useState((project as ProjectListItem & { tags?: string })?.tags || '');
-  const [dueDate, setDueDate] = useState((project as ProjectListItem & { due_date?: string })?.due_date?.split('T')[0] || '');
-  const [priority, setPriority] = useState((project as ProjectListItem & { priority?: string })?.priority || 'normal');
+  const [tags, setTags] = useState(project?.tags || '');
+  const [dueDate, setDueDate] = useState(project?.due_date?.split('T')[0] || '');
+  const [priority, setPriority] = useState(project?.priority || 'normal');
   const [budget, setBudget] = useState(project?.budget?.toString() || '');
+  const [url, setUrl] = useState(project?.url || '');
+  const [urlError, setUrlError] = useState<string | null>(null);
+  const queryClient = useQueryClient();
+  const [coverImageFilename, setCoverImageFilename] = useState(project?.cover_image_filename || null);
+  const coverFileInputRef = useRef<HTMLInputElement>(null);
+  const [coverUploading, setCoverUploading] = useState(false);
+  // Cache-bust the cover image URL when it changes mid-edit so the preview
+  // refreshes after upload/remove.
+  const [coverCacheKey, setCoverCacheKey] = useState(0);
+
+  const handleCoverFileChange = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file || !project) return;
+    setCoverUploading(true);
+    try {
+      const result = await api.uploadProjectCoverImage(project.id, file);
+      setCoverImageFilename(result.filename);
+      setCoverCacheKey((k) => k + 1);
+      queryClient.invalidateQueries({ queryKey: ['projects'] });
+    } catch {
+      // Upload failed — leave existing cover image in place.
+    } finally {
+      setCoverUploading(false);
+      if (coverFileInputRef.current) coverFileInputRef.current.value = '';
+    }
+  };
+
+  const handleRemoveCover = async () => {
+    if (!project) return;
+    setCoverUploading(true);
+    try {
+      await api.deleteProjectCoverImage(project.id);
+      setCoverImageFilename(null);
+      setCoverCacheKey((k) => k + 1);
+      queryClient.invalidateQueries({ queryKey: ['projects'] });
+    } finally {
+      setCoverUploading(false);
+    }
+  };
 
   const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault();
+    const trimmedUrl = url.trim();
+    if (trimmedUrl && !/^https?:\/\//i.test(trimmedUrl)) {
+      setUrlError(t('projects.urlInvalid'));
+      return;
+    }
+    setUrlError(null);
     onSave({
       name: name.trim(),
       description: description.trim() || undefined,
       color,
       target_count: targetCount ? parseInt(targetCount, 10) : undefined,
       target_parts_count: targetPartsCount ? parseInt(targetPartsCount, 10) : undefined,
-      tags: tags.trim() || undefined,
-      due_date: dueDate || undefined,
+      // Null clears the copies-per-file target on edit (#1897); undefined omits on create.
+      target_sets: project ? (targetSets ? parseInt(targetSets, 10) : null) : (targetSets ? parseInt(targetSets, 10) : undefined),
+      // Null clears the stored value on edit; undefined omits the key on create.
+      // Sending undefined on edit would make an emptied field un-clearable.
+      tags: project ? (tags.trim() || null) : (tags.trim() || undefined),
+      due_date: project ? (dueDate || null) : (dueDate || undefined),
       priority,
       budget: budget.trim() ? parseFloat(budget) : null,
+      // Pydantic accepts null to clear the URL; an empty string would fail the
+      // http(s) prefix validator.
+      url: project ? (trimmedUrl || null) : (trimmedUrl || undefined),
       ...(project && { status }),
     });
   };
 
   return (
+    // max-h + flex column on the card + overflow on the fields wrapper so the
+    // modal stays inside the viewport on short screens (#1642). Outer p-4 is
+    // 1rem each side, hence the 2rem subtraction below.
     <div className="fixed inset-0 bg-black/70 flex items-center justify-center z-50 p-4">
-      <div className="bg-bambu-dark-secondary rounded-lg w-full max-w-md border border-bambu-dark-tertiary">
-        <div className="p-4 border-b border-bambu-dark-tertiary">
+      <div className="bg-bambu-dark-secondary rounded-lg w-full max-w-md border border-bambu-dark-tertiary flex flex-col max-h-[calc(100vh-2rem)]">
+        <div className="p-4 border-b border-bambu-dark-tertiary flex-shrink-0">
           <h2 className="text-lg font-semibold text-white">
             {project ? t('projects.editProject') : t('projects.newProject')}
           </h2>
         </div>
 
-        <form onSubmit={handleSubmit} className="p-4 space-y-4">
+        <form onSubmit={handleSubmit} className="flex flex-col flex-1 min-h-0">
+          <div className="p-4 space-y-4 overflow-y-auto flex-1">
           <div>
             <label className="block text-sm font-medium text-white mb-1">
               {t('common.name')}
@@ -115,6 +176,80 @@ export function ProjectModal({ project, onClose, onSave, isLoading, currencySymb
               rows={2}
             />
           </div>
+
+          {/* #1155: External URL */}
+          <div>
+            <label className="block text-sm font-medium text-white mb-1">
+              {t('projects.urlLabel')}
+            </label>
+            <input
+              type="url"
+              value={url}
+              onChange={(e) => { setUrl(e.target.value); if (urlError) setUrlError(null); }}
+              className={`w-full bg-bambu-dark border rounded px-3 py-2 text-white placeholder-bambu-gray focus:outline-none ${
+                urlError ? 'border-red-500 focus:border-red-500' : 'border-bambu-dark-tertiary focus:border-bambu-green'
+              }`}
+              placeholder={t('projects.urlPlaceholder')}
+              maxLength={2048}
+            />
+            {urlError && <p className="text-xs text-red-600 dark:text-red-400 mt-1">{urlError}</p>}
+          </div>
+
+          {/* #1155: Cover image — only available when editing an existing project,
+              since uploading needs a project_id. New projects can add it after save. */}
+          {project && (
+            <div>
+              <label className="block text-sm font-medium text-white mb-1">
+                {t('projects.coverImageLabel')}
+              </label>
+              <div className="flex items-center gap-3">
+                <div className="w-20 h-20 rounded bg-bambu-dark border border-bambu-dark-tertiary overflow-hidden flex items-center justify-center flex-shrink-0">
+                  {coverImageFilename ? (
+                    <img
+                      src={`${api.getProjectCoverImageUrl(project.id)}?v=${coverCacheKey}`}
+                      alt={t('projects.coverImageAlt')}
+                      className="w-full h-full object-cover"
+                    />
+                  ) : (
+                    <ImageIcon className="w-6 h-6 text-bambu-gray" />
+                  )}
+                </div>
+                <div className="flex flex-col gap-2">
+                  <input
+                    ref={coverFileInputRef}
+                    type="file"
+                    accept="image/jpeg,image/png,image/gif,image/webp"
+                    onChange={handleCoverFileChange}
+                    className="hidden"
+                  />
+                  <Button
+                    type="button"
+                    variant="secondary"
+                    onClick={() => coverFileInputRef.current?.click()}
+                    disabled={coverUploading}
+                  >
+                    {coverUploading ? (
+                      <Loader2 className="w-4 h-4 animate-spin" />
+                    ) : (
+                      <Upload className="w-4 h-4 mr-1" />
+                    )}
+                    {coverImageFilename ? t('projects.coverImageReplace') : t('projects.coverImageUpload')}
+                  </Button>
+                  {coverImageFilename && (
+                    <Button
+                      type="button"
+                      variant="secondary"
+                      onClick={handleRemoveCover}
+                      disabled={coverUploading}
+                    >
+                      <X className="w-4 h-4 mr-1" />
+                      {t('projects.coverImageRemove')}
+                    </Button>
+                  )}
+                </div>
+              </div>
+            </div>
+          )}
 
           <div>
             <label className="block text-sm font-medium text-white mb-1">
@@ -165,6 +300,22 @@ export function ProjectModal({ project, onClose, onSave, isLoading, currencySymb
               />
               <p className="text-xs text-bambu-gray mt-1">{t('projects.targetPartsHelp')}</p>
             </div>
+          </div>
+
+          {/* Copies-per-file target (#1897) */}
+          <div>
+            <label className="block text-sm font-medium text-white mb-1">
+              {t('projects.targetSets')}
+            </label>
+            <input
+              type="number"
+              value={targetSets}
+              onChange={(e) => setTargetSets(e.target.value)}
+              className="w-full bg-bambu-dark border border-bambu-dark-tertiary rounded px-3 py-2 text-white placeholder-bambu-gray focus:outline-none focus:border-bambu-green"
+              placeholder={t('projects.targetSetsPlaceholder')}
+              min="1"
+            />
+            <p className="text-xs text-bambu-gray mt-1">{t('projects.targetSetsHelp')}</p>
           </div>
 
           {/* Tags */}
@@ -247,8 +398,12 @@ export function ProjectModal({ project, onClose, onSave, isLoading, currencySymb
               </select>
             </div>
           )}
+          </div>
 
-          <div className="flex justify-end gap-2 pt-2">
+          {/* Sticky action footer — stays visible regardless of scroll
+              position so Save/Cancel are always reachable on short screens
+              (#1642). Buttons stay inside <form> for type="submit". */}
+          <div className="flex justify-end gap-2 p-4 border-t border-bambu-dark-tertiary flex-shrink-0">
             <Button type="button" variant="secondary" onClick={onClose}>
               {t('common.cancel')}
             </Button>
@@ -267,6 +422,91 @@ export function ProjectModal({ project, onClose, onSave, isLoading, currencySymb
     </div>
   );
 }
+
+/**
+ * Cover thumbnail with portal-rendered hover preview (#1155 follow-up).
+ *
+ * Why a portal: the parent ``ProjectCard`` carries ``overflow-hidden`` for
+ * its rounded-corner clipping and color accent bar; an in-tree popover
+ * gets clipped by that and only the part that overlaps the card is
+ * visible. Rendering the preview via ``createPortal`` to ``document.body``
+ * escapes every ancestor clipping context, and ``position: fixed`` with
+ * ``getBoundingClientRect()`` keeps it pinned next to the thumbnail
+ * regardless of where the card sits in the grid.
+ */
+function ProjectCoverThumbnail({
+  projectId,
+  altText,
+}: {
+  projectId: number;
+  altText: string;
+}) {
+  const thumbRef = useRef<HTMLDivElement>(null);
+  const [hovered, setHovered] = useState(false);
+  const [pos, setPos] = useState<{ left: number; top: number } | null>(null);
+
+  const handleEnter = () => {
+    if (!thumbRef.current) return;
+    const rect = thumbRef.current.getBoundingClientRect();
+    // Anchor the 384px preview just to the right of the thumbnail (8px gap).
+    // Clamp ``top`` so the preview never overflows the viewport vertically;
+    // similar story for ``left`` if the card is near the right edge — flip
+    // to the LEFT side of the thumbnail in that case.
+    const PREVIEW = 384;
+    const GAP = 8;
+    const vw = window.innerWidth;
+    const vh = window.innerHeight;
+    let left = rect.right + GAP;
+    if (left + PREVIEW > vw - 8) {
+      left = rect.left - PREVIEW - GAP;
+    }
+    let top = rect.top;
+    if (top + PREVIEW > vh - 8) {
+      top = vh - PREVIEW - 8;
+    }
+    if (top < 8) top = 8;
+    setPos({ left, top });
+    setHovered(true);
+  };
+
+  const handleLeave = () => setHovered(false);
+
+  return (
+    <div
+      ref={thumbRef}
+      className="relative flex-shrink-0"
+      onMouseEnter={handleEnter}
+      onMouseLeave={handleLeave}
+      onClick={(e) => e.stopPropagation()}
+    >
+      <div className="w-10 h-10 rounded-lg overflow-hidden bg-bambu-dark border border-bambu-dark-tertiary">
+        <img
+          src={api.getProjectCoverImageUrl(projectId)}
+          alt={altText}
+          className="w-full h-full object-cover"
+          loading="lazy"
+        />
+      </div>
+      {hovered && pos &&
+        createPortal(
+          <div
+            className="fixed z-[100] w-96 h-96 rounded-lg overflow-hidden border border-bambu-dark-tertiary shadow-2xl bg-bambu-dark pointer-events-none"
+            style={{ left: pos.left, top: pos.top }}
+            aria-hidden="true"
+          >
+            <img
+              src={api.getProjectCoverImageUrl(projectId)}
+              alt=""
+              className="w-full h-full object-contain"
+              loading="lazy"
+            />
+          </div>,
+          document.body,
+        )}
+    </div>
+  );
+}
+
 
 interface ProjectCardProps {
   project: ProjectListItem;
@@ -294,7 +534,7 @@ function ProjectCard({ project, onClick, onEdit, onDelete, hasPermission, t }: P
   const getStatusConfig = () => {
     if (isCompleted) return { icon: CheckCircle2, color: 'text-bambu-green', bg: 'bg-bambu-green/10' };
     if (isArchived) return { icon: Archive, color: 'text-bambu-gray', bg: 'bg-bambu-gray/10' };
-    if (project.queue_count > 0) return { icon: Clock, color: 'text-blue-400', bg: 'bg-blue-400/10' };
+    if (project.queue_count > 0) return { icon: Clock, color: 'text-blue-600 dark:text-blue-400', bg: 'bg-blue-50 dark:bg-blue-400/10' };
     return { icon: FolderKanban, color: 'text-bambu-gray', bg: 'bg-bambu-gray/10' };
   };
   const statusConfig = getStatusConfig();
@@ -317,12 +557,39 @@ function ProjectCard({ project, onClick, onEdit, onDelete, hasPermission, t }: P
         {/* Header */}
         <div className="flex items-start justify-between mb-4">
           <div className="flex items-center gap-3 min-w-0 flex-1">
-            <div className={`p-2 rounded-lg ${statusConfig.bg} flex-shrink-0`}>
-              <statusConfig.icon className={`w-5 h-5 ${statusConfig.color}`} />
-            </div>
+            {project.cover_image_filename ? (
+              // #1155: cover photo replaces the status-icon box. The thumbnail
+              // itself stays small so the card layout doesn't shift; on hover
+              // a portal-rendered 384×384 preview pops out beside the card
+              // so the user can identify the print without navigating into
+              // the project view. The portal is needed because ProjectCard's
+              // own ``overflow-hidden`` (for rounded corners) clips any
+              // in-tree popover before it can extend outside the card.
+              <ProjectCoverThumbnail
+                projectId={project.id}
+                altText={t('projects.coverImageAlt')}
+              />
+            ) : (
+              <div className={`p-2 rounded-lg ${statusConfig.bg} flex-shrink-0`}>
+                <statusConfig.icon className={`w-5 h-5 ${statusConfig.color}`} />
+              </div>
+            )}
             <div className="min-w-0 flex-1">
               <div className="flex items-center gap-2 flex-wrap">
                 <h3 className="font-semibold text-white truncate">{project.name}</h3>
+                {project.url && (
+                  <a
+                    href={project.url}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    onClick={(e) => e.stopPropagation()}
+                    title={project.url}
+                    aria-label={t('projects.openExternalUrl')}
+                    className="inline-flex items-center justify-center w-6 h-6 rounded bg-bambu-dark border border-bambu-dark-tertiary text-bambu-green hover:bg-bambu-green/10 hover:border-bambu-green transition-colors flex-shrink-0"
+                  >
+                    <ExternalLink className="w-3.5 h-3.5" />
+                  </a>
+                )}
                 {project.target_parts_count ? (
                   <span className={`text-xs px-2 py-0.5 rounded-full whitespace-nowrap font-medium ${
                     partsProgressPercent >= 100
@@ -432,7 +699,7 @@ function ProjectCard({ project, onClick, onEdit, onDelete, hasPermission, t }: P
                   </button>
                   <button
                     className={`w-full px-3 py-2 text-left text-sm flex items-center gap-2 ${
-                      hasPermission('projects:delete') ? 'text-red-400 hover:bg-bambu-dark' : 'text-bambu-gray cursor-not-allowed'
+                      hasPermission('projects:delete') ? 'text-red-600 dark:text-red-400 hover:bg-bambu-dark' : 'text-bambu-gray cursor-not-allowed'
                     }`}
                     onClick={() => { if (hasPermission('projects:delete')) { onDelete(); setShowActions(false); } }}
                     disabled={!hasPermission('projects:delete')}
@@ -499,7 +766,7 @@ function ProjectCard({ project, onClick, onEdit, onDelete, hasPermission, t }: P
               )}
               {/* Failed count */}
               {project.failed_count > 0 && (
-                <div className="text-xs text-red-400">
+                <div className="text-xs text-red-600 dark:text-red-400">
                   {project.failed_count} {t('projects.failed')}
                 </div>
               )}
@@ -513,13 +780,13 @@ function ProjectCard({ project, onClick, onEdit, onDelete, hasPermission, t }: P
                 </div>
               )}
               {project.failed_count > 0 && (
-                <div className="flex items-center gap-1.5 text-red-400">
+                <div className="flex items-center gap-1.5 text-red-600 dark:text-red-400">
                   <AlertTriangle className="w-3.5 h-3.5" />
                   <span>{project.failed_count} {t('projects.failed')}</span>
                 </div>
               )}
               {project.queue_count > 0 && (
-                <div className="flex items-center gap-1.5 text-blue-400">
+                <div className="flex items-center gap-1.5 text-blue-600 dark:text-blue-400">
                   <Clock className="w-3.5 h-3.5" />
                   <span>{project.queue_count} {t('projects.inQueue')}</span>
                 </div>
@@ -573,7 +840,7 @@ function ProjectCard({ project, onClick, onEdit, onDelete, hasPermission, t }: P
         <div className="flex items-center justify-between pt-3 border-t border-bambu-dark-tertiary">
           <div className="flex items-center gap-4 text-xs text-bambu-gray">
             <div className="flex items-center gap-1.5" title={t('projects.printJobs')}>
-              <Layers className="w-3.5 h-3.5 text-blue-400" />
+              <Layers className="w-3.5 h-3.5 text-blue-600 dark:text-blue-400" />
               <span>{project.archive_count} {t('projects.plates')}</span>
             </div>
             <div className="flex items-center gap-1.5" title={t('projects.partsPrinted')}>
@@ -581,13 +848,13 @@ function ProjectCard({ project, onClick, onEdit, onDelete, hasPermission, t }: P
               <span>{project.completed_count} {t('projects.parts')}</span>
             </div>
             {project.failed_count > 0 && (
-              <div className="flex items-center gap-1.5 text-red-400" title={t('projects.failedParts')}>
+              <div className="flex items-center gap-1.5 text-red-600 dark:text-red-400" title={t('projects.failedParts')}>
                 <AlertTriangle className="w-3.5 h-3.5" />
                 <span>{project.failed_count}</span>
               </div>
             )}
             {project.queue_count > 0 && (
-              <div className="flex items-center gap-1.5 text-yellow-400" title={t('projects.inQueue')}>
+              <div className="flex items-center gap-1.5 text-yellow-600 dark:text-yellow-400" title={t('projects.inQueue')}>
                 <ListTodo className="w-3.5 h-3.5" />
                 <span>{project.queue_count}</span>
               </div>
@@ -789,12 +1056,10 @@ export function ProjectsPage() {
       <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
         <div>
           <h1 className="text-2xl font-bold text-white flex items-center gap-3">
-            <div className="p-2.5 bg-bambu-green/10 rounded-xl">
-              <FolderKanban className="w-6 h-6 text-bambu-green" />
-            </div>
+            <FolderKanban className="w-7 h-7 text-bambu-green" />
             {t('projects.title')}
           </h1>
-          <p className="text-sm text-bambu-gray mt-2 ml-14">
+          <p className="text-bambu-gray mt-1">
             {t('projects.subtitle')}
           </p>
         </div>

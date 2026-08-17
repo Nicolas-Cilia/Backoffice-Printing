@@ -6,6 +6,7 @@ Thank you for your interest in contributing to Bambuddy! This document provides 
 
 - [Code of Conduct](#code-of-conduct)
 - [Before You Start](#before-you-start)
+- [Documentation Requirements](#documentation-requirements)
 - [Getting Started](#getting-started)
 - [Development Setup](#development-setup)
 - [Making Changes](#making-changes)
@@ -34,6 +35,51 @@ Please read and follow our [Code of Conduct](CODE_OF_CONDUCT.md) to keep our com
 **No assigned issue = no PR.** Pull requests without a corresponding assigned issue will be closed.
 
 This keeps everyone on the same page, avoids wasted effort on changes that may not fit the project's direction, and prevents multiple contributors from working on the same thing.
+
+## Documentation Requirements
+
+Features and user-visible behavior changes **must** include matching documentation updates in the docs repos:
+
+- **[bambuddy-wiki](https://github.com/maziggy/bambuddy-wiki)** — end-user guide (installation, configuration, feature walkthroughs, reference)
+- **[bambuddy-website](https://github.com/maziggy/bambuddy-website)** — marketing site (updated only when the change affects public claims or feature lists)
+
+### When docs updates are required
+
+| Change | Needs wiki? | Needs website? |
+|---|---|---|
+| New feature | ✅ | Maybe (if in the feature list) |
+| New config key / setting | ✅ | ❌ |
+| New port, URL, API endpoint | ✅ | ❌ |
+| Installation or upgrade steps change | ✅ | ✅ |
+| UI change that affects screenshots | ✅ | ❌ |
+| Bug fix with no observable behavior change | ❌ | ❌ |
+| Internal refactor | ❌ | ❌ |
+| Test-only change | ❌ | ❌ |
+
+### Workflow
+
+1. Open your code PR here in `bambuddy`
+2. Open companion PR(s) in `bambuddy-wiki` and/or `bambuddy-website`
+3. **Link the companion PR(s) in the code PR description** (the PR template has a dedicated section)
+4. Merge the PRs together — usually code first, then docs, unless the docs reference new things that don't exist yet
+
+If your change truly doesn't need docs (internal refactor, silent bug fix), say so in the PR description and give a one-line reason.
+
+### Previews before you merge
+
+Clone the docs repo and run it locally to see your changes rendered with the real theme before opening the PR:
+
+- **Wiki** (`bambuddy-wiki`) — `pip install -r requirements.txt && mkdocs serve` — live-reload on `http://localhost:8000`
+- **Website** (`bambuddy-website`) — static HTML/CSS, open the changed file directly or serve with `python -m http.server`
+
+Review like you would the production site. Catch broken links, layout regressions, typos, missing images. If it looks right, open the PR.
+
+### Editing docs without a local clone
+
+Both docs repos can be edited directly in the browser, no `git clone` required:
+
+- **GitHub web editor** — click the pencil icon on any file in the repo
+- **github.dev** — press `.` (period) on any repo page to open VS Code in your browser, with multi-file editing and syntax highlighting
 
 ## Getting Started
 
@@ -71,8 +117,9 @@ pip install -r requirements-dev.txt  # Dev/test dependencies (pytest, ruff, band
 pip install pre-commit
 pre-commit install
 
-# Run backend
-DEBUG=true uvicorn backend.app.main:app --reload --host 0.0.0.0 --port 8000
+# Run backend (--loop asyncio matches production; avoids a uvloop TLS bug
+# that can truncate Virtual Printer FTP uploads on slow storage — see #1896)
+DEBUG=true uvicorn backend.app.main:app --reload --host 0.0.0.0 --port 8000 --loop asyncio
 ```
 
 ### Frontend Setup
@@ -176,19 +223,18 @@ The frontend uses [react-i18next](https://react.i18next.com/) for all user-facin
 
 ### Locale Files
 
-Translations live in `frontend/src/i18n/locales/`:
+Translations live in `frontend/src/i18n/locales/`. `en.ts` is the reference locale; every other `*.ts` file in that directory is checked against it. The parity check discovers the directory at runtime, so a new locale is picked up automatically — this file never needs updating when one is added.
 
-| File | Language |
-|------|----------|
-| `en.ts` | English (primary) |
-| `de.ts` | German |
-| `fr.ts` | French |
-| `ja.ts` | Japanese |
-| `pt-BR.ts` | Brazilian Portuguese |
+To see the current set of locales and check your work:
+
+```bash
+cd frontend
+npm run check:i18n
+```
 
 ### Adding New Strings
 
-1. Add the key to the appropriate section in **all three** locale files
+1. Add the key to the appropriate section in **every** locale file
 2. Use the `useTranslation` hook in your component:
 
 ```tsx
@@ -204,9 +250,9 @@ function MyComponent() {
 
 ### Important Notes
 
-- All three locale files must use the **same key structure** — same nesting, same key paths
-- Always add keys to all three locales to maintain parity
-- Run frontend tests after changes — locale parity is validated
+- Every locale file must use the **same key structure** — same nesting, same key paths
+- Always add keys to **every** locale to maintain parity, with real translations rather than English placeholders — the check flags leaves that are identical to `en`
+- Run `npm run test:run` before pushing — it chains the parity check, which CI runs too. Plain `npm test` is vitest in watch mode and skips it
 - If you find structural inconsistencies between locales, fix them — different key paths cause silent fallback to English
 
 ## Authentication & Permissions
@@ -247,7 +293,11 @@ Permissions follow the `resource:action` pattern (e.g., `filaments:read`, `print
 | `update` | Modify existing resources |
 | `delete` | Remove resources |
 
-Some resources have additional actions (e.g., `printers:control` for start/stop, `printers:files` for file transfer).
+Some resources have additional actions. Examples: `printers:control` for live printer controls
+such as stop/pause/resume, `printers:files` for printer storage access, `queue:create` for
+creating queue items that may dispatch immediately when scheduled ASAP, `library:upload` for
+File Manager uploads/imports, and `archives:reprint_own` / `archives:reprint_all` for archive
+reprint eligibility. Archive reprint still needs `queue:create` before it can enqueue a job.
 
 ### Adding New Permissions
 
@@ -322,7 +372,7 @@ All checks must pass before merging. Run `./test_all.sh` locally before pushing 
    - Use a clear, descriptive title
    - Fill out the PR template completely
    - Link any related issues
-   - Include screenshots for UI changes
+   - Include before/after screenshots for any visual changes
 
 3. **Wait for review** - maintainers will review your PR and may request changes
 
@@ -334,6 +384,7 @@ All checks must pass before merging. Run `./test_all.sh` locally before pushing 
 - Add tests for new functionality
 - Ensure all tests pass
 - Follow the existing code style
+- **Visual changes require screenshots** — if your PR changes any frontend UI, include before/after screenshots showing the old and new appearance
 
 ## Reporting Bugs
 

@@ -4,8 +4,12 @@ import logging
 import os
 import socket
 import ssl
+import threading
 import time
+import weakref
 from collections.abc import Awaitable, Callable
+from concurrent.futures import ThreadPoolExecutor
+from enum import Enum
 from ftplib import FTP, FTP_TLS  # nosec B402
 from io import BytesIO
 from pathlib import Path
@@ -15,6 +19,85 @@ logger = logging.getLogger(__name__)
 
 T = TypeVar("T")
 
+# Every FTP call below is blocking ftplib work handed to a thread. They used to
+# run on asyncio's *default* executor, which is sized min(32, cpu_count + 4) —
+# six threads on a 2-core NAS — and is shared with every other ``to_thread`` /
+# ``run_in_executor`` caller in the app. That was survivable only because the
+# scheduler uploaded to exactly one printer at a time. Dispatching to several
+# printers at once (#2555) would park one thread per in-flight upload for
+# minutes at a stretch (a 41 MB 3MF at the ~150 KB/s a Bambu printer sustains
+# takes ~4 min), starving the default pool and stalling unrelated work.
+#
+# A dedicated pool keeps that blast radius inside the FTP layer: the scheduler's
+# own concurrency cap is what limits parallel uploads, and it can never exhaust
+# the executor everything else depends on. Threads are created lazily, so an
+# idle pool costs nothing.
+#
+# Sized well above `queue_max_concurrent_uploads` (max 16), because uploads are
+# not the only traffic here: SD browsing, timelapse/recording listing, cover
+# downloads, deletes and storage checks all run through this pool too, and on a
+# farm they fan out across every printer at once. The pool's work queue is
+# unbounded, so exceeding it does not fail — it queues. But `asyncio.wait_for`
+# starts its clock at submission, not at thread start, so a task that sits in the
+# queue can burn its whole timeout without ever running, and `list_files_async`
+# reports a timeout as an empty listing — a silent "this printer has no files".
+# Keep the headroom.
+_FTP_MAX_WORKERS = 48
+_ftp_executor = ThreadPoolExecutor(max_workers=_FTP_MAX_WORKERS, thread_name_prefix="bambu-ftp")
+
+# Overall upload deadline (#2529). A flat wall-clock cap punishes big files on
+# slow links rather than catching broken ones: a 96 MB 3MF at the ~75 KB/s an A1
+# sustains over WiFi legitimately needs ~20 minutes, and the old flat 600 s
+# declared it dead at ~70 MB. The deadline is therefore derived from the file
+# size against a deliberately pessimistic floor rate. This is a backstop, not the
+# failure detector — a link that has actually died is caught within
+# ``socket_timeout`` by the blocking ``sendall``, long before this fires.
+_UPLOAD_FLOOR_BYTES_PER_SEC = 25 * 1024
+_UPLOAD_MIN_TIMEOUT = 600.0
+
+# How long to give the worker thread to notice the cancel flag, unwind, and
+# delete its partial file. It checks the flag once per CHUNK_SIZE, so on a link
+# slow enough to have hit the deadline this is one chunk plus the delete.
+_UPLOAD_CANCEL_GRACE = 60.0
+
+
+class UploadCancelled(Exception):
+    """Raised inside the upload worker to abort an in-flight transfer.
+
+    ``upload_file`` treats any exception from its progress callback as "stop
+    now": it breaks out of the send loop, deletes the partial file from the
+    printer, and re-raises. That is the only way to stop a transfer — an
+    executor thread cannot be cancelled from the event loop, so a bare
+    ``asyncio.wait_for`` leaves it streaming (see ``upload_file_async``).
+    """
+
+
+class DeleteResult(Enum):
+    """Outcome of an FTP delete attempt.
+
+    Distinguishes "file isn't on the printer" (550, recovery impossible by
+    retrying) from "delete failed for some other reason" (network, auth,
+    transient FTP error — worth retrying). The post-print SD-card cleanup in
+    main.py used to flatten both into ``False`` and log a "may linger" WARNING
+    on every successful print where the printer self-cleaned its SD card
+    before our cleanup ran (#1721 reporter's A1).
+    """
+
+    DELETED = "deleted"
+    NOT_FOUND = "not_found"
+    FAILED = "failed"
+
+
+class FileNotOnPrinterError(Exception):
+    """Raised when a remote FTP path returns 550 (file not found).
+
+    550 means the file does not exist at that path — retrying the same path
+    will never succeed. Callers use this sentinel with with_ftp_retry's
+    non_retry_exceptions to immediately move on to the next candidate path
+    instead of burning the full retry budget (up to 11 × 30s per path) on
+    a lookup that cannot recover.
+    """
+
 
 class ImplicitFTP_TLS(FTP_TLS):
     """FTP_TLS subclass for implicit FTPS (port 990) with model-specific SSL handling.
@@ -23,15 +106,31 @@ class ImplicitFTP_TLS(FTP_TLS):
     A1/A1 Mini printers have issues with SSL on the data channel entirely and
     timeout waiting for transfer completion. Set skip_session_reuse=True for A1
     printers to skip SSL on the data channel (control channel remains encrypted).
+
+    Optionally caps the SSL context's maximum TLS version to v1.2 (P2S firmware
+    01.02.00.00 needs this — see :mod:`ftp_profiles` and #1401).
     """
 
-    def __init__(self, *args, skip_session_reuse: bool = False, **kwargs):
+    def __init__(self, *args, skip_session_reuse: bool = False, cap_tls_v1_2: bool = False, **kwargs):
         super().__init__(*args, **kwargs)
         self._sock = None
         self.skip_session_reuse = skip_session_reuse
         self.ssl_context = ssl.create_default_context()
         self.ssl_context.check_hostname = False
         self.ssl_context.verify_mode = ssl.CERT_NONE
+        # ``create_default_context()`` does NOT guarantee a protocol floor: it
+        # leaves ``minimum_version`` at ``MINIMUM_SUPPORTED``, and what that
+        # resolves to is a property of the OpenSSL build, not of this code.
+        # Measured on identical OpenSSL 3.5.6: python:3.13-slim-trixie (our
+        # Docker base) reports TLSv1_2, a bare-metal venv reports
+        # MINIMUM_SUPPORTED. Docker users have therefore always been floored at
+        # 1.2 — every Bambu model is reachable under that floor — while
+        # bare-metal and appliance installs could silently negotiate TLS 1.0.
+        # State the floor rather than inheriting it.
+        self.ssl_context.minimum_version = ssl.TLSVersion.TLSv1_2
+        if cap_tls_v1_2:
+            # With the floor above this pins the connection to exactly TLS 1.2.
+            self.ssl_context.maximum_version = ssl.TLSVersion.TLSv1_2
 
     def connect(self, host="", port=990, timeout=-999, source_address=None):
         """Connect to host, wrapping socket in TLS immediately (implicit FTPS)."""
@@ -138,11 +237,18 @@ class BambuFTPClient:
         """Connect to the printer FTP server (implicit FTPS on port 990)."""
         try:
             use_prot_c = self._should_use_prot_c()
+            from backend.app.services.ftp_profiles import get_ftp_profile
+
+            profile = get_ftp_profile(self.printer_model)
             logger.debug(
                 f"FTP connecting to {self.ip_address}:{self.FTP_PORT} "
-                f"(timeout={self.timeout}s, model={self.printer_model}, prot_c={use_prot_c})"
+                f"(timeout={self.timeout}s, model={self.printer_model}, prot_c={use_prot_c}, "
+                f"cap_tls_v1_2={profile.cap_tls_v1_2})"
             )
-            self._ftp = ImplicitFTP_TLS(skip_session_reuse=use_prot_c)
+            self._ftp = ImplicitFTP_TLS(
+                skip_session_reuse=use_prot_c,
+                cap_tls_v1_2=profile.cap_tls_v1_2,
+            )
             self._ftp.connect(self.ip_address, self.FTP_PORT, timeout=self.timeout)
             logger.debug("FTP connected, logging in as bblp")
             self._ftp.login("bblp", self.access_code)
@@ -247,17 +353,42 @@ class BambuFTPClient:
 
         return files
 
-    def download_file(self, remote_path: str) -> bytes | None:
-        """Download a file from the printer."""
+    def download_file(self, remote_path: str, expected_size: int | None = None) -> bytes | None:
+        """Download a file from the printer.
+
+        ``expected_size`` is the byte count the directory listing reported for
+        this file. Pass it whenever a short read must not be mistaken for a
+        successful download: an FTPS data connection that closes early does
+        not always raise, so ``retrbinary`` can hand back a partial buffer that
+        looks like a perfectly good file to everything downstream. That is
+        tolerable when the printer keeps its copy, and not tolerable when the
+        caller goes on to delete the source (#2704).
+
+        A zero-byte result is always treated as a failure, matching
+        :meth:`download_to_file` — no caller has a use for an empty file.
+        """
         if not self._ftp:
             return None
 
         try:
             buffer = BytesIO()
             self._ftp.retrbinary(f"RETR {remote_path}", buffer.write)
-            return buffer.getvalue()
+            data = buffer.getvalue()
         except (OSError, ftplib.Error):
             return None
+
+        if not data:
+            logger.warning("FTP download returned 0 bytes for %s", remote_path)
+            return None
+        if expected_size is not None and len(data) != expected_size:
+            logger.warning(
+                "FTP download of %s is short: got %s bytes, listing reported %s — treating as failed",
+                remote_path,
+                len(data),
+                expected_size,
+            )
+            return None
+        return data
 
     def download_to_file(self, remote_path: str, local_path: Path) -> bool:
         """Download a file from the printer to local filesystem."""
@@ -280,14 +411,21 @@ class BambuFTPClient:
             logger.info("Successfully downloaded %s to %s (%s bytes)", remote_path, local_path, file_size)
             return True
         except (OSError, ftplib.Error) as e:
-            # Log at INFO level so we can see failures in normal logs
-            logger.info("FTP download failed for %s: %s", remote_path, e)
             # Clean up partial file if it exists
             if local_path.exists():
                 try:
                     local_path.unlink()
                 except OSError:
                     pass  # Best-effort partial file cleanup; not critical if removal fails
+            # 550 means the file is not at this path. Surface as a sentinel so
+            # with_ftp_retry can abandon this path immediately and the caller
+            # can advance to the next candidate instead of retrying 11× at
+            # 30s intervals (the pattern that cost #972's reporter ~48min).
+            if isinstance(e, ftplib.error_perm) and str(e).startswith("550"):
+                logger.info("FTP download failed for %s: %s (not on printer)", remote_path, e)
+                raise FileNotOnPrinterError(f"{remote_path}: {e}") from e
+            # Log at INFO level so we can see failures in normal logs
+            logger.info("FTP download failed for %s: %s", remote_path, e)
             return False
 
     def diagnose_storage(self) -> dict:
@@ -428,9 +566,46 @@ class BambuFTPClient:
                     logger.info("FTP STOR confirmed for %s: %s", remote_path, resp.strip())
                 finally:
                     self._ftp.sock.settimeout(old_timeout)
+            except ftplib.Error as e:
+                # Some P2S firmware revisions return ftplib.Error (e.g. 426
+                # "Failure reading network stream") on voidresp() even when
+                # the file landed fully on the SD card — the TLS data
+                # channel close races the 226 confirmation (#1417 follow-up).
+                # Verify via SIZE: if the server-side file size matches what
+                # we just uploaded, the file is intact and we proceed with
+                # a warning. If not — or SIZE itself fails — the transfer
+                # was genuinely truncated and we must fail so the print
+                # command doesn't go out for a partial 3MF (the original
+                # reason this catch was tightened in the previous round).
+                try:
+                    server_size = self._ftp.size(remote_path)
+                except (OSError, ftplib.Error) as size_err:
+                    logger.debug("Post-error SIZE check failed: %s", size_err)
+                    server_size = None
+                if server_size is not None and server_size == file_size:
+                    logger.warning(
+                        "FTP STOR returned %s for %s but file is intact on the "
+                        "printer (%s bytes match) — proceeding: %s",
+                        type(e).__name__,
+                        remote_path,
+                        file_size,
+                        e,
+                    )
+                else:
+                    logger.error(
+                        "FTP STOR rejected by printer for %s: %s (%s); server size=%s expected=%s",
+                        remote_path,
+                        e,
+                        type(e).__name__,
+                        server_size,
+                        file_size,
+                    )
+                    raise
             except Exception as e:
-                # Timeout or error reading 226 — log but proceed, the data
-                # was fully sent so the file is likely on the SD card.
+                # Timeout or socket-level error reading 226 — the data was sent
+                # on our side and the printer may still have written the file.
+                # H2D can take 30+ seconds to send 226 after the data channel
+                # closes, so we proceed with a warning rather than failing here.
                 logger.warning(
                     "FTP STOR confirmation not received for %s (proceeding): %s (%s)",
                     remote_path,
@@ -439,14 +614,16 @@ class BambuFTPClient:
                 )
 
             if callback_exception is not None:
-                cleanup_ok = False
+                cleanup_result: DeleteResult = DeleteResult.FAILED
                 try:
-                    cleanup_ok = self.delete_file(remote_path)
+                    cleanup_result = self.delete_file(remote_path)
                 except Exception as cleanup_error:
                     logger.warning("FTP cancel cleanup failed for %s: %s", remote_path, cleanup_error)
 
-                if cleanup_ok:
-                    logger.info("FTP cancel cleanup succeeded for %s", remote_path)
+                # NOT_FOUND is success here — the partial file is gone (printer
+                # may have already swept on cancel), which is the goal.
+                if cleanup_result in (DeleteResult.DELETED, DeleteResult.NOT_FOUND):
+                    logger.info("FTP cancel cleanup succeeded for %s (%s)", remote_path, cleanup_result.value)
                     raise callback_exception
 
                 raise RuntimeError(
@@ -508,7 +685,10 @@ class BambuFTPClient:
                     conn.close()
                 except OSError:
                     pass
-            # Wait for 226 confirmation (see upload_file for rationale)
+            # Wait for 226 confirmation (see upload_file for rationale).
+            # ftplib.Error subclasses (e.g. 426 error_temp) mean the server
+            # rejected the transfer and the file is partial — fail. Other
+            # exceptions (timeout, socket-level) are tolerated as in upload_file.
             try:
                 old_timeout = self._ftp.sock.gettimeout()
                 self._ftp.sock.settimeout(max(self.timeout, 60))
@@ -516,23 +696,62 @@ class BambuFTPClient:
                     self._ftp.voidresp()
                 finally:
                     self._ftp.sock.settimeout(old_timeout)
+            except ftplib.Error as e:
+                # Same SIZE-verify path as upload_file (#1417 follow-up):
+                # tolerate a transient 426 if the bytes are actually on the
+                # printer, fail loudly if they aren't.
+                try:
+                    server_size = self._ftp.size(remote_path)
+                except (OSError, ftplib.Error) as size_err:
+                    logger.debug("Post-error SIZE check failed: %s", size_err)
+                    server_size = None
+                if server_size is not None and server_size == len(data):
+                    logger.warning(
+                        "FTP STOR returned %s for %s but file is intact on the "
+                        "printer (%s bytes match) — proceeding: %s",
+                        type(e).__name__,
+                        remote_path,
+                        len(data),
+                        e,
+                    )
+                else:
+                    logger.error(
+                        "FTP STOR rejected by printer for %s: %s (%s); server size=%s expected=%s",
+                        remote_path,
+                        e,
+                        type(e).__name__,
+                        server_size,
+                        len(data),
+                    )
+                    return False
             except Exception:
-                pass  # Best-effort — data was sent, proceed
+                pass  # Timeout / socket-level — proceed, data was sent.
             return True
         except (OSError, ftplib.Error):
             return False
 
-    def delete_file(self, remote_path: str) -> bool:
-        """Delete a file from the printer."""
+    def delete_file(self, remote_path: str) -> DeleteResult:
+        """Delete a file from the printer.
+
+        Returns :class:`DeleteResult` distinguishing the file-not-found case
+        (550) from network / auth / transient FTP failure. Callers that just
+        want "did it work" should check ``result == DeleteResult.DELETED``.
+        """
         if not self._ftp:
-            return False
+            return DeleteResult.FAILED
 
         try:
             self._ftp.delete(remote_path)
-            return True
+            return DeleteResult.DELETED
+        except ftplib.error_perm as e:
+            if str(e).startswith("550"):
+                logger.debug("FTP delete: %s not on printer (550)", remote_path)
+                return DeleteResult.NOT_FOUND
+            logger.warning("Failed to delete %s: %s", remote_path, e)
+            return DeleteResult.FAILED
         except (OSError, ftplib.Error) as e:
             logger.warning("Failed to delete %s: %s", remote_path, e)
-            return False
+            return DeleteResult.FAILED
 
     def get_file_size(self, remote_path: str) -> int | None:
         """Get the size of a file."""
@@ -597,6 +816,97 @@ class BambuFTPClient:
         return result if result else None
 
 
+# Shared 3MF download cache (#972).
+#
+# Both the cover thumbnail endpoint (api/routes/printers.py) and the archive
+# metadata flow (main.py) fetch the same 3MF file over FTP during a print.
+# On slow / contended links (A1 Wi-Fi, large files) the duplicate transfers
+# compete for the printer's single FTP socket and trigger 425 "can't open
+# data channel" errors, feeding back into cause-2's retry storm.
+#
+# This cache stores the local path of a successfully-downloaded 3MF keyed
+# by (printer_id, normalized_name). Whichever flow downloads first populates
+# the cache; the other flow reuses the file read-only. Evicted on print
+# completion so a later print with the same name re-downloads fresh bytes.
+_threemf_path_cache: dict[tuple[int, str], Path] = {}
+
+
+def normalize_3mf_name(name: str) -> str:
+    """Collapse various 3MF filename variants to a cache key.
+
+    Bambu tooling produces names as bare subtask ("Part"), with .3mf, with
+    .gcode.3mf, or (Studio-normalized) with spaces → underscores. All of
+    these refer to the same print job on the same printer, so they must
+    hash to the same cache key.
+    """
+    # Lowercase first so .3MF / .GCODE.3MF variants strip cleanly — a
+    # real-world case since Windows-side tooling sometimes uppercases
+    # extensions.
+    cleaned = name.strip().lower().replace(".gcode.3mf", "").replace(".gcode", "").replace(".3mf", "")
+    return cleaned.replace(" ", "_")
+
+
+def cache_3mf_download(printer_id: int, name: str, local_path: Path) -> None:
+    """Record a successfully-downloaded 3MF so a sibling flow can reuse it."""
+    _threemf_path_cache[(printer_id, normalize_3mf_name(name))] = local_path
+
+
+def get_cached_3mf(printer_id: int, name: str) -> Path | None:
+    """Return a cached 3MF path for this printer/name if the file still exists."""
+    key = (printer_id, normalize_3mf_name(name))
+    cached = _threemf_path_cache.get(key)
+    if cached and cached.exists() and cached.stat().st_size > 0:
+        return cached
+    # Evict dead entry — the file was cleaned up (temp dir clean, manual
+    # deletion, restart) so the cache value is no longer usable.
+    if cached:
+        _threemf_path_cache.pop(key, None)
+    return None
+
+
+def clear_3mf_cache(printer_id: int | None = None, delete_files: bool = True) -> None:
+    """Drop cache entries for one printer (or all with None).
+
+    When ``delete_files`` is True (default) the on-disk 3MF is removed as well
+    — called from on_print_complete so temp files don't accumulate across
+    prints. Tests that want to inspect the cache contents disable this.
+
+    Only paths inside ``archive_dir/temp`` are unlinked. The dispatch sites
+    added in #1166 also cache the live archive copy and library file bytes
+    so /cover can skip FTP — those are *user data*, never the cache's to
+    delete. Pre-fix this branch silently removed archive 3mfs on every print
+    completion (#1212 + private reports of "file disappeared overnight").
+    """
+    from backend.app.core.config import settings as _config_settings
+
+    temp_root = _config_settings.archive_dir / "temp"
+
+    def _is_temp_path(path: Path) -> bool:
+        try:
+            return path.is_relative_to(temp_root)
+        except (OSError, ValueError):
+            return False
+
+    def _maybe_unlink(path: Path) -> None:
+        if not delete_files or not path.exists():
+            return
+        if not _is_temp_path(path):
+            return
+        try:
+            path.unlink()
+        except OSError as exc:
+            logger.debug("3MF cache cleanup skipped %s: %s", path, exc)
+
+    if printer_id is None:
+        for path in list(_threemf_path_cache.values()):
+            _maybe_unlink(path)
+        _threemf_path_cache.clear()
+        return
+    for key in [k for k in _threemf_path_cache if k[0] == printer_id]:
+        _maybe_unlink(_threemf_path_cache[key])
+        _threemf_path_cache.pop(key, None)
+
+
 async def download_file_async(
     ip_address: str,
     access_code: str,
@@ -623,48 +933,98 @@ async def download_file_async(
     loop = asyncio.get_event_loop()
     is_a1 = printer_model in BambuFTPClient.A1_MODELS if printer_model else False
 
-    def _download(force_prot_c: bool = False) -> bool:
+    # Per-attempt completion state: asyncio.wait_for cannot cancel
+    # run_in_executor threads, so on timeout the executor may still complete
+    # the download after we stop waiting. The thread flips `success` to True
+    # ONLY after the file is fully written — a post-timeout check lets us
+    # salvage the download without mistaking an in-progress partial write
+    # for a completed one. Each attempt gets its own dict and event so a
+    # zombie from an earlier attempt can't flip the flag for a later one.
+    # The event is set in `_download`'s finally block so the post-timeout
+    # path can wait for genuine thread completion instead of a fixed sleep.
+
+    def _download(force_prot_c: bool, completion: dict, done: threading.Event) -> bool:
         mode_str = "prot_c" if force_prot_c else "prot_p"
-        client = BambuFTPClient(
-            ip_address, access_code, timeout=socket_timeout, printer_model=printer_model, force_prot_c=force_prot_c
-        )
-        if client.connect():
-            try:
-                result = client.download_to_file(remote_path, local_path)
-                if result:
-                    # Cache the working mode
-                    BambuFTPClient.cache_mode(ip_address, mode_str)
-                return result
-            finally:
-                client.disconnect()
-        return False
+        try:
+            client = BambuFTPClient(
+                ip_address,
+                access_code,
+                timeout=socket_timeout,
+                printer_model=printer_model,
+                force_prot_c=force_prot_c,
+            )
+            if client.connect():
+                try:
+                    result = client.download_to_file(remote_path, local_path)
+                    if result:
+                        BambuFTPClient.cache_mode(ip_address, mode_str)
+                        completion["success"] = True
+                    return result
+                finally:
+                    client.disconnect()
+            return False
+        finally:
+            done.set()
 
-    try:
-        # Check if we have a cached mode for this printer
-        cached_mode = BambuFTPClient._mode_cache.get(ip_address)
+    async def _run(force_prot_c: bool) -> bool:
+        completion = {"success": False}
+        done = threading.Event()
+        try:
+            return await asyncio.wait_for(
+                loop.run_in_executor(_ftp_executor, _download, force_prot_c, completion, done), timeout=timeout
+            )
+        except TimeoutError:
+            # Slow WiFi links commonly overshoot ftp_timeout by 10–30 s without
+            # actually being stuck, so starting attempt 2 now would just contend
+            # with the still-progressing RETR on attempt 1 and produce the
+            # zombie-write race reported in #1014 (file landed on disk minutes
+            # after the retry loop had already given up). Wait for the worker
+            # thread to genuinely finish — capped at 30 s so a truly stuck
+            # connection can't stall a whole attempt indefinitely, with a 0.5 s
+            # floor so artificially small test timeouts still give zombies a
+            # realistic window to finish.
+            grace = max(min(timeout, 30.0), 0.5)
+            # Deliberately the DEFAULT executor, not `_ftp_executor`: this thread
+            # blocks waiting on `_download`, which is itself an `_ftp_executor`
+            # worker. Parking waiters in the same bounded pool as the workers they
+            # wait for is how you build a deadlock — with enough concurrent
+            # timeouts the waiters would occupy every slot and the downloads they
+            # are waiting for could never be scheduled.
+            await loop.run_in_executor(None, done.wait, grace)
+            if completion["success"] and local_path.exists() and local_path.stat().st_size > 0:
+                logger.info(
+                    "FTP download wait_for timed out after %ss for %s, but thread completed within %ss grace (%s bytes) — salvaging",
+                    timeout,
+                    remote_path,
+                    grace,
+                    local_path.stat().st_size,
+                )
+                return True
+            logger.warning(
+                "FTP download timed out after %ss (plus %ss grace) for %s",
+                timeout,
+                grace,
+                remote_path,
+            )
+            return False
 
-        if cached_mode:
-            # Use cached mode
-            force_prot_c = cached_mode == "prot_c"
-            return await asyncio.wait_for(loop.run_in_executor(None, lambda: _download(force_prot_c)), timeout=timeout)
+    # Check if we have a cached mode for this printer
+    cached_mode = BambuFTPClient._mode_cache.get(ip_address)
 
-        # No cached mode - try prot_p first
-        result = await asyncio.wait_for(loop.run_in_executor(None, lambda: _download(False)), timeout=timeout)
+    if cached_mode:
+        force_prot_c = cached_mode == "prot_c"
+        return await _run(force_prot_c)
 
-        if result:
-            return True
+    # No cached mode - try prot_p first
+    if await _run(False):
+        return True
 
-        # Download failed - for A1 models, try prot_c fallback
-        if is_a1:
-            logger.info("FTP download failed with prot_p for A1 model, trying prot_c fallback...")
-            result = await asyncio.wait_for(loop.run_in_executor(None, lambda: _download(True)), timeout=timeout)
-            return result
+    # Download failed - for A1 models, try prot_c fallback
+    if is_a1:
+        logger.info("FTP download failed with prot_p for A1 model, trying prot_c fallback...")
+        return await _run(True)
 
-        return False
-
-    except TimeoutError:
-        logger.warning("FTP download timed out after %ss for %s", timeout, remote_path)
-        return False
+    return False
 
 
 async def download_file_try_paths_async(
@@ -674,12 +1034,21 @@ async def download_file_try_paths_async(
     local_path: Path,
     socket_timeout: float | None = None,
     printer_model: str | None = None,
+    timeout: float = 90.0,
 ) -> bool:
     """Try downloading a file from multiple paths using a single connection.
 
     Args:
         socket_timeout: FTP socket timeout for slow connections (e.g., A1 printers)
         printer_model: Printer model for A1-specific workarounds
+        timeout: overall async cap. The per-socket timeout only bounds an
+            in-flight worker; it does NOT bound how long this coroutine waits
+            for a free slot in the fixed-size ``_ftp_executor``. On a large
+            farm where offline printers keep every worker busy on dead
+            connects, that queue wait is otherwise unbounded — and any caller
+            holding a DB connection while awaiting this would pin it until the
+            pool is exhausted (#2572). The cap converts that into a bounded
+            wait; the orphaned worker finishes and its result is discarded.
     """
     loop = asyncio.get_event_loop()
 
@@ -689,11 +1058,57 @@ async def download_file_try_paths_async(
             return False
 
         try:
-            return any(client.download_to_file(remote_path, local_path) for remote_path in remote_paths)
+            # FileNotOnPrinterError signals "try the next path", not "give up" —
+            # this function's whole purpose is to walk a list of candidates
+            # over one connection. Only a real transport error should bubble.
+            for remote_path in remote_paths:
+                try:
+                    if client.download_to_file(remote_path, local_path):
+                        return True
+                except FileNotOnPrinterError:
+                    continue
+            return False
         finally:
             client.disconnect()
 
-    return await loop.run_in_executor(None, _download)
+    try:
+        return await asyncio.wait_for(loop.run_in_executor(_ftp_executor, _download), timeout=timeout)
+    except TimeoutError:
+        logger.warning("FTP download_try_paths exceeded its %ss cap for %s (#2572)", timeout, ip_address)
+        return False
+
+
+def _upload_deadline(local_path: Path) -> float:
+    """Derive an upload deadline from the file size (#2529).
+
+    See ``_UPLOAD_FLOOR_BYTES_PER_SEC``. An unstat-able file falls back to the
+    floor timeout — ``upload_file`` will fail on the open() anyway.
+    """
+    try:
+        size = local_path.stat().st_size
+    except OSError:
+        return _UPLOAD_MIN_TIMEOUT
+    return max(_UPLOAD_MIN_TIMEOUT, size / _UPLOAD_FLOOR_BYTES_PER_SEC)
+
+
+# One upload at a time per printer. Two concurrent STOR commands for the same
+# remote path leave a corrupt file on the SD card, and the printer reads as
+# flaky rather than busy (#2529). Held for the duration of a transfer, so a
+# second dispatch to the same printer queues behind the first instead of racing
+# it. Keyed per event loop: an asyncio.Lock binds to the loop that first awaits
+# it, and the test suite runs each case on a fresh loop.
+_upload_locks: weakref.WeakKeyDictionary[asyncio.AbstractEventLoop, dict[str, asyncio.Lock]] = (
+    weakref.WeakKeyDictionary()
+)
+
+
+def _upload_lock(loop: asyncio.AbstractEventLoop, ip_address: str) -> asyncio.Lock:
+    per_loop = _upload_locks.setdefault(loop, {})
+    lock = per_loop.get(ip_address)
+    if lock is None:
+        lock = asyncio.Lock()
+        per_loop[ip_address] = lock
+    return lock
 
 
 async def upload_file_async(
@@ -701,7 +1116,7 @@ async def upload_file_async(
     access_code: str,
     local_path: Path,
     remote_path: str,
-    timeout: float = 600.0,
+    timeout: float | None = None,
     progress_callback: Callable[[int, int], None] | None = None,
     socket_timeout: float | None = None,
     printer_model: str | None = None,
@@ -716,19 +1131,31 @@ async def upload_file_async(
         access_code: Printer access code
         local_path: Local file path to upload
         remote_path: Remote path on printer
-        timeout: Overall operation timeout (asyncio)
+        timeout: Overall deadline. ``None`` (the default) derives it from the
+            file size — see ``_upload_deadline``. A caller that passes a number
+            gets exactly that, which is what the tests rely on.
         progress_callback: Optional callback for progress updates
         socket_timeout: FTP socket timeout for slow connections (e.g., A1 printers)
         printer_model: Printer model for A1-specific workarounds
     """
     loop = asyncio.get_event_loop()
     is_a1 = printer_model in BambuFTPClient.A1_MODELS if printer_model else False
+    deadline = _upload_deadline(local_path) if timeout is None else timeout
+
+    # Set when the deadline expires. The worker checks it once per chunk.
+    cancel = threading.Event()
+
+    def _guarded_progress(uploaded: int, total: int) -> None:
+        if cancel.is_set():
+            raise UploadCancelled(f"upload of {remote_path} exceeded its {deadline:.0f}s deadline")
+        if progress_callback:
+            progress_callback(uploaded, total)
 
     def _upload(force_prot_c: bool = False) -> bool:
         mode_str = "prot_c" if force_prot_c else "prot_p"
         logger.info(
             f"FTP connecting to {ip_address} for upload (model={printer_model}, "
-            f"mode={mode_str}, socket_timeout={socket_timeout}s)..."
+            f"mode={mode_str}, socket_timeout={socket_timeout}s, deadline={deadline:.0f}s)..."
         )
         client = BambuFTPClient(
             ip_address, access_code, timeout=socket_timeout, printer_model=printer_model, force_prot_c=force_prot_c
@@ -736,7 +1163,7 @@ async def upload_file_async(
         if client.connect():
             logger.info("FTP connected to %s", ip_address)
             try:
-                result = client.upload_file(local_path, remote_path, progress_callback)
+                result = client.upload_file(local_path, remote_path, _guarded_progress)
                 if result:
                     # Cache the working mode
                     BambuFTPClient.cache_mode(ip_address, mode_str)
@@ -746,32 +1173,80 @@ async def upload_file_async(
         logger.warning("FTP connection failed to %s", ip_address)
         return False
 
-    try:
+    async def _attempt(force_prot_c: bool) -> bool:
+        """Run one upload attempt, and make a timeout actually stop the transfer.
+
+        ``asyncio.wait_for`` cancels the *future*, never the executor thread
+        behind it. Before #2529 a slow-but-healthy upload that overran the
+        deadline left that thread streaming: it kept pushing bytes, kept firing
+        the progress callback, and the retry above put a *second* STOR of the
+        same file onto the same printer. The reporter's 96 MB job ran four
+        concurrent transfers and never landed. So on timeout we signal the
+        worker (it raises ``UploadCancelled`` from the progress callback, which
+        breaks the send loop and deletes the partial file) and wait for it to
+        actually go.
+        """
+        fut = loop.run_in_executor(_ftp_executor, lambda: _upload(force_prot_c))
+        try:
+            return await asyncio.wait_for(asyncio.shield(fut), timeout=deadline)
+        except TimeoutError:
+            cancel.set()
+            logger.warning(
+                "FTP upload of %s exceeded its %.0fs deadline — cancelling the transfer",
+                remote_path,
+                deadline,
+            )
+            try:
+                await asyncio.wait_for(asyncio.shield(fut), timeout=_UPLOAD_CANCEL_GRACE)
+            except UploadCancelled:
+                logger.info("FTP upload of %s cancelled; partial file removed from the printer", remote_path)
+            except TimeoutError:
+                # The thread is wedged somewhere that never reaches the callback
+                # (a blocked sendall, say). Nothing more we can do from here —
+                # but consume the eventual result so asyncio doesn't log the
+                # future's exception as unretrieved when it is garbage-collected.
+                logger.error(
+                    "FTP upload thread for %s did not stop within %.0fs of the cancel signal",
+                    remote_path,
+                    _UPLOAD_CANCEL_GRACE,
+                )
+                fut.add_done_callback(_swallow_future_result)
+            except Exception as e:
+                logger.warning("FTP upload of %s errored while cancelling: %s", remote_path, e)
+            # Raise rather than return False: a deadline expiry means the link
+            # sustained less than the floor rate for the whole transfer, and a
+            # retry would only spend another full deadline finding that out
+            # again — with check_queue serialized, four of those block the
+            # entire print queue for hours. ``with_ftp_retry`` never retries it.
+            raise UploadCancelled(
+                f"Upload of {remote_path} to {ip_address} exceeded its {deadline:.0f}s deadline "
+                f"(link sustained less than {_UPLOAD_FLOOR_BYTES_PER_SEC // 1024} KB/s)"
+            ) from None
+
+    async with _upload_lock(loop, ip_address):
         # Check if we have a cached mode for this printer
         cached_mode = BambuFTPClient._mode_cache.get(ip_address)
 
         if cached_mode:
             # Use cached mode
-            force_prot_c = cached_mode == "prot_c"
-            return await asyncio.wait_for(loop.run_in_executor(None, lambda: _upload(force_prot_c)), timeout=timeout)
+            return await _attempt(cached_mode == "prot_c")
 
         # No cached mode - try prot_p first
-        result = await asyncio.wait_for(loop.run_in_executor(None, lambda: _upload(False)), timeout=timeout)
-
-        if result:
+        if await _attempt(False):
             return True
 
         # Upload failed - for A1 models, try prot_c fallback
         if is_a1:
             logger.info("FTP upload failed with prot_p for A1 model, trying prot_c fallback...")
-            result = await asyncio.wait_for(loop.run_in_executor(None, lambda: _upload(True)), timeout=timeout)
-            return result
+            return await _attempt(True)
 
         return False
 
-    except TimeoutError:
-        logger.warning("FTP upload timed out after %ss for %s", timeout, remote_path)
-        return False
+
+def _swallow_future_result(fut: asyncio.Future) -> None:
+    """Retrieve a future's exception so asyncio doesn't log it as unhandled."""
+    if not fut.cancelled():
+        fut.exception()
 
 
 async def list_files_async(
@@ -800,7 +1275,7 @@ async def list_files_async(
         return []
 
     try:
-        return await asyncio.wait_for(loop.run_in_executor(None, _list), timeout=timeout)
+        return await asyncio.wait_for(loop.run_in_executor(_ftp_executor, _list), timeout=timeout)
     except TimeoutError:
         logger.warning("FTP list_files timed out after %ss for %s", timeout, path)
         return []
@@ -812,25 +1287,36 @@ async def delete_file_async(
     remote_path: str,
     socket_timeout: float | None = None,
     printer_model: str | None = None,
-) -> bool:
+    timeout: float = 60.0,
+) -> DeleteResult:
     """Async wrapper for deleting a file.
+
+    Returns :class:`DeleteResult` so callers can distinguish ``NOT_FOUND``
+    (550 — file isn't on the printer, no retry value) from ``FAILED``
+    (network / auth / transient — worth retrying or surfacing).
 
     Args:
         socket_timeout: FTP socket timeout for slow connections (e.g., A1 printers)
         printer_model: Printer model for A1-specific workarounds
+        timeout: overall async cap so a saturated ``_ftp_executor`` can't pin
+            the caller (and any DB connection it holds) indefinitely (#2572).
     """
     loop = asyncio.get_event_loop()
 
-    def _delete():
+    def _delete() -> DeleteResult:
         client = BambuFTPClient(ip_address, access_code, timeout=socket_timeout, printer_model=printer_model)
         if client.connect():
             try:
                 return client.delete_file(remote_path)
             finally:
                 client.disconnect()
-        return False
+        return DeleteResult.FAILED
 
-    return await loop.run_in_executor(None, _delete)
+    try:
+        return await asyncio.wait_for(loop.run_in_executor(_ftp_executor, _delete), timeout=timeout)
+    except TimeoutError:
+        logger.warning("FTP delete_file exceeded its %ss cap for %s (#2572)", timeout, ip_address)
+        return DeleteResult.FAILED
 
 
 async def download_file_bytes_async(
@@ -839,12 +1325,23 @@ async def download_file_bytes_async(
     remote_path: str,
     socket_timeout: float | None = None,
     printer_model: str | None = None,
+    timeout: float = 300.0,
+    expected_size: int | None = None,
 ) -> bytes | None:
     """Async wrapper for downloading file as bytes.
 
     Args:
         socket_timeout: FTP socket timeout for slow connections (e.g., A1 printers)
         printer_model: Printer model for A1-specific workarounds
+        timeout: overall async cap so a saturated ``_ftp_executor`` can't pin
+            the caller (and any DB connection it holds) indefinitely (#2572).
+            Generous by default because this pulls whole files (timelapse
+            video, gcode) which can legitimately take minutes over slow Wi-Fi —
+            the cap only guards against a permanently-starved pool, not a
+            slow-but-progressing transfer.
+        expected_size: size from the directory listing; a mismatch fails the
+            download instead of returning a truncated file. See
+            :meth:`BambuFTPClient.download_file`.
     """
     loop = asyncio.get_event_loop()
 
@@ -852,12 +1349,131 @@ async def download_file_bytes_async(
         client = BambuFTPClient(ip_address, access_code, timeout=socket_timeout, printer_model=printer_model)
         if client.connect():
             try:
-                return client.download_file(remote_path)
+                return client.download_file(remote_path, expected_size=expected_size)
             finally:
                 client.disconnect()
         return None
 
-    return await loop.run_in_executor(None, _download)
+    try:
+        return await asyncio.wait_for(loop.run_in_executor(_ftp_executor, _download), timeout=timeout)
+    except TimeoutError:
+        logger.warning("FTP download_bytes exceeded its %ss cap for %s (#2572)", timeout, ip_address)
+        return None
+
+
+async def remote_file_settled(
+    ip_address: str,
+    access_code: str,
+    remote_path: str,
+    downloaded_bytes: int,
+    *,
+    printer_model: str | None = None,
+) -> bool:
+    """Confirm the printer has finished writing the file we just downloaded.
+
+    Matching the download against the size from the directory listing proves we
+    received what the listing *said*, not that the file was *finished*. The
+    timelapse scan's first look happens seconds after the print ends, which is
+    exactly when the printer is writing the video — so a file still growing can
+    be listed at a partial size, served at that size, and pass the length check
+    as a complete video (#2704).
+
+    That was survivable while the printer kept its copy. It isn't now that a
+    successful attach deletes the source, so re-list afterwards: if the file has
+    grown, what we hold is a prefix and the caller should discard it and try
+    again on the next round.
+
+    Returns True when the remote file can no longer differ from what we hold —
+    the size still matches, or the file is gone from the listing entirely and
+    so cannot grow any further. Returns False when it has changed size, and on
+    a listing failure, because "we could not check" must not read as "safe to
+    delete".
+    """
+    directory, _, name = remote_path.rpartition("/")
+    files = await list_files_async(ip_address, access_code, directory or "/", printer_model=printer_model)
+    if not files:
+        logger.warning("[TIMELAPSE] Could not re-list %s to confirm %s is complete", directory or "/", name)
+        return False
+
+    for f in files:
+        if f.get("name") == name:
+            size = f.get("size")
+            if size == downloaded_bytes:
+                return True
+            logger.info(
+                "[TIMELAPSE] %s is still being written (%s bytes now, %s when downloaded) — will retry",
+                name,
+                size,
+                downloaded_bytes,
+            )
+            return False
+
+    # Vanished between the download and now. Nothing left that could grow, and
+    # nothing left to delete either.
+    logger.debug("[TIMELAPSE] %s is no longer on the printer after download", name)
+    return True
+
+
+async def delete_archived_timelapse(
+    ip_address: str,
+    access_code: str,
+    remote_path: str,
+    *,
+    verified: bool,
+    printer_model: str | None = None,
+    printer_name: str = "",
+) -> bool:
+    """Remove a timelapse from the printer once it is safely in the archive.
+
+    Call this only after the attach succeeded (#2704). Keeping ``/timelapse``
+    down to just the unclaimed videos is what makes the snapshot diff
+    unambiguous rather than merely usually-right, and it stops P1S cards
+    filling with AVIs.
+
+    ``verified`` must say whether the downloaded byte count was checked against
+    the size the directory listing reported. It is required rather than
+    defaulted because this is the one irreversible step in the flow: an FTPS
+    data connection that closes early does not always raise, so an unverified
+    transfer can be a partial file that looks complete, and deleting the source
+    would then destroy the only good copy. The check lives here rather than at
+    each call site so no future caller can omit it.
+
+    Best-effort otherwise: a printer that refuses the delete keeps its copy, the
+    diff still excludes that filename next time because it is attached to an
+    archive, and nothing else in the flow cares. Returns True only on an actual
+    delete or a 550 (already gone).
+    """
+    if not verified:
+        logger.warning(
+            "[TIMELAPSE] Not deleting %s from printer %s: the download was never size-checked",
+            remote_path,
+            printer_name,
+        )
+        return False
+
+    for attempt in range(1, 4):
+        try:
+            result = await delete_file_async(ip_address, access_code, remote_path, printer_model=printer_model)
+        except Exception as e:
+            result = DeleteResult.FAILED
+            logger.warning("[TIMELAPSE] Delete attempt %d/3 raised for %s: %s", attempt, remote_path, e)
+
+        if result == DeleteResult.DELETED:
+            logger.info("[TIMELAPSE] Deleted %s from printer %s after archiving", remote_path, printer_name)
+            return True
+        if result == DeleteResult.NOT_FOUND:
+            # 550 never recovers by waiting — the printer already cleaned up.
+            logger.debug("[TIMELAPSE] %s already gone from printer %s", remote_path, printer_name)
+            return True
+        if attempt < 3:
+            await asyncio.sleep(2)
+
+    logger.warning(
+        "[TIMELAPSE] Could not delete %s from printer %s (it stays on the card; the archive copy is unaffected)",
+        remote_path,
+        printer_name,
+    )
+    return False
 
 
 async def get_storage_info_async(
@@ -865,12 +1481,15 @@ async def get_storage_info_async(
     access_code: str,
     socket_timeout: float | None = None,
     printer_model: str | None = None,
+    timeout: float = 60.0,
 ) -> dict | None:
     """Async wrapper for getting storage info.
 
     Args:
         socket_timeout: FTP socket timeout for slow connections (e.g., A1 printers)
         printer_model: Printer model for A1-specific workarounds
+        timeout: overall async cap so a saturated ``_ftp_executor`` can't pin
+            the caller (and any DB connection it holds) indefinitely (#2572).
     """
     loop = asyncio.get_event_loop()
 
@@ -883,7 +1502,11 @@ async def get_storage_info_async(
                 client.disconnect()
         return None
 
-    return await loop.run_in_executor(None, _get_storage)
+    try:
+        return await asyncio.wait_for(loop.run_in_executor(_ftp_executor, _get_storage), timeout=timeout)
+    except TimeoutError:
+        logger.warning("FTP get_storage_info exceeded its %ss cap for %s (#2572)", timeout, ip_address)
+        return None
 
 
 async def get_ftp_retry_settings() -> tuple[bool, int, float, float]:
@@ -925,6 +1548,10 @@ async def with_ftp_retry(
 
     Returns:
         Result of the operation, or None if all attempts fail
+
+    ``UploadCancelled`` is never retried, whatever the caller passes: it means
+    the transfer overran its size-derived deadline, so a retry would spend
+    another full deadline reaching the same conclusion (#2529).
     """
     last_error = None
 
@@ -939,6 +1566,8 @@ async def with_ftp_retry(
             # Operation returned failure indicator
             if attempt > 0:
                 logger.info("%s attempt %s/%s returned failure", operation_name, attempt + 1, max_retries + 1)
+        except UploadCancelled:
+            raise
         except Exception as e:
             if non_retry_exceptions and isinstance(e, non_retry_exceptions):
                 raise

@@ -3,23 +3,36 @@ import { useTranslation } from 'react-i18next';
 import { useMutation, useQueryClient, useQuery } from '@tanstack/react-query';
 import {
   Loader2, Check, AlertTriangle, Eye, EyeOff, Info,
-  ChevronDown, ChevronRight, ArrowRightLeft, Trash2,
+  ChevronDown, ChevronRight, ArrowRightLeft, Trash2, ShieldCheck, Copy, Stethoscope,
 } from 'lucide-react';
 import { api, multiVirtualPrinterApi } from '../api/client';
 import type { VirtualPrinterConfig } from '../api/client';
 import { Card, CardContent } from './Card';
 import { Button } from './Button';
 import { ConfirmModal } from './ConfirmModal';
+import { VirtualPrinterDiagnosticModal } from './VirtualPrinterDiagnosticModal';
 import { useToast } from '../contexts/ToastContext';
+import { copyTextToClipboard } from '../utils/clipboard';
 
-type LocalMode = 'immediate' | 'review' | 'print_queue' | 'proxy';
+type LocalMode = 'archive' | 'review' | 'queue' | 'proxy';
 
 const MODE_LABELS: Record<string, string> = {
-  immediate: 'archive',
+  archive: 'archive',
   review: 'review',
-  print_queue: 'queue',
+  queue: 'queue',
   proxy: 'proxy',
 };
+
+// Legacy wire values (`immediate` → `archive`, `print_queue` → `queue`) shipped
+// before the UI labels were aligned with the wire format. Backend migration
+// flips existing rows but the function tolerates either form so a stale fetch
+// doesn't show an unselected mode (#1429 follow-up).
+function normalizeMode(value: string | undefined): LocalMode {
+  if (value === 'immediate') return 'archive';
+  if (value === 'print_queue' || value === 'queue') return 'queue';
+  if (value === 'archive' || value === 'review' || value === 'proxy') return value;
+  return 'archive';
+}
 
 interface VirtualPrinterCardProps {
   printer: VirtualPrinterConfig;
@@ -35,29 +48,63 @@ export function VirtualPrinterCard({ printer, models }: VirtualPrinterCardProps)
   const [localEnabled, setLocalEnabled] = useState(printer.enabled);
   const [localName, setLocalName] = useState(printer.name);
   const [localAccessCode, setLocalAccessCode] = useState('');
-  const [localMode, setLocalMode] = useState<LocalMode>(
-    (printer.mode === 'queue' ? 'review' : printer.mode) as LocalMode
-  );
+  const [localMode, setLocalMode] = useState<LocalMode>(normalizeMode(printer.mode));
   const [localTargetPrinterId, setLocalTargetPrinterId] = useState<number | null>(printer.target_printer_id);
   const [localBindIp, setLocalBindIp] = useState(printer.bind_ip || '');
   const [localRemoteInterfaceIp, setLocalRemoteInterfaceIp] = useState(printer.remote_interface_ip || '');
   const [localModel, setLocalModel] = useState(printer.model || '');
   const [localAutoDispatch, setLocalAutoDispatch] = useState(printer.auto_dispatch ?? true);
+  const [localQueueForceColorMatch, setLocalQueueForceColorMatch] = useState(printer.queue_force_color_match ?? false);
+  const [localSaveAmsMapping, setLocalSaveAmsMapping] = useState(printer.save_ams_mapping ?? false);
+  const [localGcodeInjection, setLocalGcodeInjection] = useState(printer.gcode_injection ?? false);
+  const [localTailscaleDisabled, setLocalTailscaleDisabled] = useState(printer.tailscale_disabled ?? true);
   const [showAccessCode, setShowAccessCode] = useState(false);
   const [pendingAction, setPendingAction] = useState<string | null>(null);
   const [showDeleteConfirm, setShowDeleteConfirm] = useState(false);
+  const [showDiagnostic, setShowDiagnostic] = useState(false);
+  const [fqdnCopied, setFqdnCopied] = useState(false);
+
+  // Host-level Tailscale identity (same for every VP) — shown inline on the card when
+  // the user has marked this VP as "exposed over Tailscale". Cert handling does NOT
+  // depend on this toggle; the slicer trusts the bambuddy CA the user imports once.
+  const { data: tailscaleStatus } = useQuery({
+    queryKey: ['tailscale-status'],
+    queryFn: multiVirtualPrinterApi.getTailscaleStatus,
+    enabled: !localTailscaleDisabled,
+    staleTime: 60_000,
+  });
+  const tailscaleFqdn = tailscaleStatus?.available ? tailscaleStatus.fqdn : '';
+  const tailscaleIp = tailscaleStatus?.available ? tailscaleStatus.tailscale_ips?.[0] ?? '' : '';
+
+  const handleCopyFqdn = async (e: React.MouseEvent) => {
+    e.stopPropagation();
+    const fqdn = tailscaleFqdn;
+    if (!fqdn) return;
+    const ok = await copyTextToClipboard(fqdn);
+    if (ok) {
+      setFqdnCopied(true);
+      showToast(t('printers.copied'));
+      setTimeout(() => setFqdnCopied(false), 2000);
+    } else {
+      showToast(t('virtualPrinter.toast.copyFailed'), 'error');
+    }
+  };
 
   // Sync local state when props change (e.g., after backend auto-disable)
   useEffect(() => {
     if (!pendingAction) {
       setLocalEnabled(printer.enabled);
-      setLocalMode((printer.mode === 'queue' ? 'review' : printer.mode) as LocalMode);
+      setLocalMode(normalizeMode(printer.mode));
       setLocalName(printer.name);
       setLocalTargetPrinterId(printer.target_printer_id);
       setLocalBindIp(printer.bind_ip || '');
       setLocalRemoteInterfaceIp(printer.remote_interface_ip || '');
       setLocalModel(printer.model || '');
       setLocalAutoDispatch(printer.auto_dispatch ?? true);
+      setLocalQueueForceColorMatch(printer.queue_force_color_match ?? false);
+      setLocalSaveAmsMapping(printer.save_ams_mapping ?? false);
+      setLocalGcodeInjection(printer.gcode_injection ?? false);
+      setLocalTailscaleDisabled(printer.tailscale_disabled ?? true);
     }
   }, [printer, pendingAction]);
 
@@ -84,9 +131,16 @@ export function VirtualPrinterCard({ printer, models }: VirtualPrinterCardProps)
     onError: (error: Error) => {
       showToast(error.message || t('virtualPrinter.toast.failedToUpdate'), 'error');
       setLocalEnabled(printer.enabled);
-      setLocalMode((printer.mode === 'queue' ? 'review' : printer.mode) as LocalMode);
+      setLocalMode(normalizeMode(printer.mode));
       setLocalTargetPrinterId(printer.target_printer_id);
       setLocalBindIp(printer.bind_ip || '');
+      setLocalTailscaleDisabled(printer.tailscale_disabled ?? true);
+      // Queue-mode behaviour toggles. Without these the switch stays visually
+      // flipped after a failed save, so the card claims a setting the server
+      // never accepted.
+      setLocalQueueForceColorMatch(printer.queue_force_color_match ?? false);
+      setLocalSaveAmsMapping(printer.save_ams_mapping ?? false);
+      setLocalGcodeInjection(printer.gcode_injection ?? false);
       setPendingAction(null);
     },
   });
@@ -162,9 +216,23 @@ export function VirtualPrinterCard({ printer, models }: VirtualPrinterCardProps)
   };
 
   const handleTargetPrinterChange = (printerId: number) => {
+    // The new target's access code becomes this VP's access code on the
+    // backend write. If the slicer was already bound with the old code,
+    // it has to rebind; flag this so the user doesn't sit there confused.
+    const previousCode = targetPrinter?.access_code;
+    const nextCode = printers?.find(p => p.id === printerId)?.access_code;
     setLocalTargetPrinterId(printerId);
     setPendingAction('targetPrinter');
-    updateMutation.mutate({ target_printer_id: printerId });
+    updateMutation.mutate(
+      { target_printer_id: printerId },
+      {
+        onSuccess: () => {
+          if (previousCode && nextCode && previousCode !== nextCode) {
+            showToast(t('virtualPrinter.toast.targetCodeChangedRebind'), 'info');
+          }
+        },
+      },
+    );
   };
 
   const handleRemoteInterfaceChange = (ip: string) => {
@@ -175,7 +243,15 @@ export function VirtualPrinterCard({ printer, models }: VirtualPrinterCardProps)
 
   const isRunning = printer.status?.running || false;
   const modeLabel = t(`virtualPrinter.mode.${MODE_LABELS[localMode] || 'archive'}`);
-  const targetPrinterName = printers?.find(p => p.id === localTargetPrinterId)?.name;
+  const targetPrinter = printers?.find(p => p.id === localTargetPrinterId);
+  const targetPrinterName = targetPrinter?.name;
+  // The bridge in non-proxy modes (and the transparent relay in proxy mode)
+  // forwards the slicer's auth bytes to the real printer, so the VP's access
+  // code is always the target's. When a target is set, the card surfaces the
+  // target's code read-only — the user types it into the slicer, but can't
+  // diverge it from the printer.
+  const inheritsAccessCodeFromTarget = !!localTargetPrinterId;
+  const inheritedAccessCode = inheritsAccessCodeFromTarget ? (targetPrinter?.access_code ?? '') : '';
 
   return (
     <>
@@ -241,21 +317,52 @@ export function VirtualPrinterCard({ printer, models }: VirtualPrinterCardProps)
                 onKeyDown={(e) => e.key === 'Enter' && handleNameChange()}
                 className="flex-1 text-sm text-white bg-bambu-dark-secondary border border-bambu-dark-tertiary rounded-md px-3 py-1.5 focus:border-bambu-green focus:outline-none"
               />
-              <span className="text-xs text-bambu-gray font-mono">{printer.serial}</span>
+              <button
+                onClick={() => setShowDiagnostic(true)}
+                className="p-1.5 text-bambu-gray hover:text-bambu-green transition-colors flex-shrink-0"
+                title={t('vpDiagnostic.runButton')}
+              >
+                <Stethoscope className="w-4 h-4" />
+              </button>
               <button
                 onClick={() => setShowDeleteConfirm(true)}
-                className="p-1.5 text-bambu-gray hover:text-red-400 transition-colors"
+                className="p-1.5 text-bambu-gray hover:text-red-600 dark:hover:text-red-400 transition-colors flex-shrink-0"
                 title={t('common.delete')}
               >
                 <Trash2 className="w-4 h-4" />
               </button>
             </div>
 
+            {/* Tailscale identity (host-level) + serial — compact info row.
+                Shown only when this VP is marked Tailscale-exposed AND the daemon is up. */}
+            <div className="flex items-center gap-2 -mt-2">
+              {tailscaleFqdn && (
+                <span className="flex items-center gap-1 text-green-700/80 dark:text-green-400/70 min-w-0">
+                  <ShieldCheck className="w-3.5 h-3.5 flex-shrink-0" />
+                  <span className="font-mono text-xs truncate">
+                    {tailscaleIp ? `${tailscaleIp} (${tailscaleFqdn})` : tailscaleFqdn}
+                  </span>
+                  <button
+                    onClick={handleCopyFqdn}
+                    className="p-0.5 rounded hover:bg-bambu-dark-tertiary text-bambu-gray hover:text-white transition-colors flex-shrink-0"
+                    title={fqdnCopied ? t('printers.copied') : t('printers.copyToClipboard')}
+                  >
+                    {fqdnCopied ? (
+                      <Check className="w-3.5 h-3.5 text-bambu-green" />
+                    ) : (
+                      <Copy className="w-3.5 h-3.5" />
+                    )}
+                  </button>
+                </span>
+              )}
+              <span className="text-xs text-bambu-gray font-mono ml-auto flex-shrink-0">{printer.serial}</span>
+            </div>
+
             {/* Mode */}
             <div>
               <div className="text-white text-sm font-medium mb-2">{t('virtualPrinter.mode.title')}</div>
               <div className="grid grid-cols-2 gap-2">
-                {(['immediate', 'review', 'print_queue', 'proxy'] as const).map((mode) => (
+                {(['archive', 'review', 'queue', 'proxy'] as const).map((mode) => (
                   <button
                     key={mode}
                     onClick={() => handleModeChange(mode)}
@@ -280,11 +387,11 @@ export function VirtualPrinterCard({ printer, models }: VirtualPrinterCardProps)
               </div>
             </div>
 
-            {/* Auto-dispatch toggle - only for print_queue mode */}
-            {localMode === 'print_queue' && (
+            {/* Auto-dispatch toggle - only for queue mode */}
+            {localMode === 'queue' && (
               <div className="pt-2 border-t border-bambu-dark-tertiary">
-                <div className="flex items-center justify-between">
-                  <div>
+                <div className="flex items-center justify-between gap-3">
+                  <div className="min-w-0">
                     <div className="text-white text-sm font-medium">{t('virtualPrinter.autoDispatch.title')}</div>
                     <div className="text-[10px] text-bambu-gray">{t('virtualPrinter.autoDispatch.description')}</div>
                   </div>
@@ -310,6 +417,124 @@ export function VirtualPrinterCard({ printer, models }: VirtualPrinterCardProps)
               </div>
             )}
 
+            {/* Force-color-match toggle - only for queue mode (#1188) */}
+            {localMode === 'queue' && (
+              <div className="pt-2 border-t border-bambu-dark-tertiary">
+                <div className="flex items-center justify-between gap-3">
+                  <div className="min-w-0">
+                    <div className="text-white text-sm font-medium">{t('virtualPrinter.queueForceColorMatch.title')}</div>
+                    <div className="text-[10px] text-bambu-gray">{t('virtualPrinter.queueForceColorMatch.description')}</div>
+                  </div>
+                  <button
+                    onClick={() => {
+                      const newVal = !localQueueForceColorMatch;
+                      setLocalQueueForceColorMatch(newVal);
+                      setPendingAction('queueForceColorMatch');
+                      updateMutation.mutate({ queue_force_color_match: newVal });
+                    }}
+                    disabled={pendingAction === 'queueForceColorMatch'}
+                    className={`relative w-10 h-5 rounded-full transition-colors flex-shrink-0 ${
+                      localQueueForceColorMatch ? 'bg-bambu-green' : 'bg-bambu-dark-tertiary'
+                    } ${pendingAction === 'queueForceColorMatch' ? 'opacity-50' : ''}`}
+                  >
+                    <span
+                      className={`absolute top-0.5 left-0.5 w-4 h-4 bg-white rounded-full transition-transform ${
+                        localQueueForceColorMatch ? 'translate-x-5' : ''
+                      }`}
+                    />
+                  </button>
+                </div>
+              </div>
+            )}
+
+            {/* Save-AMS-mapping toggle - only for queue mode */}
+            {localMode === 'queue' && (
+              <div className="pt-2 border-t border-bambu-dark-tertiary">
+                <div className="flex items-center justify-between gap-3">
+                  <div className="min-w-0">
+                    <div className="text-white text-sm font-medium">{t('virtualPrinter.saveAmsMapping.title')}</div>
+                    <div className="text-[10px] text-bambu-gray">{t('virtualPrinter.saveAmsMapping.description')}</div>
+                  </div>
+                  <button
+                    onClick={() => {
+                      const newVal = !localSaveAmsMapping;
+                      setLocalSaveAmsMapping(newVal);
+                      setPendingAction('saveAmsMapping');
+                      updateMutation.mutate({ save_ams_mapping: newVal });
+                    }}
+                    disabled={pendingAction === 'saveAmsMapping'}
+                    className={`relative w-10 h-5 rounded-full transition-colors flex-shrink-0 ${
+                      localSaveAmsMapping ? 'bg-bambu-green' : 'bg-bambu-dark-tertiary'
+                    } ${pendingAction === 'saveAmsMapping' ? 'opacity-50' : ''}`}
+                  >
+                    <span
+                      className={`absolute top-0.5 left-0.5 w-4 h-4 bg-white rounded-full transition-transform ${
+                        localSaveAmsMapping ? 'translate-x-5' : ''
+                      }`}
+                    />
+                  </button>
+                </div>
+              </div>
+            )}
+
+            {/* G-code injection toggle - only for queue mode (#1516) */}
+            {localMode === 'queue' && (
+              <div className="pt-2 border-t border-bambu-dark-tertiary">
+                <div className="flex items-center justify-between gap-3">
+                  <div className="min-w-0">
+                    <div className="text-white text-sm font-medium">{t('virtualPrinter.gcodeInjection.title')}</div>
+                    <div className="text-[10px] text-bambu-gray">{t('virtualPrinter.gcodeInjection.description')}</div>
+                  </div>
+                  <button
+                    onClick={() => {
+                      const newVal = !localGcodeInjection;
+                      setLocalGcodeInjection(newVal);
+                      setPendingAction('gcodeInjection');
+                      updateMutation.mutate({ gcode_injection: newVal });
+                    }}
+                    disabled={pendingAction === 'gcodeInjection'}
+                    className={`relative w-10 h-5 rounded-full transition-colors flex-shrink-0 ${
+                      localGcodeInjection ? 'bg-bambu-green' : 'bg-bambu-dark-tertiary'
+                    } ${pendingAction === 'gcodeInjection' ? 'opacity-50' : ''}`}
+                  >
+                    <span
+                      className={`absolute top-0.5 left-0.5 w-4 h-4 bg-white rounded-full transition-transform ${
+                        localGcodeInjection ? 'translate-x-5' : ''
+                      }`}
+                    />
+                  </button>
+                </div>
+              </div>
+            )}
+
+            {/* Tailscale toggle */}
+            <div className="pt-2 border-t border-bambu-dark-tertiary">
+              <div className="flex items-center justify-between gap-3">
+                <div className="min-w-0">
+                  <div className="text-white text-sm font-medium">{t('virtualPrinter.tailscaleDisabled.title')}</div>
+                  <div className="text-[10px] text-bambu-gray">{t('virtualPrinter.tailscaleDisabled.description')}</div>
+                </div>
+                <button
+                  onClick={() => {
+                    const newVal = !localTailscaleDisabled;
+                    setLocalTailscaleDisabled(newVal);
+                    setPendingAction('tailscaleDisabled');
+                    updateMutation.mutate({ tailscale_disabled: newVal });
+                  }}
+                  disabled={pendingAction === 'tailscaleDisabled'}
+                  className={`relative w-10 h-5 rounded-full transition-colors shrink-0 ${
+                    !localTailscaleDisabled ? 'bg-bambu-green' : 'bg-bambu-dark-tertiary'
+                  } ${pendingAction === 'tailscaleDisabled' ? 'opacity-50' : ''}`}
+                >
+                  <span
+                    className={`absolute top-0.5 left-0.5 w-4 h-4 bg-white rounded-full transition-transform ${
+                      !localTailscaleDisabled ? 'translate-x-5' : ''
+                    }`}
+                  />
+                </button>
+              </div>
+            </div>
+
             {/* Printer Model - for non-proxy modes */}
             {localMode !== 'proxy' && (
               <div className="pt-2 border-t border-bambu-dark-tertiary">
@@ -334,8 +559,8 @@ export function VirtualPrinterCard({ printer, models }: VirtualPrinterCardProps)
             {/* Proxy mode: hint about using target printer's access code */}
             {localMode === 'proxy' && (
               <div className="pt-2 border-t border-bambu-dark-tertiary">
-                <div className="flex items-start gap-2 p-2 rounded bg-blue-500/10 border border-blue-500/30">
-                  <Info className="w-4 h-4 text-blue-400 flex-shrink-0 mt-0.5" />
+                <div className="flex items-start gap-2 p-2 rounded bg-blue-50 border border-blue-300 dark:bg-blue-500/10 dark:border-blue-500/30">
+                  <Info className="w-4 h-4 text-blue-600 dark:text-blue-400 flex-shrink-0 mt-0.5" />
                   <p className="text-xs text-bambu-gray">
                     {t('virtualPrinter.proxy.accessCodeHint')}
                   </p>
@@ -348,49 +573,80 @@ export function VirtualPrinterCard({ printer, models }: VirtualPrinterCardProps)
               <div className="pt-2 border-t border-bambu-dark-tertiary">
                 <div className="flex items-center gap-2 mb-2">
                   <div className="text-white text-sm font-medium">{t('virtualPrinter.accessCode.title')}</div>
-                  {printer.access_code_set ? (
-                    <span className="flex items-center gap-1 text-xs text-green-400">
+                  {inheritsAccessCodeFromTarget ? (
+                    <span className="flex items-center gap-1 text-xs text-blue-700 dark:text-blue-400">
+                      <Info className="w-3 h-3" />
+                      {t('virtualPrinter.accessCode.inheritedFromTarget')}
+                    </span>
+                  ) : printer.access_code_set ? (
+                    <span className="flex items-center gap-1 text-xs text-green-700 dark:text-green-400">
                       <Check className="w-3 h-3" />
                       {t('virtualPrinter.accessCode.isSet')}
                     </span>
                   ) : (
-                    <span className="flex items-center gap-1 text-xs text-yellow-400">
+                    <span className="flex items-center gap-1 text-xs text-yellow-700 dark:text-yellow-400">
                       <AlertTriangle className="w-3 h-3" />
                       {t('virtualPrinter.accessCode.notSet')}
                     </span>
                   )}
                 </div>
-                <div className="flex gap-2">
-                  <div className="relative flex-1">
-                    <input
-                      type={showAccessCode ? 'text' : 'password'}
-                      value={localAccessCode}
-                      onChange={(e) => setLocalAccessCode(e.target.value)}
-                      placeholder={printer.access_code_set ? t('virtualPrinter.accessCode.placeholderChange') : t('virtualPrinter.accessCode.placeholder')}
-                      maxLength={8}
-                      className="w-full bg-bambu-dark-secondary border border-bambu-dark-tertiary rounded-md px-3 py-1.5 text-white text-sm placeholder-bambu-gray pr-10 font-mono"
-                    />
-                    <button
-                      onClick={() => setShowAccessCode(!showAccessCode)}
-                      className="absolute right-2 top-1/2 -translate-y-1/2 text-bambu-gray hover:text-white"
-                    >
-                      {showAccessCode ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
-                    </button>
-                  </div>
-                  <Button
-                    onClick={handleAccessCodeChange}
-                    disabled={!localAccessCode || pendingAction === 'accessCode'}
-                    variant="primary"
-                  >
-                    {pendingAction === 'accessCode' ? <Loader2 className="w-4 h-4 animate-spin" /> : t('common.save')}
-                  </Button>
-                </div>
-                {localAccessCode && (
-                  <p className="text-xs text-bambu-gray mt-1">
-                    <span className={localAccessCode.length === 8 ? 'text-green-400' : 'text-yellow-400'}>
-                      {t('virtualPrinter.accessCode.charCount', { count: localAccessCode.length })}
-                    </span>
-                  </p>
+                {inheritsAccessCodeFromTarget ? (
+                  <>
+                    <div className="relative">
+                      <input
+                        type={showAccessCode ? 'text' : 'password'}
+                        value={inheritedAccessCode}
+                        readOnly
+                        aria-label={t('virtualPrinter.accessCode.title')}
+                        className="w-full bg-bambu-dark-secondary border border-bambu-dark-tertiary rounded-md px-3 py-1.5 text-white text-sm pr-10 font-mono opacity-90 cursor-default"
+                      />
+                      <button
+                        onClick={() => setShowAccessCode(!showAccessCode)}
+                        className="absolute right-2 top-1/2 -translate-y-1/2 text-bambu-gray hover:text-white"
+                        aria-label={showAccessCode ? t('virtualPrinter.accessCode.hide') : t('virtualPrinter.accessCode.reveal')}
+                      >
+                        {showAccessCode ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
+                      </button>
+                    </div>
+                    <p className="text-xs text-bambu-gray mt-1">
+                      {t('virtualPrinter.accessCode.derivedFromTargetHint')}
+                    </p>
+                  </>
+                ) : (
+                  <>
+                    <div className="flex gap-2">
+                      <div className="relative flex-1">
+                        <input
+                          type={showAccessCode ? 'text' : 'password'}
+                          value={localAccessCode}
+                          onChange={(e) => setLocalAccessCode(e.target.value)}
+                          placeholder={printer.access_code_set ? t('virtualPrinter.accessCode.placeholderChange') : t('virtualPrinter.accessCode.placeholder')}
+                          maxLength={8}
+                          className="w-full bg-bambu-dark-secondary border border-bambu-dark-tertiary rounded-md px-3 py-1.5 text-white text-sm placeholder-bambu-gray pr-10 font-mono"
+                        />
+                        <button
+                          onClick={() => setShowAccessCode(!showAccessCode)}
+                          className="absolute right-2 top-1/2 -translate-y-1/2 text-bambu-gray hover:text-white"
+                        >
+                          {showAccessCode ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
+                        </button>
+                      </div>
+                      <Button
+                        onClick={handleAccessCodeChange}
+                        disabled={!localAccessCode || pendingAction === 'accessCode'}
+                        variant="primary"
+                      >
+                        {pendingAction === 'accessCode' ? <Loader2 className="w-4 h-4 animate-spin" /> : t('common.save')}
+                      </Button>
+                    </div>
+                    {localAccessCode && (
+                      <p className="text-xs text-bambu-gray mt-1">
+                        <span className={localAccessCode.length === 8 ? 'text-green-700 dark:text-green-400' : 'text-yellow-700 dark:text-yellow-400'}>
+                          {t('virtualPrinter.accessCode.charCount', { count: localAccessCode.length })}
+                        </span>
+                      </p>
+                    )}
+                  </>
                 )}
               </div>
             )}
@@ -448,7 +704,7 @@ export function VirtualPrinterCard({ printer, models }: VirtualPrinterCardProps)
               <div className="flex items-center gap-2 mb-1">
                 <div className="text-white text-sm font-medium">{t('virtualPrinter.remoteInterface.title')}</div>
                 {localRemoteInterfaceIp ? (
-                  <span className="flex items-center gap-1 text-xs text-green-400"><Check className="w-3 h-3" /></span>
+                  <span className="flex items-center gap-1 text-xs text-green-700 dark:text-green-400"><Check className="w-3 h-3" /></span>
                 ) : (
                   <span className="flex items-center gap-1 text-xs text-bambu-gray" title={t('virtualPrinter.remoteInterface.optional')}><Info className="w-3 h-3" /></span>
                 )}
@@ -483,6 +739,14 @@ export function VirtualPrinterCard({ printer, models }: VirtualPrinterCardProps)
           isLoading={deleteMutation.isPending}
           onConfirm={() => deleteMutation.mutate()}
           onCancel={() => setShowDeleteConfirm(false)}
+        />
+      )}
+
+      {showDiagnostic && (
+        <VirtualPrinterDiagnosticModal
+          vpId={printer.id}
+          vpName={printer.name}
+          onClose={() => setShowDiagnostic(false)}
         />
       )}
 

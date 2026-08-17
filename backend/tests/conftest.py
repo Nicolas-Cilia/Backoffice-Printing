@@ -45,6 +45,72 @@ from backend.app.core.database import Base  # noqa: E402
 TEST_DATABASE_URL = "sqlite+aiosqlite:///:memory:"
 
 
+@pytest.fixture(autouse=True)
+def mfa_encryption_isolation(monkeypatch, tmp_path):
+    """Per-test isolation for MFA encryption state.
+
+    - Sets ``DATA_DIR`` to an isolated tmp path so the auto-bootstrap can
+      never write ``.mfa_encryption_key`` into the repo or share state
+      across tests / xdist workers.
+    - Removes any inherited ``MFA_ENCRYPTION_KEY`` env var.
+    - With ``DATA_DIR`` pointing at a writable ``tmp_path``, the default
+      bootstrap path on first ``_get_fernet()`` call is **auto-generation**
+      (key_source='generated'), NOT plaintext fallback. Tests that need the
+      plaintext fallback path must monkeypatch ``_load_or_generate_key`` to
+      return ``(None, 'none')`` (or 'none_write_failed' / 'none_corrupted')
+      explicitly — see ``test_plaintext_passthrough_without_key`` for an
+      example.
+    - Resets the ``encryption`` module-level singletons before AND after the
+      test so reorder doesn't leak cached Fernet instances.
+
+    Tests that want to exercise an active key should call
+    ``monkeypatch.setenv("MFA_ENCRYPTION_KEY", valid_key)`` and
+    ``enc_mod._fernet_instance = None`` inside the test body — the autouse
+    fixture only sets defaults, it doesn't lock them in.
+    """
+    from backend.app.core import encryption as enc_mod
+
+    monkeypatch.setenv("DATA_DIR", str(tmp_path))
+    monkeypatch.delenv("MFA_ENCRYPTION_KEY", raising=False)
+    enc_mod._fernet_instance = None
+    enc_mod._warn_shown = False
+    enc_mod._key_source = None
+    yield
+    enc_mod._fernet_instance = None
+    enc_mod._warn_shown = False
+    enc_mod._key_source = None
+
+
+@pytest.fixture(autouse=True)
+def reset_spoolman_location_sync_cache():
+    """Drop the per-URL Spoolman location-sync TTL cache between tests.
+
+    Without this, a test that runs the sync against `http://localhost:7912`
+    will skip the sync in any later test that uses the same URL within 60
+    real seconds — test ordering would then leak assertions across runs."""
+    from backend.app.services.location_service import _spoolman_location_sync_cache_clear
+
+    _spoolman_location_sync_cache_clear()
+    yield
+    _spoolman_location_sync_cache_clear()
+
+
+@pytest.fixture(autouse=True)
+def reset_auth_enabled_cache():
+    """Drop the module-level auth-enabled cache between tests (issue #2572).
+
+    ``is_auth_enabled`` caches an enabled=True result for a TTL. Without this
+    reset a test that enables auth would leave ``True`` cached, so a later test
+    running in auth-disabled mode (without going through ``set_auth_enabled``)
+    would wrongly see auth as enabled until the TTL expired — order-dependent
+    flakiness."""
+    from backend.app.core.auth import invalidate_auth_enabled_cache
+
+    invalidate_auth_enabled_cache()
+    yield
+    invalidate_auth_enabled_cache()
+
+
 @pytest.fixture(scope="session")
 def event_loop():
     """Create an instance of the default event loop for each test session."""
@@ -70,6 +136,7 @@ async def test_engine():
         ams_label,
         api_key,
         archive,
+        auth_ephemeral,
         color_catalog,
         external_link,
         filament,
@@ -78,6 +145,8 @@ async def test_engine():
         maintenance,
         notification,
         notification_template,
+        oidc_provider,
+        print_log,
         print_queue,
         printer,
         project,
@@ -85,14 +154,20 @@ async def test_engine():
         settings,
         slot_preset,
         smart_plug,
+        smart_plug_energy_snapshot,  # noqa: F401
+        sponsor_toast_state,  # noqa: F401
         spool,
         spool_assignment,
         spool_catalog,
         spool_k_profile,
         spool_usage_history,
         spoolbuddy_device,
+        spoolman_k_profile,
+        spoolman_slot_assignment,
         user,
         user_email_pref,
+        user_otp_code,
+        user_totp,
         virtual_printer,
     )
 
@@ -128,8 +203,17 @@ async def async_client(test_engine, db_session) -> AsyncGenerator[AsyncClient, N
     test_async_session = async_sessionmaker(test_engine, class_=AsyncSession, expire_on_commit=False)
 
     async def override_get_db():
+        # Mirror production get_db (core/database.py): commit on success,
+        # rollback on error. Endpoints that rely on the request-scoped
+        # implicit commit (e.g. create_project, which only flushes) would
+        # otherwise silently lose their writes in tests (#1897).
         async with test_async_session() as session:
-            yield session
+            try:
+                yield session
+                await session.commit()
+            except BaseException:
+                await session.rollback()
+                raise
 
     app.dependency_overrides[get_db] = override_get_db
 
@@ -142,6 +226,9 @@ async def async_client(test_engine, db_session) -> AsyncGenerator[AsyncClient, N
         patch("backend.app.core.database.async_session", test_async_session),
         patch("backend.app.core.auth.async_session", test_async_session),
         patch("backend.app.main.async_session", test_async_session),
+        # Obico endpoints load settings through the service's module-level binding;
+        # without this patch they'd read whatever DB the cwd resolves to (#1546).
+        patch("backend.app.services.obico_detection.async_session", test_async_session),
         patch("backend.app.main.init_printer_connections", mock_init_printer_connections),
     ):
         # Seed default groups for tests that need them
@@ -461,10 +548,21 @@ def notification_provider_factory(db_session):
 
 @pytest.fixture
 def archive_factory(db_session):
-    """Factory to create test archives."""
+    """Factory to create test archives.
+
+    Also synthesizes one PrintLogEntry per archive (matching the production
+    flow where statistics are aggregated from PrintLogEntry, not PrintArchive,
+    per #1378). Pass ``with_run=False`` to skip — useful for testing the
+    "archived but never printed" state. Pass ``run_status=...`` to override
+    the run's status independently of the archive's status field.
+    """
 
     async def _create_archive(printer_id: int, **kwargs):
         from backend.app.models.archive import PrintArchive
+        from backend.app.models.print_log import PrintLogEntry
+
+        with_run = kwargs.pop("with_run", True)
+        run_status = kwargs.pop("run_status", None)
 
         defaults = {
             "printer_id": printer_id,
@@ -483,6 +581,34 @@ def archive_factory(db_session):
         db_session.add(archive)
         await db_session.commit()
         await db_session.refresh(archive)
+
+        if with_run:
+            duration = None
+            if archive.started_at and archive.completed_at:
+                duration = int((archive.completed_at - archive.started_at).total_seconds()) or None
+            run = PrintLogEntry(
+                archive_id=archive.id,
+                printer_id=archive.printer_id,
+                status=run_status or archive.status,
+                started_at=archive.started_at,
+                completed_at=archive.completed_at,
+                duration_seconds=duration,
+                filament_type=archive.filament_type,
+                filament_color=archive.filament_color,
+                filament_used_grams=archive.filament_used_grams,
+                cost=archive.cost,
+                energy_kwh=archive.energy_kwh,
+                energy_cost=archive.energy_cost,
+                failure_reason=archive.failure_reason,
+                print_name=archive.print_name,
+                created_by_id=archive.created_by_id,
+                # Sync the event's created_at with the archive's so date-range
+                # filtered tests that backdate an archive still find its event.
+                created_at=archive.created_at,
+            )
+            db_session.add(run)
+            await db_session.commit()
+
         return archive
 
     return _create_archive

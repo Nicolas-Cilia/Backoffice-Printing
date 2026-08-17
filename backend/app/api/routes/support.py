@@ -9,6 +9,7 @@ import logging
 import os
 import platform
 import re
+import time
 import zipfile
 from datetime import datetime, timezone
 from pathlib import Path
@@ -33,6 +34,12 @@ from backend.app.models.settings import Settings
 from backend.app.models.smart_plug import SmartPlug
 from backend.app.models.user import User
 from backend.app.services.discovery import is_running_in_docker
+from backend.app.services.log_reader import (
+    LogEntry,
+    collect_sensitive_strings,
+    read_log_entries,
+    sanitize_log_content,
+)
 from backend.app.services.network_utils import get_network_interfaces
 from backend.app.services.printer_manager import printer_manager
 
@@ -103,18 +110,14 @@ def _apply_log_level(debug: bool):
     for handler in root_logger.handlers:
         handler.setLevel(new_level)
 
-    # Also adjust third-party loggers
-    if debug:
-        logging.getLogger("sqlalchemy.engine").setLevel(logging.WARNING)
-        logging.getLogger("aiosqlite").setLevel(logging.WARNING)
-        logging.getLogger("httpcore").setLevel(logging.DEBUG)
-        logging.getLogger("httpx").setLevel(logging.DEBUG)
-        logging.getLogger("paho.mqtt").setLevel(logging.DEBUG)
-    else:
-        logging.getLogger("sqlalchemy.engine").setLevel(logging.WARNING)
-        logging.getLogger("httpcore").setLevel(logging.WARNING)
-        logging.getLogger("httpx").setLevel(logging.WARNING)
-        logging.getLogger("paho.mqtt").setLevel(logging.WARNING)
+    # Also adjust third-party loggers. httpx/httpcore stay pinned to WARNING
+    # even in debug mode — at INFO/DEBUG they log full request URLs, which
+    # leaks secrets embedded in webhook URLs (Discord, generic webhooks, etc.).
+    logging.getLogger("sqlalchemy.engine").setLevel(logging.WARNING)
+    logging.getLogger("aiosqlite").setLevel(logging.WARNING)
+    logging.getLogger("httpcore").setLevel(logging.WARNING)
+    logging.getLogger("httpx").setLevel(logging.WARNING)
+    logging.getLogger("paho.mqtt").setLevel(logging.DEBUG if debug else logging.WARNING)
 
     logger.info("Log level changed to %s", "DEBUG" if debug else "INFO")
 
@@ -160,122 +163,12 @@ async def toggle_debug_logging(
     )
 
 
-class LogEntry(BaseModel):
-    """A single log entry."""
-
-    timestamp: str
-    level: str
-    logger_name: str
-    message: str
-
-
 class LogsResponse(BaseModel):
     """Response containing log entries."""
 
     entries: list[LogEntry]
     total_in_file: int
     filtered_count: int
-
-
-# Log line regex pattern: "2024-01-15 10:30:45,123 INFO [module.name] Message here"
-LOG_LINE_PATTERN = re.compile(r"^(\d{4}-\d{2}-\d{2}\s+\d{2}:\d{2}:\d{2},\d{3})\s+(\w+)\s+\[([^\]]+)\]\s+(.*)$")
-
-
-def _parse_log_line(line: str) -> LogEntry | None:
-    """Parse a single log line into a LogEntry."""
-    match = LOG_LINE_PATTERN.match(line.strip())
-    if match:
-        return LogEntry(
-            timestamp=match.group(1),
-            level=match.group(2),
-            logger_name=match.group(3),
-            message=match.group(4),
-        )
-    return None
-
-
-def _read_log_entries(
-    limit: int = 200,
-    level_filter: str | None = None,
-    search: str | None = None,
-) -> tuple[list[LogEntry], int]:
-    """Read and parse log entries from file with optional filtering."""
-    log_file = settings.log_dir / "bambuddy.log"
-    if not log_file.exists():
-        return [], 0
-
-    entries: list[LogEntry] = []
-    total_lines = 0
-
-    try:
-        with open(log_file, encoding="utf-8", errors="replace") as f:
-            # Read all lines and process
-            lines = f.readlines()
-            total_lines = len(lines)
-
-            # Parse lines in reverse order (newest first)
-            current_entry: LogEntry | None = None
-            multi_line_buffer: list[str] = []
-
-            for line in reversed(lines):
-                parsed = _parse_log_line(line)
-                if parsed:
-                    # Found a new log entry start
-                    if current_entry:
-                        # Apply filters and add previous entry (without multi_line_buffer - it belongs to new entry)
-                        should_include = True
-
-                        # Level filter
-                        if level_filter and current_entry.level.upper() != level_filter.upper():
-                            should_include = False
-
-                        # Search filter (case-insensitive)
-                        if search and should_include:
-                            search_lower = search.lower()
-                            if not (
-                                search_lower in current_entry.message.lower()
-                                or search_lower in current_entry.logger_name.lower()
-                            ):
-                                should_include = False
-
-                        if should_include:
-                            entries.append(current_entry)
-
-                            if len(entries) >= limit:
-                                break
-
-                    # Set new entry and attach any accumulated multi-line content to it
-                    # (in reverse order, continuation lines come before their parent entry)
-                    current_entry = parsed
-                    if multi_line_buffer:
-                        current_entry.message += "\n" + "\n".join(reversed(multi_line_buffer))
-                    multi_line_buffer = []
-                elif line.strip():
-                    # Continuation of multi-line log entry (will be attached to next parsed entry)
-                    multi_line_buffer.append(line.rstrip())
-
-            # Don't forget the last (oldest) entry
-            # Note: any remaining multi_line_buffer would be orphaned lines before the first entry
-            if current_entry and len(entries) < limit:
-                should_include = True
-                if level_filter and current_entry.level.upper() != level_filter.upper():
-                    should_include = False
-                if search and should_include:
-                    search_lower = search.lower()
-                    if not (
-                        search_lower in current_entry.message.lower()
-                        or search_lower in current_entry.logger_name.lower()
-                    ):
-                        should_include = False
-                if should_include:
-                    entries.append(current_entry)
-
-    except Exception as e:
-        logger.error("Error reading log file: %s", e)
-        return [], 0
-
-    # Entries are already in newest-first order
-    return entries, total_lines
 
 
 @router.get("/logs", response_model=LogsResponse)
@@ -286,7 +179,7 @@ async def get_logs(
     _: User | None = RequirePermissionIfAuthEnabled(Permission.SETTINGS_READ),
 ):
     """Get recent application log entries with optional filtering."""
-    entries, total_lines = _read_log_entries(limit=limit, level_filter=level, search=search)
+    entries, total_lines = read_log_entries(limit=limit, level_filter=level, search=search)
 
     return LogsResponse(
         entries=entries,
@@ -408,6 +301,115 @@ def _get_container_memory_limit() -> int | None:
     return None
 
 
+# Above this RSS the heap census is skipped — see _collect_process_info.
+_GC_CENSUS_RSS_LIMIT = 2 * 1024**3
+
+
+def _collect_process_info() -> dict:
+    """Snapshot this process's resource usage, for reports about it growing.
+
+    Bundles used to carry nothing about Bambuddy's own footprint, which made
+    "memory climbs over days until the OOM killer fires" impossible to triage
+    from a bundle alone — the reporter of #2734 had to be asked to run commands
+    by hand, and the numbers that would have identified the mechanism could not
+    be recovered after the fact.
+
+    The four figures below separate the mechanisms that look identical from
+    outside:
+
+    * ``rss_bytes`` vs ``vms_bytes`` — a large virtual size against a modest
+      resident one is address space, not live data: thread stacks or allocator
+      arenas rather than a heap that keeps growing.
+    * ``num_threads`` — every leaked MQTT client reconnect would leave a paho
+      network thread behind, each reserving its stack.
+    * ``children`` — the ffmpeg-per-camera-stream leak class (#776).
+    * ``open_files`` / ``connections`` — descriptors held by streams or sockets
+      that were never closed.
+
+    Everything is best-effort: psutil raises on hardened kernels and inside
+    restricted containers, and a support bundle must still be produced when it
+    does. Child command lines are reduced to the executable name — a full
+    ffmpeg argv carries the camera URL, and with it the camera's password.
+    """
+    import psutil
+
+    out: dict = {}
+    try:
+        proc = psutil.Process()
+    except Exception:
+        return {"available": False}
+
+    out["available"] = True
+    try:
+        mem = proc.memory_info()
+        out["rss_bytes"] = mem.rss
+        out["rss_formatted"] = _format_bytes(mem.rss)
+        out["vms_bytes"] = mem.vms
+        out["vms_formatted"] = _format_bytes(mem.vms)
+    except Exception:
+        pass
+    try:
+        out["num_threads"] = proc.num_threads()
+    except Exception:
+        pass
+    try:
+        out["uptime_seconds"] = int(time.time() - proc.create_time())
+    except Exception:
+        pass
+    try:
+        out["open_files"] = len(proc.open_files())
+    except Exception:
+        pass
+    try:
+        out["connections"] = len(proc.net_connections(kind="inet"))
+    except Exception:
+        pass
+
+    # Children by executable name only. The count per name is what identifies a
+    # leak; the arguments would leak credentials.
+    try:
+        names: dict[str, int] = {}
+        for child in proc.children(recursive=True):
+            try:
+                names[child.name()] = names.get(child.name(), 0) + 1
+            except Exception:
+                names["<unknown>"] = names.get("<unknown>", 0) + 1
+        out["children_total"] = sum(names.values())
+        out["children_by_name"] = dict(sorted(names.items(), key=lambda kv: -kv[1]))
+    except Exception:
+        pass
+
+    # Live object counts by type, top 15. Identifies a heap that is growing and
+    # what it is growing with — the one thing RSS alone cannot say.
+    #
+    # Skipped above _GC_CENSUS_RSS_LIMIT. gc.get_objects() materialises a list
+    # of every tracked object, so the census costs most on exactly the process
+    # that can least afford it: a bundle generated to diagnose runaway memory
+    # must not be the allocation that tips the host over. The numbers that
+    # actually separate the mechanisms — RSS vs VMS, threads, children — are
+    # collected above and unaffected.
+    rss = out.get("rss_bytes")
+    if rss is not None and rss > _GC_CENSUS_RSS_LIMIT:
+        out["gc_census"] = (
+            f"skipped: process is using {_format_bytes(rss)}, above the "
+            f"{_format_bytes(_GC_CENSUS_RSS_LIMIT)} limit for walking the heap"
+        )
+        return out
+    try:
+        import gc
+
+        counts: dict[str, int] = {}
+        for obj in gc.get_objects():
+            name = type(obj).__name__
+            counts[name] = counts.get(name, 0) + 1
+        out["gc_tracked_objects"] = sum(counts.values())
+        out["gc_top_types"] = dict(sorted(counts.items(), key=lambda kv: -kv[1])[:15])
+    except Exception:
+        pass
+
+    return out
+
+
 def _format_bytes(size_bytes: int) -> str:
     """Format bytes into human-readable string."""
     if size_bytes < 1024:
@@ -419,12 +421,374 @@ def _format_bytes(size_bytes: int) -> str:
     return f"{size_bytes / (1024 * 1024 * 1024):.2f} GB"
 
 
+async def _collect_auth_info(db: AsyncSession) -> dict:
+    """Auth-related configuration that's stored OUTSIDE the settings table.
+
+    The settings-table passthrough already captures `ldap_*`, `advanced_auth_enabled`,
+    etc. The blocks below come from dedicated tables that the support bundle did
+    not previously surface — every recent SSO / 2FA / group bug needed this data
+    to triage.
+    """
+    from backend.app.models.api_key import APIKey
+    from backend.app.models.group import Group
+    from backend.app.models.long_lived_token import LongLivedToken
+    from backend.app.models.oidc_provider import OIDCProvider, UserOIDCLink
+    from backend.app.models.user_otp_code import UserOTPCode
+    from backend.app.models.user_totp import UserTOTP
+
+    now = datetime.now(timezone.utc)
+    auth: dict = {}
+
+    # OIDC providers — names are public (login-button labels), no secrets.
+    providers_result = await db.execute(select(OIDCProvider).order_by(OIDCProvider.id))
+    providers = providers_result.scalars().all()
+    oidc_list = []
+    for p in providers:
+        # Count linked users per provider — separate query so failure on one
+        # provider doesn't blank the whole list.
+        try:
+            link_count = (
+                await db.execute(select(func.count(UserOIDCLink.id)).where(UserOIDCLink.provider_id == p.id))
+            ).scalar() or 0
+        except Exception:
+            link_count = None
+        oidc_list.append(
+            {
+                "name": p.name,
+                "is_enabled": p.is_enabled,
+                "scopes": p.scopes,
+                "email_claim": p.email_claim,
+                "require_email_verified": p.require_email_verified,
+                "auto_create_users": p.auto_create_users,
+                "auto_link_existing_accounts": p.auto_link_existing_accounts,
+                "has_default_group": p.default_group_id is not None,
+                # Derive from icon_content_type (non-deferred) rather than
+                # icon_data (deferred BLOB) to avoid an async lazy-load.
+                # Falls back to icon_url for pre-#1333 rows that have a URL
+                # configured but no cached bytes yet.
+                "has_icon": bool(p.icon_content_type) or bool(p.icon_url),
+                "linked_user_count": link_count,
+            }
+        )
+    auth["oidc_providers"] = oidc_list
+
+    # 2FA enrollment — counts only, no per-user data.
+    totp_enabled = (
+        await db.execute(select(func.count(UserTOTP.id)).where(UserTOTP.is_enabled.is_(True)))
+    ).scalar() or 0
+    auth["users_with_totp"] = totp_enabled
+    # Active (not-yet-expired, not-yet-used) email OTP codes — bounded count;
+    # spikes here would point at someone hammering the email OTP flow.
+    email_otp_pending = (
+        await db.execute(
+            select(func.count(UserOTPCode.id)).where(
+                UserOTPCode.used.is_(False),
+                UserOTPCode.expires_at > now,
+            )
+        )
+    ).scalar() or 0
+    auth["email_otp_codes_pending"] = email_otp_pending
+
+    # API keys
+    api_keys_total = (await db.execute(select(func.count(APIKey.id)))).scalar() or 0
+    api_keys_enabled = (await db.execute(select(func.count(APIKey.id)).where(APIKey.enabled.is_(True)))).scalar() or 0
+    api_keys_expired = (
+        await db.execute(
+            select(func.count(APIKey.id)).where(
+                APIKey.expires_at.is_not(None),
+                APIKey.expires_at < now,
+            )
+        )
+    ).scalar() or 0
+    auth["api_keys_total"] = api_keys_total
+    auth["api_keys_enabled"] = api_keys_enabled
+    auth["api_keys_expired"] = api_keys_expired
+
+    # Long-lived tokens (camera-stream tokens used by kiosks etc.)
+    llt_total = (await db.execute(select(func.count(LongLivedToken.id)))).scalar() or 0
+    llt_active = (
+        await db.execute(
+            select(func.count(LongLivedToken.id)).where(
+                LongLivedToken.revoked_at.is_(None),
+                LongLivedToken.expires_at > now,
+            )
+        )
+    ).scalar() or 0
+    auth["long_lived_tokens_total"] = llt_total
+    auth["long_lived_tokens_active"] = llt_active
+
+    # Groups — system vs custom split matters for permission triage.
+    groups_system = (await db.execute(select(func.count(Group.id)).where(Group.is_system.is_(True)))).scalar() or 0
+    groups_custom = (await db.execute(select(func.count(Group.id)).where(Group.is_system.is_(False)))).scalar() or 0
+    auth["groups_system"] = groups_system
+    auth["groups_custom"] = groups_custom
+
+    return auth
+
+
+async def _collect_library_info(db: AsyncSession) -> dict:
+    """Library file / folder totals, including external-link and trash counts."""
+    from backend.app.models.external_link import ExternalLink
+    from backend.app.models.library import LibraryFile, LibraryFolder
+
+    info: dict = {}
+    info["library_files_total"] = (
+        await db.execute(select(func.count(LibraryFile.id)).where(LibraryFile.deleted_at.is_(None)))
+    ).scalar() or 0
+    info["library_files_in_trash"] = (
+        await db.execute(select(func.count(LibraryFile.id)).where(LibraryFile.deleted_at.is_not(None)))
+    ).scalar() or 0
+    info["library_folders_total"] = (await db.execute(select(func.count(LibraryFolder.id)))).scalar() or 0
+    info["external_folders_total"] = (
+        await db.execute(select(func.count(LibraryFolder.id)).where(LibraryFolder.is_external.is_(True)))
+    ).scalar() or 0
+    info["external_links_total"] = (await db.execute(select(func.count(ExternalLink.id)))).scalar() or 0
+    # MakerWorld imports — counted here because they're LibraryFile rows with
+    # source_type='makerworld' (the import path doesn't have its own table).
+    info["makerworld_imports_total"] = (
+        await db.execute(
+            select(func.count(LibraryFile.id)).where(
+                LibraryFile.deleted_at.is_(None),
+                LibraryFile.source_type == "makerworld",
+            )
+        )
+    ).scalar() or 0
+    return info
+
+
+async def _collect_inventory_info(db: AsyncSession) -> dict:
+    """Spool / k-profile totals from the inventory feature."""
+    from backend.app.models.spool import Spool
+    from backend.app.models.spool_k_profile import SpoolKProfile
+    from backend.app.models.spoolman_k_profile import SpoolmanKProfile
+
+    info: dict = {}
+    info["spools_internal"] = (await db.execute(select(func.count(Spool.id)))).scalar() or 0
+    info["k_profiles_internal"] = (await db.execute(select(func.count(SpoolKProfile.id)))).scalar() or 0
+    info["k_profiles_spoolman"] = (await db.execute(select(func.count(SpoolmanKProfile.id)))).scalar() or 0
+    return info
+
+
+async def _collect_queue_info(db: AsyncSession) -> dict:
+    """Print-queue health: pending count + oldest pending age."""
+    from backend.app.models.print_queue import PrintQueueItem
+
+    info: dict = {}
+    info["pending_total"] = (
+        await db.execute(select(func.count(PrintQueueItem.id)).where(PrintQueueItem.status == "pending"))
+    ).scalar() or 0
+    info["manual_start_pending"] = (
+        await db.execute(
+            select(func.count(PrintQueueItem.id)).where(
+                PrintQueueItem.status == "pending",
+                PrintQueueItem.manual_start.is_(True),
+            )
+        )
+    ).scalar() or 0
+    # Oldest pending item — derived from created_at to detect items stuck in queue
+    # (target printer offline, missing filament match, etc.).
+    oldest_row = (
+        await db.execute(
+            select(PrintQueueItem.created_at)
+            .where(PrintQueueItem.status == "pending")
+            .order_by(PrintQueueItem.created_at)
+            .limit(1)
+        )
+    ).scalar_one_or_none()
+    if oldest_row is not None:
+        # created_at is naive in this codebase (server_default=func.now()); compare
+        # against naive utc-now to get the actual age without TZ-conversion surprises.
+        age = (datetime.now() - oldest_row).total_seconds()
+        info["oldest_pending_age_seconds"] = int(age)
+    else:
+        info["oldest_pending_age_seconds"] = None
+    return info
+
+
+async def _collect_maintenance_info(db: AsyncSession) -> dict:
+    """Maintenance schedule totals: enabled items count + last-serviced-never count."""
+    from backend.app.models.maintenance import PrinterMaintenance
+
+    info: dict = {}
+    info["items_total"] = (await db.execute(select(func.count(PrinterMaintenance.id)))).scalar() or 0
+    info["items_enabled"] = (
+        await db.execute(select(func.count(PrinterMaintenance.id)).where(PrinterMaintenance.enabled.is_(True)))
+    ).scalar() or 0
+    return info
+
+
+async def _collect_github_backup_info(db: AsyncSession) -> dict:
+    """GitHub-backup configs: count per provider + recent-failure indicator."""
+    from backend.app.models.github_backup import GitHubBackupConfig
+
+    rows = (await db.execute(select(GitHubBackupConfig))).scalars().all()
+    providers_used: dict[str, int] = {}
+    last_failure_count = 0
+    schedule_enabled_count = 0
+    for cfg in rows:
+        providers_used[cfg.provider] = providers_used.get(cfg.provider, 0) + 1
+        if cfg.last_backup_status == "failed":
+            last_failure_count += 1
+        if cfg.schedule_enabled:
+            schedule_enabled_count += 1
+    return {
+        "configs_total": len(rows),
+        "providers_used": providers_used,
+        "schedule_enabled_count": schedule_enabled_count,
+        "last_failure_count": last_failure_count,
+    }
+
+
+async def _check_url_reachable(url: str, timeout: float = 2.0) -> bool | None:
+    """Single HEAD/GET ping with a short timeout. Returns None if URL is empty."""
+    if not url or not url.strip():
+        return None
+    try:
+        import httpx
+
+        async with httpx.AsyncClient(timeout=timeout, verify=False) as client:  # nosec B501 — local sidecars often use self-signed; this is a reachability/health probe only, no secrets are sent
+            r = await client.get(url, follow_redirects=False)
+            # Anything that returned a status code counts as reachable, even 404
+            # (the API server is up, just the path was wrong) — separates network
+            # failure from configuration mistakes for the user.
+            return r.status_code is not None
+    except Exception:
+        return False
+
+
+async def _fetch_slicer_health(url: str, timeout: float = 2.0) -> dict | None:
+    """Fetch ``/health`` from a slicer sidecar and extract the CLI version.
+
+    Returns ``None`` when ``url`` is empty (so the caller can distinguish
+    "not configured" from "unreachable"). On any failure to fetch or parse,
+    returns ``{"reachable": False, "version": None}``. The slicer-API wrapper
+    labels both sidecars' CLI under ``checks.orcaslicer`` regardless of which
+    slicer is actually bundled (cosmetic wrapper bug), so we read the version
+    from whichever non-``dataPath`` child key exists rather than hardcoding
+    one. This lets the bundle reviewer answer "is the user running the image
+    they think they are?" without a separate curl round-trip.
+    """
+    if not url or not url.strip():
+        return None
+    health_url = url.rstrip("/") + "/health"
+    try:
+        import httpx
+
+        async with httpx.AsyncClient(timeout=timeout, verify=False) as client:  # nosec B501 — local sidecars often use self-signed; this is a reachability/health probe only, no secrets are sent
+            r = await client.get(health_url, follow_redirects=False)
+            if r.status_code != 200:
+                return {"reachable": True, "version": None}
+            try:
+                data = r.json()
+            except Exception:
+                return {"reachable": True, "version": None}
+            checks = data.get("checks") if isinstance(data, dict) else None
+            if not isinstance(checks, dict):
+                return {"reachable": True, "version": None}
+            for key, value in checks.items():
+                if key == "dataPath":
+                    continue
+                if isinstance(value, dict) and "version" in value:
+                    return {"reachable": True, "version": value.get("version")}
+            return {"reachable": True, "version": None}
+    except Exception:
+        return {"reachable": False, "version": None}
+
+
+async def _collect_slicer_api_info() -> dict:
+    """Reachability check for configured slicer-API sidecars.
+
+    Mirrors the URL-resolution precedence used by the real slicer routes
+    (``archives.py:_slice_for_archive`` and ``library.py``) — DB setting first,
+    falling back to ``app_settings.bambu_studio_api_url`` / ``slicer_api_url``
+    which themselves respect the ``BAMBU_STUDIO_API_URL`` / ``SLICER_API_URL``
+    env vars and default to ``http://localhost:3001`` / ``http://localhost:3003``.
+    A bundle-time reachability check that only looked at the DB setting would
+    return ``null`` for every user who runs the sidecar via env var or on the
+    default port — i.e. most users.
+
+    Also reads URLs directly from ``Settings.value`` rather than from
+    ``info["settings"]``, which has already been redacted by the time the
+    integrations block runs (``bambu_studio_api_url`` matches the ``url``
+    keyword filter, so its value there is ``"[REDACTED]"`` and pinging that
+    crashes httpx).
+    """
+    async with async_session() as db:
+        keys_we_need = (
+            "use_slicer_api",
+            "preferred_slicer",
+            "bambu_studio_api_url",
+            "orcaslicer_api_url",
+        )
+        rows = (await db.execute(select(Settings).where(Settings.key.in_(keys_we_need)))).scalars().all()
+        raw = {s.key: (s.value or "") for s in rows}
+
+    # Resolve with the same DB-then-env-then-default precedence as the route
+    # that the slicer-API client actually uses, so the bundle reflects what
+    # the running app would resolve at request time.
+    bs_db = raw.get("bambu_studio_api_url", "").strip()
+    oc_db = raw.get("orcaslicer_api_url", "").strip()
+    bs_url = bs_db or (settings.bambu_studio_api_url or "").strip()
+    oc_url = oc_db or (settings.slicer_api_url or "").strip()
+
+    info: dict = {
+        "enabled": (raw.get("use_slicer_api", "false") or "false").lower() == "true",
+        "preferred": raw.get("preferred_slicer", ""),
+        # Layer accounting helps triage: was the URL set in the DB, or are
+        # we falling through to the env-var / default? "Reachable but no
+        # DB setting" is the env-var case.
+        "bambu_studio_url_set_in_db": bool(bs_db),
+        "orcaslicer_url_set_in_db": bool(oc_db),
+        # Effective URL is the resolved one — kept as a host-portion-only
+        # echo so we can confirm it's the expected sidecar without leaking
+        # the full URL (which `url` keyword would have redacted anyway).
+        "bambu_studio_url_source": ("db" if bs_db else ("env_or_default" if bs_url else "unset")),
+        "orcaslicer_url_source": ("db" if oc_db else ("env_or_default" if oc_url else "unset")),
+    }
+    if info["enabled"]:
+        bs_health, oc_health = await asyncio.gather(
+            _fetch_slicer_health(bs_url),
+            _fetch_slicer_health(oc_url),
+        )
+        info["bambu_studio_reachable"] = (bs_health or {}).get("reachable") if bs_health is not None else None
+        info["bambu_studio_version"] = (bs_health or {}).get("version") if bs_health is not None else None
+        info["orcaslicer_reachable"] = (oc_health or {}).get("reachable") if oc_health is not None else None
+        info["orcaslicer_version"] = (oc_health or {}).get("version") if oc_health is not None else None
+    return info
+
+
+def _parse_obico_enabled_printers(raw: str | None) -> set[int] | None:
+    """Parse the `obico_enabled_printers` setting the way the detection service does.
+
+    The setting is a JSON array of printer IDs and an empty value means *all*
+    printers — see ``ObicoDetectionService._load_settings``. This used to split
+    on commas and treat empty as *none*, so a bundle from a default Obico setup
+    reported every printer as unmonitored while the service was in fact polling
+    all of them. Returns ``None`` for "all printers"; a comma-separated fallback
+    is kept in case an install ever stored the legacy shape.
+    """
+    if not raw or not raw.strip():
+        return None
+    try:
+        parsed = json.loads(raw)
+    except (json.JSONDecodeError, TypeError):
+        parsed = None
+    if isinstance(parsed, list):
+        return {int(item) for item in parsed if isinstance(item, (int, str)) and str(item).strip().isdigit()}
+    result: set[int] = set()
+    for token in raw.split(","):
+        token = token.strip()
+        if token.isdigit():
+            result.add(int(token))
+    return result
+
+
 async def _collect_support_info() -> dict:
     """Collect all support information."""
     in_docker = is_running_in_docker()
 
     info = {
-        "generated_at": datetime.now().isoformat(),
+        "generated_at": datetime.now(timezone.utc).isoformat(),
         "app": {
             "version": APP_VERSION,
             "debug_mode": settings.debug,
@@ -445,6 +809,12 @@ async def _collect_support_info() -> dict:
         "database": {},
         "printers": [],
         "settings": {},
+        # Bambuddy's own footprint. Cheap to collect and the only thing that
+        # makes a "memory grows over days" report triageable from the bundle
+        # rather than a round trip of shell commands (#2734). Off the event
+        # loop: the heap census walks every tracked object, and a bundle
+        # request must not stall status ingest while it does.
+        "process": await asyncio.to_thread(_collect_process_info),
     }
 
     # Docker-specific info
@@ -483,6 +853,28 @@ async def _collect_support_info() -> dict:
         result = await db.execute(select(Printer))
         printers = result.scalars().all()
         statuses = printer_manager.get_all_statuses()
+
+        # Pre-load the obico settings that decide which printers are monitored.
+        # Settings are loaded later in this function (and would overwrite these
+        # keys in info["settings"]), so do a targeted query here for the
+        # per-printer flag below. ``None`` means every printer is monitored.
+        obico_enabled_set: set[int] | None = None
+        obico_globally_enabled = False
+        try:
+            obico_rows = {
+                row.key: row.value
+                for row in (
+                    await db.execute(
+                        select(Settings).where(Settings.key.in_(["obico_enabled_printers", "obico_enabled"]))
+                    )
+                )
+                .scalars()
+                .all()
+            }
+            obico_enabled_set = _parse_obico_enabled_printers(obico_rows.get("obico_enabled_printers"))
+            obico_globally_enabled = (obico_rows.get("obico_enabled") or "false").lower() == "true"
+        except Exception:
+            logger.debug("Failed to load obico settings", exc_info=True)
 
         # Check reachability in parallel
         reachability_tasks = [_check_port(p.ip_address, 8883) for p in printers]
@@ -526,6 +918,8 @@ async def _collect_support_info() -> dict:
                     "has_vt_tray": has_vt_tray,
                     "external_camera_configured": bool(printer.external_camera_url),
                     "plate_detection_enabled": printer.plate_detection_enabled,
+                    "obico_enabled": obico_globally_enabled
+                    and (obico_enabled_set is None or printer.id in obico_enabled_set),
                     "hms_error_count": len(state.hms_errors) if state else 0,
                     "developer_mode": state.developer_mode if state else None,
                     "nozzle_rack_count": len(state.nozzle_rack) if state else 0,
@@ -560,7 +954,10 @@ async def _collect_support_info() -> dict:
         except Exception:
             logger.debug("Failed to collect virtual printer info", exc_info=True)
 
-        # Non-sensitive settings
+        # All settings — sensitive values are redacted rather than dropped so
+        # new settings automatically show up in support bundles without a code
+        # change. The value is replaced with "[REDACTED]" but the key is kept
+        # so we can still see which integrations are configured.
         result = await db.execute(select(Settings))
         all_settings = result.scalars().all()
         sensitive_keys = {
@@ -569,6 +966,7 @@ async def _collect_support_info() -> dict:
             "token",
             "secret",
             "api_key",
+            "auth_key",  # Tailscale auth keys: virtual_printer_tailscale_auth_key
             "installation_id",
             "cloud_token",
             "mqtt_password",
@@ -581,12 +979,26 @@ async def _collect_support_info() -> dict:
             "url",
             "path",  # Filesystem paths may contain usernames
             "config",  # URLs may contain IPs, configs may have embedded secrets
+            "_ip",  # IP address fields (e.g. virtual_printer_remote_interface_ip)
+            "host",
+            "broker",  # MQTT broker hostname / IP — network exposure
+            "credential",
         }
+        # Value-based safety net: redact anything whose value carries an
+        # unambiguous secret prefix, even if the key name didn't match.
+        # `tskey-` is the Tailscale auth-key prefix — future Tailscale settings
+        # with unexpected names won't leak just because we forgot to add them.
+        sensitive_value_prefixes = ("tskey-",)
         for s in all_settings:
-            # Skip sensitive settings
-            if any(sensitive in s.key.lower() for sensitive in sensitive_keys):
-                continue
-            info["settings"][s.key] = s.value
+            key_lower = s.key.lower()
+            value = s.value or ""
+            if any(sensitive in key_lower for sensitive in sensitive_keys) or any(
+                value.startswith(prefix) for prefix in sensitive_value_prefixes
+            ):
+                # Preserve shape: mark presence without leaking the value
+                info["settings"][s.key] = "[REDACTED]" if s.value else ""
+            else:
+                info["settings"][s.key] = s.value
 
         # Notification providers (anonymized — type/enabled/error status only)
         try:
@@ -640,6 +1052,42 @@ async def _collect_support_info() -> dict:
         except Exception:
             logger.debug("Failed to collect database health info", exc_info=True)
 
+    # Auth section — OIDC, 2FA, API keys, long-lived tokens, groups.
+    # Stored in dedicated tables that the settings-table passthrough doesn't see.
+    try:
+        async with async_session() as auth_db:
+            info["auth"] = await _collect_auth_info(auth_db)
+    except Exception:
+        logger.debug("Failed to collect auth info", exc_info=True)
+
+    # Library + folder + makerworld import totals
+    try:
+        async with async_session() as lib_db:
+            info["library"] = await _collect_library_info(lib_db)
+    except Exception:
+        logger.debug("Failed to collect library info", exc_info=True)
+
+    # Spool / k-profile totals (inventory feature)
+    try:
+        async with async_session() as inv_db:
+            info["inventory"] = await _collect_inventory_info(inv_db)
+    except Exception:
+        logger.debug("Failed to collect inventory info", exc_info=True)
+
+    # Print queue health
+    try:
+        async with async_session() as q_db:
+            info["queue"] = await _collect_queue_info(q_db)
+    except Exception:
+        logger.debug("Failed to collect queue info", exc_info=True)
+
+    # Maintenance schedules
+    try:
+        async with async_session() as m_db:
+            info["maintenance"] = await _collect_maintenance_info(m_db)
+    except Exception:
+        logger.debug("Failed to collect maintenance info", exc_info=True)
+
     # Integrations (lazy imports to avoid circular dependencies)
     info.setdefault("integrations", {})
 
@@ -671,6 +1119,44 @@ async def _collect_support_info() -> dict:
     except Exception:
         logger.debug("Failed to collect MQTT relay info", exc_info=True)
 
+    # SpoolBuddy devices (anonymized — no hostnames, IPs or device IDs)
+    try:
+        async with async_session() as db:
+            from backend.app.models.spoolbuddy_device import SpoolBuddyDevice
+
+            result = await db.execute(select(SpoolBuddyDevice))
+            devices = result.scalars().all()
+            info["integrations"]["spoolbuddy"] = {
+                "device_count": len(devices),
+                "online_count": sum(
+                    1
+                    for d in devices
+                    if d.last_seen
+                    and (datetime.now(tz=timezone.utc) - d.last_seen.replace(tzinfo=timezone.utc)).total_seconds() < 30
+                ),
+                "devices": [
+                    {
+                        "index": i + 1,
+                        "firmware_version": d.firmware_version,
+                        "has_nfc": d.has_nfc,
+                        "has_scale": d.has_scale,
+                        "nfc_reader_type": d.nfc_reader_type,
+                        "nfc_connection": d.nfc_connection,
+                        "has_backlight": d.has_backlight,
+                        "nfc_ok": d.nfc_ok,
+                        "scale_ok": d.scale_ok,
+                        "uptime_s": d.uptime_s,
+                        "calibration_factor": d.calibration_factor,
+                        "tare_offset": d.tare_offset,
+                        "last_calibrated_at": d.last_calibrated_at.isoformat() if d.last_calibrated_at else None,
+                        "update_status": d.update_status,
+                    }
+                    for i, d in enumerate(devices)
+                ],
+            }
+    except Exception:
+        logger.debug("Failed to collect SpoolBuddy info", exc_info=True)
+
     # Home Assistant (check ha_enabled setting)
     try:
         info["integrations"]["homeassistant"] = {
@@ -678,6 +1164,19 @@ async def _collect_support_info() -> dict:
         }
     except Exception:
         logger.debug("Failed to collect Home Assistant info", exc_info=True)
+
+    # GitHub backup — providers + recent-failure counts from github_backup_config.
+    try:
+        async with async_session() as gb_db:
+            info["integrations"]["github_backup"] = await _collect_github_backup_info(gb_db)
+    except Exception:
+        logger.debug("Failed to collect GitHub backup info", exc_info=True)
+
+    # Slicer-API sidecar reachability (#X1C-investigation-style triage)
+    try:
+        info["integrations"]["slicer_api"] = await _collect_slicer_api_info()
+    except Exception:
+        logger.debug("Failed to collect slicer-API info", exc_info=True)
 
     # Dependencies
     try:
@@ -735,92 +1234,168 @@ async def _collect_support_info() -> dict:
     except Exception:
         logger.debug("Failed to collect WebSocket info", exc_info=True)
 
+    # Active diagnostics — per-printer connection check, per-VP setup check,
+    # and the log-health scan. These all surface in the UI today (System page +
+    # bug-report bubble) but were never persisted into what the maintainer
+    # receives, so a "looks broken in bambuddy" report arrived with no
+    # actionable signal beyond raw logs. The snapshot helper is fail-soft per
+    # probe and bounded by a per-probe wall-clock cap, so a hung interface
+    # adds at most ~15 s to bundle generation regardless of fleet size (probes
+    # run concurrently).
+    try:
+        from backend.app.services.diagnostic_snapshot import collect_diagnostic_snapshot
+
+        async with async_session() as db:
+            info["diagnostics"] = await collect_diagnostic_snapshot(db)
+    except Exception:
+        logger.warning("Failed to collect diagnostic snapshot", exc_info=True)
+
     return info
 
 
-def _sanitize_log_content(content: str, sensitive_strings: dict[str, str] | None = None) -> str:
-    """Remove sensitive data from log content."""
-    # First, replace known sensitive values (database-aware exact matching)
-    # This catches printer names, usernames, and other arbitrary user-chosen strings
-    # that regex patterns cannot detect
-    if sensitive_strings:
-        # Sort by length descending to avoid partial matches (e.g. "My Printer 1" before "My Printer")
-        for value, label in sorted(sensitive_strings.items(), key=lambda x: len(x[0]), reverse=True):
-            if len(value) < 3:
-                continue  # Skip very short strings to prevent over-redaction
-            content = re.sub(re.escape(value), label, content)
-
-    # Replace credentials in URLs (e.g. http://user:pass@host, rtsps://bblp:code@host)
-    content = re.sub(r"((?:https?|rtsps?)://)[^/:@\s]+:[^/@\s]+@", r"\1[CREDENTIALS]@", content)
-
-    # Replace email addresses
-    content = re.sub(r"\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Z|a-z]{2,}\b", "[EMAIL]", content)
-
-    # Replace Bambu Lab printer serial numbers (format: 00M/01D/01S/01P/03W + alphanumeric, 12-16 chars total)
-    content = re.sub(r"\b0[0-3][A-Z0-9][A-Z0-9]{9,13}\b", "[SERIAL]", content, flags=re.IGNORECASE)
-
-    # Replace IPv4 addresses (skip firmware versions like 01.09.01.00 which have leading zeros)
-    content = re.sub(
-        r"\b(?:(?:25[0-5]|2[0-4]\d|1\d\d|[1-9]\d|\d)\.){3}(?:25[0-5]|2[0-4]\d|1\d\d|[1-9]\d|\d)\b",
-        "[IP]",
-        content,
-    )
-
-    # Replace paths with usernames
-    content = re.sub(r"/home/[^/\s]+/", "/home/[user]/", content)
-    content = re.sub(r"/Users/[^/\s]+/", "/Users/[user]/", content)
-    content = re.sub(r"/opt/[^/\s]+/", "/opt/[user]/", content)
-
-    return content
-
-
 def _get_log_content(max_bytes: int = 10 * 1024 * 1024, sensitive_strings: dict[str, str] | None = None) -> bytes:
-    """Get log file content, limited to max_bytes from the end."""
+    """Get recent log content, limited to max_bytes from the end.
+
+    Spans the rotated files as well as the live one. ``bambuddy.log`` is capped
+    at 5 MB by the RotatingFileHandler, and the bundle used to ship only that
+    file — so on a large fleet with debug logging on, the window we ask a
+    reporter for was far shorter than anyone realised. The 19-printer farm in
+    #2555 emits ~100 lines/s of MQTT frame dumps, which fills 5 MB in under five
+    minutes: the bundle we received to diagnose a *queue* problem barely
+    contained one upload. The three rotated backups were sitting on disk unread.
+
+    Reads oldest -> newest so the result is chronological, then takes the last
+    ``max_bytes``, which is where the budget was all along.
+    """
     log_file = settings.log_dir / "bambuddy.log"
     if not log_file.exists():
         return b"Log file not found"
 
-    file_size = log_file.stat().st_size
-    if file_size <= max_bytes:
-        content = log_file.read_text(encoding="utf-8", errors="replace")
-    else:
-        # Read last max_bytes
-        with open(log_file, "rb") as f:
-            f.seek(file_size - max_bytes)
-            # Skip partial line at start
-            f.readline()
-            content = f.read().decode("utf-8", errors="replace")
+    # RotatingFileHandler names its backups .log.1 (newest) .. .log.N (oldest).
+    # Walk them in reverse so the concatenation reads forwards in time.
+    candidates: list[Path] = []
+    for index in range(settings.log_backup_count, 0, -1):
+        rotated = log_file.with_name(f"{log_file.name}.{index}")
+        if rotated.exists():
+            candidates.append(rotated)
+    candidates.append(log_file)
+
+    chunks: list[str] = []
+    remaining = max_bytes
+    # Fill from the newest backwards so the byte budget is spent on recent
+    # history, then flip back to chronological order for the reader.
+    for path in reversed(candidates):
+        if remaining <= 0:
+            break
+        try:
+            size = path.stat().st_size
+            with open(path, "rb") as f:
+                if size > remaining:
+                    f.seek(size - remaining)
+                    f.readline()  # discard the partial line the seek landed in
+                chunks.append(f.read().decode("utf-8", errors="replace"))
+            remaining -= min(size, remaining)
+        except OSError:
+            logger.debug("Failed to read log file %s for support bundle", path, exc_info=True)
+
+    content = "".join(reversed(chunks))
 
     # Sanitize sensitive data
-    content = _sanitize_log_content(content, sensitive_strings)
+    content = sanitize_log_content(content, sensitive_strings)
     return content.encode("utf-8")
+
+
+# Top-level push_status keys that carry user-private data (filenames, BambuCloud
+# IDs). Dropped from the bundled per-printer snapshot. Keep print.cfg /
+# print.option / ams / vt_tray / vir_slot / mapping — those are the fields that
+# make the snapshot worth shipping (per-model AMS Backup detection, tray-shape
+# research, VP regression baselines).
+_RAW_DATA_DROP_KEYS = frozenset(
+    {
+        "subtask_name",
+        "gcode_file",
+        "gcode_file_prepare_percent",
+        "subtask_id",
+        "task_id",
+        "project_id",
+        "gcode_state",  # not sensitive, but mirrors current_print which we strip
+        "design_id",
+        "profile_id",
+        "model_id",
+    }
+)
+
+
+def _redact_raw_push_status(raw: dict) -> dict:
+    """Strip user-private keys from a cached push_status snapshot.
+
+    Drops the keys in :data:`_RAW_DATA_DROP_KEYS` anywhere in the tree, then
+    rewrites every entry under ``net.info[*].ip`` to ``"0.0.0.0"``. Mirrors the
+    LAN-topology leak fixed in the virtual-printer bridge (#1429) — the same
+    field exposes the printer's local IP plus the gateway/peers it sees. Returns
+    a NEW dict; the live ``state.raw_data`` is never mutated.
+    """
+
+    if not isinstance(raw, dict):
+        return {}
+
+    def _walk(value):
+        if isinstance(value, dict):
+            return {k: _walk(v) for k, v in value.items() if k not in _RAW_DATA_DROP_KEYS}
+        if isinstance(value, list):
+            return [_walk(v) for v in value]
+        return value
+
+    out = _walk(raw)
+
+    # Scrub net.info[*].ip after the structural walk — only meaningful at the
+    # top level; nested "net" blocks don't appear in Bambu push_status payloads.
+    net = out.get("net")
+    if isinstance(net, dict):
+        info_list = net.get("info")
+        if isinstance(info_list, list):
+            net["info"] = [
+                ({**entry, "ip": "0.0.0.0"} if isinstance(entry, dict) and "ip" in entry else entry)  # nosec B104 - redaction sentinel, not a bind address
+                for entry in info_list
+            ]
+
+    return out
+
+
+def _sanitize_push_status_values(node, sensitive_strings: dict[str, str]):
+    """Sanitize a push_status snapshot's string *values*, never its JSON text.
+
+    This used to run :func:`sanitize_log_content` over the serialised snapshot.
+    That pass includes a generic Bambu-serial regex
+    (``0[0-3][A-Z0-9][A-Z0-9]{9,13}`` in ``log_reader``) which matches the
+    decimal expansion of a float just as happily as a serial: an AMS ``k`` flow
+    factor of ``0.0199999995529652`` came out as ``0.[SERIAL]``, and the bundle
+    shipped invalid JSON — unusable for exactly the ground-truth purpose the
+    snapshot exists for (found while diagnosing #2702).
+
+    Walking the structure instead leaves numbers, bools and None untouched, so
+    the output always parses. Keys are structural and never rewritten.
+    """
+    if isinstance(node, str):
+        return sanitize_log_content(node, sensitive_strings)
+    if isinstance(node, dict):
+        return {k: _sanitize_push_status_values(v, sensitive_strings) for k, v in node.items()}
+    if isinstance(node, list | tuple):
+        # Tuples too: `json.dumps` renders them as arrays, so stringifying one
+        # here would change the file's shape rather than just its content.
+        return [_sanitize_push_status_values(v, sensitive_strings) for v in node]
+    if node is None or isinstance(node, bool | int | float):
+        return node
+    # Anything else (datetime, Decimal, …) would be stringified by json.dumps'
+    # ``default=str`` *after* this pass and so escape sanitisation entirely.
+    return sanitize_log_content(str(node), sensitive_strings)
 
 
 async def _get_recent_sanitized_logs(max_lines: int = 200) -> str:
     """Get recent log lines, sanitized for inclusion in bug reports."""
     # Collect sensitive strings from DB for redaction
-    sensitive_strings: dict[str, str] = {}
     async with async_session() as db:
-        result = await db.execute(select(Printer.name, Printer.serial_number, Printer.ip_address, Printer.access_code))
-        for name, serial, ip_address, access_code in result.all():
-            if name:
-                sensitive_strings[name] = "[PRINTER]"
-            if serial:
-                sensitive_strings[serial] = "[SERIAL]"
-            if ip_address:
-                sensitive_strings[ip_address] = "[IP]"
-            if access_code:
-                sensitive_strings[access_code] = "[ACCESS_CODE]"
-
-        result = await db.execute(select(User.username))
-        for (username,) in result.all():
-            if username:
-                sensitive_strings[username] = "[USER]"
-
-        result = await db.execute(select(Settings.value).where(Settings.key == "bambu_cloud_email"))
-        cloud_email = result.scalar_one_or_none()
-        if cloud_email:
-            sensitive_strings[cloud_email] = "[EMAIL]"
+        sensitive_strings = await collect_sensitive_strings(db)
 
     log_file = settings.log_dir / "bambuddy.log"
     if not log_file.exists():
@@ -831,7 +1406,7 @@ async def _get_recent_sanitized_logs(max_lines: int = 200) -> str:
         content = log_file.read_text(encoding="utf-8", errors="replace")
         lines = content.splitlines()
         recent = "\n".join(lines[-max_lines:])
-        return _sanitize_log_content(recent, sensitive_strings)
+        return sanitize_log_content(recent, sensitive_strings)
     except Exception:
         logger.debug("Failed to read logs for bug report", exc_info=True)
         return ""
@@ -854,31 +1429,7 @@ async def generate_support_bundle(
             )
 
         # Collect known sensitive values for log redaction
-        sensitive_strings: dict[str, str] = {}
-
-        # Printer names, serial numbers, IP addresses, and access codes
-        result = await db.execute(select(Printer.name, Printer.serial_number, Printer.ip_address, Printer.access_code))
-        for name, serial, ip_address, access_code in result.all():
-            if name:
-                sensitive_strings[name] = "[PRINTER]"
-            if serial:
-                sensitive_strings[serial] = "[SERIAL]"
-            if ip_address:
-                sensitive_strings[ip_address] = "[IP]"
-            if access_code:
-                sensitive_strings[access_code] = "[ACCESS_CODE]"
-
-        # Auth usernames
-        result = await db.execute(select(User.username))
-        for (username,) in result.all():
-            if username:
-                sensitive_strings[username] = "[USER]"
-
-        # Bambu Cloud email
-        result = await db.execute(select(Settings.value).where(Settings.key == "bambu_cloud_email"))
-        cloud_email = result.scalar_one_or_none()
-        if cloud_email:
-            sensitive_strings[cloud_email] = "[EMAIL]"
+        sensitive_strings = await collect_sensitive_strings(db)
 
     # Collect support info
     support_info = await _collect_support_info()
@@ -891,8 +1442,43 @@ async def generate_support_bundle(
         # Add support info JSON
         zf.writestr("support-info.json", json.dumps(support_info, indent=2, default=str))
 
+        # Per-printer cached push_status dump. Bambu firmware ships per-model
+        # config in a different shape for every family (the bit-26 / print.cfg
+        # gap that blocked AMS Backup awareness in 85fbd7fc), and shape-of-
+        # vt_tray / mapping / vir_slot has bitten the VP bridge repeatedly.
+        # Including the redacted snapshot turns every future support bundle
+        # into a ground-truth sample for that exact model+firmware. Index
+        # matches the 1-based ordering in support-info.json["printers"] so a
+        # maintainer can cross-reference without re-deriving identifiers.
+        statuses = printer_manager.get_all_statuses()
+        async with async_session() as db:
+            db_printers = (await db.execute(select(Printer))).scalars().all()
+        for i, printer in enumerate(db_printers):
+            state = statuses.get(printer.id)
+            if state is None or not state.raw_data:
+                continue
+            redacted = _redact_raw_push_status(state.raw_data)
+            snapshot = {
+                "model": printer.model or "Unknown",
+                "firmware_version": state.firmware_version,
+                "captured_at": datetime.now(timezone.utc).isoformat(),
+                "raw_data": redacted,
+            }
+            # Belt-and-suspenders: pass every string value through the
+            # string-based sanitizer so any user-named string (printer name,
+            # serial baked into a tray uuid) the structural pass missed still
+            # gets caught. Values only — sanitizing the serialised JSON text
+            # corrupted numeric literals (see _sanitize_push_status_values).
+            snapshot = _sanitize_push_status_values(snapshot, sensitive_strings)
+            zf.writestr(f"push-status/printer-{i + 1}.json", json.dumps(snapshot, indent=2, default=str))
+
         # Add log file
-        log_content = _get_log_content(sensitive_strings=sensitive_strings)
+        # Off the event loop: this reads up to 10 MB and then runs one full regex
+        # pass per sensitive string over it. Now that the bundle spans the rotated
+        # files it can genuinely reach that ceiling, and the blocking cost scales
+        # with the number of printers (4 redaction patterns each) — i.e. it is
+        # worst on exactly the fleet size this change was written for.
+        log_content = await asyncio.to_thread(_get_log_content, sensitive_strings=sensitive_strings)
         zf.writestr("bambuddy.log", log_content)
 
     zip_buffer.seek(0)

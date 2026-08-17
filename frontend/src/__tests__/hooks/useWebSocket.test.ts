@@ -68,6 +68,15 @@ class MockWebSocket {
     }
   }
 
+  // Helper to simulate the server closing with a specific code (e.g. 4401,
+  // the /ws auth-rejection close code).
+  simulateClose(code: number) {
+    this.readyState = MockWebSocket.CLOSED;
+    if (this.onclose) {
+      this.onclose(new CloseEvent('close', { code }));
+    }
+  }
+
   // Helper to simulate receiving a message
   simulateMessage(data: unknown) {
     if (this.onmessage) {
@@ -107,8 +116,27 @@ function createWrapper(queryClient: QueryClient) {
   };
 }
 
-function getLatestWs(): MockWebSocket | undefined {
-  return wsInstances[wsInstances.length - 1];
+/**
+ * After GHSA-r2qv, useWebSocket awaits a ws-token fetch before constructing
+ * the WebSocket. The MockWebSocket isn't pushed into ``wsInstances`` until
+ * that promise resolves. ``waitFor`` from testing-library uses real-time
+ * polling and so wedges under ``vi.useFakeTimers()``; flushing microtasks
+ * manually works under both real and fake timers because Promise resolution
+ * runs on the microtask queue, not on the mocked clock.
+ *
+ * Two iterations suffice for ``await fetch(...)`` → ``await resp.json()``;
+ * a small headroom lets future awaits land here without changing every
+ * call site.
+ */
+async function waitForWs(): Promise<MockWebSocket> {
+  for (let i = 0; i < 10 && wsInstances.length === 0; i++) {
+    await Promise.resolve();
+  }
+  const ws = wsInstances[wsInstances.length - 1];
+  if (!ws) {
+    throw new Error('WebSocket was not constructed after microtask flush');
+  }
+  return ws;
 }
 
 describe('useWebSocket hook', () => {
@@ -122,10 +150,28 @@ describe('useWebSocket hook', () => {
     // Save original and install mock
     originalWebSocket = globalThis.WebSocket;
     globalThis.WebSocket = MockWebSocket as unknown as typeof WebSocket;
+
+    // After GHSA-r2qv, useWebSocket fetches a ws-token via api.getWebSocketToken
+    // before opening the socket. ``api.request`` reads ``response.headers``
+    // and ``response.status``; the stub must expose those (a missing
+    // ``headers`` field throws inside request() and the silent catch in
+    // useWebSocket then proceeds with an undefined token, so the assertion
+    // "URL contains ?token=" fails without making the cause obvious).
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () => ({
+        ok: true,
+        status: 200,
+        statusText: 'OK',
+        headers: { get: () => null },
+        json: async () => ({ token: 'test-ws-token' }),
+      })),
+    );
   });
 
   afterEach(() => {
     vi.restoreAllMocks();
+    vi.unstubAllGlobals();
     // Restore original WebSocket
     globalThis.WebSocket = originalWebSocket;
   });
@@ -190,9 +236,11 @@ describe('useWebSocket hook', () => {
         wrapper: createWrapper(queryClient),
       });
 
-      const ws = getLatestWs();
+      const ws = await waitForWs();
       expect(ws).toBeDefined();
-      expect(ws?.url).toContain('/api/v1/ws');
+      expect(ws.url).toContain('/api/v1/ws');
+      // GHSA-r2qv: the ws-token mint result is appended as ?token=...
+      expect(ws.url).toContain('token=test-ws-token');
     });
 
     it('reports connected state when WebSocket opens', async () => {
@@ -206,9 +254,9 @@ describe('useWebSocket hook', () => {
       expect(result.current.isConnected).toBe(false);
 
       // Simulate connection opening
-      const ws = getLatestWs();
+      const ws = await waitForWs();
       act(() => {
-        ws?.open();
+        ws.open();
       });
 
       await waitFor(() => {
@@ -285,7 +333,7 @@ describe('useWebSocket hook', () => {
         wrapper: createWrapper(queryClient),
       });
 
-      const ws = getLatestWs()!;
+      const ws = await waitForWs();
 
       // Open connection
       act(() => {
@@ -327,7 +375,7 @@ describe('useWebSocket hook', () => {
         wrapper: createWrapper(queryClient),
       });
 
-      const ws = getLatestWs()!;
+      const ws = await waitForWs();
 
       // Open connection
       act(() => {
@@ -368,7 +416,7 @@ describe('useWebSocket hook', () => {
         wrapper: createWrapper(queryClient),
       });
 
-      const ws = getLatestWs()!;
+      const ws = await waitForWs();
 
       // Open connection
       act(() => {
@@ -394,6 +442,42 @@ describe('useWebSocket hook', () => {
       vi.unstubAllGlobals();
     });
 
+    it('invalidates inventory queries on inventory_changed message', async () => {
+      vi.useFakeTimers();
+      vi.stubGlobal('requestAnimationFrame', (cb: FrameRequestCallback) => {
+        cb(0);
+        return 0;
+      });
+      const { useWebSocket } = await import('../../hooks/useWebSocket');
+
+      const invalidateSpy = vi.spyOn(queryClient, 'invalidateQueries');
+
+      renderHook(() => useWebSocket(), {
+        wrapper: createWrapper(queryClient),
+      });
+
+      const ws = await waitForWs();
+
+      act(() => {
+        ws.open();
+      });
+
+      act(() => {
+        ws.simulateMessage({ type: 'inventory_changed' });
+      });
+
+      await act(async () => {
+        vi.advanceTimersByTime(5000);
+      });
+
+      expect(invalidateSpy).toHaveBeenCalledWith({ queryKey: ['inventory-spools'] });
+      expect(invalidateSpy).toHaveBeenCalledWith({ queryKey: ['spoolman-inventory-spools'] });
+      expect(invalidateSpy).toHaveBeenCalledWith({ queryKey: ['inventory-locations'] });
+
+      vi.useRealTimers();
+      vi.unstubAllGlobals();
+    });
+
     it('handles missing_spool_assignment message without error', async () => {
       vi.stubGlobal('requestAnimationFrame', (cb: FrameRequestCallback) => {
         cb(0);
@@ -405,7 +489,7 @@ describe('useWebSocket hook', () => {
         wrapper: createWrapper(queryClient),
       });
 
-      const ws = getLatestWs()!;
+      const ws = await waitForWs();
       act(() => {
         ws.open();
       });
@@ -426,6 +510,56 @@ describe('useWebSocket hook', () => {
       vi.unstubAllGlobals();
     });
 
+    it('handles spool_assignment_verified messages (success and failure) without error', async () => {
+      vi.stubGlobal('requestAnimationFrame', (cb: FrameRequestCallback) => {
+        cb(0);
+        return 0;
+      });
+      const { useWebSocket } = await import('../../hooks/useWebSocket');
+
+      renderHook(() => useWebSocket(), {
+        wrapper: createWrapper(queryClient),
+      });
+
+      const ws = await waitForWs();
+      act(() => {
+        ws.open();
+      });
+
+      // #2582: verified (loaded), loaded-but-no-K-profile, and not-confirmed
+      // all route to a toast — assert none of the branches throw.
+      expect(() => {
+        act(() => {
+          ws.simulateMessage({
+            type: 'spool_assignment_verified',
+            printer_id: 3,
+            printer_name: 'Printer A',
+            slot: 'A1',
+            verified: true,
+            kprofile_applied: true,
+          });
+          ws.simulateMessage({
+            type: 'spool_assignment_verified',
+            printer_id: 3,
+            printer_name: 'Printer A',
+            slot: 'A1',
+            verified: true,
+            kprofile_applied: false,
+          });
+          ws.simulateMessage({
+            type: 'spool_assignment_verified',
+            printer_id: 3,
+            printer_name: 'Printer A',
+            slot: 'A1',
+            verified: false,
+            saw_tray: true,
+          });
+        });
+      }).not.toThrow();
+
+      vi.unstubAllGlobals();
+    });
+
     it('ignores pong messages without error', async () => {
       const { useWebSocket } = await import('../../hooks/useWebSocket');
 
@@ -435,7 +569,7 @@ describe('useWebSocket hook', () => {
         wrapper: createWrapper(queryClient),
       });
 
-      const ws = getLatestWs()!;
+      const ws = await waitForWs();
 
       // Open connection
       act(() => {
@@ -460,7 +594,7 @@ describe('useWebSocket hook', () => {
         wrapper: createWrapper(queryClient),
       });
 
-      const ws = getLatestWs()!;
+      const ws = await waitForWs();
 
       // Open connection
       act(() => {
@@ -490,7 +624,7 @@ describe('useWebSocket hook', () => {
         wrapper: createWrapper(queryClient),
       });
 
-      const ws = getLatestWs()!;
+      const ws = await waitForWs();
 
       // Open connection
       act(() => {
@@ -519,7 +653,7 @@ describe('useWebSocket hook', () => {
         wrapper: createWrapper(queryClient),
       });
 
-      const ws = getLatestWs()!;
+      const ws = await waitForWs();
 
       // Open connection
       act(() => {
@@ -542,7 +676,7 @@ describe('useWebSocket hook', () => {
         wrapper: createWrapper(queryClient),
       });
 
-      const ws = getLatestWs()!;
+      const ws = await waitForWs();
 
       // Don't open connection - still in CONNECTING state
 
@@ -564,7 +698,11 @@ describe('useWebSocket hook', () => {
         wrapper: createWrapper(queryClient),
       });
 
-      const firstWs = getLatestWs()!;
+      // GHSA-r2qv: connect() awaits a ws-token fetch before constructing
+      // the WebSocket. Flush microtasks under fake timers so the await
+      // resolves and MockWebSocket is pushed into wsInstances.
+      await vi.advanceTimersByTimeAsync(0);
+      const firstWs = wsInstances[wsInstances.length - 1]!;
 
       // Open connection
       act(() => {
@@ -578,14 +716,102 @@ describe('useWebSocket hook', () => {
         firstWs.close();
       });
 
-      // Wait for reconnect timeout (3 seconds)
-      act(() => {
-        vi.advanceTimersByTime(3000);
-      });
+      // Wait for reconnect timeout (3 seconds) + microtask flush for the
+      // async connect() that the reconnect schedules.
+      await vi.advanceTimersByTimeAsync(3000);
 
       // Should have created new WebSocket
       expect(wsInstances.length).toBe(instanceCountBefore + 1);
-      expect(getLatestWs()).not.toBe(firstWs);
+      expect(wsInstances[wsInstances.length - 1]).not.toBe(firstWs);
+
+      vi.useRealTimers();
+    });
+
+    it('does NOT reconnect after an auth-rejection close (4401)', async () => {
+      // Regression: a 4401 (ws-token invalid/expired or caller lacks
+      // WEBSOCKET_CONNECT) used to reschedule connect() every 3s, spamming
+      // /auth/ws-token forever. It must be terminal now.
+      vi.useFakeTimers();
+
+      const { useWebSocket } = await import('../../hooks/useWebSocket');
+      renderHook(() => useWebSocket(), { wrapper: createWrapper(queryClient) });
+
+      await vi.advanceTimersByTimeAsync(0);
+      const firstWs = wsInstances[wsInstances.length - 1]!;
+      act(() => {
+        firstWs.open();
+      });
+
+      const instanceCountBefore = wsInstances.length;
+
+      // Server rejects auth.
+      act(() => {
+        firstWs.simulateClose(4401);
+      });
+
+      // No reconnect even after the 3s window elapses.
+      await vi.advanceTimersByTimeAsync(3000);
+      expect(wsInstances.length).toBe(instanceCountBefore);
+
+      vi.useRealTimers();
+    });
+
+    it('does NOT open a socket or reconnect when ws-token mint returns 403', async () => {
+      // Mike/Forge's case: an authenticated user whose group lacks
+      // WEBSOCKET_CONNECT. POST /auth/ws-token returns 403; the hook must NOT
+      // fall through to a tokenless socket (server closes it 4401) and must NOT
+      // enter the reconnect loop — it degrades to REST polling instead.
+      vi.useFakeTimers();
+
+      vi.stubGlobal(
+        'fetch',
+        vi.fn(async () => ({
+          ok: false,
+          status: 403,
+          statusText: 'Forbidden',
+          headers: { get: () => null },
+          json: async () => ({ detail: 'Insufficient permissions' }),
+        })),
+      );
+
+      const { useWebSocket } = await import('../../hooks/useWebSocket');
+      renderHook(() => useWebSocket(), { wrapper: createWrapper(queryClient) });
+
+      // Flush the token-mint rejection, then let the (would-be) reconnect
+      // window pass. No socket should ever be constructed.
+      await vi.advanceTimersByTimeAsync(0);
+      await vi.advanceTimersByTimeAsync(3000);
+      expect(wsInstances.length).toBe(0);
+
+      vi.useRealTimers();
+    });
+
+    it('does NOT reconnect when a close fires during unmount', async () => {
+      // The provider unmounting (e.g. logout redirect) must not leave a
+      // scheduled reconnect behind — the cleanup marks disposed before
+      // close(), so the resulting onclose is a no-op.
+      vi.useFakeTimers();
+
+      const { useWebSocket } = await import('../../hooks/useWebSocket');
+      const { unmount } = renderHook(() => useWebSocket(), {
+        wrapper: createWrapper(queryClient),
+      });
+
+      await vi.advanceTimersByTimeAsync(0);
+      const ws = wsInstances[wsInstances.length - 1]!;
+      act(() => {
+        ws.open();
+      });
+
+      const instanceCountBefore = wsInstances.length;
+
+      // Unmount closes the socket, which fires onclose synchronously.
+      act(() => {
+        unmount();
+      });
+
+      await vi.advanceTimersByTimeAsync(3000);
+      expect(wsInstances.length).toBe(instanceCountBefore);
 
       vi.useRealTimers();
     });
@@ -597,7 +823,7 @@ describe('useWebSocket hook', () => {
         wrapper: createWrapper(queryClient),
       });
 
-      const ws = getLatestWs()!;
+      const ws = await waitForWs();
 
       // Open connection
       act(() => {

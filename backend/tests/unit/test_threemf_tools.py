@@ -5,11 +5,20 @@ and cumulative layer usage lookup.
 """
 
 import io
+import json
 import math
 import zipfile
 
 from backend.app.utils.threemf_tools import (
+    expand_to_project_slots,
+    extract_bed_type_from_3mf,
+    extract_embedded_presets_from_3mf,
     extract_filament_usage_from_3mf,
+    extract_max_z_height_from_3mf,
+    extract_plate_extruder_set_from_3mf,
+    extract_print_time_from_3mf,
+    extract_project_filaments_from_3mf,
+    extract_support_filament_slots_from_3mf,
     get_cumulative_usage_at_layer,
     mm_to_grams,
     parse_gcode_layer_filament_usage,
@@ -408,3 +417,978 @@ class TestExtractFilamentUsageFrom3mf:
         assert len(result) == 1
         assert result[0]["type"] == ""
         assert result[0]["color"] == ""
+
+
+# ---------------------------------------------------------------------------
+# Tests for extract_project_filaments_from_3mf — used by the slice modal as
+# fallback when the sidecar can't run a preview slice.
+# ---------------------------------------------------------------------------
+
+
+def _make_3mf_with(files: dict[str, bytes | str]) -> zipfile.ZipFile:
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w") as zf:
+        for name, content in files.items():
+            zf.writestr(name, content if isinstance(content, (bytes, str)) else str(content))
+    buf.seek(0)
+    return zipfile.ZipFile(buf, "r")
+
+
+class TestExtractProjectFilamentsFrom3mf:
+    """The helper backfills the slice modal when slice_info.config is empty
+    (raw project files) and the sidecar is unreachable."""
+
+    def test_returns_empty_when_project_settings_missing(self):
+        with _make_3mf_with({"placeholder.txt": "hi"}) as zf:
+            assert extract_project_filaments_from_3mf(zf) == []
+
+    def test_happy_path_returns_one_entry_per_slot(self):
+        proj = {
+            "filament_type": ["PLA", "PETG"],
+            "filament_colour": ["#000000", "#FFFFFF"],
+        }
+        with _make_3mf_with({"Metadata/project_settings.config": json.dumps(proj)}) as zf:
+            out = extract_project_filaments_from_3mf(zf)
+        assert [(f["slot_id"], f["type"], f["color"]) for f in out] == [
+            (1, "PLA", "#000000"),
+            (2, "PETG", "#FFFFFF"),
+        ]
+
+    def test_mismatched_array_lengths_use_max_with_blanks(self):
+        proj = {
+            "filament_type": ["PLA", "PETG", "ABS"],
+            "filament_colour": ["#000000"],
+        }
+        with _make_3mf_with({"Metadata/project_settings.config": json.dumps(proj)}) as zf:
+            out = extract_project_filaments_from_3mf(zf)
+        assert len(out) == 3
+        assert out[0]["color"] == "#000000"
+        assert out[1]["color"] == ""
+        assert out[2]["color"] == ""
+
+    def test_corrupt_json_returns_empty_no_exception(self):
+        with _make_3mf_with({"Metadata/project_settings.config": b"{not json"}) as zf:
+            assert extract_project_filaments_from_3mf(zf) == []
+
+    def test_root_is_list_returns_empty(self):
+        # Defensive: spec says it's a dict, but a file shipping a top-level
+        # list (or anything non-dict) shouldn't crash the modal.
+        with _make_3mf_with({"Metadata/project_settings.config": json.dumps([])}) as zf:
+            assert extract_project_filaments_from_3mf(zf) == []
+
+    def test_empty_arrays_returns_empty(self):
+        proj = {"filament_type": [], "filament_colour": []}
+        with _make_3mf_with({"Metadata/project_settings.config": json.dumps(proj)}) as zf:
+            assert extract_project_filaments_from_3mf(zf) == []
+
+
+# ---------------------------------------------------------------------------
+# Tests for expand_to_project_slots — #2712
+# ---------------------------------------------------------------------------
+
+
+class TestExpandToProjectSlots:
+    """The slice modal's filament list is positional: index 0 is slot 1, all
+    the way through to the ``filament_N.json`` parts handed to the slicer.
+
+    A MakerWorld source that carries slice_info but paints with slot 4 alone
+    used to yield a one-row list, so the user's single pick was bound to slot
+    1 and slot 4 — the slot that actually prints — kept the source's embedded
+    default. Picking PETG produced a PLA print.
+    """
+
+    PROJECT = json.dumps(
+        {
+            "filament_type": ["PLA", "PLA", "PLA", "PLA"],
+            "filament_colour": ["#38CC0A", "#161616", "#898989", "#898989"],
+        }
+    )
+
+    def test_a_single_used_slot_still_produces_a_full_positional_list(self):
+        """The reported file: four project slots, only slot 4 printed."""
+        used = [
+            {
+                "slot_id": 4,
+                "type": "PLA",
+                "color": "#898989",
+                "used_grams": 105.9,
+                "used_meters": 35.51,
+                "tray_info_idx": "GFL99",
+                "used_in_plate": True,
+            }
+        ]
+        with _make_3mf_with({"Metadata/project_settings.config": self.PROJECT}) as zf:
+            out = expand_to_project_slots(zf, used)
+
+        assert [f["slot_id"] for f in out] == [1, 2, 3, 4]
+        assert [f["used_in_plate"] for f in out] == [False, False, False, True]
+
+    def test_the_used_row_keeps_its_usage_figures(self):
+        """The modal shows the real weight and colour, and the print path
+        downstream reads ``tray_info_idx`` — none of it may be flattened into
+        a zeroed project row."""
+        used = [
+            {
+                "slot_id": 4,
+                "type": "PETG",
+                "color": "#FF0000",
+                "used_grams": 105.9,
+                "used_meters": 35.51,
+                "tray_info_idx": "GFL99",
+                "used_in_plate": True,
+            }
+        ]
+        with _make_3mf_with({"Metadata/project_settings.config": self.PROJECT}) as zf:
+            out = expand_to_project_slots(zf, used)
+
+        slot4 = out[3]
+        assert slot4["used_grams"] == 105.9
+        assert slot4["tray_info_idx"] == "GFL99"
+        # Resolved from the slice, not the project's stale PLA/#898989.
+        assert (slot4["type"], slot4["color"]) == ("PETG", "#FF0000")
+
+    def test_padding_rows_carry_the_project_type_and_colour(self):
+        """They drive the modal's pre-pick for the disabled rows."""
+        used = [{"slot_id": 4, "type": "PLA", "color": "#898989", "used_grams": 1.0, "used_meters": 1.0}]
+        with _make_3mf_with({"Metadata/project_settings.config": self.PROJECT}) as zf:
+            out = expand_to_project_slots(zf, used)
+
+        assert (out[0]["type"], out[0]["color"]) == ("PLA", "#38CC0A")
+        assert out[0]["used_grams"] == 0
+
+    def test_every_slot_used_is_a_shape_change_only(self):
+        used = [
+            {"slot_id": i, "type": "PLA", "color": "", "used_grams": 5.0, "used_meters": 1.0, "used_in_plate": True}
+            for i in (1, 2, 3, 4)
+        ]
+        with _make_3mf_with({"Metadata/project_settings.config": self.PROJECT}) as zf:
+            out = expand_to_project_slots(zf, used)
+
+        assert len(out) == 4
+        assert all(f["used_in_plate"] for f in out)
+        assert all(f["used_grams"] == 5.0 for f in out)
+
+    def test_a_used_slot_beyond_the_project_list_is_kept(self):
+        """Dropping it would recreate the original bug on a file whose
+        project settings and slice_info disagree — the one slot that prints
+        would vanish from the list entirely."""
+        used = [{"slot_id": 9, "type": "PLA", "color": "", "used_grams": 5.0, "used_meters": 1.0}]
+        with _make_3mf_with({"Metadata/project_settings.config": self.PROJECT}) as zf:
+            out = expand_to_project_slots(zf, used)
+
+        assert [f["slot_id"] for f in out] == [1, 2, 3, 4, 9]
+        assert out[-1]["used_in_plate"] is True
+
+    def test_returns_the_input_unchanged_without_project_settings(self):
+        """Nothing to widen against — a narrow list still prints correctly,
+        an invented one might not."""
+        used = [{"slot_id": 4, "type": "PLA", "color": "", "used_grams": 5.0, "used_meters": 1.0}]
+        with _make_3mf_with({"placeholder.txt": "hi"}) as zf:
+            assert expand_to_project_slots(zf, used) == used
+
+
+# ---------------------------------------------------------------------------
+# Tests for extract_plate_extruder_set_from_3mf — three sources unioned:
+# object top-level extruder, per-part extruder, painted-face quadtree leaves.
+# ---------------------------------------------------------------------------
+
+
+def _model_settings(plate_id: int, objects: list[dict]) -> str:
+    """Build a minimal model_settings.config XML for tests. Each object dict
+    can have: id, extruder (top-level), parts (list of {extruder}).
+    The plate references all object ids."""
+    parts_xml = []
+    for obj in objects:
+        oid = obj["id"]
+        ext = obj.get("extruder")
+        parts = obj.get("parts", [])
+        ext_meta = f'<metadata key="extruder" value="{ext}"/>' if ext is not None else ""
+        part_blocks = "".join(
+            f'<part id="{i}" subtype="normal_part"><metadata key="extruder" value="{p["extruder"]}"/></part>'
+            for i, p in enumerate(parts)
+            if p.get("extruder") is not None
+        )
+        parts_xml.append(f'<object id="{oid}"><metadata key="name" value="o{oid}"/>{ext_meta}{part_blocks}</object>')
+    instances = "".join(
+        f'<model_instance><metadata key="object_id" value="{o["id"]}"/></model_instance>' for o in objects
+    )
+    plate = f'<plate><metadata key="plater_id" value="{plate_id}"/>{instances}</plate>'
+    return f'<?xml version="1.0"?><config>{"".join(parts_xml)}{plate}</config>'
+
+
+class TestExtractPlateExtruderSetFrom3mf:
+    def test_returns_empty_set_when_model_settings_missing(self):
+        with _make_3mf_with({"placeholder.txt": "hi"}) as zf:
+            assert extract_plate_extruder_set_from_3mf(zf, plate_id=1) == set()
+
+    def test_object_top_level_extruder_only(self):
+        xml = _model_settings(plate_id=1, objects=[{"id": "10", "extruder": 2}])
+        with _make_3mf_with({"Metadata/model_settings.config": xml}) as zf:
+            assert extract_plate_extruder_set_from_3mf(zf, plate_id=1) == {2}
+
+    def test_per_part_extruder_unions_with_top_level(self):
+        # Object's default is 1; one of its parts overrides to 3 (multi-color
+        # via a sub-mesh). Union both — the slicer needs profiles for both.
+        xml = _model_settings(
+            plate_id=1,
+            objects=[{"id": "10", "extruder": 1, "parts": [{"extruder": 3}]}],
+        )
+        with _make_3mf_with({"Metadata/model_settings.config": xml}) as zf:
+            assert extract_plate_extruder_set_from_3mf(zf, plate_id=1) == {1, 3}
+
+    def test_unknown_plate_id_returns_empty_set(self):
+        xml = _model_settings(plate_id=1, objects=[{"id": "10", "extruder": 2}])
+        with _make_3mf_with({"Metadata/model_settings.config": xml}) as zf:
+            assert extract_plate_extruder_set_from_3mf(zf, plate_id=99) == set()
+
+    def test_corrupt_xml_returns_empty_set_no_exception(self):
+        with _make_3mf_with({"Metadata/model_settings.config": "<not valid xml"}) as zf:
+            assert extract_plate_extruder_set_from_3mf(zf, plate_id=1) == set()
+
+    def test_zero_extruder_value_ignored(self):
+        # Bambu's 0 means "use object default" — not a real slot.
+        xml = _model_settings(plate_id=1, objects=[{"id": "10", "extruder": 0}])
+        with _make_3mf_with({"Metadata/model_settings.config": xml}) as zf:
+            assert extract_plate_extruder_set_from_3mf(zf, plate_id=1) == set()
+
+    def test_painted_face_above_threshold_kept(self):
+        # 60/40 split: 60 triangles painted with extruder 1, 40 with ext 2.
+        # Threshold is 5%; both above. The dominant ones are real colours.
+        triangles = []
+        for _ in range(60):
+            triangles.append('<triangle v1="0" v2="1" v3="2" paint_color="1"/>')
+        for _ in range(40):
+            triangles.append('<triangle v1="0" v2="1" v3="2" paint_color="2"/>')
+        per_obj = (
+            '<?xml version="1.0"?>'
+            '<model><resources><object id="100" type="model"><mesh>'
+            "<triangles>" + "".join(triangles) + "</triangles>"
+            "</mesh></object></resources><build/></model>"
+        )
+        ms = (
+            '<?xml version="1.0"?><config>'
+            '<object id="10"><metadata key="name" value="o"/></object>'
+            '<plate><metadata key="plater_id" value="1"/>'
+            '<model_instance><metadata key="object_id" value="10"/></model_instance>'
+            "</plate></config>"
+        )
+        threed = (
+            '<?xml version="1.0"?>'
+            '<model xmlns="http://schemas.microsoft.com/3dmanufacturing/core/2015/02"'
+            ' xmlns:p="http://schemas.microsoft.com/3dmanufacturing/production/2015/06">'
+            "<resources>"
+            '<object id="10" type="model"><components>'
+            '<component p:path="/3D/Objects/o100.model" objectid="100"/>'
+            "</components></object>"
+            "</resources><build/></model>"
+        )
+        with _make_3mf_with(
+            {
+                "Metadata/model_settings.config": ms,
+                "3D/3dmodel.model": threed,
+                "3D/Objects/o100.model": per_obj,
+            }
+        ) as zf:
+            result = extract_plate_extruder_set_from_3mf(zf, plate_id=1)
+        # Both real colours kept (60/40 well above 5% threshold); the dropped
+        # threshold case is the regression that motivates this test.
+        assert result == {1, 2}
+
+    def test_painted_face_below_threshold_dropped_as_noise(self):
+        # 99 triangles at ext 1, 1 triangle at ext 9 (1% — below 5%
+        # threshold). The 1% leaf is a single-leaf accident.
+        triangles = []
+        for _ in range(99):
+            triangles.append('<triangle v1="0" v2="1" v3="2" paint_color="1"/>')
+        triangles.append('<triangle v1="0" v2="1" v3="2" paint_color="9"/>')
+        per_obj = (
+            '<?xml version="1.0"?>'
+            '<model><resources><object id="100" type="model"><mesh>'
+            "<triangles>" + "".join(triangles) + "</triangles>"
+            "</mesh></object></resources><build/></model>"
+        )
+        ms = (
+            '<?xml version="1.0"?><config>'
+            '<object id="10"><metadata key="name" value="o"/></object>'
+            '<plate><metadata key="plater_id" value="1"/>'
+            '<model_instance><metadata key="object_id" value="10"/></model_instance>'
+            "</plate></config>"
+        )
+        threed = (
+            '<?xml version="1.0"?>'
+            '<model xmlns="http://schemas.microsoft.com/3dmanufacturing/core/2015/02"'
+            ' xmlns:p="http://schemas.microsoft.com/3dmanufacturing/production/2015/06">'
+            '<resources><object id="10" type="model"><components>'
+            '<component p:path="/3D/Objects/o100.model" objectid="100"/>'
+            "</components></object></resources><build/></model>"
+        )
+        with _make_3mf_with(
+            {
+                "Metadata/model_settings.config": ms,
+                "3D/3dmodel.model": threed,
+                "3D/Objects/o100.model": per_obj,
+            }
+        ) as zf:
+            result = extract_plate_extruder_set_from_3mf(zf, plate_id=1)
+        # Single-leaf accident at 1% filtered as noise; only the dominant
+        # extruder survives.
+        assert result == {1}
+
+    def test_missing_per_object_model_file_silently_skipped(self):
+        ms = (
+            '<?xml version="1.0"?><config>'
+            '<object id="10"><metadata key="extruder" value="2"/></object>'
+            '<plate><metadata key="plater_id" value="1"/>'
+            '<model_instance><metadata key="object_id" value="10"/></model_instance>'
+            "</plate></config>"
+        )
+        threed = (
+            '<?xml version="1.0"?>'
+            '<model xmlns="http://schemas.microsoft.com/3dmanufacturing/core/2015/02"'
+            ' xmlns:p="http://schemas.microsoft.com/3dmanufacturing/production/2015/06">'
+            '<resources><object id="10" type="model"><components>'
+            '<component p:path="/3D/Objects/missing.model" objectid="999"/>'
+            "</components></object></resources><build/></model>"
+        )
+        with _make_3mf_with(
+            {"Metadata/model_settings.config": ms, "3D/3dmodel.model": threed},
+        ) as zf:
+            # Top-level metadata still works; missing component model file
+            # is silently skipped without crashing.
+            assert extract_plate_extruder_set_from_3mf(zf, plate_id=1) == {2}
+
+
+class TestExtractEmbeddedPresetsFrom3mf:
+    """Printer / process preset names read from project_settings.config so the
+    SliceModal can default its dropdowns to the file's own config (#1325)."""
+
+    def test_extracts_printer_and_process(self):
+        config = json.dumps(
+            {
+                "printer_settings_id": "Bambu Lab X1 Carbon 0.4 nozzle",
+                "print_settings_id": "0.20mm Standard @BBL X1C",
+                "filament_settings_id": ["Bambu PLA Basic @BBL X1C"],
+            }
+        )
+        with _make_3mf_with({"Metadata/project_settings.config": config}) as zf:
+            assert extract_embedded_presets_from_3mf(zf) == {
+                "printer": "Bambu Lab X1 Carbon 0.4 nozzle",
+                "process": "0.20mm Standard @BBL X1C",
+            }
+
+    def test_settings_id_as_list_takes_first(self):
+        # Some exports write *_settings_id as a per-extruder list.
+        config = json.dumps(
+            {
+                "printer_settings_id": ["Bambu Lab A1 0.4 nozzle"],
+                "print_settings_id": ["0.16mm Optimal @BBL A1", "0.20mm @BBL A1"],
+            }
+        )
+        with _make_3mf_with({"Metadata/project_settings.config": config}) as zf:
+            result = extract_embedded_presets_from_3mf(zf)
+            assert result["printer"] == "Bambu Lab A1 0.4 nozzle"
+            assert result["process"] == "0.16mm Optimal @BBL A1"
+
+    def test_missing_config_returns_none_values(self):
+        with _make_3mf_with({"3D/3dmodel.model": "<model/>"}) as zf:
+            assert extract_embedded_presets_from_3mf(zf) == {
+                "printer": None,
+                "process": None,
+            }
+
+    def test_malformed_json_returns_none_values(self):
+        with _make_3mf_with({"Metadata/project_settings.config": "not json"}) as zf:
+            assert extract_embedded_presets_from_3mf(zf) == {
+                "printer": None,
+                "process": None,
+            }
+
+    def test_blank_and_absent_keys_yield_none(self):
+        config = json.dumps({"printer_settings_id": "  ", "other": "x"})
+        with _make_3mf_with({"Metadata/project_settings.config": config}) as zf:
+            assert extract_embedded_presets_from_3mf(zf) == {
+                "printer": None,
+                "process": None,
+            }
+
+
+class TestExtractBedTypeFrom3mf:
+    """extract_bed_type_from_3mf reads per-plate `curr_bed_type` from
+    slice_info.config so the queue / print modal can show the right plate
+    even on multi-plate 3MFs where different plates target different beds
+    (#1281). archive.bed_type is one-value-per-archive (first plate's
+    curr_bed_type — see services/archive.py:235), so for accurate
+    per-plate surfacing we have to re-read the 3MF."""
+
+    def test_single_plate_returns_bed_type(self, tmp_path):
+        xml_content = """<?xml version="1.0" encoding="UTF-8"?>
+        <config>
+            <plate>
+                <metadata key="index" value="1"/>
+                <metadata key="curr_bed_type" value="Textured PEI Plate"/>
+            </plate>
+        </config>
+        """
+        file_path = tmp_path / "test.3mf"
+        file_path.write_bytes(create_mock_3mf(xml_content).read())
+
+        assert extract_bed_type_from_3mf(file_path) == "Textured PEI Plate"
+
+    def test_multi_plate_returns_per_plate_value(self, tmp_path):
+        # Reporter's case: a 3MF mixing PEI + Engineering across plates.
+        # Looking up by plate_id must return THAT plate's value, not the
+        # first plate's value the archive happens to cache.
+        xml_content = """<?xml version="1.0" encoding="UTF-8"?>
+        <config>
+            <plate>
+                <metadata key="index" value="1"/>
+                <metadata key="curr_bed_type" value="Textured PEI Plate"/>
+            </plate>
+            <plate>
+                <metadata key="index" value="2"/>
+                <metadata key="curr_bed_type" value="Engineering Plate"/>
+            </plate>
+            <plate>
+                <metadata key="index" value="3"/>
+                <metadata key="curr_bed_type" value="Cool Plate"/>
+            </plate>
+        </config>
+        """
+        file_path = tmp_path / "test.3mf"
+        file_path.write_bytes(create_mock_3mf(xml_content).read())
+
+        assert extract_bed_type_from_3mf(file_path, plate_id=1) == "Textured PEI Plate"
+        assert extract_bed_type_from_3mf(file_path, plate_id=2) == "Engineering Plate"
+        assert extract_bed_type_from_3mf(file_path, plate_id=3) == "Cool Plate"
+
+    def test_no_plate_id_returns_first_plate(self, tmp_path):
+        # The plate_id=None branch must match the archive-level capture
+        # convention (first plate wins) so callers that don't care about
+        # plate selection see the same value the archive table holds.
+        xml_content = """<?xml version="1.0" encoding="UTF-8"?>
+        <config>
+            <plate>
+                <metadata key="index" value="1"/>
+                <metadata key="curr_bed_type" value="Cool Plate SuperTack"/>
+            </plate>
+            <plate>
+                <metadata key="index" value="2"/>
+                <metadata key="curr_bed_type" value="Engineering Plate"/>
+            </plate>
+        </config>
+        """
+        file_path = tmp_path / "test.3mf"
+        file_path.write_bytes(create_mock_3mf(xml_content).read())
+
+        assert extract_bed_type_from_3mf(file_path) == "Cool Plate SuperTack"
+
+    def test_unknown_plate_id_returns_none(self, tmp_path):
+        xml_content = """<?xml version="1.0" encoding="UTF-8"?>
+        <config>
+            <plate>
+                <metadata key="index" value="1"/>
+                <metadata key="curr_bed_type" value="Textured PEI Plate"/>
+            </plate>
+        </config>
+        """
+        file_path = tmp_path / "test.3mf"
+        file_path.write_bytes(create_mock_3mf(xml_content).read())
+
+        assert extract_bed_type_from_3mf(file_path, plate_id=99) is None
+
+    def test_plate_without_bed_type_returns_none(self, tmp_path):
+        # Older slicers may export a plate without curr_bed_type. The
+        # helper must return None rather than falling through to another
+        # plate's value (which would silently lie).
+        xml_content = """<?xml version="1.0" encoding="UTF-8"?>
+        <config>
+            <plate>
+                <metadata key="index" value="1"/>
+            </plate>
+            <plate>
+                <metadata key="index" value="2"/>
+                <metadata key="curr_bed_type" value="Engineering Plate"/>
+            </plate>
+        </config>
+        """
+        file_path = tmp_path / "test.3mf"
+        file_path.write_bytes(create_mock_3mf(xml_content).read())
+
+        assert extract_bed_type_from_3mf(file_path, plate_id=1) is None
+        assert extract_bed_type_from_3mf(file_path, plate_id=2) == "Engineering Plate"
+
+    def test_missing_slice_info_returns_none(self, tmp_path):
+        buffer = io.BytesIO()
+        with zipfile.ZipFile(buffer, "w") as zf:
+            zf.writestr("other_file.txt", "content")
+        buffer.seek(0)
+
+        file_path = tmp_path / "test.3mf"
+        file_path.write_bytes(buffer.read())
+
+        assert extract_bed_type_from_3mf(file_path) is None
+
+    def test_invalid_file_returns_none(self, tmp_path):
+        file_path = tmp_path / "invalid.3mf"
+        file_path.write_text("not a zip file")
+
+        assert extract_bed_type_from_3mf(file_path) is None
+
+    def test_whitespace_trimmed(self, tmp_path):
+        # 3MF values sometimes carry surrounding whitespace from manual
+        # template tweaks; getBedTypeInfo() on the frontend is also
+        # whitespace-tolerant, but the wire shape should be clean.
+        xml_content = """<?xml version="1.0" encoding="UTF-8"?>
+        <config>
+            <plate>
+                <metadata key="index" value="1"/>
+                <metadata key="curr_bed_type" value="  Textured PEI Plate  "/>
+            </plate>
+        </config>
+        """
+        file_path = tmp_path / "test.3mf"
+        file_path.write_bytes(create_mock_3mf(xml_content).read())
+
+        assert extract_bed_type_from_3mf(file_path) == "Textured PEI Plate"
+
+
+class TestExtractPrintTimeFrom3mf:
+    """Tests for extract_print_time_from_3mf — the per-plate `prediction` reader
+    used by the completion notification path to scope the archive-level (summed)
+    total down to the actually-printed plate (#1785)."""
+
+    def test_returns_plate_prediction_when_plate_id_matches(self, tmp_path):
+        xml_content = """<?xml version="1.0" encoding="UTF-8"?>
+        <config>
+            <plate>
+                <metadata key="index" value="1"/>
+                <metadata key="prediction" value="3600"/>
+            </plate>
+            <plate>
+                <metadata key="index" value="2"/>
+                <metadata key="prediction" value="7200"/>
+            </plate>
+            <plate>
+                <metadata key="index" value="3"/>
+                <metadata key="prediction" value="10800"/>
+            </plate>
+        </config>
+        """
+        file_path = tmp_path / "test.3mf"
+        file_path.write_bytes(create_mock_3mf(xml_content).read())
+
+        assert extract_print_time_from_3mf(file_path, plate_id=2) == 7200
+
+    def test_returns_first_plate_when_no_plate_id(self, tmp_path):
+        xml_content = """<?xml version="1.0" encoding="UTF-8"?>
+        <config>
+            <plate>
+                <metadata key="index" value="1"/>
+                <metadata key="prediction" value="900"/>
+            </plate>
+            <plate>
+                <metadata key="index" value="2"/>
+                <metadata key="prediction" value="1800"/>
+            </plate>
+        </config>
+        """
+        file_path = tmp_path / "test.3mf"
+        file_path.write_bytes(create_mock_3mf(xml_content).read())
+
+        assert extract_print_time_from_3mf(file_path) == 900
+
+    def test_returns_none_when_plate_id_missing(self, tmp_path):
+        xml_content = """<?xml version="1.0" encoding="UTF-8"?>
+        <config>
+            <plate>
+                <metadata key="index" value="1"/>
+                <metadata key="prediction" value="3600"/>
+            </plate>
+        </config>
+        """
+        file_path = tmp_path / "test.3mf"
+        file_path.write_bytes(create_mock_3mf(xml_content).read())
+
+        assert extract_print_time_from_3mf(file_path, plate_id=5) is None
+
+    def test_returns_none_when_prediction_unparseable(self, tmp_path):
+        xml_content = """<?xml version="1.0" encoding="UTF-8"?>
+        <config>
+            <plate>
+                <metadata key="index" value="1"/>
+                <metadata key="prediction" value="not-a-number"/>
+            </plate>
+        </config>
+        """
+        file_path = tmp_path / "test.3mf"
+        file_path.write_bytes(create_mock_3mf(xml_content).read())
+
+        assert extract_print_time_from_3mf(file_path, plate_id=1) is None
+
+    def test_returns_none_when_slice_info_missing(self, tmp_path):
+        buffer = io.BytesIO()
+        with zipfile.ZipFile(buffer, "w") as zf:
+            zf.writestr("other_file.txt", "content")
+        buffer.seek(0)
+
+        file_path = tmp_path / "test.3mf"
+        file_path.write_bytes(buffer.read())
+
+        assert extract_print_time_from_3mf(file_path) is None
+        assert extract_print_time_from_3mf(file_path, plate_id=1) is None
+
+    def test_returns_none_when_file_invalid(self, tmp_path):
+        file_path = tmp_path / "invalid.3mf"
+        file_path.write_text("not a zip file")
+
+        assert extract_print_time_from_3mf(file_path) is None
+        assert extract_print_time_from_3mf(file_path, plate_id=1) is None
+
+    def test_returns_none_when_file_missing(self, tmp_path):
+        file_path = tmp_path / "nonexistent.3mf"
+
+        assert extract_print_time_from_3mf(file_path) is None
+        assert extract_print_time_from_3mf(file_path, plate_id=2) is None
+
+
+# ---------------------------------------------------------------------------
+# Tests for extract_support_filament_slots_from_3mf — #1881: a plate that uses
+# PVA (or any material) exclusively for supports doesn't reference the support
+# slot from object geometry, so without this helper substitute_unused_plate_
+# filaments overwrites the user's support-material profile with slot 1's.
+# ---------------------------------------------------------------------------
+
+
+class TestExtractSupportFilamentSlotsFrom3mf:
+    def test_pla_object_plus_pva_support_returns_support_slot(self):
+        # The reporter's exact scenario (#1881): slot 1 = PLA (model),
+        # slot 2 = PVA (support). enable_support on. Without this the
+        # substitute logic replaces slot 2's PVA profile with PLA and
+        # the printed supports come out in PLA.
+        cfg = json.dumps(
+            {
+                "enable_support": "1",
+                "support_filament": "2",
+                "support_interface_filament": "2",
+                "filament_type": ["PLA", "PVA"],
+            }
+        )
+        with _make_3mf_with({"Metadata/project_settings.config": cfg}) as zf:
+            assert extract_support_filament_slots_from_3mf(zf) == {2}
+
+    def test_distinct_support_body_and_interface_slots(self):
+        cfg = json.dumps(
+            {
+                "enable_support": "1",
+                "support_filament": "2",
+                "support_interface_filament": "3",
+            }
+        )
+        with _make_3mf_with({"Metadata/project_settings.config": cfg}) as zf:
+            assert extract_support_filament_slots_from_3mf(zf) == {2, 3}
+
+    def test_supports_disabled_returns_empty(self):
+        # enable_support off — supports won't be printed even if a slot is
+        # configured. Don't force it into the "used" set; substitution
+        # should still homogenise the loaded-filament array.
+        cfg = json.dumps(
+            {
+                "enable_support": "0",
+                "support_filament": "2",
+                "support_interface_filament": "2",
+            }
+        )
+        with _make_3mf_with({"Metadata/project_settings.config": cfg}) as zf:
+            assert extract_support_filament_slots_from_3mf(zf) == set()
+
+    def test_slot_zero_treated_as_same_as_model(self):
+        # BambuStudio's `0` for support_filament means "same as model" —
+        # no dedicated slot to preserve.
+        cfg = json.dumps(
+            {
+                "enable_support": "1",
+                "support_filament": "0",
+                "support_interface_filament": "0",
+            }
+        )
+        with _make_3mf_with({"Metadata/project_settings.config": cfg}) as zf:
+            assert extract_support_filament_slots_from_3mf(zf) == set()
+
+    def test_boolean_enable_support_accepted(self):
+        # Some forks / older versions write a real JSON bool instead of "1"/"0".
+        cfg = json.dumps({"enable_support": True, "support_filament": "2"})
+        with _make_3mf_with({"Metadata/project_settings.config": cfg}) as zf:
+            assert extract_support_filament_slots_from_3mf(zf) == {2}
+
+    def test_integer_slot_value_accepted(self):
+        cfg = json.dumps({"enable_support": "1", "support_filament": 3})
+        with _make_3mf_with({"Metadata/project_settings.config": cfg}) as zf:
+            assert extract_support_filament_slots_from_3mf(zf) == {3}
+
+    def test_missing_project_settings_returns_empty(self):
+        with _make_3mf_with({"placeholder.txt": "hi"}) as zf:
+            assert extract_support_filament_slots_from_3mf(zf) == set()
+
+    def test_malformed_json_returns_empty(self):
+        with _make_3mf_with({"Metadata/project_settings.config": b"{not json"}) as zf:
+            assert extract_support_filament_slots_from_3mf(zf) == set()
+
+    def test_root_is_list_returns_empty(self):
+        with _make_3mf_with({"Metadata/project_settings.config": json.dumps([])}) as zf:
+            assert extract_support_filament_slots_from_3mf(zf) == set()
+
+    def test_non_numeric_slot_value_skipped(self):
+        cfg = json.dumps({"enable_support": "1", "support_filament": "not-a-number"})
+        with _make_3mf_with({"Metadata/project_settings.config": cfg}) as zf:
+            assert extract_support_filament_slots_from_3mf(zf) == set()
+
+
+class TestExtractPlateMetadataFrom3mf:
+    """The combined per-plate helper parses slice_info.config once and caches
+    the result by file revision so queue polling doesn't re-open the same 3MF
+    three times per row on every poll (#2573)."""
+
+    _MULTI_PLATE = """<?xml version="1.0" encoding="UTF-8"?>
+    <config>
+        <plate>
+            <metadata key="index" value="1"/>
+            <metadata key="prediction" value="3600"/>
+            <metadata key="curr_bed_type" value="Textured PEI Plate"/>
+            <filament id="1" used_g="50.0" type="PLA" color="#FF0000"/>
+        </plate>
+        <plate>
+            <metadata key="index" value="2"/>
+            <metadata key="prediction" value="7200"/>
+            <metadata key="curr_bed_type" value="Engineering Plate"/>
+            <filament id="1" used_g="12.5" type="ABS" color="#00FF00"/>
+            <filament id="2" used_g="7.5" type="ABS" color="#0000FF"/>
+        </plate>
+    </config>
+    """
+
+    def _write(self, tmp_path, xml, name="test.3mf"):
+        from backend.app.utils.threemf_tools import clear_plate_metadata_cache
+
+        clear_plate_metadata_cache()
+        file_path = tmp_path / name
+        file_path.write_bytes(create_mock_3mf(xml).read())
+        return file_path
+
+    def test_combines_all_three_fields_for_plate(self, tmp_path):
+        from backend.app.utils.threemf_tools import extract_plate_metadata_from_3mf
+
+        file_path = self._write(tmp_path, self._MULTI_PLATE)
+
+        meta = extract_plate_metadata_from_3mf(file_path, plate_id=2)
+        assert meta.print_time_seconds == 7200
+        assert meta.bed_type == "Engineering Plate"
+        assert meta.filament_used_grams == 20.0
+        assert {f["slot_id"] for f in meta.filament_usage} == {1, 2}
+
+    def test_plate_id_none_matches_legacy_behaviour(self, tmp_path):
+        # Legacy None behaviour: time+bed from the first plate, but usage
+        # collects EVERY filament in the file (not just plate 1).
+        from backend.app.utils.threemf_tools import extract_plate_metadata_from_3mf
+
+        file_path = self._write(tmp_path, self._MULTI_PLATE)
+
+        meta = extract_plate_metadata_from_3mf(file_path, plate_id=None)
+        assert meta.print_time_seconds == 3600
+        assert meta.bed_type == "Textured PEI Plate"
+        assert len(meta.filament_usage) == 3  # 1 from plate 1 + 2 from plate 2
+
+    def test_second_call_hits_cache_without_reparsing(self, tmp_path):
+        from unittest.mock import patch
+
+        import backend.app.utils.threemf_tools as tools
+
+        file_path = self._write(tmp_path, self._MULTI_PLATE)
+
+        with patch.object(tools, "_parse_plate_metadata_uncached", wraps=tools._parse_plate_metadata_uncached) as spy:
+            first = tools.extract_plate_metadata_from_3mf(file_path, plate_id=2)
+            second = tools.extract_plate_metadata_from_3mf(file_path, plate_id=2)
+
+        assert spy.call_count == 1  # parsed once, served from cache the second time
+        assert first is second
+        assert second.print_time_seconds == 7200
+
+    def test_changed_file_reparses(self, tmp_path):
+        from unittest.mock import patch
+
+        import backend.app.utils.threemf_tools as tools
+
+        file_path = self._write(tmp_path, self._MULTI_PLATE)
+
+        with patch.object(tools, "_parse_plate_metadata_uncached", wraps=tools._parse_plate_metadata_uncached) as spy:
+            tools.extract_plate_metadata_from_3mf(file_path, plate_id=1)
+            # Replace the file with different content (and a different size, so the
+            # revision key changes even if mtime resolution is coarse).
+            new_xml = """<?xml version="1.0" encoding="UTF-8"?>
+            <config>
+                <plate>
+                    <metadata key="index" value="1"/>
+                    <metadata key="prediction" value="999"/>
+                    <metadata key="curr_bed_type" value="Cool Plate"/>
+                    <filament id="1" used_g="1.0" type="PLA" color="#FFFFFF"/>
+                </plate>
+            </config>
+            """
+            file_path.write_bytes(create_mock_3mf(new_xml).read())
+            fresh = tools.extract_plate_metadata_from_3mf(file_path, plate_id=1)
+
+        assert spy.call_count == 2  # revision changed -> re-parsed
+        assert fresh.print_time_seconds == 999
+        assert fresh.bed_type == "Cool Plate"
+
+    def test_wrapper_returns_mutable_copy(self, tmp_path):
+        # extract_filament_usage_from_3mf callers mutate the list; that must not
+        # corrupt the shared cached PlateMetadata.
+        from backend.app.utils.threemf_tools import (
+            extract_filament_usage_from_3mf,
+            extract_plate_metadata_from_3mf,
+        )
+
+        file_path = self._write(tmp_path, self._MULTI_PLATE)
+
+        usage = extract_filament_usage_from_3mf(file_path, plate_id=2)
+        usage.append({"slot_id": 99, "used_g": 0.0, "type": "", "color": ""})
+        usage[0]["used_g"] = -1.0
+
+        cached = extract_plate_metadata_from_3mf(file_path, plate_id=2)
+        assert len(cached.filament_usage) == 2
+        assert all(f["used_g"] > 0 for f in cached.filament_usage)
+
+    def test_non_numeric_filament_id_is_skipped_not_raised(self, tmp_path):
+        # A garbage filament id (or used_g) must be silently skipped, exactly as
+        # the legacy helpers did — a raise here would 500 the queue listing that
+        # calls this per row. Guards both the plate-specific and plate_id=None paths.
+        from backend.app.utils.threemf_tools import (
+            extract_filament_usage_from_3mf,
+            extract_plate_metadata_from_3mf,
+        )
+
+        xml_content = """<?xml version="1.0" encoding="UTF-8"?>
+        <config>
+            <plate>
+                <metadata key="index" value="1"/>
+                <metadata key="prediction" value="3600"/>
+                <filament id="abc" used_g="5.0" type="PLA" color="#FFFFFF"/>
+                <filament id="1" used_g="10.0" type="PLA" color="#FF0000"/>
+                <filament id="2" used_g="bad" type="PLA" color="#00FF00"/>
+            </plate>
+        </config>
+        """
+        file_path = self._write(tmp_path, xml_content)
+
+        meta = extract_plate_metadata_from_3mf(file_path, plate_id=1)
+        assert [f["slot_id"] for f in meta.filament_usage] == [1]
+        assert meta.filament_used_grams == 10.0
+        assert meta.print_time_seconds == 3600
+
+        # plate_id=None path (collects all filaments in the file) must skip too.
+        none_result = extract_filament_usage_from_3mf(file_path, plate_id=None)
+        assert [f["slot_id"] for f in none_result] == [1]
+
+    def test_missing_file_returns_empty_and_is_not_cached(self, tmp_path):
+        from unittest.mock import patch
+
+        import backend.app.utils.threemf_tools as tools
+
+        tools.clear_plate_metadata_cache()
+        missing = tmp_path / "nope.3mf"
+
+        with patch.object(tools, "_parse_plate_metadata_uncached", wraps=tools._parse_plate_metadata_uncached) as spy:
+            meta = tools.extract_plate_metadata_from_3mf(missing, plate_id=1)
+            tools.extract_plate_metadata_from_3mf(missing, plate_id=1)
+
+        assert meta.print_time_seconds is None
+        assert meta.filament_usage == []
+        # Missing file must not create a sticky cache entry (it may appear later).
+        assert spy.call_count == 2
+
+
+def _make_plate_3mf(tmp_path, gcode_by_name: dict[str, str], name: str = "print.3mf"):
+    """Write a 3MF containing the given plate G-code members."""
+    buffer = io.BytesIO()
+    with zipfile.ZipFile(buffer, "w") as zf:
+        for member, content in gcode_by_name.items():
+            zf.writestr(member, content)
+    buffer.seek(0)
+    path = tmp_path / name
+    path.write_bytes(buffer.read())
+    return path
+
+
+def _header(**values: str) -> str:
+    lines = ["; HEADER_BLOCK_START"]
+    lines += [f"; {key.replace('_', ' ')}: {value}" for key, value in values.items()]
+    lines.append("; HEADER_BLOCK_END")
+    lines.append("G1 X0 Y0")
+    return "\n".join(lines)
+
+
+class TestExtractMaxZHeightFrom3mf:
+    """#2547: the print's top Z, used to command the plate back into camera
+    framing before the finish photo.
+
+    This value becomes the target of a real Z move, so "don't know" has to be
+    reported as None rather than defaulted — a wrong height would drive the
+    nozzle into the part.
+    """
+
+    def test_reads_max_z_height_from_the_plate_header(self, tmp_path):
+        path = _make_plate_3mf(
+            tmp_path,
+            {"Metadata/plate_1.gcode": _header(max_z_height="16.00", total_layer_number="80")},
+        )
+        assert extract_max_z_height_from_3mf(path, 1) == 16.0
+
+    def test_picks_the_requested_plate(self, tmp_path):
+        path = _make_plate_3mf(
+            tmp_path,
+            {
+                "Metadata/plate_1.gcode": _header(max_z_height="16.00"),
+                "Metadata/plate_2.gcode": _header(max_z_height="42.50"),
+            },
+        )
+        assert extract_max_z_height_from_3mf(path, 2) == 42.5
+
+    def test_falls_back_to_the_only_gcode_when_the_plate_name_does_not_match(self, tmp_path):
+        """Files from slicers that don't use Bambu's plate naming still resolve."""
+        path = _make_plate_3mf(tmp_path, {"whatever.gcode": _header(max_z_height="7.25")})
+        assert extract_max_z_height_from_3mf(path, 3) == 7.25
+
+    def test_missing_header_key_returns_none(self, tmp_path):
+        path = _make_plate_3mf(tmp_path, {"Metadata/plate_1.gcode": _header(total_layer_number="80")})
+        assert extract_max_z_height_from_3mf(path, 1) is None
+
+    def test_non_numeric_value_returns_none(self, tmp_path):
+        path = _make_plate_3mf(tmp_path, {"Metadata/plate_1.gcode": _header(max_z_height="tall")})
+        assert extract_max_z_height_from_3mf(path, 1) is None
+
+    def test_zero_and_negative_are_treated_as_unknown(self, tmp_path):
+        """Passed through, either would become a Z move toward the bed."""
+        zero = _make_plate_3mf(tmp_path, {"Metadata/plate_1.gcode": _header(max_z_height="0")}, "z.3mf")
+        negative = _make_plate_3mf(tmp_path, {"Metadata/plate_1.gcode": _header(max_z_height="-3")}, "n.3mf")
+        assert extract_max_z_height_from_3mf(zero, 1) is None
+        assert extract_max_z_height_from_3mf(negative, 1) is None
+
+    def test_no_gcode_member_returns_none(self, tmp_path):
+        path = _make_plate_3mf(tmp_path, {"Metadata/slice_info.config": "<config/>"})
+        assert extract_max_z_height_from_3mf(path, 1) is None
+
+    def test_unreadable_file_returns_none(self, tmp_path):
+        path = tmp_path / "broken.3mf"
+        path.write_text("not a zip")
+        assert extract_max_z_height_from_3mf(path, 1) is None
+
+    def test_missing_file_returns_none(self, tmp_path):
+        assert extract_max_z_height_from_3mf(tmp_path / "nope.3mf", 1) is None
+
+    def test_only_the_header_is_inflated(self, tmp_path):
+        """A sliced plate is routinely tens of MB; reading it whole to reach ~40
+        header lines would stall the finish-photo path. The header is read from
+        a bounded prefix, so a huge body must not change the answer."""
+        gcode = _header(max_z_height="99.9") + "\n" + ("G1 X1 Y1 E0.1\n" * 400_000)
+        path = _make_plate_3mf(tmp_path, {"Metadata/plate_1.gcode": gcode})
+        assert extract_max_z_height_from_3mf(path, 1) == 99.9

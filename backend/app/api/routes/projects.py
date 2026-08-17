@@ -14,12 +14,13 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
 from backend.app.api.routes.library import get_library_dir
-from backend.app.core.auth import RequirePermissionIfAuthEnabled
+from backend.app.core.auth import RequireCameraStreamTokenIfAuthEnabled, RequirePermissionIfAuthEnabled
 from backend.app.core.config import settings
 from backend.app.core.database import get_db
 from backend.app.core.permissions import Permission
 from backend.app.models.archive import PrintArchive
 from backend.app.models.library import LibraryFile, LibraryFolder
+from backend.app.models.print_log import PrintLogEntry
 from backend.app.models.print_queue import PrintQueueItem
 from backend.app.models.project import Project
 from backend.app.models.project_bom import ProjectBOMItem
@@ -33,6 +34,7 @@ from backend.app.schemas.project import (
     BOMItemUpdate,
     ProjectChildPreview,
     ProjectCreate,
+    ProjectFileProgress,
     ProjectImport,
     ProjectListResponse,
     ProjectResponse,
@@ -40,46 +42,89 @@ from backend.app.schemas.project import (
     ProjectUpdate,
     TimelineEvent,
 )
+from backend.app.utils.http import build_content_disposition
+from backend.app.utils.safe_path import safe_join_under
 
 logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/projects", tags=["projects"])
 
 
+_FAILURE_STATUSES = ("failed", "aborted", "cancelled", "stopped")
+
+# Soft-deleted archives (#1343) keep their row — and therefore their
+# ``project_id`` — after their files have been removed from disk, so that global
+# Quick Stats can still count their filament / time / cost. Nothing in this
+# module filtered on that, which left deleted prints listed on the project with
+# thumbnails pointing at files that no longer exist, and no way to unassign them
+# (the only unassign UI lives on the Archives page, which correctly hides them)
+# — #2731.
+#
+# Every project-scoped query filters them out, counts included: a project that
+# lists 11 prints must not claim 12. That is a deliberate divergence from the
+# global Quick Stats behaviour, where the whole point of the soft delete is that
+# the contribution survives. A project is a piece of work with a definite
+# membership, not a lifetime total, so a print the user deleted has left it.
+_LIVE_ARCHIVE = PrintArchive.deleted_at.is_(None)
+
+
 async def compute_project_stats(
     db: AsyncSession, project_id: int, target_count: int | None = None, target_parts_count: int | None = None
 ) -> ProjectStats:
-    """Compute statistics for a project."""
-    # Count total archives (distinct print jobs)
-    total_result = await db.execute(select(func.count(PrintArchive.id)).where(PrintArchive.project_id == project_id))
-    total_archives = total_result.scalar() or 0
+    """Compute statistics for a project.
 
-    # Sum total items (using quantity field)
-    total_items_result = await db.execute(
-        select(func.coalesce(func.sum(PrintArchive.quantity), 0)).where(PrintArchive.project_id == project_id)
-    )
-    total_items = total_items_result.scalar() or 0
+    Aggregates from ``print_log_entries`` joined to ``print_archives`` so
+    every actual run contributes — pre-fix this counted ``print_archives``
+    (one row per file), which under-reported every reprint by collapsing
+    runs back into the source file (#1593). The Archive Print Log view
+    already drives off the same source (``archives.py::list_archives_slim``),
+    so project stats now stay aligned with the per-archive numbers.
 
-    # Count failed archives (number of print jobs) - includes all failure states
-    failed_result = await db.execute(
-        select(func.count(PrintArchive.id)).where(
-            PrintArchive.project_id == project_id,
-            PrintArchive.status.in_(["failed", "aborted", "cancelled", "stopped"]),
-        )
-    )
-    failed_prints = failed_result.scalar() or 0
-
-    # Sum print time, filament, and energy
-    sums_result = await db.execute(
+    Orphan log entries (``archive_id IS NULL`` after archive deletion via
+    ``ON DELETE SET NULL``) are excluded by the inner join — they can't
+    be attributed to a project.
+    """
+    # Per-run aggregates from print_log_entries joined on archive_id so
+    # the WHERE filters by archives.project_id. Each run's duration,
+    # filament, cost, and energy come from the log row, not the source
+    # archive — so multi-plate 3MFs and reprints both count correctly.
+    log_stats_result = await db.execute(
         select(
-            func.coalesce(func.sum(PrintArchive.print_time_seconds), 0).label("total_time"),
-            func.coalesce(func.sum(PrintArchive.filament_used_grams), 0).label("total_filament"),
-            func.coalesce(func.sum(PrintArchive.cost), 0).label("total_filament_cost"),
-            func.coalesce(func.sum(PrintArchive.energy_kwh), 0).label("total_energy"),
-            func.coalesce(func.sum(PrintArchive.energy_cost), 0).label("total_energy_cost"),
-        ).where(PrintArchive.project_id == project_id)
+            func.count(PrintLogEntry.id).label("total_runs"),
+            func.coalesce(func.sum(PrintLogEntry.duration_seconds), 0).label("total_time"),
+            func.coalesce(func.sum(PrintLogEntry.filament_used_grams), 0).label("total_filament"),
+            func.coalesce(func.sum(PrintLogEntry.cost), 0).label("total_filament_cost"),
+            func.coalesce(func.sum(PrintLogEntry.energy_kwh), 0).label("total_energy"),
+            func.coalesce(func.sum(PrintLogEntry.energy_cost), 0).label("total_energy_cost"),
+        )
+        .join(PrintArchive, PrintArchive.id == PrintLogEntry.archive_id)
+        .where(PrintArchive.project_id == project_id, _LIVE_ARCHIVE)
     )
-    sums = sums_result.first()
+    log_stats = log_stats_result.first()
+    total_archives = int(log_stats.total_runs or 0)
+
+    # Total items the project has produced or attempted: sum of quantity
+    # per run (each run contributes its archive's quantity). The total/
+    # completed/failed splits are all per-run, not per-file.
+    items_split_result = await db.execute(
+        select(
+            func.coalesce(func.sum(PrintArchive.quantity), 0).label("total_items"),
+            func.coalesce(
+                func.sum(case((PrintLogEntry.status == "completed", PrintArchive.quantity), else_=0)),
+                0,
+            ).label("completed_items"),
+            func.coalesce(
+                func.sum(case((PrintLogEntry.status.in_(_FAILURE_STATUSES), 1), else_=0)),
+                0,
+            ).label("failed_runs"),
+        )
+        .join(PrintArchive, PrintArchive.id == PrintLogEntry.archive_id)
+        .where(PrintArchive.project_id == project_id, _LIVE_ARCHIVE)
+    )
+    items_split = items_split_result.first()
+    total_items = int(items_split.total_items or 0)
+    completed_items = int(items_split.completed_items or 0)
+    failed_prints = int(items_split.failed_runs or 0)
 
     # Count queued items
     queued_result = await db.execute(
@@ -96,15 +141,6 @@ async def compute_project_stats(
         )
     )
     in_progress_prints = in_progress_result.scalar() or 0
-
-    # Sum completed items (parts) - sum of quantities for actually printed jobs
-    completed_items_result = await db.execute(
-        select(func.coalesce(func.sum(PrintArchive.quantity), 0)).where(
-            PrintArchive.project_id == project_id,
-            PrintArchive.status == "completed",
-        )
-    )
-    completed_items = int(completed_items_result.scalar() or 0)
 
     # Calculate progress for plates (target_count vs total_archives)
     progress_percent = None
@@ -139,13 +175,13 @@ async def compute_project_stats(
         failed_prints=int(failed_prints),
         queued_prints=queued_prints,
         in_progress_prints=in_progress_prints,
-        total_print_time_hours=round((sums.total_time or 0) / 3600, 2),
-        total_filament_grams=round(sums.total_filament or 0, 2),
+        total_print_time_hours=round((log_stats.total_time or 0) / 3600, 2),
+        total_filament_grams=round(log_stats.total_filament or 0, 2),
         progress_percent=progress_percent,
         parts_progress_percent=parts_progress_percent,
-        estimated_cost=round((sums.total_filament_cost or 0), 2),
-        total_energy_kwh=round((sums.total_energy or 0), 3),
-        total_energy_cost=round((sums.total_energy_cost or 0), 3),
+        estimated_cost=round((log_stats.total_filament_cost or 0), 2),
+        total_energy_kwh=round((log_stats.total_energy or 0), 3),
+        total_energy_cost=round((log_stats.total_energy_cost or 0), 3),
         remaining_prints=remaining_prints,
         remaining_parts=remaining_parts,
         bom_total_items=bom_stats.total or 0,
@@ -170,20 +206,34 @@ async def list_projects(
     result = await db.execute(query)
     projects = result.scalars().all()
 
-    # Compute quick stats for each project
+    # Compute quick stats for each project. Same per-run aggregation as
+    # ``compute_project_stats`` — counts and quantities come from
+    # ``print_log_entries`` joined to ``print_archives`` so reprints and
+    # multi-plate prints contribute every run, not just the source file
+    # (#1593). Quick stats and the full stats endpoint must agree.
     response = []
     for project in projects:
-        # Get archive count (number of print jobs)
-        archive_count_result = await db.execute(
-            select(func.count(PrintArchive.id)).where(PrintArchive.project_id == project.id)
+        log_quick_result = await db.execute(
+            select(
+                func.count(PrintLogEntry.id).label("archive_count"),
+                func.coalesce(func.sum(PrintArchive.quantity), 0).label("total_items"),
+                func.coalesce(
+                    func.sum(case((PrintLogEntry.status == "completed", PrintArchive.quantity), else_=0)),
+                    0,
+                ).label("completed_count"),
+                func.coalesce(
+                    func.sum(case((PrintLogEntry.status.in_(_FAILURE_STATUSES), 1), else_=0)),
+                    0,
+                ).label("failed_count"),
+            )
+            .join(PrintArchive, PrintArchive.id == PrintLogEntry.archive_id)
+            .where(PrintArchive.project_id == project.id, _LIVE_ARCHIVE)
         )
-        archive_count = archive_count_result.scalar() or 0
-
-        # Get total items (sum of quantities)
-        total_items_result = await db.execute(
-            select(func.coalesce(func.sum(PrintArchive.quantity), 0)).where(PrintArchive.project_id == project.id)
-        )
-        total_items = int(total_items_result.scalar() or 0)
+        log_quick = log_quick_result.first()
+        archive_count = int(log_quick.archive_count or 0)
+        total_items = int(log_quick.total_items or 0)
+        completed_count = int(log_quick.completed_count or 0)
+        failed_count = int(log_quick.failed_count or 0)
 
         # Get queue count
         queue_count_result = await db.execute(
@@ -194,24 +244,6 @@ async def list_projects(
         )
         queue_count = queue_count_result.scalar() or 0
 
-        # Sum completed parts (quantities) - only actually printed jobs
-        completed_result = await db.execute(
-            select(func.coalesce(func.sum(PrintArchive.quantity), 0)).where(
-                PrintArchive.project_id == project.id,
-                PrintArchive.status == "completed",
-            )
-        )
-        completed_count = int(completed_result.scalar() or 0)
-
-        # Sum failed parts (quantities) - includes all failure states
-        failed_result = await db.execute(
-            select(func.coalesce(func.sum(PrintArchive.quantity), 0)).where(
-                PrintArchive.project_id == project.id,
-                PrintArchive.status.in_(["failed", "aborted", "cancelled", "stopped"]),
-            )
-        )
-        failed_count = int(failed_result.scalar() or 0)
-
         # Plates progress: archive_count / target_count
         progress_percent = None
         if project.target_count and project.target_count > 0:
@@ -220,7 +252,7 @@ async def list_projects(
         # Get archive previews (up to 6 most recent)
         archives_result = await db.execute(
             select(PrintArchive)
-            .where(PrintArchive.project_id == project.id)
+            .where(PrintArchive.project_id == project.id, _LIVE_ARCHIVE)
             .order_by(PrintArchive.created_at.desc())
             .limit(6)
         )
@@ -246,7 +278,11 @@ async def list_projects(
                 status=project.status,
                 target_count=project.target_count,
                 target_parts_count=project.target_parts_count,
+                target_sets=project.target_sets,
                 budget=project.budget,
+                tags=project.tags,
+                due_date=project.due_date,
+                priority=project.priority,
                 created_at=project.created_at,
                 archive_count=archive_count,
                 total_items=total_items,
@@ -255,6 +291,8 @@ async def list_projects(
                 queue_count=queue_count,
                 progress_percent=progress_percent,
                 archives=archive_previews,
+                url=project.url,
+                cover_image_filename=project.cover_image_filename,
             )
         )
 
@@ -283,12 +321,14 @@ async def create_project(
         color=data.color,
         target_count=data.target_count,
         target_parts_count=data.target_parts_count,
+        target_sets=data.target_sets,
         notes=data.notes,
         tags=data.tags,
         due_date=data.due_date,
         priority=data.priority,
         budget=data.budget,
         parent_id=data.parent_id,
+        url=data.url,
     )
     db.add(project)
     await db.flush()
@@ -304,8 +344,11 @@ async def create_project(
         status=project.status,
         target_count=project.target_count,
         target_parts_count=project.target_parts_count,
+        target_sets=project.target_sets,
         notes=project.notes,
         attachments=project.attachments,
+        url=project.url,
+        cover_image_filename=project.cover_image_filename,
         tags=project.tags,
         due_date=project.due_date,
         priority=project.priority,
@@ -337,7 +380,7 @@ async def list_templates(
     for project in templates:
         # Get archive count
         archive_count_result = await db.execute(
-            select(func.count(PrintArchive.id)).where(PrintArchive.project_id == project.id)
+            select(func.count(PrintArchive.id)).where(PrintArchive.project_id == project.id, _LIVE_ARCHIVE)
         )
         archive_count = archive_count_result.scalar() or 0
 
@@ -349,12 +392,19 @@ async def list_templates(
                 color=project.color,
                 status=project.status,
                 target_count=project.target_count,
+                target_parts_count=project.target_parts_count,
+                target_sets=project.target_sets,
                 budget=project.budget,
+                tags=project.tags,
+                due_date=project.due_date,
+                priority=project.priority,
                 created_at=project.created_at,
                 archive_count=archive_count,
                 queue_count=0,
                 progress_percent=None,
                 archives=[],
+                url=project.url,
+                cover_image_filename=project.cover_image_filename,
             )
         )
 
@@ -385,12 +435,14 @@ async def create_project_from_template(
         color=template.color,
         target_count=template.target_count,
         target_parts_count=template.target_parts_count,
+        target_sets=template.target_sets,
         notes=template.notes,
         tags=template.tags,
         priority=template.priority,
         budget=template.budget,
         is_template=False,
         template_source_id=template.id,
+        url=template.url,
     )
     db.add(project)
     await db.flush()
@@ -426,8 +478,11 @@ async def create_project_from_template(
         status=project.status,
         target_count=project.target_count,
         target_parts_count=project.target_parts_count,
+        target_sets=project.target_sets,
         notes=project.notes,
         attachments=project.attachments,
+        url=project.url,
+        cover_image_filename=project.cover_image_filename,
         tags=project.tags,
         due_date=project.due_date,
         priority=project.priority,
@@ -458,6 +513,7 @@ async def get_child_previews(db: AsyncSession, parent_id: int) -> list[ProjectCh
             select(func.coalesce(func.sum(PrintArchive.quantity), 0)).where(
                 PrintArchive.project_id == child.id,
                 PrintArchive.status == "completed",
+                _LIVE_ARCHIVE,
             )
         )
         completed_count = completed_result.scalar() or 0
@@ -509,8 +565,11 @@ async def get_project(
         status=project.status,
         target_count=project.target_count,
         target_parts_count=project.target_parts_count,
+        target_sets=project.target_sets,
         notes=project.notes,
         attachments=project.attachments,
+        url=project.url,
+        cover_image_filename=project.cover_image_filename,
         tags=project.tags,
         due_date=project.due_date,
         priority=project.priority,
@@ -555,11 +614,18 @@ async def update_project(
         project.target_count = data.target_count
     if data.target_parts_count is not None:
         project.target_parts_count = data.target_parts_count
+    # Sent-but-null clears the copies-per-file target (#1897); omitted leaves it
+    # alone (same #2536 semantics as tags/due_date below).
+    if "target_sets" in data.model_fields_set:
+        project.target_sets = data.target_sets
     if data.notes is not None:
         project.notes = data.notes
-    if data.tags is not None:
+    # Sent-but-null clears the field; omitted leaves it alone. Guarding on
+    # ``is not None`` would make an emptied tags field or a removed due date
+    # silently revert to the stored value (#2536).
+    if "tags" in data.model_fields_set:
         project.tags = data.tags
-    if data.due_date is not None:
+    if "due_date" in data.model_fields_set:
         project.due_date = data.due_date
     if data.priority is not None:
         if data.priority not in ["low", "normal", "high", "urgent"]:
@@ -567,6 +633,9 @@ async def update_project(
         project.priority = data.priority
     if "budget" in data.model_fields_set:
         project.budget = data.budget
+    if "url" in data.model_fields_set:
+        # Pydantic validator already guarantees http(s) prefix or None.
+        project.url = data.url
     if data.parent_id is not None:
         # Verify parent exists and prevent circular reference
         if data.parent_id == project_id:
@@ -601,8 +670,11 @@ async def update_project(
         status=project.status,
         target_count=project.target_count,
         target_parts_count=project.target_parts_count,
+        target_sets=project.target_sets,
         notes=project.notes,
         attachments=project.attachments,
+        url=project.url,
+        cover_image_filename=project.cover_image_filename,
         tags=project.tags,
         due_date=project.due_date,
         priority=project.priority,
@@ -650,11 +722,16 @@ async def list_project_archives(
     if not result.scalar_one_or_none():
         raise HTTPException(status_code=404, detail="Project not found")
 
-    # Get archives with project relationship eagerly loaded
+    # Get archives with both ``project`` and ``created_by`` eagerly loaded.
+    # ``archive_to_response`` accesses ``archive.created_by.username`` to
+    # surface the creator on the archive card; without selectinload that's
+    # a lazy attribute access on a closed async session, which throws
+    # ``MissingGreenlet`` and produces a 500. ``ArchiveService.list_archives``
+    # already loads both — this route just got out of step.
     query = (
         select(PrintArchive)
-        .options(selectinload(PrintArchive.project))
-        .where(PrintArchive.project_id == project_id)
+        .options(selectinload(PrintArchive.project), selectinload(PrintArchive.created_by))
+        .where(PrintArchive.project_id == project_id, _LIVE_ARCHIVE)
         .order_by(PrintArchive.created_at.desc())
         .limit(limit)
         .offset(offset)
@@ -663,9 +740,13 @@ async def list_project_archives(
     archives = result.scalars().all()
 
     # Import the response converter from archives module
-    from backend.app.api.routes.archives import archive_to_response
+    from backend.app.api.routes.archives import _load_run_aggregates, archive_to_response
 
-    return [archive_to_response(a) for a in archives]
+    # Load run aggregates so multi-run archives' time/accuracy badge is
+    # suppressed consistently with the main archives list endpoint (#1608).
+    run_aggregates = await _load_run_aggregates(db, [a.id for a in archives])
+
+    return [archive_to_response(a, run_aggregate=run_aggregates.get(a.id)) for a in archives]
 
 
 @router.get("/{project_id}/queue")
@@ -686,6 +767,76 @@ async def list_project_queue(
     items = result.scalars().all()
 
     return items
+
+
+@router.get("/{project_id}/file-progress", response_model=list[ProjectFileProgress])
+async def get_project_file_progress(
+    project_id: int,
+    db: AsyncSession = Depends(get_db),
+    _: User | None = RequirePermissionIfAuthEnabled(Permission.PROJECTS_READ),
+):
+    """Completed-run counts per library file inside a project (#1897).
+
+    Counts completed ``PrintLogEntry`` rows (same source as the aggregate
+    project stats) of archives attributed to this project, and maps each run to
+    one of the project's library files — the files living in folders linked to
+    the project, the same set the project detail page renders.
+
+    A run is attributed to exactly one file, by the strongest available match:
+    1. ``archive.library_file_id`` (stamped at queue dispatch since #1897),
+    2. content hash (covers historical rows),
+    3. filename (covers hash drift, e.g. re-sliced uploads of the same name).
+    Files with no completed runs are omitted — the frontend treats absence as 0.
+    """
+    result = await db.execute(select(Project.id).where(Project.id == project_id))
+    if result.scalar_one_or_none() is None:
+        raise HTTPException(status_code=404, detail="Project not found")
+
+    files_result = await db.execute(
+        select(LibraryFile.id, LibraryFile.file_hash, LibraryFile.filename)
+        .join(LibraryFolder, LibraryFile.folder_id == LibraryFolder.id)
+        .where(LibraryFolder.project_id == project_id, LibraryFile.deleted_at.is_(None))
+    )
+    file_rows = files_result.all()
+    if not file_rows:
+        return []
+
+    # First match wins within each tier, so iteration order (file id) is stable
+    # when duplicates share a hash or filename.
+    by_id = {fid for fid, _, _ in file_rows}
+    by_hash: dict[str, int] = {}
+    by_name: dict[str, int] = {}
+    for fid, fhash, fname in file_rows:
+        if fhash and fhash not in by_hash:
+            by_hash[fhash] = fid
+        if fname not in by_name:
+            by_name[fname] = fid
+
+    runs_result = await db.execute(
+        select(
+            PrintArchive.library_file_id,
+            PrintArchive.content_hash,
+            PrintArchive.filename,
+            func.count(PrintLogEntry.id),
+        )
+        .join(PrintArchive, PrintArchive.id == PrintLogEntry.archive_id)
+        .where(PrintArchive.project_id == project_id, PrintLogEntry.status == "completed", _LIVE_ARCHIVE)
+        .group_by(PrintArchive.library_file_id, PrintArchive.content_hash, PrintArchive.filename)
+    )
+
+    counts: dict[int, int] = {}
+    for lib_file_id, content_hash, filename, run_count in runs_result.all():
+        if lib_file_id in by_id:
+            fid = lib_file_id
+        elif content_hash and content_hash in by_hash:
+            fid = by_hash[content_hash]
+        elif filename in by_name:
+            fid = by_name[filename]
+        else:
+            continue
+        counts[fid] = counts.get(fid, 0) + run_count
+
+    return [ProjectFileProgress(file_id=fid, completed_count=n) for fid, n in sorted(counts.items())]
 
 
 @router.post("/{project_id}/add-archives")
@@ -766,6 +917,19 @@ def get_project_attachments_dir(project_id: int) -> Path:
     """Get the attachments directory for a project."""
     base_dir = Path(settings.archive_dir)
     return base_dir / "projects" / str(project_id) / "attachments"
+
+
+# Cover-image upload accepts only common web-renderable image types (#1155).
+# Subset of ALLOWED_ATTACHMENT_EXTENSIONS minus .svg/.ico because those don't
+# render well as a card thumbnail.
+COVER_IMAGE_EXTENSIONS = {".jpg", ".jpeg", ".png", ".gif", ".webp"}
+COVER_IMAGE_CONTENT_TYPES = {
+    ".jpg": "image/jpeg",
+    ".jpeg": "image/jpeg",
+    ".png": "image/png",
+    ".gif": "image/gif",
+    ".webp": "image/webp",
+}
 
 
 # Allowed file extensions for attachments
@@ -856,7 +1020,7 @@ async def upload_attachment(
 
     # Generate unique filename
     unique_filename = f"{uuid.uuid4().hex}{ext}"
-    file_path = attachments_dir / unique_filename
+    file_path = attachments_dir / unique_filename  # SEC-PATH-OK: unique_filename = uuid.uuid4().hex + ext
 
     # Save file
     try:
@@ -928,7 +1092,9 @@ async def download_attachment(
         raise HTTPException(status_code=404, detail="Attachment not found")
 
     # Check file exists
-    file_path = get_project_attachments_dir(project_id) / filename
+    file_path = (
+        get_project_attachments_dir(project_id) / filename
+    )  # SEC-PATH-OK: filename validated above (no /, \\, .., empty) + attachment membership check
     if not file_path.exists():
         raise HTTPException(status_code=404, detail="Attachment file not found")
 
@@ -968,7 +1134,9 @@ async def delete_attachment(
     project.attachments = attachments if attachments else None
 
     # Delete file
-    file_path = get_project_attachments_dir(project_id) / filename
+    file_path = (
+        get_project_attachments_dir(project_id) / filename
+    )  # SEC-PATH-OK: filename validated above (no /, \\, .., empty) + attachment membership check
     if file_path.exists():
         try:
             os.remove(file_path)
@@ -983,6 +1151,132 @@ async def delete_attachment(
         "message": "Attachment deleted",
         "attachments": project.attachments,
     }
+
+
+# ============ #1155: Cover image ============
+
+
+@router.post("/{project_id}/cover-image")
+async def upload_project_cover_image(
+    project_id: int,
+    file: UploadFile = File(...),
+    db: AsyncSession = Depends(get_db),
+    _: User | None = RequirePermissionIfAuthEnabled(Permission.PROJECTS_UPDATE),
+):
+    """Upload (or replace) the project's cover image (#1155).
+
+    Stored alongside other attachments but tracked via Project.cover_image_filename
+    so swap/delete operations don't touch the attachments list. Replaces any
+    existing cover image — the prior file is deleted on disk before the new one
+    lands so a stuck filesystem reference can't accumulate orphaned images.
+    """
+    result = await db.execute(select(Project).where(Project.id == project_id))
+    project = result.scalar_one_or_none()
+    if not project:
+        raise HTTPException(status_code=404, detail="Project not found")
+
+    original_name = file.filename or "cover"
+    ext = os.path.splitext(original_name)[1].lower()
+    if ext not in COVER_IMAGE_EXTENSIONS:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Cover image must be one of {sorted(COVER_IMAGE_EXTENSIONS)}",
+        )
+
+    attachments_dir = get_project_attachments_dir(project_id)
+    attachments_dir.mkdir(parents=True, exist_ok=True)
+
+    # Remove the previous cover-image file from disk first so we don't accumulate
+    # orphans when users repeatedly replace it. Best-effort: a missing/locked file
+    # shouldn't block a successful replacement.
+    if project.cover_image_filename:
+        old_path = attachments_dir / project.cover_image_filename
+        if old_path.exists():
+            try:
+                os.remove(old_path)
+            except OSError as e:
+                logger.warning("Failed to delete old cover image %s: %s", old_path, e)
+
+    unique_filename = f"cover_{uuid.uuid4().hex}{ext}"
+    file_path = attachments_dir / unique_filename  # SEC-PATH-OK: unique_filename = f"cover_{uuid.uuid4().hex}{ext}"
+    try:
+        with open(file_path, "wb") as f:
+            content = await file.read()
+            f.write(content)
+    except OSError as e:
+        logger.error("Failed to save cover image: %s", e)
+        raise HTTPException(status_code=500, detail="Failed to save cover image")
+
+    project.cover_image_filename = unique_filename
+    db.add(project)
+    await db.flush()
+    await db.commit()
+
+    return {
+        "status": "success",
+        "filename": unique_filename,
+        "size": len(content),
+    }
+
+
+@router.get("/{project_id}/cover-image")
+async def get_project_cover_image(
+    project_id: int,
+    db: AsyncSession = Depends(get_db),
+    _: None = RequireCameraStreamTokenIfAuthEnabled,
+):
+    """Stream the project's cover image (#1155).
+
+    Browsers can't attach `Authorization: Bearer ...` to `<img src>` requests,
+    so this route accepts the same `?token=` stream-credential as
+    /archives/{id}/thumbnail. The frontend wraps URLs with `withStreamToken`."""
+    result = await db.execute(select(Project).where(Project.id == project_id))
+    project = result.scalar_one_or_none()
+    if not project:
+        raise HTTPException(status_code=404, detail="Project not found")
+    if not project.cover_image_filename:
+        raise HTTPException(status_code=404, detail="No cover image set")
+
+    file_path = get_project_attachments_dir(project_id) / project.cover_image_filename
+    if not file_path.exists():
+        # DB references a file that vanished from disk — clear the dangling
+        # reference so future GETs get a clean 404 instead of repeatedly
+        # touching the filesystem.
+        logger.warning("Cover image file missing for project %s: %s", project_id, file_path)
+        project.cover_image_filename = None
+        await db.commit()
+        raise HTTPException(status_code=404, detail="Cover image file not found")
+
+    ext = os.path.splitext(project.cover_image_filename)[1].lower()
+    media_type = COVER_IMAGE_CONTENT_TYPES.get(ext, "application/octet-stream")
+    return FileResponse(file_path, media_type=media_type)
+
+
+@router.delete("/{project_id}/cover-image")
+async def delete_project_cover_image(
+    project_id: int,
+    db: AsyncSession = Depends(get_db),
+    _: User | None = RequirePermissionIfAuthEnabled(Permission.PROJECTS_UPDATE),
+):
+    """Remove the project's cover image (#1155)."""
+    result = await db.execute(select(Project).where(Project.id == project_id))
+    project = result.scalar_one_or_none()
+    if not project:
+        raise HTTPException(status_code=404, detail="Project not found")
+
+    if project.cover_image_filename:
+        file_path = get_project_attachments_dir(project_id) / project.cover_image_filename
+        if file_path.exists():
+            try:
+                os.remove(file_path)
+            except OSError as e:
+                logger.warning("Failed to delete cover image file %s: %s", file_path, e)
+        project.cover_image_filename = None
+        db.add(project)
+        await db.flush()
+        await db.commit()
+
+    return {"status": "success"}
 
 
 # ============ Phase 7: BOM Endpoints ============
@@ -1207,12 +1501,14 @@ async def create_template_from_project(
         color=source.color,
         target_count=source.target_count,
         target_parts_count=source.target_parts_count,
+        target_sets=source.target_sets,
         notes=source.notes,
         tags=source.tags,
         priority=source.priority,
         budget=source.budget,
         is_template=True,
         template_source_id=source.id,
+        url=source.url,
     )
     db.add(template)
     await db.flush()
@@ -1248,8 +1544,11 @@ async def create_template_from_project(
         status=template.status,
         target_count=template.target_count,
         target_parts_count=template.target_parts_count,
+        target_sets=template.target_sets,
         notes=template.notes,
         attachments=template.attachments,
+        url=template.url,
+        cover_image_filename=template.cover_image_filename,
         tags=template.tags,
         due_date=template.due_date,
         priority=template.priority,
@@ -1297,7 +1596,7 @@ async def get_project_timeline(
     # Get archives and add events
     archives_result = await db.execute(
         select(PrintArchive)
-        .where(PrintArchive.project_id == project_id)
+        .where(PrintArchive.project_id == project_id, _LIVE_ARCHIVE)
         .order_by(PrintArchive.created_at.desc())
         .limit(limit)
     )
@@ -1414,7 +1713,7 @@ async def export_project(
     for folder in linked_folders:
         # Get files in this folder
         files_result = await db.execute(
-            select(LibraryFile).where(LibraryFile.folder_id == folder.id).order_by(LibraryFile.filename)
+            LibraryFile.active().where(LibraryFile.folder_id == folder.id).order_by(LibraryFile.filename)
         )
         files = files_result.scalars().all()
 
@@ -1455,6 +1754,7 @@ async def export_project(
         "status": project.status,
         "target_count": project.target_count,
         "target_parts_count": project.target_parts_count,
+        "target_sets": project.target_sets,
         "notes": project.notes,
         "tags": project.tags,
         "due_date": project.due_date.isoformat() if project.due_date else None,
@@ -1487,7 +1787,7 @@ async def export_project(
     return StreamingResponse(
         zip_buffer,
         media_type="application/zip",
-        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+        headers={"Content-Disposition": build_content_disposition(filename)},
     )
 
 
@@ -1506,6 +1806,7 @@ async def import_project(
         status=data.status,
         target_count=data.target_count,
         target_parts_count=data.target_parts_count,
+        target_sets=data.target_sets,
         notes=data.notes,
         tags=data.tags,
         due_date=data.due_date,
@@ -1568,8 +1869,11 @@ async def import_project(
         status=project.status,
         target_count=project.target_count,
         target_parts_count=project.target_parts_count,
+        target_sets=project.target_sets,
         notes=project.notes,
         attachments=project.attachments,
+        url=project.url,
+        cover_image_filename=project.cover_image_filename,
         tags=project.tags,
         due_date=project.due_date,
         priority=project.priority,
@@ -1629,6 +1933,7 @@ async def import_project_file(
         status=data.get("status", "active"),
         target_count=data.get("target_count"),
         target_parts_count=data.get("target_parts_count"),
+        target_sets=data.get("target_sets"),
         notes=data.get("notes"),
         tags=data.get("tags"),
         due_date=datetime.fromisoformat(data["due_date"]) if data.get("due_date") else None,
@@ -1660,6 +1965,13 @@ async def import_project_file(
         if not folder_name:
             continue
 
+        # Containment check on the folder name — refuses absolute paths and
+        # ``..`` traversal in ``project.json[linked_folders[*].name]``. The
+        # previous code did ``library_dir / folder_name`` directly, which
+        # collapses to ``Path(folder_name)`` when folder_name is absolute
+        # and lets ``..`` escape after mkdir.
+        folder_path = safe_join_under(library_dir, folder_name)
+
         # Check if folder exists
         existing_result = await db.execute(
             select(LibraryFolder).where(
@@ -1686,7 +1998,6 @@ async def import_project_file(
             await db.flush()
 
             # Create folder on disk
-            folder_path = library_dir / folder_name
             folder_path.mkdir(parents=True, exist_ok=True)
 
         # Import files for this folder from ZIP
@@ -1701,8 +2012,18 @@ async def import_project_file(
             if not relative_path:
                 continue
 
-            # Write file to disk
-            file_disk_path = library_dir / folder_name / relative_path
+            # Containment check on the per-entry relative path. ZIP names
+            # can carry ``..`` segments by spec; without resolve + parent
+            # containment, ``files/<folder>/../../../etc/x`` escapes
+            # ``library_dir`` entirely. ``relative_path`` is split into
+            # parts because ``safe_join_under`` rejects parts that start
+            # with ``/``, and a single combined string would hide an
+            # embedded ``..`` segment behind a forward slash.
+            file_disk_path = safe_join_under(
+                library_dir,
+                folder_name,
+                *Path(relative_path).parts,
+            )
             file_disk_path.parent.mkdir(parents=True, exist_ok=True)
             file_disk_path.write_bytes(file_content)
 
@@ -1741,8 +2062,11 @@ async def import_project_file(
         status=project.status,
         target_count=project.target_count,
         target_parts_count=project.target_parts_count,
+        target_sets=project.target_sets,
         notes=project.notes,
         attachments=project.attachments,
+        url=project.url,
+        cover_image_filename=project.cover_image_filename,
         tags=project.tags,
         due_date=project.due_date,
         priority=project.priority,

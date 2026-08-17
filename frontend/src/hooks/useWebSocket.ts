@@ -2,6 +2,15 @@ import { useQueryClient } from '@tanstack/react-query';
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { useToast } from '../contexts/ToastContext';
 import { useTranslation } from 'react-i18next';
+import { api, ApiError } from '../api/client';
+import { inventoryLocationsQueryKey } from '../utils/inventoryQueries';
+
+// The only auth-failure close code /api/v1/ws emits (websocket.py
+// _WS_CLOSE_UNAUTHORIZED). A 4401 means the ws-token was missing / invalid /
+// expired, or the caller lacks WEBSOCKET_CONNECT — none of which a reconnect can
+// fix without a fresh login (which remounts this provider anyway). Treat it as
+// terminal so we don't respawn the /auth/ws-token loop.
+const WS_CLOSE_UNAUTHORIZED = 4401;
 
 interface WebSocketMessage {
   type: string;
@@ -9,11 +18,25 @@ interface WebSocketMessage {
   data?: Record<string, unknown>;
   printer_name?: string;
   missing_slots?: Array<{ slot?: string }>;
+  // Spool-assignment read-back verification (#2582).
+  slot?: string;
+  verified?: boolean;
+  kprofile_applied?: boolean;
+  saw_tray?: boolean;
+  // Slicer Pipeline run events (#1425 PR C). ``run`` carries the full
+  // PipelineRunResponse payload — typed loosely here so the WebSocket hook
+  // doesn't pull the full client.ts types in.
+  run?: { pipeline_id?: number | null };
 }
 
 export function useWebSocket() {
   const wsRef = useRef<WebSocket | null>(null);
   const reconnectTimeoutRef = useRef<number | null>(null);
+  // Set true by the effect cleanup so a close event fired *during* unmount
+  // can't schedule a reconnect after the provider is gone (the old code cleared
+  // reconnectTimeoutRef, then .close() ran ws.onclose which set a *fresh*
+  // timeout — a leaked reconnect that kept minting ws-tokens post-logout).
+  const disposedRef = useRef(false);
   const queryClient = useQueryClient();
   const [isConnected, setIsConnected] = useState(false);
   const lastMissingSpoolWarningRef = useRef<Map<number, string>>(new Map());
@@ -64,13 +87,49 @@ export function useWebSocket() {
     processNext();
   }, []);
 
-  const connect = useCallback(() => {
-    if (wsRef.current?.readyState === WebSocket.OPEN) {
+  const connect = useCallback(async () => {
+    if (disposedRef.current || wsRef.current?.readyState === WebSocket.OPEN) {
+      return;
+    }
+
+    // GHSA-r2qv follow-up: when auth is enabled, /ws now requires a token
+    // minted by POST /api/v1/auth/ws-token. We use the shared ``api.request``
+    // helper (via ``api.getWebSocketToken``) so the JWT Authorization header
+    // is attached — a raw ``fetch()`` with ``credentials: 'include'`` would
+    // miss it (Bambuddy uses Bearer tokens, not cookies, for JWT auth).
+    // Auth-disabled deployments accept connections without a token.
+    let token: string | undefined;
+    try {
+      const resp = await api.getWebSocketToken();
+      token = resp.token;
+    } catch (err) {
+      // A 401/403 from the token mint is an AUTH decision, not a transient
+      // blip, so retrying is pointless and hammers /auth/ws-token every 3s:
+      //   401 — the JWT expired. ``request()`` already cleared it and
+      //         dispatched ``auth:expired``, so the route guard is redirecting
+      //         to /login and this provider is about to unmount.
+      //   403 — the user is validly logged in but their group lacks
+      //         WEBSOCKET_CONNECT. They stay logged in; live updates simply
+      //         degrade to the REST polling the query cache already does.
+      // Either way: do NOT open a tokenless socket (the server just closes it
+      // 4401) and do NOT reconnect. The old catch-all fell through to a
+      // tokenless socket whose 4401 close rescheduled connect() forever. A
+      // network/5xx error is not auth — fall through and let the socket + its
+      // reconnect loop handle it (auth-disabled deployments also land here with
+      // no token and connect fine).
+      const status = err instanceof ApiError ? err.status : 0;
+      if (status === 401 || status === 403) {
+        return;
+      }
+    }
+
+    if (disposedRef.current) {
       return;
     }
 
     const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
-    const wsUrl = `${protocol}//${window.location.host}/api/v1/ws`;
+    const tokenParam = token ? `?token=${encodeURIComponent(token)}` : '';
+    const wsUrl = `${protocol}//${window.location.host}/api/v1/ws${tokenParam}`;
 
     const ws = new WebSocket(wsUrl);
 
@@ -112,6 +171,14 @@ export function useWebSocket() {
       }
       setIsConnected(false);
       wsRef.current = null;
+
+      // Don't reconnect after an auth rejection (4401) or once the provider has
+      // unmounted — both would just respawn the /auth/ws-token loop. A 4401 is
+      // terminal (needs a fresh login, which remounts us); every other close
+      // code is treated as a network drop and gets the 3s reconnect.
+      if (disposedRef.current || event.code === WS_CLOSE_UNAUTHORIZED) {
+        return;
+      }
 
       // Reconnect after 3 seconds
       reconnectTimeoutRef.current = window.setTimeout(() => {
@@ -263,11 +330,43 @@ export function useWebSocket() {
         }));
         break;
 
+      case 'inventory_changed':
+        // Spool created/updated/deleted/archived/restored - refresh inventory across all tabs
+        debouncedInvalidate('inventory-spools');
+        debouncedInvalidate('spoolman-inventory-spools');
+        debouncedInvalidate(inventoryLocationsQueryKey[0]);
+        break;
+
       case 'spool_assignment_changed':
         // Spool assigned/unassigned - refresh assignment data across all tabs
         debouncedInvalidate('spool-assignments');
         debouncedInvalidate('slotPresets');
         break;
+
+      case 'spool_assignment_verified': {
+        // #2582: the backend read the AMS telemetry back after an assignment
+        // and either confirmed the tray accepted it or timed out. Toast the
+        // outcome so the AMS→Studio hand-off is no longer silent.
+        // Backend always supplies printer_name (falls back to "Printer <id>"),
+        // so the '||' here only guards a malformed payload.
+        const printer = message.printer_name || 'Printer';
+        const slot = message.slot || '?';
+        if (message.verified) {
+          if (message.kprofile_applied === false) {
+            // Filament id landed but the K-profile (cali_idx) did not — the
+            // exact "loaded but no flow profile" case the reporter chased.
+            showToast(
+              t('printers.toast.assignmentVerifiedNoKprofile', { slot, printer }),
+              'warning'
+            );
+          } else {
+            showToast(t('printers.toast.assignmentVerified', { slot, printer }), 'success');
+          }
+        } else {
+          showToast(t('printers.toast.assignmentNotConfirmed', { slot, printer }), 'warning');
+        }
+        break;
+      }
 
       case 'spool_auto_assigned':
         // RFID tag matched - refresh inventory and assignment data
@@ -280,26 +379,37 @@ export function useWebSocket() {
         debouncedInvalidate('inventory-spools');
         break;
 
-      case 'unknown_tag':
-        // Unknown RFID tag detected - dispatch event for UI
+      case 'unknown_tag': {
+        // Unknown RFID tag detected — dispatch event for UI. The backend
+        // ships the slot's current tray data alongside the event so
+        // consumers don't have to look it up from the (frequently stale)
+        // cached printerStatus query.
+        const m = message as unknown as {
+          printer_id?: number;
+          ams_id?: number;
+          tray_id?: number;
+          tag_uid?: string;
+          tray_uuid?: string;
+          tray_type?: string | null;
+          tray_color?: string | null;
+          tray_sub_brands?: string | null;
+          tray_count?: number | null;
+        };
         window.dispatchEvent(new CustomEvent('unknown-tag', {
           detail: {
-            printer_id: (message as unknown as { printer_id?: number }).printer_id,
-            ams_id: (message as unknown as { ams_id?: number }).ams_id,
-            tray_id: (message as unknown as { tray_id?: number }).tray_id,
-            tag_uid: (message as unknown as { tag_uid?: string }).tag_uid,
-            tray_uuid: (message as unknown as { tray_uuid?: string }).tray_uuid,
+            printer_id: m.printer_id,
+            ams_id: m.ams_id,
+            tray_id: m.tray_id,
+            tag_uid: m.tag_uid,
+            tray_uuid: m.tray_uuid,
+            tray_type: m.tray_type,
+            tray_color: m.tray_color,
+            tray_sub_brands: m.tray_sub_brands,
+            tray_count: m.tray_count,
           }
         }));
         break;
-
-      case 'background_dispatch':
-        window.dispatchEvent(
-          new CustomEvent('background-dispatch', {
-            detail: (message as unknown as { data?: Record<string, unknown> }).data || {},
-          })
-        );
-        break;
+      }
 
       case 'spoolbuddy_weight':
         window.dispatchEvent(new CustomEvent('spoolbuddy-weight', { detail: message }));
@@ -342,6 +452,31 @@ export function useWebSocket() {
         debouncedInvalidate('spoolbuddy-devices');
         debouncedInvalidate('spoolbuddy-update-check');
         break;
+
+      // Dispatch toast lifecycle (#1625 follow-up — restored the upload
+      // progress UI that the scheduler unification removed). Four backend
+      // event types collapse to one frontend channel. No
+      // `queue_item_queued` (the toast must wait for the upload to
+      // actually start) and no `queue_item_dispatched` (the legacy
+      // background-dispatch flow kept status='processing' from upload
+      // start until printer ack — the "Awaiting printer…" subtitle is
+      // derived from upload_progress_pct >= 99.9, not from a separate
+      // event).
+      case 'queue_item_uploading':
+      case 'queue_item_upload_progress':
+      case 'queue_item_acked':
+      case 'queue_item_failed':
+        window.dispatchEvent(new CustomEvent('bambuddy:dispatch-toast', { detail: message }));
+        break;
+      // Slicer Pipeline runs (#1425 PR C). State transitions on the run
+      // refresh both the dashboard list AND the per-pipeline "Last run"
+      // chip in Settings → Pipelines.
+      case 'pipeline_run_updated':
+        queryClient.invalidateQueries({ queryKey: ['pipeline-runs-all'] });
+        if (message.run?.pipeline_id) {
+          queryClient.invalidateQueries({ queryKey: ['pipeline-runs', message.run.pipeline_id] });
+        }
+        break;
     }
   }, [queryClient, debouncedInvalidate, throttledPrinterStatusUpdate, showToast, t]);
 
@@ -351,9 +486,16 @@ export function useWebSocket() {
   }, [handleMessage]);
 
   useEffect(() => {
-    connect();
+    // connect() is async after the GHSA-r2qv fix (mints a ws-token first).
+    // Fire-and-forget at mount; the inner reconnect loop also calls
+    // connect() in the ws.onclose handler.
+    disposedRef.current = false;
+    void connect();
 
     return () => {
+      // Mark disposed BEFORE closing so the ws.onclose triggered by close()
+      // sees it and won't schedule a post-unmount reconnect.
+      disposedRef.current = true;
       if (reconnectTimeoutRef.current) {
         clearTimeout(reconnectTimeoutRef.current);
       }

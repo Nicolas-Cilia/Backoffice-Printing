@@ -1,7 +1,7 @@
 from datetime import datetime
 from typing import Annotated, Literal
 
-from pydantic import BaseModel, PlainSerializer
+from pydantic import BaseModel, BeforeValidator, Field, PlainSerializer, model_validator
 
 
 # Custom serializer to ensure UTC datetimes have Z suffix
@@ -13,6 +13,33 @@ def serialize_utc_datetime(dt: datetime | None) -> str | None:
 
 
 UTCDatetime = Annotated[datetime | None, PlainSerializer(serialize_utc_datetime)]
+
+
+def _coerce_tristate(v: object) -> object:
+    """Map legacy on/off booleans onto the tri-state calibration options.
+
+    bed_levelling / flow_cali / nozzle_offset_cali were plain booleans before we
+    added BambuStudio's third "auto" state (skip if recently done). Rows and API
+    payloads created under the old scheme carry bool / 0-1 int / "true"/"false";
+    coerce them so old clients and un-migrated rows still validate. getValueInt
+    parity: off=0, on=1, auto=2.
+    """
+    if isinstance(v, bool):
+        return "on" if v else "off"
+    if isinstance(v, int):
+        return {0: "off", 1: "on", 2: "auto"}.get(v, "auto")
+    if isinstance(v, str):
+        low = v.strip().lower()
+        if low in ("true", "1"):
+            return "on"
+        if low in ("false", "0"):
+            return "off"
+    return v
+
+
+# Tri-state calibration option: "auto" (printer decides / skip if recent),
+# "on" (force every print), "off" (never). Mirrors BambuStudio's ops_auto.
+TriState = Annotated[Literal["off", "on", "auto"], BeforeValidator(_coerce_tristate)]
 
 
 class PrintQueueItemCreate(BaseModel):
@@ -28,20 +55,47 @@ class PrintQueueItemCreate(BaseModel):
     require_previous_success: bool = False
     auto_off_after: bool = False  # Power off printer after print completes
     manual_start: bool = False  # Requires manual trigger to start (staged)
+    insert_at_top: bool = False  # Insert ahead of other pending items in the same queue scope
+    insert_position: int | None = None  # 1-indexed insertion position for priority queueing
+    # Persistent "Print Anyway" acknowledgement (#1698-followup). When set,
+    # PrintModal already showed the deficit warning and the user confirmed,
+    # so the scheduler does not re-flag this item on the next tick.
+    skip_filament_check: bool = False
     # AMS mapping: list of global tray IDs for each filament slot
     # Format: [5, -1, 2, -1] where position = slot_id-1, value = global tray ID (-1 = unused)
     ams_mapping: list[int] | None = None
     # Plate ID for multi-plate 3MF files (1-indexed, None = auto-detect/plate 1)
     plate_id: int | None = None
-    # Print options
-    bed_levelling: bool = True
-    flow_cali: bool = False
+    # Print options. bed_levelling / flow_cali / nozzle_offset_cali are tri-state
+    # (off/on/auto), defaulting to "auto" to match BambuStudio. vibration_cali /
+    # layer_inspect / timelapse stay on/off (BambuStudio exposes no auto for them).
+    bed_levelling: TriState = "auto"
+    flow_cali: TriState = "auto"
     vibration_cali: bool = True
     layer_inspect: bool = False
     timelapse: bool = False
     use_ams: bool = True
+    # Nozzle offset calibration — dual-nozzle printers only (#1682). The MQTT
+    # layer ignores the value on single-nozzle printers so the wire stays "skip".
+    nozzle_offset_cali: TriState = "auto"
+    # Preheat / heat-soak per-item override (#1468). 'inherit' uses the global
+    # preheat_enabled setting; 'on' / 'off' force the decision. The chamber
+    # target falls through: this override → max(filament-map[loaded tray]) → 0.
+    preheat_override: Literal["inherit", "on", "off"] = "inherit"
+    preheat_chamber_target_override: int | None = Field(default=None, ge=0, le=60)
+    # Auto-print G-code injection
+    gcode_injection: bool = False
     # Batch: create multiple copies (creates a batch if > 1)
     quantity: int = 1
+    # Existing batch to add this item into. When set, the item's batch_id is
+    # populated on insert so the queue UI groups it with its siblings. Used by
+    # the multi-plate auto-batch flow and by the "Group as batch" action.
+    batch_id: int | None = None
+    # Project to associate the resulting archive with
+    project_id: int | None = None
+    # Direct printer-card uploads are temporary library files. The scheduler
+    # deletes them after creating the durable archive copy.
+    cleanup_library_after_dispatch: bool = False
 
 
 class PrintQueueItemUpdate(BaseModel):
@@ -57,12 +111,21 @@ class PrintQueueItemUpdate(BaseModel):
     ams_mapping: list[int] | None = None
     plate_id: int | None = None
     # Print options
-    bed_levelling: bool | None = None
-    flow_cali: bool | None = None
+    bed_levelling: TriState | None = None
+    flow_cali: TriState | None = None
     vibration_cali: bool | None = None
     layer_inspect: bool | None = None
     timelapse: bool | None = None
     use_ams: bool | None = None
+    nozzle_offset_cali: TriState | None = None
+    preheat_override: Literal["inherit", "on", "off"] | None = None
+    preheat_chamber_target_override: int | None = Field(default=None, ge=0, le=60)
+    # Auto-print G-code injection
+    gcode_injection: bool | None = None
+    # H2C dual-nozzle-rack slicer pick (#1780). list[int] per-filament
+    # physical nozzle position IDs from BambuStudio's project_file MQTT
+    # body; sent back to the printer verbatim on dispatch.
+    nozzle_mapping: list[int] | None = None
 
 
 class PrintQueueItemResponse(BaseModel):
@@ -80,15 +143,26 @@ class PrintQueueItemResponse(BaseModel):
     require_previous_success: bool
     auto_off_after: bool
     manual_start: bool
+    # True when the dispatch scheduler last evaluated this item and the
+    # assigned spool could not satisfy at least one slot's required grams
+    # (#1496). Display-only — the ▶ click recomputes deficit against live
+    # spool state.
+    filament_short: bool = False
+    # User has acknowledged "Print Anyway" — scheduler skips the deficit check
+    # for this item (#1698-followup).
+    skip_filament_check: bool = False
     ams_mapping: list[int] | None = None
     plate_id: int | None = None  # Plate ID for multi-plate 3MF files
     # Print options
-    bed_levelling: bool = True
-    flow_cali: bool = False
+    bed_levelling: TriState = "auto"
+    flow_cali: TriState = "auto"
     vibration_cali: bool = True
     layer_inspect: bool = False
     timelapse: bool = False
     use_ams: bool = True
+    nozzle_offset_cali: TriState = "auto"
+    preheat_override: Literal["inherit", "on", "off"] = "inherit"
+    preheat_chamber_target_override: int | None = None
     status: Literal["pending", "printing", "completed", "failed", "skipped", "cancelled"]
     started_at: UTCDatetime
     completed_at: UTCDatetime
@@ -98,6 +172,13 @@ class PrintQueueItemResponse(BaseModel):
     # Nested info for UI (populated in route)
     archive_name: str | None = None
     archive_thumbnail: str | None = None
+    # True when the linked archive has been soft-deleted (its files are gone
+    # from disk). In that case the *archive_name* / *archive_thumbnail* /
+    # downstream metadata fields are intentionally left None so the frontend
+    # doesn't 404-storm the now-missing thumbnail / plates / plate-thumbnail
+    # endpoints (#1348 follow-up). Frontends can render a "source deleted"
+    # badge based on this flag.
+    archive_deleted: bool = False
     library_file_name: str | None = None  # Name of library file (if library_file_id is set)
     library_file_thumbnail: str | None = None  # Thumbnail of library file
     printer_name: str | None = None
@@ -108,6 +189,17 @@ class PrintQueueItemResponse(BaseModel):
     layer_height: float | None = None  # e.g. 0.2 (from archive/library file)
     nozzle_diameter: float | None = None  # e.g. 0.4 (from archive/library file)
     sliced_for_model: str | None = None  # e.g. "P1S" (from archive/library file)
+    # Build plate type (e.g. "Textured PEI Plate") so the user knows which
+    # plate to mount on the printer (#1281). Per-plate accurate on multi-plate
+    # 3MFs: when `plate_id` is set, the value is the matching plate's
+    # `curr_bed_type` rather than the archive-level first-plate default.
+    bed_type: str | None = None
+    # True when the source archive carries the slicer's own live-resolved
+    # AMS-slot pick (extra_data.slicer_ams_mapping) *and* it was resolved
+    # against this row's own printer — the only case where dispatch actually
+    # reuses that exact physical spool instead of the scheduler re-deriving one
+    # from the file's static type/color.
+    archive_has_slicer_ams_mapping: bool = False
 
     # User tracking (Issue #206)
     created_by_id: int | None = None
@@ -119,6 +211,15 @@ class PrintQueueItemResponse(BaseModel):
 
     # Shortest-job-first scheduling
     been_jumped: bool = False
+
+    # Auto-print G-code injection
+    gcode_injection: bool = False
+    cleanup_library_after_dispatch: bool = False
+
+    # H2C dual-nozzle-rack slicer pick (#1780). Surface for any future
+    # "edit print → choose nozzle" UI; null on every model except O1C2
+    # uploads from BambuStudio.
+    nozzle_mapping: list[int] | None = None
 
     class Config:
         from_attributes = True
@@ -132,6 +233,30 @@ class PrintQueueReorderItem(BaseModel):
 class PrintQueueReorder(BaseModel):
     items: list[PrintQueueReorderItem]
 
+    @model_validator(mode="after")
+    def _validate_positions_unique(self) -> "PrintQueueReorder":
+        """Reject reorder requests with duplicate positions in the payload
+        (#1625-followup).
+
+        The /reorder route is the drag-drop renumber path on the queue UI;
+        a well-behaved client sends a contiguous renumbering of a single
+        printer's pending queue. A buggy client that sends two items at
+        the same position would leave the queue in an inconsistent state
+        (scheduler's ORDER BY (printer_id, position) ties get broken by
+        physical row order). Fail closed at the schema boundary so the
+        bug is caught before any DB mutation.
+
+        Uniqueness is enforced WITHIN THE PAYLOAD only — cross-printer
+        reorders that intentionally share positions across different
+        printer queues are a non-goal of the drag-drop UI, so this is the
+        right scope.
+        """
+        positions = [it.position for it in self.items]
+        if len(positions) != len(set(positions)):
+            duplicates = sorted({p for p in positions if positions.count(p) > 1})
+            raise ValueError(f"Duplicate positions in reorder request: {duplicates}")
+        return self
+
 
 class PrintQueueBulkUpdate(BaseModel):
     """Bulk update multiple queue items with the same values."""
@@ -144,12 +269,17 @@ class PrintQueueBulkUpdate(BaseModel):
     auto_off_after: bool | None = None
     manual_start: bool | None = None
     # Print options
-    bed_levelling: bool | None = None
-    flow_cali: bool | None = None
+    bed_levelling: TriState | None = None
+    flow_cali: TriState | None = None
     vibration_cali: bool | None = None
     layer_inspect: bool | None = None
     timelapse: bool | None = None
     use_ams: bool | None = None
+    nozzle_offset_cali: TriState | None = None
+    preheat_override: Literal["inherit", "on", "off"] | None = None
+    preheat_chamber_target_override: int | None = Field(default=None, ge=0, le=60)
+    # Auto-print G-code injection
+    gcode_injection: bool | None = None
 
 
 class PrintQueueBulkUpdateResponse(BaseModel):
@@ -157,6 +287,26 @@ class PrintQueueBulkUpdateResponse(BaseModel):
 
     updated_count: int
     skipped_count: int  # Items that were not pending
+    message: str
+
+
+class PrintBatchCreate(BaseModel):
+    """Create a batch, either empty (multi-plate pre-batch flow) or by
+    assigning existing pending queue items into it (manual "Group as batch")."""
+
+    name: str
+    archive_id: int | None = None
+    library_file_id: int | None = None
+    # Existing pending queue items to assign to this batch. None / empty for
+    # the empty-batch flow (client passes the returned id on subsequent
+    # addToQueue calls).
+    item_ids: list[int] | None = None
+
+
+class PrintBatchUngroupResponse(BaseModel):
+    """Response after ungrouping a batch."""
+
+    ungrouped_count: int
     message: str
 
 

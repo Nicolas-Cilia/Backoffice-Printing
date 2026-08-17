@@ -10,7 +10,6 @@
 # Options:
 #   --path PATH        Installation directory (default: /opt/bambuddy)
 #   --port PORT        Port to expose (default: 8000)
-#   --bind ADDRESS     Bind address: 0.0.0.0 (network) or 127.0.0.1 (local only)
 #   --tz TIMEZONE      Timezone (default: system timezone or UTC)
 #   --build            Build from source instead of using pre-built image
 #   --yes, -y          Non-interactive mode, accept defaults
@@ -32,12 +31,10 @@ BOLD='\033[1m'
 # Default values
 DEFAULT_INSTALL_PATH="/opt/bambuddy"
 DEFAULT_PORT="8000"
-DEFAULT_BIND_ADDRESS="0.0.0.0"
 
 # Script variables
 INSTALL_PATH=""
 PORT=""
-BIND_ADDRESS=""
 TIMEZONE=""
 BUILD_FROM_SOURCE="false"
 NON_INTERACTIVE="false"
@@ -138,7 +135,6 @@ show_help() {
     echo "Options:"
     echo "  --path PATH        Installation directory (default: /opt/bambuddy)"
     echo "  --port PORT        Port to expose (default: 8000)"
-    echo "  --bind ADDRESS     Bind address: 0.0.0.0 (network) or 127.0.0.1 (local only)"
     echo "  --tz TIMEZONE      Timezone (default: system timezone or UTC)"
     echo "  --build            Build from source instead of using pre-built image"
     echo "  --yes, -y          Non-interactive mode, accept defaults"
@@ -253,7 +249,17 @@ install_docker() {
 create_install_dir() {
     log_info "Creating installation directory..."
 
-    mkdir -p "$INSTALL_PATH"
+    if ! mkdir -p "$INSTALL_PATH" 2>/dev/null; then
+        # The default `/opt/bambuddy` (and any other root-owned parent) needs
+        # elevation. Try without sudo first so user-supplied custom paths
+        # under $HOME / /srv / etc. don't drag in an unnecessary password
+        # prompt. On the fallback path, chown the result to the invoking
+        # user so they can edit docker-compose.yml + .env afterwards
+        # without sudo every time (#1774).
+        log_info "$INSTALL_PATH requires sudo to create..."
+        sudo mkdir -p "$INSTALL_PATH"
+        sudo chown -R "$USER:$USER" "$INSTALL_PATH"
+    fi
     cd "$INSTALL_PATH"
 
     log_success "Directory created: $INSTALL_PATH"
@@ -367,10 +373,6 @@ parse_args() {
                 PORT="$2"
                 shift 2
                 ;;
-            --bind)
-                BIND_ADDRESS="$2"
-                shift 2
-                ;;
             --tz)
                 TIMEZONE="$2"
                 shift 2
@@ -432,17 +434,6 @@ gather_config() {
     # Port
     [[ -z "$PORT" ]] && prompt "Port to expose" "$DEFAULT_PORT" PORT
 
-    # Bind address
-    if [[ -z "$BIND_ADDRESS" ]]; then
-        echo ""
-        echo "Network access:"
-        echo "  0.0.0.0   - Accessible from other devices on your network (recommended)"
-        echo "  127.0.0.1 - Only accessible from this machine"
-        prompt "Bind address" "$DEFAULT_BIND_ADDRESS" BIND_ADDRESS
-    fi
-
-    # Note: iptables redirect is no longer needed — FTP binds to port 990 directly.
-
     # Timezone
     detect_timezone
     prompt "Timezone" "$TIMEZONE" TIMEZONE
@@ -460,7 +451,6 @@ gather_config() {
     echo -e "${CYAN}─────────────────────────────────────────${NC}"
     echo -e "  Install path:  ${GREEN}$INSTALL_PATH${NC}"
     echo -e "  Port:          ${GREEN}$PORT${NC}"
-    echo -e "  Bind address:  ${GREEN}$BIND_ADDRESS${NC}"
     echo -e "  Timezone:      ${GREEN}$TIMEZONE${NC}"
     echo -e "  Build source:  ${GREEN}$BUILD_FROM_SOURCE${NC}"
     echo -e "  Redirect 990:  ${GREEN}$REDIRECT_990${NC}"
@@ -535,15 +525,10 @@ main() {
     echo -e "${GREEN}║                                                              ║${NC}"
     echo -e "${GREEN}╚══════════════════════════════════════════════════════════════╝${NC}"
     echo ""
-    # Show appropriate URL based on bind address
-    if [[ "$BIND_ADDRESS" == "0.0.0.0" ]]; then
-        local ip_addr
-        ip_addr=$(hostname -I 2>/dev/null | awk '{print $1}') || ip_addr="<your-ip>"
-        echo -e "  ${BOLD}Access BamBuddy:${NC}  ${CYAN}http://localhost:$PORT${NC}"
-        echo -e "                    ${CYAN}http://$ip_addr:$PORT${NC} (from other devices)"
-    else
-        echo -e "  ${BOLD}Access BamBuddy:${NC}  ${CYAN}http://localhost:$PORT${NC}"
-    fi
+    local ip_addr
+    ip_addr=$(hostname -I 2>/dev/null | awk '{print $1}') || ip_addr="<your-ip>"
+    echo -e "  ${BOLD}Access BamBuddy:${NC}  ${CYAN}http://localhost:$PORT${NC}"
+    echo -e "                    ${CYAN}http://$ip_addr:$PORT${NC} (from other devices)"
     echo ""
     echo -e "  ${BOLD}Manage container:${NC}"
     echo -e "    Status:  cd $INSTALL_PATH && $DOCKER_CMD ps"

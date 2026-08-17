@@ -1,9 +1,8 @@
 import { Component, type ReactNode, type ErrorInfo } from 'react';
-import { BrowserRouter, Routes, Route, Navigate } from 'react-router-dom';
+import { BrowserRouter, Routes, Route, Navigate, useLocation } from 'react-router-dom';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { Layout } from './components/Layout';
 import { PrintersPage } from './pages/PrintersPage';
-import { ArchivesPage } from './pages/ArchivesPage';
 import { QueuePage } from './pages/QueuePage';
 import { StatsPage } from './pages/StatsPage';
 import { SettingsPage } from './pages/SettingsPage';
@@ -12,7 +11,9 @@ import { MaintenancePage } from './pages/MaintenancePage';
 import { ProjectsPage } from './pages/ProjectsPage';
 import { ProjectDetailPage } from './pages/ProjectDetailPage';
 import { FileManagerPage } from './pages/FileManagerPage';
+import { LibraryTrashPage } from './pages/LibraryTrashPage';
 import { CameraPage } from './pages/CameraPage';
+import { CamWallPage } from './pages/CamWallPage';
 import { StreamOverlayPage } from './pages/StreamOverlayPage';
 import { ExternalLinkPage } from './pages/ExternalLinkPage';
 import { GroupEditPage } from './pages/GroupEditPage';
@@ -21,11 +22,15 @@ import { SystemInfoPage } from './pages/SystemInfoPage';
 import { LoginPage } from './pages/LoginPage';
 import { SetupPage } from './pages/SetupPage';
 import { NotificationsPage } from './pages/NotificationsPage';
+import { GCodeViewerPage } from './pages/GCodeViewerPage';
 import { useWebSocket } from './hooks/useWebSocket';
+import { usePrintProgressTitle } from './hooks/usePrintProgressTitle';
 import { useStreamTokenSync } from './hooks/useCameraStreamToken';
 import { ThemeProvider } from './contexts/ThemeContext';
 import { ToastProvider } from './contexts/ToastContext';
+import { SliceJobTrackerProvider } from './contexts/SliceJobTrackerContext';
 import { AuthProvider, useAuth } from './contexts/AuthContext';
+import { ColorCatalogProvider } from './contexts/ColorCatalogContext';
 import { SpoolBuddyLayout } from './components/spoolbuddy/SpoolBuddyLayout';
 import { SpoolBuddyDashboard } from './pages/spoolbuddy/SpoolBuddyDashboard';
 import { SpoolBuddyAmsPage } from './pages/spoolbuddy/SpoolBuddyAmsPage';
@@ -83,42 +88,48 @@ function StreamTokenSync() {
 
 function WebSocketProvider({ children }: { children: React.ReactNode }) {
   useWebSocket();
+  usePrintProgressTitle();
   return <>{children}</>;
 }
 
 function ProtectedRoute({ children }: { children: React.ReactNode }) {
   const { authEnabled, loading, user } = useAuth();
+  const location = useLocation();
 
   if (loading) {
     return <div className="min-h-screen flex items-center justify-center">Loading...</div>;
   }
 
   if (authEnabled && !user) {
-    return <Navigate to="/login" replace />;
+    return <Navigate to="/login" replace state={{ from: location }} />;
   }
 
   return <>{children}</>;
 }
 
-function AdminRoute({ children }: { children: React.ReactNode }) {
-  const { authEnabled, loading, user, isAdmin } = useAuth();
+function PermissionRoute({ permission, children }: { permission: string; children: React.ReactNode }) {
+  // Permission-gated route: any user with the given permission can enter, not
+  // just admins. Individual components below this guard apply their own
+  // per-action permission checks. Used for pages where delegation is supported
+  // (e.g. settings:read grants read-only access to Settings; specific tabs
+  // require their own permissions like users:read, groups:update, etc.).
+  const { authEnabled, loading, user, hasPermission } = useAuth();
+  const location = useLocation();
 
   if (loading) {
     return <div className="min-h-screen flex items-center justify-center">Loading...</div>;
   }
 
-  // If auth is not enabled, allow access (backward compatibility)
+  // Auth disabled → open access (backward compatibility)
   if (!authEnabled) {
     return <>{children}</>;
   }
 
-  // If auth is enabled but no user, redirect to login
   if (!user) {
-    return <Navigate to="/login" replace />;
+    return <Navigate to="/login" replace state={{ from: location }} />;
   }
 
-  // If user is not admin, redirect to home
-  if (!isAdmin) {
+  if (!hasPermission(permission as Parameters<typeof hasPermission>[0])) {
     return <Navigate to="/" replace />;
   }
 
@@ -145,10 +156,18 @@ function SetupRoute({ children }: { children: React.ReactNode }) {
 function App() {
   return (
     <ErrorBoundary>
-    <ThemeProvider>
       <ToastProvider>
         <QueryClientProvider client={queryClient}>
           <AuthProvider>
+            {/* ThemeProvider sits inside AuthProvider so its initial
+                ``api.getSettings()`` fetch can wait for AuthContext to
+                resolve — otherwise it fires unconditionally on every
+                login page load and returns 401. ErrorBoundary uses
+                inline styles, so a missing theme on a crash screen is
+                not a regression. */}
+            <ThemeProvider>
+            <ColorCatalogProvider>
+            <SliceJobTrackerProvider>
             <StreamTokenSync />
             <BrowserRouter>
               <Routes>
@@ -164,6 +183,11 @@ function App() {
                 {/* Stream overlay page - standalone for OBS/streaming embeds, no auth required */}
                 <Route path="/overlay/:printerId" element={<StreamOverlayPage />} />
 
+                {/* Cam Wall on its own URL (#2531). Outside ProtectedRoute because a
+                    ?token= kiosk has no session to protect; the page itself sends a
+                    tokenless visitor to /login, and the backend gates the feed. */}
+                <Route path="/camwall" element={<CamWallPage />} />
+
                 {/* SpoolBuddy kiosk UI */}
                 <Route element={<ProtectedRoute><WebSocketProvider><SpoolBuddyLayout /></WebSocketProvider></ProtectedRoute>}>
                   <Route path="spoolbuddy" element={<SpoolBuddyDashboard />} />
@@ -177,8 +201,11 @@ function App() {
                 {/* Main app with WebSocket for real-time updates */}
                 <Route element={<ProtectedRoute><WebSocketProvider><Layout /></WebSocketProvider></ProtectedRoute>}>
                   <Route index element={<PrintersPage />} />
-                  <Route path="archives" element={<ArchivesPage />} />
                   <Route path="queue" element={<QueuePage />} />
+                  {/* Slicer Pipelines (#1425) — Pipelines tab lives on the
+                      Print Queue page (Queue + History + Timeline +
+                      Pipelines). Old standalone URL redirects. */}
+                  <Route path="pipelines/runs" element={<Navigate to="/queue?tab=pipelines" replace />} />
                   <Route path="stats" element={<StatsPage />} />
                   <Route path="profiles" element={<ProfilesPage />} />
                   <Route path="maintenance" element={<MaintenancePage />} />
@@ -186,21 +213,26 @@ function App() {
                   <Route path="projects/:id" element={<ProjectDetailPage />} />
                   <Route path="inventory" element={<InventoryPage />} />
                   <Route path="files" element={<FileManagerPage />} />
-                  <Route path="settings" element={<AdminRoute><SettingsPage /></AdminRoute>} />
-                  <Route path="groups/new" element={<AdminRoute><GroupEditPage /></AdminRoute>} />
-                  <Route path="groups/:id/edit" element={<AdminRoute><GroupEditPage /></AdminRoute>} />
+                  <Route path="files/trash" element={<LibraryTrashPage />} />
+                  <Route path="settings" element={<PermissionRoute permission="settings:read"><SettingsPage /></PermissionRoute>} />
+                  <Route path="groups/new" element={<PermissionRoute permission="groups:create"><GroupEditPage /></PermissionRoute>} />
+                  <Route path="groups/:id/edit" element={<PermissionRoute permission="groups:update"><GroupEditPage /></PermissionRoute>} />
                   <Route path="users" element={<Navigate to="/settings?tab=users" replace />} />
                   <Route path="groups" element={<Navigate to="/settings?tab=users" replace />} />
                   <Route path="system" element={<SystemInfoPage />} />
                   <Route path="notifications" element={<NotificationsPage />} />
+                  <Route path="gcode-viewer" element={<GCodeViewerPage />} />
                   <Route path="external/:id" element={<ExternalLinkPage />} />
+                  <Route path="camera-tokens" element={<Navigate to="/settings?tab=apikeys#card-camera-tokens" replace />} />
                 </Route>
               </Routes>
             </BrowserRouter>
+            </SliceJobTrackerProvider>
+            </ColorCatalogProvider>
+            </ThemeProvider>
           </AuthProvider>
         </QueryClientProvider>
       </ToastProvider>
-    </ThemeProvider>
     </ErrorBoundary>
   );
 }

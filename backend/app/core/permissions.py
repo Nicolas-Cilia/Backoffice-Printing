@@ -19,24 +19,32 @@ class Permission(StrEnum):
     PRINTERS_CREATE = "printers:create"
     PRINTERS_UPDATE = "printers:update"
     PRINTERS_DELETE = "printers:delete"
-    PRINTERS_CONTROL = "printers:control"  # Start/stop/pause/resume prints
+    PRINTERS_CONTROL = "printers:control"  # Printer controls: stop/pause/resume, lights, motors, drying, etc.
     PRINTERS_FILES = "printers:files"  # Send files to printer
     PRINTERS_AMS_RFID = "printers:ams_rfid"  # Re-read AMS RFID tags
     PRINTERS_CLEAR_PLATE = "printers:clear_plate"  # Confirm plate cleared for next print
 
     # Archives
+    # ARCHIVES_READ kept for backward-compat with legacy custom roles, but new
+    # role bootstraps use the ownership-split variants below. seed_default_groups
+    # migrates pre-existing role rows: Administrators → ALL, everyone else → OWN.
     ARCHIVES_READ = "archives:read"
+    ARCHIVES_READ_OWN = "archives:read_own"
+    ARCHIVES_READ_ALL = "archives:read_all"
     ARCHIVES_CREATE = "archives:create"
     ARCHIVES_UPDATE_OWN = "archives:update_own"
     ARCHIVES_UPDATE_ALL = "archives:update_all"
     ARCHIVES_DELETE_OWN = "archives:delete_own"
     ARCHIVES_DELETE_ALL = "archives:delete_all"
-    ARCHIVES_REPRINT_OWN = "archives:reprint_own"
-    ARCHIVES_REPRINT_ALL = "archives:reprint_all"
+    ARCHIVES_REPRINT_OWN = "archives:reprint_own"  # Reprint own archives; queue:create is also required to enqueue
+    ARCHIVES_REPRINT_ALL = "archives:reprint_all"  # Reprint any archive; queue:create is also required to enqueue
+    ARCHIVES_PURGE = "archives:purge"
 
     # Queue
     QUEUE_READ = "queue:read"
-    QUEUE_CREATE = "queue:create"
+    QUEUE_READ_OWN = "queue:read_own"
+    QUEUE_READ_ALL = "queue:read_all"
+    QUEUE_CREATE = "queue:create"  # Create queue items, including ASAP items eligible for immediate dispatch
     QUEUE_UPDATE_OWN = "queue:update_own"
     QUEUE_UPDATE_ALL = "queue:update_all"
     QUEUE_DELETE_OWN = "queue:delete_own"
@@ -45,11 +53,17 @@ class Permission(StrEnum):
 
     # Library
     LIBRARY_READ = "library:read"
-    LIBRARY_UPLOAD = "library:upload"
+    LIBRARY_READ_OWN = "library:read_own"
+    LIBRARY_READ_ALL = "library:read_all"
+    LIBRARY_UPLOAD = "library:upload"  # Upload/import/slice library files; queue:create is also required to print
     LIBRARY_UPDATE_OWN = "library:update_own"
     LIBRARY_UPDATE_ALL = "library:update_all"
     LIBRARY_DELETE_OWN = "library:delete_own"
     LIBRARY_DELETE_ALL = "library:delete_all"
+    # Admin-only: bulk purge of old files + trash retention settings (#1008).
+    # Routine per-user trash management (restore-own, hard-delete-own) is
+    # gated by the existing LIBRARY_DELETE_* permissions instead.
+    LIBRARY_PURGE = "library:purge"
 
     # Projects
     PROJECTS_READ = "projects:read"
@@ -69,6 +83,8 @@ class Permission(StrEnum):
     INVENTORY_UPDATE = "inventory:update"
     INVENTORY_DELETE = "inventory:delete"
     INVENTORY_VIEW_ASSIGNMENTS = "inventory:view_assignments"  # View spool-to-AMS assignments on printer cards
+    INVENTORY_FORECAST_READ = "inventory:forecast_read"  # View forecast/reorder intelligence panel
+    INVENTORY_FORECAST_WRITE = "inventory:forecast_write"  # Modify SKU settings, lead times, shopping list
 
     # Smart Plugs
     SMART_PLUGS_READ = "smart_plugs:read"
@@ -117,6 +133,7 @@ class Permission(StrEnum):
 
     # AMS History
     AMS_HISTORY_READ = "ams_history:read"
+    PRINTER_SENSOR_HISTORY_READ = "printer_sensor_history:read"
 
     # Stats/Metrics
     STATS_READ = "stats:read"
@@ -137,6 +154,11 @@ class Permission(StrEnum):
 
     # Cloud Auth (admin-level)
     CLOUD_AUTH = "cloud:auth"
+    ORCA_CLOUD_AUTH = "orca_cloud:auth"
+
+    # MakerWorld Integration
+    MAKERWORLD_VIEW = "makerworld:view"  # Resolve MakerWorld URLs and view model metadata
+    MAKERWORLD_IMPORT = "makerworld:import"  # Download 3MFs from MakerWorld into the library
 
     # API Keys (admin-level)
     API_KEYS_READ = "api_keys:read"
@@ -156,6 +178,11 @@ class Permission(StrEnum):
     GROUPS_UPDATE = "groups:update"
     GROUPS_DELETE = "groups:delete"
 
+    # Slicer Pipelines (#1425)
+    PIPELINES_READ = "pipelines:read"  # View pipeline definitions and run history
+    PIPELINES_WRITE = "pipelines:write"  # Create / edit / delete pipeline definitions
+    PIPELINES_RUN = "pipelines:run"  # Kick off a pipeline run (PR C); separate because spending filament is a different trust dimension than authoring the recipe
+
     # WebSocket connection
     WEBSOCKET_CONNECT = "websocket:connect"
 
@@ -173,7 +200,9 @@ PERMISSION_CATEGORIES = {
         Permission.PRINTERS_CLEAR_PLATE,
     ],
     "Archives": [
-        Permission.ARCHIVES_READ,
+        Permission.ARCHIVES_READ,  # legacy — kept for back-compat with custom roles
+        Permission.ARCHIVES_READ_OWN,
+        Permission.ARCHIVES_READ_ALL,
         Permission.ARCHIVES_CREATE,
         Permission.ARCHIVES_UPDATE_OWN,
         Permission.ARCHIVES_UPDATE_ALL,
@@ -181,9 +210,12 @@ PERMISSION_CATEGORIES = {
         Permission.ARCHIVES_DELETE_ALL,
         Permission.ARCHIVES_REPRINT_OWN,
         Permission.ARCHIVES_REPRINT_ALL,
+        Permission.ARCHIVES_PURGE,
     ],
     "Queue": [
-        Permission.QUEUE_READ,
+        Permission.QUEUE_READ,  # legacy — kept for back-compat with custom roles
+        Permission.QUEUE_READ_OWN,
+        Permission.QUEUE_READ_ALL,
         Permission.QUEUE_CREATE,
         Permission.QUEUE_UPDATE_OWN,
         Permission.QUEUE_UPDATE_ALL,
@@ -192,12 +224,15 @@ PERMISSION_CATEGORIES = {
         Permission.QUEUE_REORDER,
     ],
     "Library": [
-        Permission.LIBRARY_READ,
+        Permission.LIBRARY_READ,  # legacy — kept for back-compat with custom roles
+        Permission.LIBRARY_READ_OWN,
+        Permission.LIBRARY_READ_ALL,
         Permission.LIBRARY_UPLOAD,
         Permission.LIBRARY_UPDATE_OWN,
         Permission.LIBRARY_UPDATE_ALL,
         Permission.LIBRARY_DELETE_OWN,
         Permission.LIBRARY_DELETE_ALL,
+        Permission.LIBRARY_PURGE,
     ],
     "Projects": [
         Permission.PROJECTS_READ,
@@ -217,6 +252,8 @@ PERMISSION_CATEGORIES = {
         Permission.INVENTORY_UPDATE,
         Permission.INVENTORY_DELETE,
         Permission.INVENTORY_VIEW_ASSIGNMENTS,
+        Permission.INVENTORY_FORECAST_READ,
+        Permission.INVENTORY_FORECAST_WRITE,
     ],
     "Smart Plugs": [
         Permission.SMART_PLUGS_READ,
@@ -264,6 +301,7 @@ PERMISSION_CATEGORIES = {
     ],
     "Stats & History": [
         Permission.AMS_HISTORY_READ,
+        Permission.PRINTER_SENSOR_HISTORY_READ,
         Permission.STATS_READ,
         Permission.STATS_FILTER_BY_USER,
     ],
@@ -282,6 +320,11 @@ PERMISSION_CATEGORIES = {
     ],
     "Cloud": [
         Permission.CLOUD_AUTH,
+        Permission.ORCA_CLOUD_AUTH,
+    ],
+    "MakerWorld": [
+        Permission.MAKERWORLD_VIEW,
+        Permission.MAKERWORLD_IMPORT,
     ],
     "API Keys": [
         Permission.API_KEYS_READ,
@@ -298,6 +341,11 @@ PERMISSION_CATEGORIES = {
         Permission.GROUPS_CREATE,
         Permission.GROUPS_UPDATE,
         Permission.GROUPS_DELETE,
+    ],
+    "Slicer Pipelines": [
+        Permission.PIPELINES_READ,
+        Permission.PIPELINES_WRITE,
+        Permission.PIPELINES_RUN,
     ],
     "WebSocket": [
         Permission.WEBSOCKET_CONNECT,
@@ -329,22 +377,31 @@ DEFAULT_GROUPS = {
             Permission.PRINTERS_AMS_RFID.value,
             Permission.PRINTERS_CLEAR_PLATE.value,
             # Archives - own items only
-            Permission.ARCHIVES_READ.value,
+            Permission.ARCHIVES_READ_OWN.value,
             Permission.ARCHIVES_CREATE.value,
             Permission.ARCHIVES_UPDATE_OWN.value,
             Permission.ARCHIVES_DELETE_OWN.value,
             Permission.ARCHIVES_REPRINT_OWN.value,
             # Queue - own items only
-            Permission.QUEUE_READ.value,
+            Permission.QUEUE_READ_OWN.value,
             Permission.QUEUE_CREATE.value,
             Permission.QUEUE_UPDATE_OWN.value,
             Permission.QUEUE_DELETE_OWN.value,
             Permission.QUEUE_REORDER.value,
             # Library - own items only
-            Permission.LIBRARY_READ.value,
+            Permission.LIBRARY_READ_OWN.value,
             Permission.LIBRARY_UPLOAD.value,
             Permission.LIBRARY_UPDATE_OWN.value,
             Permission.LIBRARY_DELETE_OWN.value,
+            # MakerWorld integration
+            Permission.MAKERWORLD_VIEW.value,
+            Permission.MAKERWORLD_IMPORT.value,
+            # Orca Cloud — needed for the Slice modal's Orca Cloud preset
+            # picker to populate. Workshops that use Orca Cloud presets
+            # need every operator to be able to authenticate. Bambu Cloud
+            # (CLOUD_AUTH) stays admin-only — that one is a more sensitive
+            # account binding.
+            Permission.ORCA_CLOUD_AUTH.value,
             # Projects - full access
             Permission.PROJECTS_READ.value,
             Permission.PROJECTS_CREATE.value,
@@ -361,6 +418,8 @@ DEFAULT_GROUPS = {
             Permission.INVENTORY_UPDATE.value,
             Permission.INVENTORY_DELETE.value,
             Permission.INVENTORY_VIEW_ASSIGNMENTS.value,
+            Permission.INVENTORY_FORECAST_READ.value,
+            Permission.INVENTORY_FORECAST_WRITE.value,
             # Smart Plugs - full access
             Permission.SMART_PLUGS_READ.value,
             Permission.SMART_PLUGS_CREATE.value,
@@ -398,10 +457,15 @@ DEFAULT_GROUPS = {
             Permission.FIRMWARE_READ.value,
             # Stats & History
             Permission.AMS_HISTORY_READ.value,
+            Permission.PRINTER_SENSOR_HISTORY_READ.value,
             Permission.STATS_READ.value,
             Permission.SYSTEM_READ.value,
             # Settings - read only
             Permission.SETTINGS_READ.value,
+            # Slicer Pipelines - full access
+            Permission.PIPELINES_READ.value,
+            Permission.PIPELINES_WRITE.value,
+            Permission.PIPELINES_RUN.value,
             # WebSocket
             Permission.WEBSOCKET_CONNECT.value,
         ],
@@ -412,13 +476,14 @@ DEFAULT_GROUPS = {
         "permissions": [
             # Read-only access
             Permission.PRINTERS_READ.value,
-            Permission.ARCHIVES_READ.value,
-            Permission.QUEUE_READ.value,
-            Permission.LIBRARY_READ.value,
+            Permission.ARCHIVES_READ_OWN.value,
+            Permission.QUEUE_READ_OWN.value,
+            Permission.LIBRARY_READ_OWN.value,
             Permission.PROJECTS_READ.value,
             Permission.FILAMENTS_READ.value,
             Permission.INVENTORY_READ.value,
             Permission.INVENTORY_VIEW_ASSIGNMENTS.value,
+            Permission.INVENTORY_FORECAST_READ.value,
             Permission.SMART_PLUGS_READ.value,
             Permission.CAMERA_VIEW.value,
             Permission.MAINTENANCE_READ.value,
@@ -428,10 +493,15 @@ DEFAULT_GROUPS = {
             Permission.EXTERNAL_LINKS_READ.value,
             Permission.FIRMWARE_READ.value,
             Permission.AMS_HISTORY_READ.value,
+            Permission.PRINTER_SENSOR_HISTORY_READ.value,
             Permission.STATS_READ.value,
             Permission.SYSTEM_READ.value,
             Permission.SETTINGS_READ.value,
+            # Slicer Pipelines - read only
+            Permission.PIPELINES_READ.value,
             Permission.WEBSOCKET_CONNECT.value,
+            # MakerWorld browsing only (no import — that writes to library)
+            Permission.MAKERWORLD_VIEW.value,
         ],
         "is_system": True,
     },

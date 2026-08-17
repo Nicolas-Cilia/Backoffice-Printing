@@ -1,7 +1,7 @@
 """API routes for smart plug management."""
 
 import logging
-from datetime import datetime, timedelta, timezone
+from datetime import timedelta
 
 from fastapi import APIRouter, Body, Depends, HTTPException
 from pydantic import BaseModel
@@ -12,6 +12,7 @@ from backend.app.api.routes.settings import get_setting
 from backend.app.core.auth import RequirePermissionIfAuthEnabled
 from backend.app.core.database import get_db
 from backend.app.core.permissions import Permission
+from backend.app.core.tasks import spawn_background_task
 from backend.app.models.printer import Printer
 from backend.app.models.smart_plug import SmartPlug
 from backend.app.models.user import User
@@ -33,10 +34,13 @@ from backend.app.schemas.smart_plug import (
 from backend.app.services.discovery import tasmota_scanner
 from backend.app.services.homeassistant import homeassistant_service
 from backend.app.services.mqtt_relay import mqtt_relay
+from backend.app.services.mqtt_smart_plug import subscribe_plug_to_mqtt
 from backend.app.services.notification_service import notification_service
+from backend.app.services.plug_energy_history import fill_derived_energy
 from backend.app.services.printer_manager import printer_manager
 from backend.app.services.rest_smart_plug import rest_smart_plug_service
 from backend.app.services.tasmota import tasmota_service
+from backend.app.utils.local_time import to_naive_utc, utcnow_naive
 
 logger = logging.getLogger(__name__)
 
@@ -124,30 +128,9 @@ async def create_smart_plug(
 
     # Subscribe MQTT plugs to their topics
     if plug.plug_type == "mqtt":
-        # Determine effective topics (new fields take priority, fall back to legacy)
-        power_topic = plug.mqtt_power_topic or plug.mqtt_topic
-        energy_topic = plug.mqtt_energy_topic
-        state_topic = plug.mqtt_state_topic
-
-        # Only subscribe if at least one topic is configured
-        if power_topic or energy_topic or state_topic:
-            mqtt_relay.smart_plug_service.subscribe(
-                plug_id=plug.id,
-                # Power source (path is optional)
-                power_topic=power_topic,
-                power_path=plug.mqtt_power_path,
-                power_multiplier=plug.mqtt_power_multiplier or plug.mqtt_multiplier or 1.0,
-                # Energy source (path is optional)
-                energy_topic=energy_topic,
-                energy_path=plug.mqtt_energy_path,
-                energy_multiplier=plug.mqtt_energy_multiplier or plug.mqtt_multiplier or 1.0,
-                # State source (path is optional)
-                state_topic=state_topic,
-                state_path=plug.mqtt_state_path,
-                state_on_value=plug.mqtt_state_on_value,
-            )
-            topics = [t for t in [power_topic, energy_topic, state_topic] if t]
-            logger.info("Created MQTT plug '%s' subscribed to %s", plug.name, ", ".join(set(topics)))
+        topics = subscribe_plug_to_mqtt(mqtt_relay.smart_plug_service, plug)
+        if topics:
+            logger.info("Created MQTT plug '%s' subscribed to %s", plug.name, ", ".join(topics))
     elif plug.plug_type == "homeassistant":
         logger.info("Created Home Assistant plug '%s' (%s)", plug.name, plug.ha_entity_id)
     else:
@@ -269,14 +252,16 @@ async def start_tasmota_scan(
 
     Auto-detects local network if no IP range provided.
     """
-    import asyncio
 
     # Auto-detect network
     from_ip, to_ip = get_local_network_range()
     timeout = request.timeout if request else 1.0
 
     # Start scan in background
-    asyncio.create_task(tasmota_scanner.scan_range(from_ip, to_ip, timeout))
+    spawn_background_task(
+        tasmota_scanner.scan_range(from_ip, to_ip, timeout),
+        name="tasmota-scan",
+    )
 
     # Return immediate status
     scanned, total = tasmota_scanner.progress
@@ -505,28 +490,9 @@ async def update_smart_plug(
             if old_plug_type == "mqtt":
                 mqtt_relay.smart_plug_service.unsubscribe(plug.id)
 
-            # Subscribe to new topics
-            power_topic = plug.mqtt_power_topic or plug.mqtt_topic
-            energy_topic = plug.mqtt_energy_topic
-            state_topic = plug.mqtt_state_topic
-
-            # Only subscribe if at least one topic is configured
-            if power_topic or energy_topic or state_topic:
-                mqtt_relay.smart_plug_service.subscribe(
-                    plug_id=plug.id,
-                    # Power source (path is optional)
-                    power_topic=power_topic,
-                    power_path=plug.mqtt_power_path,
-                    power_multiplier=plug.mqtt_power_multiplier or plug.mqtt_multiplier or 1.0,
-                    # Energy source (path is optional)
-                    energy_topic=energy_topic,
-                    energy_path=plug.mqtt_energy_path,
-                    energy_multiplier=plug.mqtt_energy_multiplier or plug.mqtt_multiplier or 1.0,
-                    # State source (path is optional)
-                    state_topic=state_topic,
-                    state_path=plug.mqtt_state_path,
-                    state_on_value=plug.mqtt_state_on_value,
-                )
+            # Subscribe via the shared helper (matches startup restore and
+            # create route) — keeps all three paths in lock-step.
+            subscribe_plug_to_mqtt(mqtt_relay.smart_plug_service, plug)
 
     logger.info("Updated smart plug '%s'", plug.name)
     return plug
@@ -617,10 +583,11 @@ async def control_smart_plug(
         plug.last_state = expected_state
         if expected_state == "ON":
             plug.auto_off_executed = False  # Reset flag when manually turning on
-        elif expected_state == "OFF" and plug.printer_id:
-            # Mark printer offline immediately for faster UI update
+        elif expected_state == "OFF" and plug.printer_id and plug.controls_printer_power:
+            # Mark printer offline immediately for faster UI update. Skipped for
+            # accessory plugs, which are linked to a printer but don't feed it (#2629).
             printer_manager.mark_printer_offline(plug.printer_id)
-    plug.last_checked = datetime.now(timezone.utc)
+    plug.last_checked = utcnow_naive()
     await db.commit()
 
     # Trigger associated scripts if this is a main (non-script) plug
@@ -707,7 +674,7 @@ async def get_plug_status(
             # Update last state in database
             if is_reachable and data.state:
                 plug.last_state = data.state
-                plug.last_checked = datetime.now(timezone.utc)
+                plug.last_checked = utcnow_naive()
                 await db.commit()
 
             energy_data = None
@@ -742,7 +709,7 @@ async def get_plug_status(
     # Update last state in database
     if status["reachable"]:
         plug.last_state = status["state"]
-        plug.last_checked = datetime.now(timezone.utc)
+        plug.last_checked = utcnow_naive()
         await db.commit()
 
     # Fetch energy data if device is reachable
@@ -750,6 +717,11 @@ async def get_plug_status(
     if status["reachable"]:
         energy = await service.get_energy(plug)
         if energy:
+            # Most plugs report only a lifetime counter — a Shelly has no notion
+            # of "today" at all, and Home Assistant never reports "yesterday".
+            # Fill those in from the hourly snapshots (#2539). Tasmota, which
+            # knows its own daily figures, is left alone.
+            energy = await fill_derived_energy(db, plug.id, energy)
             energy_data = SmartPlugEnergy(**energy)
 
             # Check power alerts
@@ -771,10 +743,10 @@ async def check_power_alerts(plug: SmartPlug, current_power: float | None, db: A
     # Cooldown: don't alert more than once per 5 minutes
     cooldown_minutes = 5
     if plug.power_alert_last_triggered:
-        last_triggered = plug.power_alert_last_triggered
-        if last_triggered.tzinfo is None:
-            last_triggered = last_triggered.replace(tzinfo=timezone.utc)
-        time_since_last = datetime.now(timezone.utc) - last_triggered
+        # Naive UTC on both sides: the column is naive, so a row loaded fresh from
+        # the DB comes back without an offset and subtracting an aware now() would
+        # raise TypeError.
+        time_since_last = utcnow_naive() - to_naive_utc(plug.power_alert_last_triggered)
         if time_since_last < timedelta(minutes=cooldown_minutes):
             return
 
@@ -795,7 +767,7 @@ async def check_power_alerts(plug: SmartPlug, current_power: float | None, db: A
         threshold = plug.power_alert_low
 
     if alert_triggered:
-        plug.power_alert_last_triggered = datetime.now(timezone.utc)
+        plug.power_alert_last_triggered = utcnow_naive()
         await db.commit()
 
         # Send notification

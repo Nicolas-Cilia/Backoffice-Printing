@@ -5,21 +5,33 @@ import { useTranslation } from 'react-i18next';
 import { SpoolBuddyTopBar } from './SpoolBuddyTopBar';
 import { SpoolBuddyBottomNav } from './SpoolBuddyBottomNav';
 import { SpoolBuddyStatusBar } from './SpoolBuddyStatusBar';
+import { SpoolBuddyQuickMenu } from './SpoolBuddyQuickMenu';
 import { useSpoolBuddyState } from '../../hooks/useSpoolBuddyState';
+import { useColorCatalogVersion } from '../../hooks/useColorCatalogVersion';
 import { api, spoolbuddyApi, type Printer, type PrinterStatus } from '../../api/client';
 import { VirtualKeyboard } from '../VirtualKeyboard';
+import { useToast } from '../../contexts/ToastContext';
 
 export function SpoolBuddyLayout() {
+  // Cascade a re-render into all SpoolBuddy pages when the color catalog
+  // loads, for the same reason as the main Layout — SpoolBuddyInventoryPage
+  // renders spool color names on mount. See #857.
+  useColorCatalogVersion();
   const [selectedPrinterId, setSelectedPrinterId] = useState<number | null>(null);
   const [alert, setAlert] = useState<{ type: 'warning' | 'error' | 'info'; message: string } | null>(null);
-  const [blanked, setBlanked] = useState(false);
   const [displayBrightness, setDisplayBrightness] = useState(100);
-  const [displayBlankTimeout, setDisplayBlankTimeout] = useState(0);
-  const lastActivityRef = useRef(Date.now());
   const { i18n } = useTranslation();
   const navigate = useNavigate();
   const location = useLocation();
   const sbState = useSpoolBuddyState();
+
+  // Hide the global toast viewport on the kiosk display. Restore on unmount so
+  // navigating back to the main app sees its toasts again.
+  const { setViewportSuppressed } = useToast();
+  useEffect(() => {
+    setViewportSuppressed(true);
+    return () => setViewportSuppressed(false);
+  }, [setViewportSuppressed]);
 
   // Sync language from backend settings (kiosk has its own browser with empty localStorage)
   const { data: appSettings } = useQuery({
@@ -50,7 +62,6 @@ export function SpoolBuddyLayout() {
   useEffect(() => {
     if (device && !initializedRef.current) {
       setDisplayBrightness(device.display_brightness);
-      setDisplayBlankTimeout(device.display_blank_timeout);
       initializedRef.current = true;
     }
   }, [device]);
@@ -92,44 +103,20 @@ export function SpoolBuddyLayout() {
     }
   }, [effectiveDeviceOnline, updateCheck?.update_available, updateCheck?.latest_version]);
 
-  // Track user activity for screen blank
-  const resetActivity = useCallback(() => {
-    lastActivityRef.current = Date.now();
-    setBlanked(false);
-  }, []);
-
-  useEffect(() => {
-    window.addEventListener('pointerdown', resetActivity);
-    window.addEventListener('keydown', resetActivity);
-    return () => {
-      window.removeEventListener('pointerdown', resetActivity);
-      window.removeEventListener('keydown', resetActivity);
-    };
-  }, [resetActivity]);
-
-  // Auto-navigate to dashboard when a NEW tag is detected (transition from no-tag to tag)
-  const tagDetected = Boolean(sbState.matchedSpool || sbState.unknownTagUid);
+  // Auto-navigate to dashboard when a NEW tag is detected (transition from no-tag to tag).
+  // Blanking itself is handled by swayidle/wlopm at the OS level on the kiosk device —
+  // when the HDMI output powers off and the user taps the screen, labwc delivers the
+  // input event to swayidle's `resume` command which re-powers HDMI. See issue #937.
+  const tagDetected = Boolean(sbState.matchedSpool || sbState.unknownTagUid || sbState.unknownTrayUuid);
   const prevTagDetected = useRef(false);
   useEffect(() => {
     if (tagDetected && !prevTagDetected.current) {
-      resetActivity();
       if (location.pathname !== '/spoolbuddy') {
         navigate('/spoolbuddy');
       }
     }
     prevTagDetected.current = tagDetected;
-  }, [tagDetected, location.pathname, navigate, resetActivity]);
-
-  // Screen blank timer
-  useEffect(() => {
-    if (displayBlankTimeout <= 0) return;
-    const interval = setInterval(() => {
-      if (Date.now() - lastActivityRef.current >= displayBlankTimeout * 1000) {
-        setBlanked(true);
-      }
-    }, 1000);
-    return () => clearInterval(interval);
-  }, [displayBlankTimeout]);
+  }, [tagDetected, location.pathname, navigate]);
 
   // Online printers list for swipe-to-switch
   const { data: printers = [] } = useQuery({
@@ -159,11 +146,22 @@ export function SpoolBuddyLayout() {
     swipeLockedRef.current = false;
   }, []);
   const handleTouchEnd = useCallback((e: React.TouchEvent) => {
-    if (!touchStartRef.current || onlinePrinters.length < 2) return;
+    if (!touchStartRef.current) return;
     const dx = e.changedTouches[0].clientX - touchStartRef.current.x;
     const dy = e.changedTouches[0].clientY - touchStartRef.current.y;
+    const startY = touchStartRef.current.y;
     touchStartRef.current = null;
     swipeLockedRef.current = false;
+
+    // Vertical swipe down from top area → open quick menu
+    // Top bar is 48px; allow starting swipe up to 120px from top to account for finger size
+    if (dy >= SWIPE_THRESHOLD && Math.abs(dy) > Math.abs(dx) && startY < 120) {
+      setQuickMenuOpen(true);
+      return;
+    }
+
+    // Horizontal swipe: cycle printers
+    if (onlinePrinters.length < 2) return;
     if (Math.abs(dx) < SWIPE_THRESHOLD || Math.abs(dy) > Math.abs(dx)) return;
     const currentIdx = onlinePrinters.findIndex((p: Printer) => p.id === selectedPrinterId);
     const nextIdx = dx < 0
@@ -191,6 +189,9 @@ export function SpoolBuddyLayout() {
   // Track virtual keyboard visibility to hide bottom bars
   const [keyboardVisible, setKeyboardVisible] = useState(false);
 
+  // Quick menu (swipe down to open)
+  const [quickMenuOpen, setQuickMenuOpen] = useState(false);
+
   // CSS brightness filter (software dimming)
   const brightnessStyle = displayBrightness < 100
     ? { filter: `brightness(${displayBrightness / 100})` } as const
@@ -206,6 +207,15 @@ export function SpoolBuddyLayout() {
         onTouchStart={handleTouchStart}
         onTouchEnd={handleTouchEnd}
       >
+        {/* Pull-down handle — tap or swipe to open quick menu */}
+        <button
+          onClick={() => setQuickMenuOpen(true)}
+          className="w-full h-1.5 bg-bambu-dark-secondary flex justify-center items-center shrink-0 touch-none"
+          aria-label="Open quick menu"
+        >
+          <div className="w-8 h-0.5 rounded-full bg-zinc-600" />
+        </button>
+
         <SpoolBuddyTopBar
           selectedPrinterId={selectedPrinterId}
           onPrinterChange={setSelectedPrinterId}
@@ -216,7 +226,6 @@ export function SpoolBuddyLayout() {
           <Outlet context={{
             selectedPrinterId, setSelectedPrinterId, sbState: sbStateForUi, setAlert,
             displayBrightness, setDisplayBrightness,
-            displayBlankTimeout, setDisplayBlankTimeout,
           }} />
         </main>
 
@@ -225,13 +234,13 @@ export function SpoolBuddyLayout() {
         <VirtualKeyboard onVisibilityChange={setKeyboardVisible} />
       </div>
 
-      {/* Screen blank overlay — touch to wake */}
-      {blanked && (
-        <div
-          className="fixed inset-0 bg-black z-[9999]"
-          onPointerDown={(e) => { e.stopPropagation(); resetActivity(); }}
-        />
-      )}
+      {/* Quick menu (swipe down from top) */}
+      <SpoolBuddyQuickMenu
+        isOpen={quickMenuOpen}
+        onClose={() => setQuickMenuOpen(false)}
+        deviceId={device?.device_id ?? null}
+        deviceOnline={effectiveDeviceOnline}
+      />
     </>
   );
 }
@@ -244,6 +253,4 @@ export interface SpoolBuddyOutletContext {
   setAlert: (alert: { type: 'warning' | 'error' | 'info'; message: string } | null) => void;
   displayBrightness: number;
   setDisplayBrightness: (brightness: number) => void;
-  displayBlankTimeout: number;
-  setDisplayBlankTimeout: (timeout: number) => void;
 }

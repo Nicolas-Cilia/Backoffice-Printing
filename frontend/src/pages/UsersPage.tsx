@@ -11,6 +11,7 @@ import { Button } from '../components/Button';
 import { Card, CardContent, CardHeader } from '../components/Card';
 import { ConfirmModal } from '../components/ConfirmModal';
 import { CreateUserAdvancedAuthModal } from '../components/CreateUserAdvancedAuthModal';
+import { LdapUserPicker } from '../components/LdapUserPicker';
 
 interface FormData extends UserCreate {
   group_ids: number[];
@@ -25,6 +26,9 @@ export function UsersPage() {
   const { showToast } = useToast();
   const queryClient = useQueryClient();
   const [showCreateModal, setShowCreateModal] = useState(false);
+  // Basic-mode (non-advanced-auth) modal: track which tab is active so the
+  // LDAP picker can replace the local form when LDAP is enabled.
+  const [basicCreateTab, setBasicCreateTab] = useState<'local' | 'ldap'>('local');
   const [showEditModal, setShowEditModal] = useState(false);
   const [editingUserId, setEditingUserId] = useState<number | null>(null);
   const [deleteUserId, setDeleteUserId] = useState<number | null>(null);
@@ -43,12 +47,19 @@ export function UsersPage() {
     queryFn: () => api.getAdvancedAuthStatus(),
   });
 
+  // LDAP status — drives whether the LDAP tab is rendered in the create modal.
+  const { data: ldapStatus = { ldap_enabled: false, ldap_configured: false } } = useQuery({
+    queryKey: ['ldapStatus'],
+    queryFn: () => api.getLDAPStatus(),
+  });
+
   // Close modal on Escape key
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
       if (e.key === 'Escape') {
         if (showCreateModal) {
           setShowCreateModal(false);
+          setBasicCreateTab('local');
           setFormData({ username: '', password: '', email: '', confirmPassword: '', role: 'user', group_ids: [] });
         }
         if (showEditModal) {
@@ -257,7 +268,7 @@ export function UsersPage() {
       <div className="p-6">
         <Card>
           <CardContent className="py-6">
-            <div className="flex items-center gap-3 text-red-400">
+            <div className="flex items-center gap-3 text-red-700 dark:text-red-400">
               <Shield className="w-5 h-5" />
               <p className="text-white">{t('users.noPermission')}</p>
             </div>
@@ -332,7 +343,7 @@ export function UsersPage() {
                     <td className="px-6 py-4 text-sm">
                       <div className="flex flex-wrap gap-1">
                         {user.is_admin && (
-                          <span className="px-2 py-0.5 rounded-full text-xs font-medium bg-purple-500/20 text-purple-300">
+                          <span className="px-2 py-0.5 rounded-full text-xs font-medium bg-purple-100 dark:bg-purple-500/20 text-purple-700 dark:text-purple-300">
                             {t('users.admin')}
                           </span>
                         )}
@@ -341,11 +352,11 @@ export function UsersPage() {
                             key={group.id}
                             className={`px-2 py-0.5 rounded-full text-xs font-medium ${
                               group.name === 'Administrators'
-                                ? 'bg-purple-500/20 text-purple-300'
+                                ? 'bg-purple-100 dark:bg-purple-500/20 text-purple-700 dark:text-purple-300'
                                 : group.name === 'Operators'
-                                ? 'bg-blue-500/20 text-blue-300'
+                                ? 'bg-blue-100 dark:bg-blue-500/20 text-blue-700 dark:text-blue-300'
                                 : group.name === 'Viewers'
-                                ? 'bg-green-500/20 text-green-300'
+                                ? 'bg-green-100 dark:bg-green-500/20 text-green-700 dark:text-green-300'
                                 : 'bg-gray-500/20 text-gray-300'
                             }`}
                           >
@@ -361,7 +372,7 @@ export function UsersPage() {
                       <span className={`px-3 py-1 rounded-full text-xs font-medium ${
                         user.is_active
                           ? 'bg-bambu-green/20 text-bambu-green'
-                          : 'bg-red-500/20 text-red-400'
+                          : 'bg-red-100 dark:bg-red-500/20 text-red-700 dark:text-red-400'
                       }`}>
                         {user.is_active ? t('users.active') : t('users.inactive')}
                       </span>
@@ -413,6 +424,7 @@ export function UsersPage() {
           className="fixed inset-0 bg-black/70 flex items-center justify-center z-50 p-4"
           onClick={() => {
             setShowCreateModal(false);
+            setBasicCreateTab('local');
             setFormData({ username: '', password: '', email: '', confirmPassword: '', role: 'user', group_ids: [] });
           }}
         >
@@ -431,6 +443,7 @@ export function UsersPage() {
                   size="sm"
                   onClick={() => {
                     setShowCreateModal(false);
+                    setBasicCreateTab('local');
                     setFormData({ username: '', password: '', email: '', confirmPassword: '', role: 'user', group_ids: [] });
                   }}
                 >
@@ -439,6 +452,66 @@ export function UsersPage() {
               </div>
             </CardHeader>
             <CardContent>
+              {ldapStatus?.ldap_enabled && (
+                <div
+                  className="mb-4 flex items-center gap-1 p-1 bg-bambu-dark-secondary rounded-lg"
+                  role="tablist"
+                  aria-label={t('users.modal.tabsAriaLabel')}
+                >
+                  <button
+                    type="button"
+                    role="tab"
+                    aria-selected={basicCreateTab === 'local'}
+                    onClick={() => setBasicCreateTab('local')}
+                    className={`flex-1 px-3 py-2 text-sm rounded-md transition-colors ${
+                      basicCreateTab === 'local'
+                        ? 'bg-bambu-green/15 text-bambu-green'
+                        : 'text-bambu-gray hover:text-white'
+                    }`}
+                  >
+                    {t('users.modal.localTab')}
+                  </button>
+                  <button
+                    type="button"
+                    role="tab"
+                    aria-selected={basicCreateTab === 'ldap'}
+                    onClick={() => setBasicCreateTab('ldap')}
+                    className={`flex-1 px-3 py-2 text-sm rounded-md transition-colors ${
+                      basicCreateTab === 'ldap'
+                        ? 'bg-bambu-green/15 text-bambu-green'
+                        : 'text-bambu-gray hover:text-white'
+                    }`}
+                  >
+                    {t('users.modal.ldapTab')}
+                  </button>
+                </div>
+              )}
+
+              {basicCreateTab === 'ldap' && ldapStatus?.ldap_enabled ? (
+                <>
+                  <LdapUserPicker
+                    onSuccess={(user) => {
+                      setShowCreateModal(false);
+                      setBasicCreateTab('local');
+                      setFormData({ username: '', password: '', email: '', confirmPassword: '', role: 'user', group_ids: [] });
+                      showToast(t('users.toast.ldapProvisioned', { username: user.username }));
+                    }}
+                  />
+                  <div className="mt-6 flex justify-end">
+                    <Button
+                      variant="secondary"
+                      onClick={() => {
+                        setShowCreateModal(false);
+                        setBasicCreateTab('local');
+                        setFormData({ username: '', password: '', email: '', confirmPassword: '', role: 'user', group_ids: [] });
+                      }}
+                    >
+                      {t('users.modal.cancel')}
+                    </Button>
+                  </div>
+                </>
+              ) : (
+              <>
               <div className="space-y-4">
                 <div>
                   <label className="block text-sm font-medium text-white mb-2">
@@ -485,7 +558,7 @@ export function UsersPage() {
                     minLength={6}
                   />
                   {formData.confirmPassword && formData.password !== formData.confirmPassword && (
-                    <p className="text-red-400 text-xs mt-1">{t('users.toast.passwordsDoNotMatch')}</p>
+                    <p className="text-red-700 dark:text-red-400 text-xs mt-1">{t('users.toast.passwordsDoNotMatch')}</p>
                   )}
                 </div>
                 <div>
@@ -506,7 +579,7 @@ export function UsersPage() {
                         />
                         <span className="text-sm text-white">{group.name}</span>
                         {group.is_system && (
-                          <span className="text-xs text-yellow-400">({t('users.system')})</span>
+                          <span className="text-xs text-yellow-700 dark:text-yellow-400">({t('users.system')})</span>
                         )}
                       </label>
                     ))}
@@ -543,6 +616,8 @@ export function UsersPage() {
                   )}
                 </Button>
               </div>
+              </>
+              )}
             </CardContent>
           </Card>
         </div>
@@ -561,6 +636,12 @@ export function UsersPage() {
           onCreate={handleCreate}
           isCreating={createMutation.isPending}
           isCreateButtonDisabled={isCreateButtonDisabled}
+          ldapEnabled={ldapStatus?.ldap_enabled}
+          onLdapProvisioned={(user) => {
+            setShowCreateModal(false);
+            setFormData({ username: '', password: '', email: '', confirmPassword: '', role: 'user', group_ids: [] });
+            showToast(t('users.toast.ldapProvisioned', { username: user.username }));
+          }}
         />
       )}
 
@@ -649,7 +730,7 @@ export function UsersPage() {
                       minLength={6}
                     />
                     {formData.confirmPassword && formData.password !== formData.confirmPassword && (
-                      <p className="text-red-400 text-xs mt-1">{t('users.toast.passwordsDoNotMatch')}</p>
+                      <p className="text-red-700 dark:text-red-400 text-xs mt-1">{t('users.toast.passwordsDoNotMatch')}</p>
                     )}
                   </div>
                 )}
@@ -671,7 +752,7 @@ export function UsersPage() {
                         />
                         <span className="text-sm text-white">{group.name}</span>
                         {group.is_system && (
-                          <span className="text-xs text-yellow-400">({t('users.system')})</span>
+                          <span className="text-xs text-yellow-700 dark:text-yellow-400">({t('users.system')})</span>
                         )}
                       </label>
                     ))}

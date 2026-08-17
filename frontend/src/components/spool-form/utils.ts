@@ -1,6 +1,47 @@
-import type { SlicerSetting, LocalPreset } from '../../api/client';
-import type { ColorPreset, FilamentOption } from './types';
+import { api } from '../../api/client';
+import type { SlicerSetting, LocalPreset, BuiltinFilament } from '../../api/client';
+import { installedNozzleDiameters } from '../../utils/amsHelpers';
+import type { CalibrationProfile, ColorPreset, FilamentOption } from './types';
 import { KNOWN_VARIANTS, DEFAULT_BRANDS, RECENT_COLORS_KEY, MAX_RECENT_COLORS } from './constants';
+
+/**
+ * Fetch a printer's K-profiles across every nozzle it actually has installed
+ * (#2618) and flatten them into CalibrationProfile rows for the PA-Profil
+ * picker. `getKProfiles` filters strictly by nozzle diameter and defaults to
+ * "0.4", so a single call hides non-0.4 profiles (e.g. a 0.6mm PAHT-CF K
+ * value) — the picker then shows only one of two nozzle-specific profiles.
+ * We query each installed diameter and merge. Falls back to "0.4" when the
+ * printer hasn't reported nozzle hardware, preserving prior behaviour.
+ * Per-diameter failures are swallowed (a printer that doesn't support the
+ * endpoint just yields no rows), matching the callers' previous try/catch.
+ */
+export async function fetchPrinterCalibrations(
+  printerId: number,
+  status: { nozzles?: { nozzle_diameter?: string }[] } | null | undefined,
+): Promise<CalibrationProfile[]> {
+  const diameters = installedNozzleDiameters(status);
+  const toFetch = diameters.length > 0 ? diameters : ['0.4'];
+  const responses = await Promise.all(
+    toFetch.map(d => api.getKProfiles(printerId, d).catch(() => null)),
+  );
+  const calibrations: CalibrationProfile[] = [];
+  for (const res of responses) {
+    if (!res) continue;
+    for (const p of res.profiles) {
+      calibrations.push({
+        cali_idx: p.slot_id,
+        filament_id: p.filament_id,
+        setting_id: p.setting_id || '',
+        name: p.name,
+        k_value: parseFloat(p.k_value) || 0,
+        n_coef: parseFloat(p.n_coef) || 0,
+        extruder_id: p.extruder_id,
+        nozzle_diameter: p.nozzle_diameter,
+      });
+    }
+  }
+  return calibrations;
+}
 
 // Fallback filament presets when cloud is not available
 const FALLBACK_PRESETS: FilamentOption[] = [
@@ -119,92 +160,124 @@ export function extractBrandsFromPresets(presets: SlicerSetting[], localPresets?
   return Array.from(brandSet).sort((a, b) => a.localeCompare(b));
 }
 
-// Build filament options from local presets (OrcaSlicer imports)
+// Build filament options from local presets (OrcaSlicer / BambuStudio imports).
+// Each preset gets its own entry — no base-name collapse — so the spool form
+// shows all per-printer/per-nozzle variants the user has imported. The spool
+// itself is printer-agnostic, so the variant the user picks just becomes the
+// stored slicer_filament code (consumed by normalize_slicer_filament during
+// slicing — kept as preset.filament_type when available so the existing
+// "GFL05"-style normalisation still resolves).
 function buildLocalFilamentOptions(localPresets: LocalPreset[]): FilamentOption[] {
   const filamentPresets = localPresets.filter(p => p.preset_type === 'filament');
   if (filamentPresets.length === 0) return [];
 
-  const presetsMap = new Map<string, FilamentOption>();
-  for (const preset of filamentPresets) {
-    const baseName = preset.name.replace(/@.*$/, '').trim();
-    const existing = presetsMap.get(baseName);
-    if (existing) {
-      existing.allCodes.push(String(preset.id));
-    } else {
-      // Use filament_type as the code if available (e.g. "GFL00"), otherwise use the id
-      const code = preset.filament_type || String(preset.id);
-      presetsMap.set(baseName, {
-        code,
-        name: baseName,
-        displayName: baseName,
-        isCustom: false,
-        allCodes: [code],
-      });
-    }
-  }
-  return Array.from(presetsMap.values()).sort((a, b) => a.displayName.localeCompare(b.displayName));
+  const options: FilamentOption[] = filamentPresets.map(preset => {
+    // Use the unique preset.id (stringified) as the code so each local preset
+    // has its own identity. Earlier this was preset.filament_type (e.g. "PLA")
+    // which collapsed every PLA local preset onto the same code — picking any
+    // of them saved slicer_filament="PLA", a material name the backend cannot
+    // resolve back to a specific preset row. The backend handler at
+    // inventory.py expects numeric IDs for local-preset slicer_filament values.
+    // allCodes still carries the legacy filament_type so findPresetOption
+    // resolves existing saved spools that have the old material-name code.
+    const code = String(preset.id);
+    const legacyCode = preset.filament_type || code;
+    const allCodes = Array.from(new Set([code, legacyCode]));
+    return {
+      code,
+      name: preset.name,
+      displayName: preset.name,
+      isCustom: false,
+      allCodes,
+    };
+  });
+  return options.sort((a, b) => a.displayName.localeCompare(b.displayName));
 }
 
-// Build filament options: cloud presets → local presets → hardcoded fallback
+// Build filament options by merging cloud presets, local profiles, and built-in
+// filaments — matching the behavior of ConfigureAmsSlotModal and the wiki's
+// "Where Presets Come From" section. Earlier versions were precedence-based
+// (cloud-only when cloud had any presets), which silently hid Local Profiles
+// from users logged into Bambu Cloud — see #1248.
 export function buildFilamentOptions(
   cloudPresets: SlicerSetting[],
   configuredPrinterModels: Set<string>,
   localPresets?: LocalPreset[],
+  builtinFilaments?: BuiltinFilament[],
 ): FilamentOption[] {
-  // 1. Cloud presets (highest priority)
-  if (cloudPresets.length > 0) {
-    const customPresets: FilamentOption[] = [];
-    const defaultPresetsMap = new Map<string, FilamentOption>();
+  const customPresets: FilamentOption[] = [];
+  const defaultPresets: FilamentOption[] = [];
+  const cloudCodes = new Set<string>();
 
-    for (const preset of cloudPresets) {
-      if (preset.is_custom) {
-        // Custom presets: include if matches configured printers or no printer filter
-        const presetNameUpper = preset.name.toUpperCase();
-        const matchesPrinter = configuredPrinterModels.size === 0 ||
-          Array.from(configuredPrinterModels).some(model => presetNameUpper.includes(model)) ||
-          !presetNameUpper.includes('@');
+  // 1. Cloud presets — each setting_id gets its own entry. The spool form is
+  // printer-agnostic so we deliberately do NOT collapse "@P1S" / "@X1C"
+  // variants into a single row; the user picks the variant they want and
+  // its setting_id is what gets persisted.
+  for (const preset of cloudPresets) {
+    if (preset.is_custom) {
+      const presetNameUpper = preset.name.toUpperCase();
+      const matchesPrinter = configuredPrinterModels.size === 0 ||
+        Array.from(configuredPrinterModels).some(model => presetNameUpper.includes(model)) ||
+        !presetNameUpper.includes('@');
 
-        if (matchesPrinter) {
-          customPresets.push({
-            code: preset.setting_id,
-            name: preset.name,
-            displayName: `${preset.name} (Custom)`,
-            isCustom: true,
-            allCodes: [preset.setting_id],
-          });
-        }
-      } else {
-        // Default presets: deduplicate by base name
-        const baseName = preset.name.replace(/@.*$/, '').trim();
-        const existing = defaultPresetsMap.get(baseName);
-        if (existing) {
-          existing.allCodes.push(preset.setting_id);
-        } else {
-          defaultPresetsMap.set(baseName, {
-            code: preset.setting_id,
-            name: baseName,
-            displayName: baseName,
-            isCustom: false,
-            allCodes: [preset.setting_id],
-          });
-        }
+      if (matchesPrinter) {
+        customPresets.push({
+          code: preset.setting_id,
+          name: preset.name,
+          displayName: `${preset.name} (Custom)`,
+          isCustom: true,
+          allCodes: [preset.setting_id],
+        });
+        cloudCodes.add(preset.setting_id);
       }
+    } else {
+      defaultPresets.push({
+        code: preset.setting_id,
+        name: preset.name,
+        displayName: preset.name,
+        isCustom: false,
+        allCodes: [preset.setting_id],
+      });
+      cloudCodes.add(preset.setting_id);
     }
-
-    return [
-      ...customPresets,
-      ...Array.from(defaultPresetsMap.values()),
-    ].sort((a, b) => a.displayName.localeCompare(b.displayName));
   }
 
-  // 2. Local presets (OrcaSlicer imports)
-  if (localPresets && localPresets.length > 0) {
-    const localOptions = buildLocalFilamentOptions(localPresets);
-    if (localOptions.length > 0) return localOptions;
+  // 2. Local profiles (OrcaSlicer / BambuStudio imports)
+  const localOptions = localPresets && localPresets.length > 0
+    ? buildLocalFilamentOptions(localPresets)
+    : [];
+
+  // 3. Built-in filaments — only those not already represented by a cloud preset.
+  // Cloud setting_ids look like "GFSA00", built-in filament_ids look like "GFA00";
+  // map between the two so we don't render the same filament twice.
+  const builtinOptions: FilamentOption[] = [];
+  if (builtinFilaments && builtinFilaments.length > 0) {
+    for (const bf of builtinFilaments) {
+      const settingId = bf.filament_id.startsWith('GF')
+        ? 'GFS' + bf.filament_id.slice(2)
+        : bf.filament_id;
+      if (cloudCodes.has(bf.filament_id) || cloudCodes.has(settingId)) continue;
+      builtinOptions.push({
+        code: bf.filament_id,
+        name: bf.name,
+        displayName: bf.name,
+        isCustom: false,
+        allCodes: [bf.filament_id, settingId],
+      });
+    }
   }
 
-  // 3. Hardcoded fallback
-  return FALLBACK_PRESETS;
+  const merged = [
+    ...customPresets,
+    ...defaultPresets,
+    ...localOptions,
+    ...builtinOptions,
+  ];
+
+  // 4. Hardcoded fallback only when literally every source is empty.
+  if (merged.length === 0) return FALLBACK_PRESETS;
+
+  return merged.sort((a, b) => a.displayName.localeCompare(b.displayName));
 }
 
 // Find selected preset option
@@ -229,6 +302,31 @@ export function findPresetOption(
     );
   }
   return option;
+}
+
+// Keep the value a spool already carries selectable in its own dropdown (#1905).
+// A brand or material entered as a custom value isn't part of the color catalog
+// or any slicer preset, so without this the edit form offered no way back to it
+// once the user opened the dropdown.
+export function withCurrentValue(options: string[], current: string): string[] {
+  const trimmed = current.trim();
+  if (!trimmed || options.some(o => o.toLowerCase() === trimmed.toLowerCase())) return options;
+  return [...options, trimmed].sort((a, b) => a.localeCompare(b));
+}
+
+// Brands/materials the catalog and slicer presets pair with the other field's
+// current value (#1905). Used to rank the dropdown, never to filter it — the
+// pairs are incomplete (Elegoo ships ASA even though the catalog only knows its
+// PLA), and hiding the rest made valid entries look impossible.
+export function pairedOptions(
+  options: string[],
+  counterpart: string,
+  pairMap: Map<string, Set<string>>,
+): string[] {
+  if (!counterpart) return [];
+  const keys = pairMap.get(counterpart.toLowerCase());
+  if (!keys || keys.size === 0) return [];
+  return options.filter(o => keys.has(o.toLowerCase()));
 }
 
 // Recent colors management
@@ -259,12 +357,103 @@ export function saveRecentColor(color: ColorPreset, currentRecent: ColorPreset[]
   return updated;
 }
 
+// Normalise a Bambu filament identifier to its bare filament_id form (#1688).
+// Spools store ``slicer_filament`` as a setting_id like "GFSG98_09" (the "_NN"
+// suffix is the variant, the "S" infix marks it as a setting_id); printer
+// K-profiles store ``filament_id`` as "GFG98" (bare). Both shapes need
+// normalising before comparison.
+//
+// This is the inverse of the filament_id→setting_id mapping at
+// ``buildFilamentOptions`` ("GFS" + filament_id.slice(2)), so a round-trip
+// stays consistent. Non-Bambu IDs (numeric local-preset IDs, Orca UUIDs)
+// are returned unchanged uppercase — they won't match any K-profile's
+// filament_id and the caller falls through to name-based matching.
+export function toFilamentId(id: string | null | undefined): string {
+  if (!id) return '';
+  // Drop "_NN" variant suffix.
+  let s = id.split('_')[0];
+  // Strip the "S" infix in "GFS..." so "GFSG98" → "GFG98".
+  if (/^GFS/i.test(s)) s = s.slice(0, 2) + s.slice(3);
+  return s.toUpperCase();
+}
+
+// "GFx99" identifiers (GFL99, GFG99, GFB99, ...) are Bambu's *generic* filament
+// IDs — one per material, shared across every physical filament the user hasn't
+// given a specific preset. They still identify a material unambiguously, so an
+// exact generic id match is only ambiguous about *brand*, never about material.
+export function isGenericFilamentId(id: string | null | undefined): boolean {
+  return !!id && /^GF[A-Z]99$/i.test(id);
+}
+
+// The material each generic Bambu filament ID stands for. Used to sanity-check
+// a generic id-match against the material the caller already knows (#2710): a
+// PETG spool must never claim GFL99 (generic PLA) profiles just because both
+// sides happen to have stored the same generic id.
+const GENERIC_FILAMENT_MATERIALS: Record<string, string> = {
+  GFB99: 'ABS',
+  GFC99: 'PC',
+  GFG99: 'PETG',
+  GFL99: 'PLA',
+  GFN99: 'PA',
+  GFP99: 'PE',
+  GFR99: 'EVA',
+  GFS99: 'PVA',
+  GFU99: 'TPU',
+};
+
+// Material a generic filament ID stands for ("GFL99" → "PLA"), or '' when the
+// ID isn't a known generic one.
+export function materialForGenericFilamentId(id: string | null | undefined): string {
+  if (!id) return '';
+  return GENERIC_FILAMENT_MATERIALS[id.toUpperCase()] || '';
+}
+
+// Bambu labels nylon "PA"; users routinely type "Nylon". Compare materials
+// through this so the two spellings agree.
+function normaliseMaterial(material: string): string {
+  const upper = material.trim().toUpperCase();
+  return upper === 'NYLON' ? 'PA' : upper;
+}
+
+// True when a generic filament ID may stand in for the given material — i.e.
+// the ID is generic and describes that same material.
+export function genericFilamentIdMatchesMaterial(id: string, material: string): boolean {
+  const generic = materialForGenericFilamentId(id);
+  return !!generic && !!material && normaliseMaterial(generic) === normaliseMaterial(material);
+}
+
 // Check if a calibration matches based on brand, material, and variant
 export function isMatchingCalibration(
   cal: { name?: string; filament_id?: string },
-  formData: { material: string; brand: string; subtype: string },
+  formData: { material: string; brand: string; subtype: string; slicer_filament?: string },
 ): boolean {
   if (!formData.material) return false;
+
+  // Preferred path: exact filament_id match after normalising both sides
+  // (#1688). When the spool has a non-generic preset assigned and it agrees
+  // with the K-profile's filament_id, this is unambiguous — no name parsing
+  // needed. A spool storing "GFSG98_09" matches a K-profile with filament_id
+  // "GFG98" without going anywhere near parsePresetName.
+  const spoolFid = toFilamentId(formData.slicer_filament);
+  const calFid = toFilamentId(cal.filament_id);
+  if (spoolFid && calFid && spoolFid === calFid) {
+    if (!isGenericFilamentId(calFid)) {
+      return true;
+    }
+    // Both sides carry the same *generic* id (#2710). That still pins the
+    // material, so the only thing left ambiguous is brand — a printer holds
+    // one flat calibration table per generic id and users routinely name
+    // those entries by colour ("Dark Brown", "Marble"), which no amount of
+    // name parsing can tie back to a material. Accept the match when the
+    // material agrees and the spool claims no brand of its own; a spool that
+    // does name a brand keeps the stricter name-based path below so its
+    // suggestions stay brand-specific.
+    const brand = formData.brand.trim();
+    const brandIsGeneric = !brand || brand.toUpperCase() === 'GENERIC';
+    if (brandIsGeneric && genericFilamentIdMatchesMaterial(calFid, formData.material)) {
+      return true;
+    }
+  }
 
   const profileName = cal.name || '';
 

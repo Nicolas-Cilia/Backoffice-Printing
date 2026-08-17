@@ -4,15 +4,15 @@ import { useQuery, useQueries, useMutation, useQueryClient } from '@tanstack/rea
 import { Link } from 'react-router-dom';
 import {
   DndContext,
+  DragOverlay,
   closestCenter,
   KeyboardSensor,
   PointerSensor,
   useSensor,
   useSensors,
 } from '@dnd-kit/core';
-import type { DragEndEvent } from '@dnd-kit/core';
+import type { DragEndEvent, DragStartEvent } from '@dnd-kit/core';
 import {
-  arrayMove,
   SortableContext,
   sortableKeyboardCoordinates,
   useSortable,
@@ -50,12 +50,23 @@ import {
   Weight,
   ChevronDown,
   ChevronRight,
+  ChevronUp,
   List,
   GanttChart,
+  Code,
+  Snail,
+  Package,
+  PackageOpen,
+  Ungroup,
+  Ban,
+  PlayCircle,
+  Workflow,
 } from 'lucide-react';
-import { api } from '../api/client';
+import { api, ApiError } from '../api/client';
+import { PipelineRunsView } from './PipelineRunsPage';
 import { type TimeFormat, formatETA, formatDuration, formatRelativeTime, parseUTCDate } from '../utils/date';
-import type { PrintQueueItem, PrintQueueBulkUpdate, Permission } from '../api/client';
+import { getBedTypeInfo } from '../utils/bedType';
+import type { PrintQueueItem, PrintQueueBulkUpdate, Permission, CalibrationMode } from '../api/client';
 import { Card } from '../components/Card';
 import { Button } from '../components/Button';
 import { ConfirmModal } from '../components/ConfirmModal';
@@ -75,7 +86,7 @@ function StatusBadge({ status, waitingReason, printerState, t }: { status: Print
   // Special case: pending with waiting_reason shows as "Waiting"
   if (status === 'pending' && waitingReason) {
     return (
-      <span className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-xs font-medium border text-purple-400 bg-purple-400/10 border-purple-400/20">
+      <span className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-xs font-medium border text-purple-700 dark:text-purple-400 bg-purple-50 dark:bg-purple-400/10 border-purple-200 dark:border-purple-400/20">
         <Clock className="w-3.5 h-3.5" />
         {t('queue.status.waiting')}
       </span>
@@ -85,7 +96,7 @@ function StatusBadge({ status, waitingReason, printerState, t }: { status: Print
   // Special case: printing but printer is paused
   if (status === 'printing' && printerState === 'PAUSE') {
     return (
-      <span className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-xs font-medium border text-yellow-400 bg-yellow-400/10 border-yellow-400/20">
+      <span className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-xs font-medium border text-yellow-700 dark:text-yellow-400 bg-yellow-50 dark:bg-yellow-400/10 border-yellow-200 dark:border-yellow-400/20">
         <Pause className="w-3.5 h-3.5" />
         {t('queue.status.paused')}
       </span>
@@ -94,10 +105,10 @@ function StatusBadge({ status, waitingReason, printerState, t }: { status: Print
 
   const config = {
     pending: { icon: Clock, color: 'text-status-warning bg-status-warning/10 border-status-warning/20', label: t('queue.status.pending') },
-    printing: { icon: Play, color: 'text-blue-400 bg-blue-400/10 border-blue-400/20', label: t('queue.status.printing') },
+    printing: { icon: Play, color: 'text-blue-700 dark:text-blue-400 bg-blue-50 dark:bg-blue-400/10 border-blue-200 dark:border-blue-400/20', label: t('queue.status.printing') },
     completed: { icon: CheckCircle, color: 'text-status-ok bg-status-ok/10 border-status-ok/20', label: t('queue.status.completed') },
     failed: { icon: XCircle, color: 'text-status-error bg-status-error/10 border-status-error/20', label: t('queue.status.failed') },
-    skipped: { icon: SkipForward, color: 'text-orange-400 bg-orange-400/10 border-orange-400/20', label: t('queue.status.skipped') },
+    skipped: { icon: SkipForward, color: 'text-orange-700 dark:text-orange-400 bg-orange-50 dark:bg-orange-400/10 border-orange-200 dark:border-orange-400/20', label: t('queue.status.skipped') },
     cancelled: { icon: X, color: 'text-gray-400 bg-gray-400/10 border-gray-400/20', label: t('queue.status.cancelled') },
   };
 
@@ -122,7 +133,7 @@ function BulkEditModal({
   t,
 }: {
   selectedCount: number;
-  printers: { id: number; name: string }[];
+  printers: { id: number; name: string; nozzle_count?: number }[];
   onSave: (data: Partial<PrintQueueBulkUpdate>) => void;
   onClose: () => void;
   isSaving: boolean;
@@ -133,12 +144,18 @@ function BulkEditModal({
   const [manualStart, setManualStart] = useState<boolean | 'unchanged'>('unchanged');
   const [autoOffAfter, setAutoOffAfter] = useState<boolean | 'unchanged'>('unchanged');
   const [requirePreviousSuccess, setRequirePreviousSuccess] = useState<boolean | 'unchanged'>('unchanged');
-  const [bedLevelling, setBedLevelling] = useState<boolean | 'unchanged'>('unchanged');
-  const [flowCali, setFlowCali] = useState<boolean | 'unchanged'>('unchanged');
+  const [bedLevelling, setBedLevelling] = useState<CalibrationMode | 'unchanged'>('unchanged');
+  const [flowCali, setFlowCali] = useState<CalibrationMode | 'unchanged'>('unchanged');
   const [vibrationCali, setVibrationCali] = useState<boolean | 'unchanged'>('unchanged');
   const [layerInspect, setLayerInspect] = useState<boolean | 'unchanged'>('unchanged');
   const [timelapse, setTimelapse] = useState<boolean | 'unchanged'>('unchanged');
   const [useAms, setUseAms] = useState<boolean | 'unchanged'>('unchanged');
+  const [nozzleOffsetCali, setNozzleOffsetCali] = useState<CalibrationMode | 'unchanged'>('unchanged');
+
+  // Show the dual-nozzle-only toggle when the user has at least one
+  // dual-nozzle printer registered (H2D/H2D Pro/H2C/X2D). Single-nozzle
+  // queues never see it — the MQTT layer ignores the field anyway.
+  const hasDualNozzlePrinter = printers.some(p => p.nozzle_count === 2);
 
   const handleSave = () => {
     const data: Partial<PrintQueueBulkUpdate> = {};
@@ -152,12 +169,14 @@ function BulkEditModal({
     if (layerInspect !== 'unchanged') data.layer_inspect = layerInspect;
     if (timelapse !== 'unchanged') data.timelapse = timelapse;
     if (useAms !== 'unchanged') data.use_ams = useAms;
+    if (nozzleOffsetCali !== 'unchanged') data.nozzle_offset_cali = nozzleOffsetCali;
     onSave(data);
   };
 
   const hasChanges = printerId !== 'unchanged' || manualStart !== 'unchanged' || autoOffAfter !== 'unchanged' ||
     requirePreviousSuccess !== 'unchanged' || bedLevelling !== 'unchanged' || flowCali !== 'unchanged' ||
-    vibrationCali !== 'unchanged' || layerInspect !== 'unchanged' || timelapse !== 'unchanged' || useAms !== 'unchanged';
+    vibrationCali !== 'unchanged' || layerInspect !== 'unchanged' || timelapse !== 'unchanged' || useAms !== 'unchanged' ||
+    nozzleOffsetCali !== 'unchanged';
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/50 backdrop-blur-sm">
@@ -211,12 +230,15 @@ function BulkEditModal({
           <div>
             <label className="block text-sm font-medium text-white mb-2">{t('queue.bulkEdit.printOptions')}</label>
             <div className="space-y-2">
-              <TriStateToggle label={t('queue.bulkEdit.bedLevelling')} value={bedLevelling} onChange={setBedLevelling} t={t} />
-              <TriStateToggle label={t('queue.bulkEdit.flowCalibration')} value={flowCali} onChange={setFlowCali} t={t} />
+              <CalibrationModeToggle label={t('queue.bulkEdit.bedLevelling')} value={bedLevelling} onChange={setBedLevelling} t={t} />
+              <CalibrationModeToggle label={t('queue.bulkEdit.flowCalibration')} value={flowCali} onChange={setFlowCali} t={t} />
               <TriStateToggle label={t('queue.bulkEdit.vibrationCalibration')} value={vibrationCali} onChange={setVibrationCali} t={t} />
               <TriStateToggle label={t('queue.bulkEdit.layerInspection')} value={layerInspect} onChange={setLayerInspect} t={t} />
               <TriStateToggle label={t('queue.bulkEdit.timelapse')} value={timelapse} onChange={setTimelapse} t={t} />
               <TriStateToggle label={t('queue.bulkEdit.useAms')} value={useAms} onChange={setUseAms} t={t} />
+              {hasDualNozzlePrinter && (
+                <CalibrationModeToggle label={t('queue.bulkEdit.nozzleOffsetCali')} value={nozzleOffsetCali} onChange={setNozzleOffsetCali} t={t} />
+              )}
             </div>
           </div>
         </div>
@@ -263,7 +285,7 @@ function TriStateToggle({
         <button
           onClick={() => onChange(false)}
           disabled={disabled}
-          className={`px-2 py-1 text-xs rounded ${value === false ? 'bg-red-500/20 text-red-400' : 'text-bambu-gray hover:text-white'} disabled:cursor-not-allowed`}
+          className={`px-2 py-1 text-xs rounded ${value === false ? 'bg-red-100 dark:bg-red-500/20 text-red-700 dark:text-red-400' : 'text-bambu-gray hover:text-white'} disabled:cursor-not-allowed`}
         >
           {t('common.off')}
         </button>
@@ -279,6 +301,43 @@ function TriStateToggle({
   );
 }
 
+// Four-state selector for the tri-state calibration options in bulk edit
+// (unchanged / off / auto / on). Mirrors TriStateToggle's chrome.
+function CalibrationModeToggle({
+  label,
+  value,
+  onChange,
+  t,
+}: {
+  label: string;
+  value: CalibrationMode | 'unchanged';
+  onChange: (val: CalibrationMode | 'unchanged') => void;
+  t: (key: string) => string;
+}) {
+  const modes: Array<{ key: CalibrationMode | 'unchanged'; label: string; active: string }> = [
+    { key: 'unchanged', label: '—', active: 'bg-bambu-dark-tertiary text-white' },
+    { key: 'off', label: t('settings.calibrationMode_off'), active: 'bg-red-100 dark:bg-red-500/20 text-red-700 dark:text-red-400' },
+    { key: 'auto', label: t('settings.calibrationMode_auto'), active: 'bg-blue-100 dark:bg-blue-500/20 text-blue-700 dark:text-blue-400' },
+    { key: 'on', label: t('settings.calibrationMode_on'), active: 'bg-bambu-green/20 text-bambu-green' },
+  ];
+  return (
+    <div className="flex items-center justify-between py-1">
+      <span className="text-sm text-bambu-gray">{label}</span>
+      <div className="flex items-center gap-1 bg-bambu-dark rounded-lg p-0.5">
+        {modes.map(({ key, label: modeLabel, active }) => (
+          <button
+            key={key}
+            onClick={() => onChange(key)}
+            className={`px-2 py-1 text-xs rounded ${value === key ? active : 'text-bambu-gray hover:text-white'}`}
+          >
+            {modeLabel}
+          </button>
+        ))}
+      </div>
+    </div>
+  );
+}
+
 // Sortable queue item for drag and drop
 function SortableQueueItem({
   item,
@@ -289,12 +348,16 @@ function SortableQueueItem({
   onStop,
   onRequeue,
   onStart,
+  onMoveUp,
+  onMoveDown,
   timeFormat = 'system',
   isSelected = false,
   onToggleSelect,
   hasPermission,
   canModify,
   printerState,
+  showEta = false,
+  etaNow,
   t,
 }: {
   item: PrintQueueItem;
@@ -305,12 +368,22 @@ function SortableQueueItem({
   onStop: () => void;
   onRequeue: () => void;
   onStart: () => void;
+  // Mobile tap-to-reorder (#2667). Undefined = at a list boundary (button
+  // shown disabled) or reordering isn't available; the desktop drag handle
+  // is unaffected. Move one step among siblings, then persist via reorder.
+  onMoveUp?: () => void;
+  onMoveDown?: () => void;
   timeFormat?: TimeFormat;
   isSelected?: boolean;
   onToggleSelect?: () => void;
   hasPermission: (permission: Permission) => boolean;
   canModify: (resource: 'queue' | 'archives' | 'library', action: 'update' | 'delete' | 'reprint', createdById: number | null | undefined) => boolean;
   printerState?: string | null;
+  // Whether this item qualifies for an "if started now" ETA (#2740), and the
+  // instant to measure it from. Both are decided by the page so every row on
+  // screen quotes the same clock.
+  showEta?: boolean;
+  etaNow?: number;
   t: (key: string, options?: Record<string, unknown>) => string;
 }) {
   // Fetch printer status every 30 seconds while printing to monitor progress
@@ -323,11 +396,13 @@ function SortableQueueItem({
 
   // Determine if we're printing a library file
   const isLibraryFile = !!item.library_file_id && !item.archive_id;
-  // Fetch archive plate details
+  // Fetch archive plate details. Skip when the linked archive has been
+  // soft-deleted (#1348 follow-up): its 3MF is gone from disk so the
+  // /plates endpoint just 404-storms the queue page.
   const { data: archivePlatesData } = useQuery({
     queryKey: ['archive-plates', item.archive_id],
     queryFn: () => api.getArchivePlates(item.archive_id!),
-    enabled: !!item.archive_id && !isLibraryFile,
+    enabled: !!item.archive_id && !isLibraryFile && !item.archive_deleted,
   });
 
   // Fetch library file plate details
@@ -360,6 +435,16 @@ function SortableQueueItem({
   const isPending = item.status === 'pending';
   const isHistory = ['completed', 'failed', 'skipped', 'cancelled'].includes(item.status);
 
+  // This is an "if started now" estimate, not a cumulative queue forecast, so
+  // it is only shown for items the page determined could actually start now
+  // (see etaEligibleIds). etaNow is the caller's ticking clock — deriving the
+  // ETA from it rather than from Date.now() keeps this render deterministic and
+  // stops the value freezing at first paint.
+  const queueItemEta =
+    isPending && showEta && item.print_time_seconds != null && item.print_time_seconds > 0
+      ? formatETA(item.print_time_seconds / 60, timeFormat, t, etaNow)
+      : null;
+
   const isMobileSelectable = isPending && onToggleSelect;
 
   return (
@@ -391,6 +476,37 @@ function SortableQueueItem({
       )}
 
       <div className="flex items-start sm:items-center gap-2 sm:gap-4 p-3 sm:p-4">
+        {/* Mobile reorder arrows (#2667). The desktop drag handle is hidden on
+            phones and touch-drag is unreliable there, so pending rows get
+            tap-to-move up/down controls instead. Shown only below `sm`. */}
+        {isPending && (onMoveUp || onMoveDown) && (
+          <div
+            className="flex sm:hidden flex-col shrink-0 -my-1"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <button
+              type="button"
+              onClick={onMoveUp}
+              disabled={!onMoveUp}
+              title={t('queue.moveUp')}
+              aria-label={t('queue.moveUp')}
+              className="flex items-center justify-center w-8 h-7 rounded-lg text-bambu-gray hover:text-white hover:bg-bambu-dark disabled:opacity-25 disabled:hover:bg-transparent transition-colors"
+            >
+              <ChevronUp className="w-5 h-5" />
+            </button>
+            <button
+              type="button"
+              onClick={onMoveDown}
+              disabled={!onMoveDown}
+              title={t('queue.moveDown')}
+              aria-label={t('queue.moveDown')}
+              className="flex items-center justify-center w-8 h-7 rounded-lg text-bambu-gray hover:text-white hover:bg-bambu-dark disabled:opacity-25 disabled:hover:bg-transparent transition-colors"
+            >
+              <ChevronDown className="w-5 h-5" />
+            </button>
+          </div>
+        )}
+
         {/* Mobile selection indicator — left accent bar only, no tick */}
 
         {/* Selection checkbox for pending items - hidden on mobile, tap card instead */}
@@ -415,7 +531,7 @@ function SortableQueueItem({
           <div
             {...attributes}
             {...listeners}
-            className="hidden sm:flex items-center justify-center w-8 h-8 rounded-lg bg-bambu-dark cursor-grab active:cursor-grabbing hover:bg-bambu-dark-tertiary transition-colors touch-manipulation shrink-0"
+            className="hidden sm:flex items-center justify-center w-8 h-8 rounded-lg bg-bambu-dark cursor-grab active:cursor-grabbing hover:bg-bambu-dark-tertiary transition-colors touch-none shrink-0"
           >
             <GripVertical className="w-4 h-4 text-bambu-gray" />
           </div>
@@ -481,14 +597,14 @@ function SortableQueueItem({
               </Link>
             ) : null}
             {item.batch_name && (
-              <span className="flex-shrink-0 px-1.5 py-0.5 text-[10px] sm:text-xs bg-purple-500/20 text-purple-300 rounded border border-purple-500/30">
+              <span className="flex-shrink-0 px-1.5 py-0.5 text-[10px] sm:text-xs bg-cyan-100 dark:bg-cyan-500/20 text-cyan-700 dark:text-cyan-300 rounded border border-cyan-300 dark:border-cyan-500/30">
                 {item.batch_name}
               </span>
             )}
           </div>
 
           <div className="flex flex-wrap items-center gap-x-3 gap-y-1 text-xs sm:text-sm text-bambu-gray">
-            <span className={`flex items-center gap-1 sm:gap-1.5 ${item.printer_id === null && !item.target_model ? 'text-orange-400' : ''} ${item.target_model && !item.printer_id ? 'text-blue-400' : ''}`}>
+            <span className={`flex items-center gap-1 sm:gap-1.5 ${item.printer_id === null && !item.target_model ? 'text-orange-700 dark:text-orange-400' : ''} ${item.target_model && !item.printer_id ? 'text-blue-700 dark:text-blue-400' : ''}`}>
               <Printer className="w-3 h-3 sm:w-3.5 sm:h-3.5" />
               <span className="truncate max-w-[120px] sm:max-w-none">
               {item.target_model && !item.printer_id
@@ -504,12 +620,34 @@ function SortableQueueItem({
                 {formatDuration(item.print_time_seconds)}
               </span>
             )}
+            {queueItemEta && (
+              <span
+                data-testid="queue-item-eta"
+                className="text-bambu-green font-medium"
+                title={t('queue.time.etaIfStartedNow')}
+              >
+                ETA {queueItemEta}
+              </span>
+            )}
             {item.filament_used_grams && (
               <span className="flex items-center gap-1 sm:gap-1.5">
                 <Weight className="w-3 h-3 sm:w-3.5 sm:h-3.5" />
                 {formatWeight(item.filament_used_grams)}
               </span>
             )}
+            {(() => {
+              // Build plate badge so the user knows which plate to mount before
+              // walking to the printer (#1281). Hidden when the 3MF doesn't
+              // carry curr_bed_type or the slicer used an unknown label.
+              const bed = getBedTypeInfo(item.bed_type);
+              if (!bed) return null;
+              return (
+                <span className="flex items-center gap-1 sm:gap-1.5" title={bed.label}>
+                  <img src={bed.icon} alt="" className="w-3.5 h-3.5 sm:w-4 sm:h-4 object-contain" />
+                  <span className="truncate max-w-[120px]">{bed.label}</span>
+                </span>
+              );
+            })()}
             {item.created_by_username && (
               <span className="hidden sm:flex items-center gap-1.5" title={t('queue.addedBy', { name: item.created_by_username })}>
                 <User className="w-3.5 h-3.5" />
@@ -531,69 +669,110 @@ function SortableQueueItem({
           {/* Options badges */}
           <div className="flex flex-wrap items-center gap-1.5 sm:gap-2 mt-1.5 sm:mt-2">
             {item.manual_start && (
-              <span className="text-[10px] sm:text-xs px-1.5 sm:px-2 py-0.5 bg-purple-500/10 text-purple-400 rounded-full border border-purple-500/20 flex items-center gap-1">
+              <span className="text-[10px] sm:text-xs px-1.5 sm:px-2 py-0.5 bg-purple-50 dark:bg-purple-500/10 text-purple-700 dark:text-purple-400 rounded-full border border-purple-200 dark:border-purple-500/20 flex items-center gap-1">
                 <Hand className="w-2.5 h-2.5 sm:w-3 sm:h-3" />
                 {t('queue.badges.staged')}
               </span>
             )}
             {item.require_previous_success && (
-              <span className="text-[10px] sm:text-xs px-1.5 sm:px-2 py-0.5 bg-orange-500/10 text-orange-400 rounded-full border border-orange-500/20">
+              <span className="text-[10px] sm:text-xs px-1.5 sm:px-2 py-0.5 bg-orange-50 dark:bg-orange-500/10 text-orange-700 dark:text-orange-400 rounded-full border border-orange-200 dark:border-orange-500/20">
                 {t('queue.badges.requiresPrevious')}
               </span>
             )}
             {item.auto_off_after && (
-              <span className="text-[10px] sm:text-xs px-1.5 sm:px-2 py-0.5 bg-blue-500/10 text-blue-400 rounded-full border border-blue-500/20 flex items-center gap-1">
+              <span className="text-[10px] sm:text-xs px-1.5 sm:px-2 py-0.5 bg-blue-50 dark:bg-blue-500/10 text-blue-700 dark:text-blue-400 rounded-full border border-blue-200 dark:border-blue-500/20 flex items-center gap-1">
                 <Power className="w-2.5 h-2.5 sm:w-3 sm:h-3" />
                 {t('queue.badges.autoPowerOff')}
+              </span>
+            )}
+            {item.gcode_injection && (
+              <span className="text-[10px] sm:text-xs px-1.5 sm:px-2 py-0.5 bg-emerald-50 dark:bg-emerald-500/10 text-emerald-700 dark:text-emerald-400 rounded-full border border-emerald-200 dark:border-emerald-500/20 flex items-center gap-1">
+                <Code className="w-2.5 h-2.5 sm:w-3 sm:h-3" />
+                {t('queue.badges.gcodeInjection')}
               </span>
             )}
           </div>
 
           {/* Progress bar for printing items - TODO: integrate with WebSocket */}
-          {isPrinting && status && (
-            <div className="mt-2 sm:mt-3">
-              <div className="flex items-center justify-between text-xs sm:text-sm">
-                <div className="flex-1 bg-bambu-dark-tertiary rounded-full h-1.5 sm:h-2 mr-3">
-                  <div
-                    className="bg-bambu-green h-1.5 sm:h-2 rounded-full transition-all"
-                    style={{ width: `${status.progress || 0}%` }}
-                  />
+          {isPrinting && status && (() => {
+            // Gate progress/remaining/layer on printer actually running this print.
+            // Between dispatch and RUNNING transition (H2D/P1 MQTT lag), status.progress
+            // is stale from the previous print — showing 100% then snapping back to 0%
+            // once the new print starts. Only trust these fields when state is active.
+            const isActive = status.state === 'RUNNING' || status.state === 'PAUSE';
+            const progress = isActive ? (status.progress || 0) : 0;
+            const remaining = isActive ? status.remaining_time : null;
+            const layerNum = isActive ? status.layer_num : null;
+            const totalLayers = isActive ? status.total_layers : null;
+            return (
+              <div className="mt-2 sm:mt-3">
+                <div className="flex items-center justify-between text-xs sm:text-sm">
+                  <div className="flex-1 bg-bambu-dark-tertiary rounded-full h-1.5 sm:h-2 mr-3">
+                    <div
+                      className="bg-bambu-green h-1.5 sm:h-2 rounded-full transition-all"
+                      style={{ width: `${progress}%` }}
+                    />
+                  </div>
+                  <span className="text-white">{Math.round(progress)}%</span>
                 </div>
-                <span className="text-white">{Math.round(status.progress || 0)}%</span>
-              </div>
-              <div className="flex flex-wrap items-center gap-2 sm:gap-3 mt-1.5 sm:mt-2 text-[10px] sm:text-xs text-bambu-gray">
-                {status.remaining_time != null && status.remaining_time > 0 && (
-                  <>
+                <div className="flex flex-wrap items-center gap-2 sm:gap-3 mt-1.5 sm:mt-2 text-[10px] sm:text-xs text-bambu-gray">
+                  {remaining != null && remaining > 0 && (
+                    <>
+                      <span className="flex items-center gap-1">
+                        <Clock className="w-3 h-3" />
+                        {formatDuration(remaining * 60)}
+                      </span>
+                      <span className="text-bambu-green font-medium" title={t('printers.estimatedCompletion')}>
+                        ETA {formatETA(remaining, timeFormat, t)}
+                      </span>
+                    </>
+                  )}
+                  {layerNum != null && totalLayers != null && totalLayers > 0 && (
                     <span className="flex items-center gap-1">
-                      <Clock className="w-3 h-3" />
-                      {formatDuration(status.remaining_time * 60)}
+                      <Layers className="w-3 h-3" />
+                      {layerNum}/{totalLayers}
                     </span>
-                    <span className="text-bambu-green font-medium" title={t('printers.estimatedCompletion')}>
-                      ETA {formatETA(status.remaining_time, timeFormat, t)}
-                    </span>
-                  </>
-                )}
-                {status.layer_num != null && status.total_layers != null && status.total_layers > 0 && (
-                  <span className="flex items-center gap-1">
-                    <Layers className="w-3 h-3" />
-                    {status.layer_num}/{status.total_layers}
-                  </span>
-                )}
+                  )}
+                </div>
               </div>
-            </div>
-          )}
+            );
+          })()}
 
           {/* Waiting reason for model-based assignments */}
           {item.waiting_reason && item.status === 'pending' && (
-            <p className="text-[10px] sm:text-xs text-purple-400 mt-1.5 sm:mt-2 flex items-start gap-1">
+            <p className="text-[10px] sm:text-xs text-purple-700 dark:text-purple-400 mt-1.5 sm:mt-2 flex items-start gap-1">
               <AlertCircle className="w-3 h-3 mt-0.5 flex-shrink-0" />
               <span>{item.waiting_reason}</span>
             </p>
           )}
 
+          {/* Filament-short flag from the dispatch pre-flight (#1496). */}
+          {item.filament_short && item.status === 'pending' && (
+            <p
+              className="text-[10px] sm:text-xs text-yellow-700 dark:text-yellow-400 mt-1.5 sm:mt-2 flex items-start gap-1"
+              title={t('queue.filamentShort.rowTooltip')}
+            >
+              <AlertCircle className="w-3 h-3 mt-0.5 flex-shrink-0" />
+              <span>{t('queue.filamentShort.rowBadge')}</span>
+            </p>
+          )}
+
+          {/* Archive carries the slicer's own live-resolved AMS-slot pick
+              (extra_data.slicer_ams_mapping) — reprints of this archive reuse
+              the exact physical spool instead of re-deriving one. */}
+          {item.archive_has_slicer_ams_mapping && (
+            <p
+              className="text-[10px] sm:text-xs text-green-700 dark:text-green-400 mt-1.5 sm:mt-2 flex items-start gap-1"
+              title={t('queue.slicerAmsMapping.rowTooltip')}
+            >
+              <Check className="w-3 h-3 mt-0.5 flex-shrink-0" />
+              <span>{t('queue.slicerAmsMapping.rowBadge')}</span>
+            </p>
+          )}
+
           {/* Error message */}
           {item.error_message && (
-            <p className="text-[10px] sm:text-xs text-red-400 mt-1.5 sm:mt-2 flex items-center gap-1">
+            <p className="text-[10px] sm:text-xs text-red-700 dark:text-red-400 mt-1.5 sm:mt-2 flex items-center gap-1">
               <AlertCircle className="w-3 h-3" />
               {item.error_message}
             </p>
@@ -610,9 +789,9 @@ function SortableQueueItem({
                 variant="ghost"
                 size="sm"
                 onClick={onStop}
-                disabled={!hasPermission('printers:control')}
-                title={!hasPermission('printers:control') ? t('queue.permissions.noStopPrint') : t('queue.actions.stopPrint')}
-                className="text-red-400 hover:text-red-300 hover:bg-red-500/10 p-1.5 sm:p-2"
+                disabled={!canModify('queue', 'update', item.created_by_id)}
+                title={!canModify('queue', 'update', item.created_by_id) ? t('queue.permissions.noStopPrint') : t('queue.actions.stopPrint')}
+                className="text-red-600 dark:text-red-400 hover:text-red-700 dark:hover:text-red-300 hover:bg-red-50 dark:hover:bg-red-500/10 p-1.5 sm:p-2"
               >
                 <StopCircle className="w-4 h-4" />
               </Button>
@@ -624,8 +803,8 @@ function SortableQueueItem({
                     variant="ghost"
                     size="sm"
                     onClick={onStart}
-                    disabled={!hasPermission('printers:control')}
-                    title={!hasPermission('printers:control') ? t('queue.permissions.noStartPrint') : t('queue.actions.startPrint')}
+                    disabled={!canModify('queue', 'update', item.created_by_id)}
+                    title={!canModify('queue', 'update', item.created_by_id) ? t('queue.permissions.noStartPrint') : t('queue.actions.startPrint')}
                     className="text-bambu-green hover:text-bambu-green-light hover:bg-bambu-green/10 p-1.5 sm:p-2"
                   >
                     <Play className="w-4 h-4" />
@@ -647,7 +826,7 @@ function SortableQueueItem({
                   onClick={onCancel}
                   disabled={!canModify('queue', 'delete', item.created_by_id)}
                   title={!canModify('queue', 'delete', item.created_by_id) ? t('queue.permissions.noCancel') : t('common.cancel')}
-                  className="text-red-400 hover:text-red-300 hover:bg-red-500/10 p-1.5 sm:p-2"
+                  className="text-red-600 dark:text-red-400 hover:text-red-700 dark:hover:text-red-300 hover:bg-red-50 dark:hover:bg-red-500/10 p-1.5 sm:p-2"
                 >
                   <X className="w-4 h-4" />
                 </Button>
@@ -684,6 +863,533 @@ function SortableQueueItem({
   );
 }
 
+type QueueRow =
+  | { kind: 'item'; item: PrintQueueItem }
+  | { kind: 'batch'; batchId: number; batchName: string; items: PrintQueueItem[] };
+
+interface QueueRowRenderProps {
+  row: QueueRow;
+  collapsed: boolean;
+  onToggleBatch?: () => void;
+  onUngroup?: () => void;
+  setEditItem: (item: PrintQueueItem) => void;
+  setConfirmAction: (a: { type: 'cancel' | 'remove' | 'stop'; item: PrintQueueItem }) => void;
+  startMutation: { mutate: (vars: { id: number; skipFilamentCheck?: boolean }) => void };
+  selectedItems: number[];
+  handleToggleSelect: (id: number) => void;
+  timeFormat: TimeFormat;
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  hasPermission: (p: any) => boolean;
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  canModify: (resource: any, action: any, createdById?: number | null) => boolean;
+  t: (key: string, options?: Record<string, unknown>) => string;
+  // Items that qualify for an "if started now" ETA, and the shared clock it is
+  // measured from (#2740).
+  etaEligibleIds: Set<number>;
+  etaNow: number;
+  aggregateForRows: (rows: QueueRow[]) => { count: number; time: number; weight: number };
+  // Mobile tap-to-reorder (#2667). onMoveUp/onMoveDown move this whole row
+  // (single item or batch) one step among its siblings; onMoveBlock is the
+  // low-level primitive SortableBatchRow uses to move a child within the
+  // batch. All undefined when reordering isn't available (non-manual sort).
+  onMoveUp?: () => void;
+  onMoveDown?: () => void;
+  onMoveBlock?: (movingIds: number[], anchorId: number, placeAfter: boolean) => void;
+}
+
+/** Renders either a single item or a collapsible batch group containing N
+ *  sibling items. The batch parent shows aggregate stats; children render
+ *  with the existing SortableQueueItem (only draggable inside the batch). */
+function QueueRowRender(props: QueueRowRenderProps) {
+  const {
+    row,
+    setEditItem,
+    setConfirmAction,
+    startMutation,
+    selectedItems,
+    handleToggleSelect,
+    timeFormat,
+    hasPermission,
+    canModify,
+    t,
+    etaEligibleIds,
+    etaNow,
+    onMoveUp,
+    onMoveDown,
+  } = props;
+
+  if (row.kind === 'item') {
+    return (
+      <SortableQueueItem
+        item={row.item}
+        onEdit={() => setEditItem(row.item)}
+        onCancel={() => setConfirmAction({ type: 'cancel', item: row.item })}
+        onRemove={() => {}}
+        onStop={() => {}}
+        onRequeue={() => {}}
+        onStart={() => startMutation.mutate({ id: row.item.id })}
+        onMoveUp={onMoveUp}
+        onMoveDown={onMoveDown}
+        timeFormat={timeFormat}
+        isSelected={selectedItems.includes(row.item.id)}
+        onToggleSelect={() => handleToggleSelect(row.item.id)}
+        hasPermission={hasPermission}
+        canModify={canModify}
+        showEta={etaEligibleIds.has(row.item.id)}
+        etaNow={etaNow}
+        t={t}
+      />
+    );
+  }
+
+  return <SortableBatchRow {...props} />;
+}
+
+/** Batch parent header registered with dnd-kit so the whole group can be
+ *  reordered as one unit. Drag handle lives in the header itself; children
+ *  remain individually draggable while expanded for within-batch reorder. */
+function SortableBatchRow({
+  row,
+  collapsed,
+  onToggleBatch,
+  onUngroup,
+  setEditItem,
+  setConfirmAction,
+  startMutation,
+  selectedItems,
+  handleToggleSelect,
+  timeFormat,
+  hasPermission,
+  canModify,
+  t,
+  etaEligibleIds,
+  etaNow,
+  aggregateForRows,
+  onMoveUp,
+  onMoveDown,
+  onMoveBlock,
+}: QueueRowRenderProps) {
+  // Dispatcher (QueueRowRender) only mounts this with row.kind === 'batch';
+  // narrow up-front so the hook below can reference batchId unconditionally.
+  const batchRow = row as Extract<QueueRow, { kind: 'batch' }>;
+  const canReorder = hasPermission('queue:reorder');
+  const {
+    attributes,
+    listeners,
+    setNodeRef,
+    transform,
+    transition,
+    isDragging,
+  } = useSortable({ id: `batch-${batchRow.batchId}`, disabled: !canReorder });
+
+  const style = {
+    transform: CSS.Transform.toString(transform),
+    transition,
+  };
+
+  const agg = aggregateForRows([batchRow]);
+  const allChildIds = batchRow.items.map((i) => i.id);
+  const allSelected = allChildIds.length > 0 && allChildIds.every((id) => selectedItems.includes(id));
+  // Status rollup: worst-of-children (failed > printing > pending).
+  const childStatuses = new Set(batchRow.items.map((i) => i.status));
+  // We never put non-pending into a batch grouping but render defensively.
+  const rollupStatus: PrintQueueItem['status'] = childStatuses.has('failed')
+    ? 'failed'
+    : childStatuses.has('printing')
+      ? 'printing'
+      : 'pending';
+  const pendingChildren = batchRow.items.filter((i) => i.status === 'pending').length;
+
+  return (
+    <div
+      ref={setNodeRef}
+      style={style}
+      className={`bg-bambu-dark-secondary rounded-xl border border-l-[3px] border-l-cyan-400 border-bambu-dark-tertiary overflow-hidden ${
+        isDragging ? 'opacity-50 scale-[1.01] shadow-xl z-50' : ''
+      }`}
+    >
+      {/* Parent header */}
+      <div className="flex items-center gap-2 sm:gap-3 p-3 sm:p-4">
+        {/* Mobile reorder arrows for the whole group (#2667), mirroring the
+            desktop drag handle which is hidden on phones. */}
+        {canReorder && (onMoveUp || onMoveDown) && (
+          <div className="flex sm:hidden flex-col shrink-0 -my-1">
+            <button
+              type="button"
+              onClick={onMoveUp}
+              disabled={!onMoveUp}
+              title={t('queue.moveUp')}
+              aria-label={t('queue.moveUp')}
+              className="flex items-center justify-center w-8 h-7 rounded-lg text-bambu-gray hover:text-white hover:bg-bambu-dark disabled:opacity-25 disabled:hover:bg-transparent transition-colors"
+            >
+              <ChevronUp className="w-5 h-5" />
+            </button>
+            <button
+              type="button"
+              onClick={onMoveDown}
+              disabled={!onMoveDown}
+              title={t('queue.moveDown')}
+              aria-label={t('queue.moveDown')}
+              className="flex items-center justify-center w-8 h-7 rounded-lg text-bambu-gray hover:text-white hover:bg-bambu-dark disabled:opacity-25 disabled:hover:bg-transparent transition-colors"
+            >
+              <ChevronDown className="w-5 h-5" />
+            </button>
+          </div>
+        )}
+        <button
+          onClick={(e) => {
+            e.stopPropagation();
+            allChildIds.forEach((id) => {
+              if (allSelected && selectedItems.includes(id)) {
+                handleToggleSelect(id);
+              } else if (!allSelected && !selectedItems.includes(id)) {
+                handleToggleSelect(id);
+              }
+            });
+          }}
+          className={`hidden sm:flex items-center justify-center w-6 h-6 rounded border transition-colors shrink-0 ${
+            allSelected
+              ? 'bg-bambu-green border-bambu-green text-white'
+              : 'border-white/30 bg-black/30 hover:border-bambu-green/50'
+          }`}
+          title={allSelected ? t('queue.bulkEdit.deselectAll') : t('queue.bulkEdit.selectAll')}
+        >
+          {allSelected && <Check className="w-4 h-4" />}
+        </button>
+        {canReorder && (
+          <div
+            {...attributes}
+            {...listeners}
+            className="hidden sm:flex items-center justify-center w-8 h-8 rounded-lg bg-bambu-dark cursor-grab active:cursor-grabbing hover:bg-bambu-dark-tertiary transition-colors touch-none shrink-0"
+            title={t('queue.batch.dragGroup', { defaultValue: 'Drag group' })}
+          >
+            <GripVertical className="w-4 h-4 text-bambu-gray" />
+          </div>
+        )}
+        <button
+          onClick={onToggleBatch}
+          className="flex items-center justify-center w-8 h-8 rounded-lg bg-bambu-dark hover:bg-bambu-dark-tertiary transition-colors shrink-0"
+          title={collapsed ? t('queue.batch.expand') : t('queue.batch.collapse')}
+        >
+          {collapsed ? (
+            <ChevronRight className="w-4 h-4 text-bambu-gray" />
+          ) : (
+            <ChevronDown className="w-4 h-4 text-bambu-gray" />
+          )}
+        </button>
+        <div className="w-10 h-10 sm:w-12 sm:h-12 flex-shrink-0 bg-bambu-dark rounded-lg flex items-center justify-center">
+          {collapsed ? (
+            <Package className="w-5 h-5 text-cyan-700 dark:text-cyan-300" />
+          ) : (
+            <PackageOpen className="w-5 h-5 text-cyan-700 dark:text-cyan-300" />
+          )}
+        </div>
+        <div className="flex-1 min-w-0">
+          <div className="flex items-center gap-2 mb-1">
+            <p className="text-sm sm:text-base text-white font-medium truncate">{batchRow.batchName}</p>
+            <span className="flex-shrink-0 px-1.5 py-0.5 text-[10px] sm:text-xs bg-cyan-100 dark:bg-cyan-500/15 text-cyan-700 dark:text-cyan-300 rounded border border-cyan-300 dark:border-cyan-500/30">
+              {t('queue.batch.label', { count: agg.count })}
+            </span>
+          </div>
+          <div className="flex flex-wrap items-center gap-x-3 gap-y-1 text-xs sm:text-sm text-bambu-gray">
+            {agg.time > 0 && (
+              <span className="flex items-center gap-1 sm:gap-1.5">
+                <Timer className="w-3 h-3 sm:w-3.5 sm:h-3.5" />
+                {formatDuration(agg.time)}
+              </span>
+            )}
+            {agg.weight > 0 && (
+              <span className="flex items-center gap-1 sm:gap-1.5">
+                <Weight className="w-3 h-3 sm:w-3.5 sm:h-3.5" />
+                {formatWeight(agg.weight)}
+              </span>
+            )}
+            {pendingChildren > 0 && rollupStatus === 'pending' && (
+              <span className="flex items-center gap-1 sm:gap-1.5 text-yellow-700 dark:text-yellow-400">
+                <Clock className="w-3 h-3 sm:w-3.5 sm:h-3.5" />
+                {t('queue.batch.pendingCount', { count: pendingChildren })}
+              </span>
+            )}
+          </div>
+        </div>
+        <div className="flex items-center gap-1 shrink-0">
+          {onUngroup && (
+            <Button
+              variant="ghost"
+              size="sm"
+              onClick={onUngroup}
+              title={t('queue.batch.ungroup')}
+              className="text-cyan-700 dark:text-cyan-300 hover:text-cyan-900 dark:hover:text-cyan-200 hover:bg-cyan-50 dark:hover:bg-cyan-500/10 p-1.5 sm:p-2"
+            >
+              <Ungroup className="w-4 h-4" />
+            </Button>
+          )}
+        </div>
+      </div>
+
+      {/* Children (only when expanded) */}
+      {!collapsed && (
+        <div className="border-t border-bambu-dark-tertiary bg-black/20 p-2 sm:p-3 space-y-2">
+          {batchRow.items.map((child, ci) => (
+            <SortableQueueItem
+              key={child.id}
+              item={child}
+              onEdit={() => setEditItem(child)}
+              onCancel={() => setConfirmAction({ type: 'cancel', item: child })}
+              onRemove={() => {}}
+              onStop={() => {}}
+              onRequeue={() => {}}
+              onStart={() => startMutation.mutate({ id: child.id })}
+              onMoveUp={
+                onMoveBlock && ci > 0
+                  ? () => onMoveBlock([child.id], batchRow.items[ci - 1].id, false)
+                  : undefined
+              }
+              onMoveDown={
+                onMoveBlock && ci < batchRow.items.length - 1
+                  ? () => onMoveBlock([child.id], batchRow.items[ci + 1].id, true)
+                  : undefined
+              }
+              timeFormat={timeFormat}
+              isSelected={selectedItems.includes(child.id)}
+              onToggleSelect={() => handleToggleSelect(child.id)}
+              hasPermission={hasPermission}
+              canModify={canModify}
+              showEta={etaEligibleIds.has(child.id)}
+              etaNow={etaNow}
+              t={t}
+            />
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
+type HistoryRow =
+  | { kind: 'item'; item: PrintQueueItem }
+  | { kind: 'batch'; batchId: number; batchName: string; items: PrintQueueItem[] };
+
+interface HistorySectionProps {
+  items: PrintQueueItem[];
+  collapsed: boolean;
+  visibleCount: number;
+  onShowMore: () => void;
+  sortBy: 'date' | 'name' | 'printer';
+  sortAsc: boolean;
+  onSortByChange: (v: 'date' | 'name' | 'printer') => void;
+  onSortAscToggle: () => void;
+  onRemove: (item: PrintQueueItem) => void;
+  onRequeue: (item: PrintQueueItem) => void;
+  timeFormat: TimeFormat;
+  batchCollapsed: Record<number, boolean>;
+  toggleBatchCollapsed: (id: number) => void;
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  hasPermission: (p: any) => boolean;
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  canModify: (resource: any, action: any, createdById?: number | null) => boolean;
+  t: (key: string, options?: Record<string, unknown>) => string;
+}
+
+function HistorySection({
+  items,
+  visibleCount,
+  onShowMore,
+  sortBy,
+  sortAsc,
+  onSortByChange,
+  onSortAscToggle,
+  onRemove,
+  onRequeue,
+  timeFormat,
+  batchCollapsed,
+  toggleBatchCollapsed,
+  hasPermission,
+  canModify,
+  t,
+}: HistorySectionProps) {
+  if (items.length === 0) {
+    return (
+      <Card className="p-12 text-center border-dashed">
+        <ListOrdered className="w-16 h-16 text-bambu-gray mx-auto mb-4 opacity-50" />
+        <h3 className="text-xl font-medium text-white mb-2">{t('queue.history.emptyTitle')}</h3>
+        <p className="text-bambu-gray max-w-md mx-auto">{t('queue.history.emptyDescription')}</p>
+      </Card>
+    );
+  }
+
+  // Group siblings sharing a batch_id into a single collapsible row.
+  // First-seen order is preserved for batches; items keep their sorted
+  // position from the parent's sort selector.
+  const rows: HistoryRow[] = [];
+  const seenBatches = new Set<number>();
+  for (const item of items.slice(0, visibleCount)) {
+    if (item.batch_id != null) {
+      if (seenBatches.has(item.batch_id)) continue;
+      seenBatches.add(item.batch_id);
+      const siblings = items.filter((s) => s.batch_id === item.batch_id);
+      rows.push({
+        kind: 'batch',
+        batchId: item.batch_id,
+        batchName: item.batch_name || t('queue.batch.defaultName'),
+        items: siblings,
+      });
+    } else {
+      rows.push({ kind: 'item', item });
+    }
+  }
+
+  return (
+    <div>
+      <div className="flex flex-wrap items-center justify-between gap-2 mb-3 sm:mb-4">
+        <h2 className="text-base sm:text-lg font-semibold text-white flex items-center gap-2">
+          {t('queue.sections.history')}
+          <span className="text-xs sm:text-sm font-normal text-bambu-gray">
+            ({t('queue.itemCount', { count: items.length })})
+          </span>
+        </h2>
+        <div className="flex items-center gap-2">
+          <select
+            className="px-2 sm:px-3 py-1.5 text-xs sm:text-sm bg-bambu-dark-secondary border border-bambu-dark-tertiary rounded-lg text-white focus:border-bambu-green focus:outline-none"
+            value={sortBy}
+            onChange={(e) => onSortByChange(e.target.value as 'date' | 'name' | 'printer')}
+          >
+            <option value="date">{t('queue.sort.byDate')}</option>
+            <option value="name">{t('queue.sort.byName')}</option>
+            <option value="printer">{t('queue.sort.byPrinter')}</option>
+          </select>
+          <Button
+            variant="ghost"
+            size="sm"
+            onClick={onSortAscToggle}
+            title={sortAsc ? t('queue.sort.ascendingOldest') : t('queue.sort.descendingNewest')}
+            className="px-2"
+          >
+            {sortAsc ? <ArrowUp className="w-4 h-4" /> : <ArrowDown className="w-4 h-4" />}
+          </Button>
+        </div>
+      </div>
+      <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-2">
+        {rows.map((row) => {
+          if (row.kind === 'item') {
+            return (
+              <CompactHistoryRow
+                key={row.item.id}
+                item={row.item}
+                onRemove={() => onRemove(row.item)}
+                onRequeue={() => onRequeue(row.item)}
+                timeFormat={timeFormat}
+                hasPermission={hasPermission}
+                canModify={canModify}
+                t={t}
+              />
+            );
+          }
+          // Batch group — spans the full grid width so it visually anchors
+          // its children below it. The children themselves render in the
+          // same responsive grid pattern inside the expanded body.
+          const collapsed = batchCollapsed[row.batchId] ?? true;
+          const completed = row.items.filter((i) => i.status === 'completed').length;
+          const failed = row.items.filter((i) => i.status === 'failed').length;
+          const skipped = row.items.filter((i) => i.status === 'skipped').length;
+          const cancelled = row.items.filter((i) => i.status === 'cancelled').length;
+          const latest = row.items
+            .map((i) => i.completed_at || i.created_at)
+            .filter((v): v is string => !!v)
+            .sort()
+            .at(-1);
+          return (
+            <div
+              key={`batch-${row.batchId}`}
+              className="md:col-span-2 xl:col-span-3 bg-bambu-dark-secondary rounded-lg border border-bambu-dark-tertiary border-l-[3px] border-l-cyan-400"
+            >
+              <button
+                onClick={() => toggleBatchCollapsed(row.batchId)}
+                className="w-full flex items-center gap-2 sm:gap-3 px-3 py-2 hover:bg-bambu-dark/30 transition-colors text-left"
+                title={collapsed ? t('queue.batch.expand') : t('queue.batch.collapse')}
+              >
+                {collapsed ? (
+                  <ChevronRight className="w-4 h-4 text-bambu-gray shrink-0" />
+                ) : (
+                  <ChevronDown className="w-4 h-4 text-bambu-gray shrink-0" />
+                )}
+                {collapsed ? (
+                  <Package className="w-5 h-5 text-cyan-700 dark:text-cyan-300 shrink-0" />
+                ) : (
+                  <PackageOpen className="w-5 h-5 text-cyan-700 dark:text-cyan-300 shrink-0" />
+                )}
+                <span className="text-sm text-white font-medium truncate min-w-0 flex-1">
+                  {row.batchName}
+                </span>
+                <div className="flex items-center gap-2 text-xs text-bambu-gray shrink-0">
+                  {completed > 0 && (
+                    <span className="flex items-center gap-1 text-emerald-700 dark:text-emerald-400">
+                      <CheckCircle className="w-3 h-3" />
+                      {completed}
+                    </span>
+                  )}
+                  {failed > 0 && (
+                    <span className="flex items-center gap-1 text-red-700 dark:text-red-400">
+                      <XCircle className="w-3 h-3" />
+                      {failed}
+                    </span>
+                  )}
+                  {skipped > 0 && (
+                    <span className="flex items-center gap-1 text-orange-700 dark:text-orange-400">
+                      <SkipForward className="w-3 h-3" />
+                      {skipped}
+                    </span>
+                  )}
+                  {cancelled > 0 && (
+                    <span className="flex items-center gap-1 text-gray-400">
+                      <Ban className="w-3 h-3" />
+                      {cancelled}
+                    </span>
+                  )}
+                  <span title={latest ?? undefined}>
+                    {latest ? formatRelativeTime(latest, timeFormat, t) : null}
+                  </span>
+                </div>
+              </button>
+              {!collapsed && (
+                <div className="border-t border-bambu-dark-tertiary bg-black/20 p-2 grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-2">
+                  {row.items.map((child) => (
+                    <CompactHistoryRow
+                      key={child.id}
+                      item={child}
+                      onRemove={() => onRemove(child)}
+                      onRequeue={() => onRequeue(child)}
+                      timeFormat={timeFormat}
+                      hasPermission={hasPermission}
+                      canModify={canModify}
+                      t={t}
+                    />
+                  ))}
+                </div>
+              )}
+            </div>
+          );
+        })}
+      </div>
+      {items.length > visibleCount && (
+        <div className="mt-4 flex flex-col items-center gap-2">
+          <Button variant="secondary" size="sm" onClick={onShowMore}>
+            {t('queue.history.showMore')}
+          </Button>
+          <span className="text-xs text-bambu-gray">
+            {t('queue.history.showingCount', {
+              shown: Math.min(visibleCount, items.length),
+              total: items.length,
+            })}
+          </span>
+        </div>
+      )}
+    </div>
+  );
+}
+
+const HISTORY_PAGE_SIZE = 50;
+
 export function QueuePage() {
   const { t } = useTranslation();
   const queryClient = useQueryClient();
@@ -701,6 +1407,13 @@ export function QueuePage() {
   } | null>(null);
   const [selectedItems, setSelectedItems] = useState<number[]>([]);
   const [showBulkEditModal, setShowBulkEditModal] = useState(false);
+  // #1818: per-printer Resume-after-failure confirm modal. Tracks which
+  // printer's gate the user is about to clear; null when no modal is open.
+  const [resumeConfirm, setResumeConfirm] = useState<{
+    printerId: number;
+    printerName: string;
+    skippedCount: number;
+  } | null>(null);
   const [historySortBy, setHistorySortBy] = useState<'date' | 'name' | 'printer'>(() => {
     const saved = localStorage.getItem('queue.historySortBy');
     return (saved as 'date' | 'name' | 'printer') || 'date';
@@ -709,6 +1422,10 @@ export function QueuePage() {
     const saved = localStorage.getItem('queue.historySortAsc');
     return saved !== null ? saved === 'true' : false;
   });
+  // #2682: History renders progressively — start at one page, grow on demand.
+  // Reset happens only on a deliberate re-sort / filter change (below), NOT on
+  // the periodic queue poll, so an expanded view doesn't snap back mid-scroll.
+  const [historyVisibleCount, setHistoryVisibleCount] = useState(HISTORY_PAGE_SIZE);
   const [pendingSortBy, setPendingSortBy] = useState<'position' | 'name' | 'printer' | 'time'>(() => {
     const saved = localStorage.getItem('queue.pendingSortBy');
     return (saved as 'position' | 'name' | 'printer' | 'time') || 'position';
@@ -717,12 +1434,45 @@ export function QueuePage() {
     const saved = localStorage.getItem('queue.pendingSortAsc');
     return saved !== null ? saved === 'true' : true;
   });
-  const [historyCollapsed, setHistoryCollapsed] = useState(() => {
-    return localStorage.getItem('queue.historyCollapsed') !== 'false';
+  // historyCollapsed legacy state retained only for localStorage migration; the
+  // History tab renders unconditionally so this no longer drives the UI.
+  // Tabbed page structure: Active queue stays as the main view; History
+  // and Timeline split off. Persists per-user via localStorage.
+  const [activeTab, setActiveTab] = useState<'queue' | 'history' | 'timeline' | 'pipelines'>(() => {
+    // URL deep-link wins so the legacy /pipelines/runs redirect lands on the
+    // right tab. localStorage holds the per-user last-selected fallback.
+    const search = new URLSearchParams(window.location.search);
+    const url = search.get('tab');
+    if (url === 'pipelines' || url === 'history' || url === 'timeline' || url === 'queue') {
+      return url;
+    }
+    const saved = localStorage.getItem('queue.activeTab');
+    if (saved === 'history' || saved === 'timeline' || saved === 'pipelines') return saved;
+    return 'queue';
   });
-  const [viewMode, setViewMode] = useState<'list' | 'timeline'>(() => {
-    return (localStorage.getItem('queue.viewMode') as 'list' | 'timeline') || 'list';
+  // Active-tab layout toggle. "position" = today's flat list; "printer"
+  // groups items under per-printer section headers with aggregate stats.
+  const [activeLayout, setActiveLayout] = useState<'position' | 'printer'>(() => {
+    const saved = localStorage.getItem('queue.activeLayout');
+    return saved === 'printer' ? 'printer' : 'position';
   });
+  // Per-batch collapse state, keyed by batch_id. Default = collapsed
+  // (matches the SimplyPrint/Files convention — show the rollup first).
+  const [batchCollapsed, setBatchCollapsed] = useState<Record<number, boolean>>(() => {
+    try {
+      const saved = localStorage.getItem('queue.batchCollapsed');
+      return saved ? JSON.parse(saved) : {};
+    } catch {
+      return {};
+    }
+  });
+  // Multi-drag bookkeeping for DragOverlay. Numeric for single items, string
+  // `batch-<id>` when a whole group is being dragged.
+  const [activeDragId, setActiveDragId] = useState<number | string | null>(null);
+  // "Group as batch" modal.
+  const [groupBatchModal, setGroupBatchModal] = useState(false);
+  // Ungroup confirm.
+  const [ungroupBatchId, setUngroupBatchId] = useState<number | null>(null);
 
   // Persist sort settings to localStorage
   useEffect(() => {
@@ -733,6 +1483,13 @@ export function QueuePage() {
     localStorage.setItem('queue.historySortAsc', String(historySortAsc));
   }, [historySortAsc]);
 
+  // Collapse History back to a single page when the user re-sorts or changes
+  // the location filter (deliberate view changes). Intentionally excludes the
+  // queue poll so periodic refetches keep the expanded count.
+  useEffect(() => {
+    setHistoryVisibleCount(HISTORY_PAGE_SIZE);
+  }, [historySortBy, historySortAsc, filterLocation]);
+
   useEffect(() => {
     localStorage.setItem('queue.pendingSortBy', pendingSortBy);
   }, [pendingSortBy]);
@@ -742,12 +1499,16 @@ export function QueuePage() {
   }, [pendingSortAsc]);
 
   useEffect(() => {
-    localStorage.setItem('queue.historyCollapsed', String(historyCollapsed));
-  }, [historyCollapsed]);
+    localStorage.setItem('queue.activeTab', activeTab);
+  }, [activeTab]);
 
   useEffect(() => {
-    localStorage.setItem('queue.viewMode', viewMode);
-  }, [viewMode]);
+    localStorage.setItem('queue.activeLayout', activeLayout);
+  }, [activeLayout]);
+
+  useEffect(() => {
+    localStorage.setItem('queue.batchCollapsed', JSON.stringify(batchCollapsed));
+  }, [batchCollapsed]);
 
   const sensors = useSensors(
     useSensor(PointerSensor, { activationConstraint: { distance: 8 } }),
@@ -806,13 +1567,41 @@ export function QueuePage() {
     onError: () => showToast(t('queue.toast.stopFailed'), 'error'),
   });
 
+  // Filament-deficit confirmation state (#1496). When the backend returns
+  // 409 with `code=insufficient_filament` we stash the deficit + item id
+  // here; the modal at the bottom of the page reads it and the "Print
+  // Anyway" path re-issues the start with `skipFilamentCheck=true`.
+  const [filamentShortConfirm, setFilamentShortConfirm] = useState<{
+    itemId: number;
+    deficit: Array<{
+      slot_id: number;
+      required_grams: number;
+      remaining_grams: number | null;
+      filament_type?: string | null;
+    }>;
+  } | null>(null);
+
   const startMutation = useMutation({
-    mutationFn: (id: number) => api.startQueueItem(id),
+    mutationFn: ({ id, skipFilamentCheck }: { id: number; skipFilamentCheck?: boolean }) =>
+      api.startQueueItem(id, { skipFilamentCheck }),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['queue'] });
       showToast(t('queue.toast.released'));
+      setFilamentShortConfirm(null);
     },
-    onError: () => showToast(t('queue.toast.startFailed'), 'error'),
+    onError: (error: unknown, variables) => {
+      if (error instanceof ApiError && error.status === 409 && error.code === 'insufficient_filament') {
+        const deficitRaw = (error.detail?.deficit ?? []) as Array<{
+          slot_id: number;
+          required_grams: number;
+          remaining_grams: number | null;
+          filament_type?: string | null;
+        }>;
+        setFilamentShortConfirm({ itemId: variables.id, deficit: deficitRaw });
+        return;
+      }
+      showToast(t('queue.toast.startFailed'), 'error');
+    },
   });
 
   const reorderMutation = useMutation({
@@ -864,6 +1653,44 @@ export function QueuePage() {
       showToast(t('queue.toast.bulkCancelled', { count }));
     },
     onError: () => showToast(t('queue.toast.bulkCancelFailed'), 'error'),
+  });
+
+  const resumeAfterFailureMutation = useMutation({
+    mutationFn: (printerId: number) => api.resumeQueueAfterFailure(printerId),
+    onSuccess: (result) => {
+      queryClient.invalidateQueries({ queryKey: ['queue'] });
+      setResumeConfirm(null);
+      showToast(
+        t('queue.toast.resumedAfterFailure', {
+          restored: result.restored,
+          acknowledged: result.acknowledged,
+        }),
+      );
+    },
+    onError: () => showToast(t('queue.toast.resumeAfterFailureFailed'), 'error'),
+  });
+
+  const createBatchMutation = useMutation({
+    mutationFn: (data: { name: string; item_ids: number[] }) => api.createBatch(data),
+    onSuccess: (batch) => {
+      queryClient.invalidateQueries({ queryKey: ['queue'] });
+      setSelectedItems([]);
+      setGroupBatchModal(false);
+      // New batches start expanded so the user sees what they just grouped.
+      setBatchCollapsed((prev) => ({ ...prev, [batch.id]: false }));
+      showToast(t('queue.toast.batchCreated', { name: batch.name }));
+    },
+    onError: () => showToast(t('queue.toast.batchCreateFailed'), 'error'),
+  });
+
+  const ungroupBatchMutation = useMutation({
+    mutationFn: (id: number) => api.ungroupBatch(id),
+    onSuccess: (result) => {
+      queryClient.invalidateQueries({ queryKey: ['queue'] });
+      setUngroupBatchId(null);
+      showToast(t('queue.toast.batchUngrouped', { count: result.ungrouped_count }));
+    },
+    onError: () => showToast(t('queue.toast.batchUngroupFailed'), 'error'),
   });
 
   const handleToggleSelect = (id: number) => {
@@ -970,6 +1797,106 @@ export function QueuePage() {
     return items;
   }, [queue, filterLocation, matchesLocationFilter]);
 
+  // Queue items eligible for an "if started now" ETA (#2740).
+  //
+  // The ETA answers "when would this finish if it began right now", so it may
+  // only appear on items that really could begin right now. Deriving that from
+  // waiting_reason alone is not enough: the scheduler only writes that field on
+  // the model-based assignment path (print_scheduler.py), so an item pinned to a
+  // specific printer sits behind a running job with waiting_reason still NULL.
+  //
+  // Computed from the unfiltered queue on purpose — hiding a printer behind the
+  // location filter must not make its printer look free.
+  const etaEligibleIds = useMemo(() => {
+    const eligible = new Set<number>();
+    if (!queue) return eligible;
+
+    const busyPrinters = new Set<number>();
+    queue.forEach(item => {
+      if (item.status === 'printing' && item.printer_id) busyPrinters.add(item.printer_id);
+    });
+
+    const isFutureScheduled = (item: PrintQueueItem): boolean => {
+      if (!item.scheduled_time) return false;
+      return (parseUTCDate(item.scheduled_time)?.getTime() ?? 0) > Date.now();
+    };
+
+    // Mirrors the scheduler's own ordering so "next up" here means the item the
+    // scheduler would actually dispatch next, not whatever the user sorted by.
+    const schedulerOrder = (a: PrintQueueItem, b: PrintQueueItem): number => {
+      if (settings?.queue_shortest_first) {
+        const aJumped = a.been_jumped ? 1 : 0;
+        const bJumped = b.been_jumped ? 1 : 0;
+        if (aJumped !== bJumped) return bJumped - aJumped;
+        const aTime = a.print_time_seconds ?? Infinity;
+        const bTime = b.print_time_seconds ?? Infinity;
+        if (aTime !== bTime) return aTime - bTime;
+      }
+      return a.position - b.position;
+    };
+
+    // Claimants for each printer, in the order the scheduler would take them.
+    // Staged and future-scheduled items are excluded: the scheduler skips both
+    // without marking the printer busy, so neither holds up the item behind it.
+    const contenders = new Map<number, PrintQueueItem[]>();
+    queue
+      .filter(
+        item =>
+          item.status === 'pending' &&
+          item.printer_id != null &&
+          !item.manual_start &&
+          !isFutureScheduled(item)
+      )
+      .sort(schedulerOrder)
+      .forEach(item => {
+        const list = contenders.get(item.printer_id!) ?? [];
+        list.push(item);
+        contenders.set(item.printer_id!, list);
+      });
+
+    queue.forEach(item => {
+      if (item.status !== 'pending') return;
+      // Blocked, scheduled for later, or no usable duration to add.
+      if (item.waiting_reason) return;
+      if (isFutureScheduled(item)) return;
+      if (item.print_time_seconds == null || item.print_time_seconds <= 0) return;
+      // Conditional on an earlier print's outcome, which the UI cannot see: the
+      // scheduler may skip it outright rather than ever running it.
+      if (item.require_previous_success) return;
+
+      // Model-based items have no printer yet; an empty waiting_reason is the
+      // scheduler saying it found one, so trust that.
+      if (item.printer_id == null) {
+        eligible.add(item.id);
+        return;
+      }
+
+      if (busyPrinters.has(item.printer_id)) return;
+      // Staged items wait on the user, not on the queue, so they are startable
+      // whenever their printer is free regardless of what is queued ahead.
+      if (item.manual_start) {
+        eligible.add(item.id);
+        return;
+      }
+      if (contenders.get(item.printer_id)?.[0]?.id === item.id) eligible.add(item.id);
+    });
+
+    return eligible;
+  }, [queue, settings?.queue_shortest_first]);
+
+  // The ETA is "now + duration", so it goes stale on its own. Nothing else
+  // re-renders these rows while the queue payload is unchanged (react-query's
+  // structural sharing keeps the reference stable), so drive it from a clock of
+  // our own. Only runs while an ETA is actually on screen.
+  const [etaNow, setEtaNow] = useState(() => Date.now());
+  const hasEtas = etaEligibleIds.size > 0;
+  useEffect(() => {
+    if (!hasEtas) return;
+    setEtaNow(Date.now());
+    const id = setInterval(() => setEtaNow(Date.now()), 30000);
+    return () => clearInterval(id);
+  }, [hasEtas]);
+
   // Get unique printer IDs from active items to fetch their statuses
   const activePrinterIds = useMemo(() => {
     const ids = new Set<number>();
@@ -1047,27 +1974,311 @@ export function QueuePage() {
     return pendingItems.reduce((acc, item) => acc + (item.filament_used_grams || 0), 0);
   }, [pendingItems]);
 
+  const handleDragStart = (event: DragStartEvent) => {
+    const id = event.active.id;
+    setActiveDragId(typeof id === 'number' || typeof id === 'string' ? id : null);
+  };
+
   const handleDragEnd = (event: DragEndEvent) => {
     const { active, over } = event;
+    setActiveDragId(null);
     if (!over || active.id === over.id) return;
 
-    const oldIndex = pendingItems.findIndex(i => i.id === active.id);
-    const newIndex = pendingItems.findIndex(i => i.id === over.id);
-
-    if (oldIndex !== -1 && newIndex !== -1) {
-      const reordered = arrayMove(pendingItems, oldIndex, newIndex);
-      const updates = reordered.map((item, index) => ({
-        id: item.id,
-        position: index + 1,
-      }));
-      reorderMutation.mutate(updates);
+    // Resolve dragged source → movingIds (preserving order from pendingItems).
+    //   - `batch-<id>`: every child of that batch, in their current order
+    //   - selected + dragged is one of them: contiguous multi-drag block
+    //   - otherwise: single row
+    let movingIds: number[];
+    const activeId = active.id;
+    if (typeof activeId === 'string' && activeId.startsWith('batch-')) {
+      const batchId = Number(activeId.slice('batch-'.length));
+      movingIds = pendingItems.filter((i) => i.batch_id === batchId).map((i) => i.id);
+    } else {
+      const draggedId = activeId as number;
+      movingIds = selectedItems.includes(draggedId) && selectedItems.length > 1
+        ? selectedItems.slice().sort((a, b) => {
+            const ai = pendingItems.findIndex((i) => i.id === a);
+            const bi = pendingItems.findIndex((i) => i.id === b);
+            return ai - bi;
+          })
+        : [draggedId];
     }
+    if (movingIds.length === 0) return;
+
+    // Resolve drop target → index inside pendingItems. A `batch-<id>` drop
+    // target anchors at the batch's first child, so dropping above another
+    // batch lands the moving block immediately before it.
+    let overIndex: number;
+    const overId = over.id;
+    if (typeof overId === 'string' && overId.startsWith('batch-')) {
+      const overBatchId = Number(overId.slice('batch-'.length));
+      overIndex = pendingItems.findIndex((i) => i.batch_id === overBatchId);
+    } else {
+      overIndex = pendingItems.findIndex((i) => i.id === overId);
+    }
+    if (overIndex === -1) return;
+
+    // Remove the moving items, then re-insert at overIndex (adjusted).
+    const overAnchor = pendingItems[overIndex];
+    const remaining = pendingItems.filter((i) => !movingIds.includes(i.id));
+    let insertAt = remaining.findIndex((i) => i.id === overAnchor.id);
+    if (insertAt === -1) insertAt = overIndex;
+    // If dragging downward across the drop target, insert AFTER it; upward
+    // = before. dnd-kit's `over` is the row under the pointer, not the gap.
+    const firstMovingIndex = pendingItems.findIndex((i) => i.id === movingIds[0]);
+    if (firstMovingIndex < overIndex) insertAt += 1;
+    const reordered = [
+      ...remaining.slice(0, insertAt),
+      ...movingIds
+        .map((id) => pendingItems.find((i) => i.id === id))
+        .filter((x): x is PrintQueueItem => !!x),
+      ...remaining.slice(insertAt),
+    ];
+
+    const updates = reordered.map((item, index) => ({
+      id: item.id,
+      position: index + 1,
+    }));
+    reorderMutation.mutate(updates);
+  };
+
+  // Group pending items by batch_id. Items with batch_id null render as
+  // standalone rows; items sharing a batch_id render as a collapsible
+  // group keyed by that id. Items inside a group keep their original
+  // relative order from pendingItems.
+  const groupedRows = useMemo<QueueRow[]>(() => {
+    const rows: QueueRow[] = [];
+    const seenBatches = new Set<number>();
+    for (const item of pendingItems) {
+      if (item.batch_id != null) {
+        if (seenBatches.has(item.batch_id)) continue;
+        seenBatches.add(item.batch_id);
+        const siblings = pendingItems.filter((s) => s.batch_id === item.batch_id);
+        rows.push({
+          kind: 'batch',
+          batchId: item.batch_id,
+          batchName: item.batch_name || t('queue.batch.defaultName'),
+          items: siblings,
+        });
+      } else {
+        rows.push({ kind: 'item', item });
+      }
+    }
+    return rows;
+  }, [pendingItems, t]);
+
+  // Mobile tap-to-reorder (#2667). The desktop drag handle is hidden on
+  // phones and touch-drag is unreliable, so pending rows get up/down arrows.
+  // Reordering only has a defined meaning in the manual "position" sort with
+  // SJF off — any other sort re-orders the list itself, so we don't offer it.
+  const canReorderManually =
+    hasPermission('queue:reorder') &&
+    pendingSortBy === 'position' &&
+    !settings?.queue_shortest_first;
+
+  const rowItemIds = (row: QueueRow): number[] =>
+    row.kind === 'item' ? [row.item.id] : row.items.map((i) => i.id);
+
+  // Move a block of items to sit immediately before (or after) an anchor item
+  // in the global pending order, then persist — the same remove-and-reinsert
+  // shape as handleDragEnd, so arrows and drag agree. Anchoring to a real item
+  // id keeps it correct in the printer-grouped layout, where a bucket's rows
+  // aren't contiguous in the global order.
+  const moveBlockRelativeTo = (
+    movingIds: number[],
+    anchorId: number,
+    placeAfter: boolean,
+  ) => {
+    const remaining = pendingItems.filter((i) => !movingIds.includes(i.id));
+    let insertAt = remaining.findIndex((i) => i.id === anchorId);
+    if (insertAt === -1) return;
+    if (placeAfter) insertAt += 1;
+    const movingItems = movingIds
+      .map((id) => pendingItems.find((i) => i.id === id))
+      .filter((x): x is PrintQueueItem => !!x);
+    const reordered = [
+      ...remaining.slice(0, insertAt),
+      ...movingItems,
+      ...remaining.slice(insertAt),
+    ];
+    reorderMutation.mutate(
+      reordered.map((item, index) => ({ id: item.id, position: index + 1 })),
+    );
+  };
+
+  // Build up/down thunks for the row at `idx` within its displayed sibling
+  // list (the flat list, or a single printer bucket). Undefined at a boundary
+  // (button rendered disabled) or when manual reorder isn't available.
+  const rowMovers = (
+    rows: QueueRow[],
+    idx: number,
+  ): { onMoveUp?: () => void; onMoveDown?: () => void } => {
+    if (!canReorderManually) return {};
+    const moving = rowItemIds(rows[idx]);
+    const onMoveUp =
+      idx > 0
+        ? () => moveBlockRelativeTo(moving, rowItemIds(rows[idx - 1])[0], false)
+        : undefined;
+    const onMoveDown =
+      idx < rows.length - 1
+        ? () => {
+            const next = rowItemIds(rows[idx + 1]);
+            moveBlockRelativeTo(moving, next[next.length - 1], true);
+          }
+        : undefined;
+    return { onMoveUp, onMoveDown };
+  };
+
+  // SortableContext ID list.
+  // - Standalone pending items: their numeric id.
+  // - Batch parents: the synthetic `batch-<id>` string, always present so the
+  //   group itself is draggable and acts as a drop target whether collapsed
+  //   or expanded.
+  // - Expanded batch children: their numeric id, so within-batch reorder
+  //   keeps working. Collapsed children are detached from the DOM and
+  //   intentionally omitted to keep dnd-kit's collision resolver clean.
+  const sortableIds = useMemo<(number | string)[]>(() => {
+    const ids: (number | string)[] = [];
+    for (const row of groupedRows) {
+      if (row.kind === 'item') {
+        ids.push(row.item.id);
+      } else {
+        ids.push(`batch-${row.batchId}`);
+        const collapsed = batchCollapsed[row.batchId] ?? true;
+        if (!collapsed) {
+          for (const child of row.items) ids.push(child.id);
+        }
+      }
+    }
+    return ids;
+  }, [groupedRows, batchCollapsed]);
+
+  // Items already in a batch can't be grouped; "Group as batch" only shows
+  // when 2+ ungrouped items are selected.
+  const canGroupSelected = useMemo(() => {
+    if (selectedItems.length < 2) return false;
+    return selectedItems.every((id) => {
+      const item = pendingItems.find((p) => p.id === id);
+      return item && item.batch_id == null;
+    });
+  }, [selectedItems, pendingItems]);
+
+  const toggleBatchCollapsed = (id: number) => {
+    setBatchCollapsed((prev) => ({ ...prev, [id]: !(prev[id] ?? true) }));
+  };
+
+  // Group by printer view. Items are bucketed by printer_id (null = model
+  // assignment or unassigned, keyed by target_model or "unassigned").
+  type PrinterBucket = {
+    key: string;
+    printerId: number | null;
+    targetModel: string | null;
+    label: string;
+    isUnassigned: boolean;
+    rows: QueueRow[];
+  };
+
+  const printerBuckets = useMemo<PrinterBucket[]>(() => {
+    const buckets = new Map<string, PrinterBucket>();
+    const bucketForItem = (item: PrintQueueItem): { key: string; label: string; printerId: number | null; targetModel: string | null; isUnassigned: boolean } => {
+      if (item.printer_id) {
+        return {
+          key: `printer:${item.printer_id}`,
+          label: item.printer_name || `Printer #${item.printer_id}`,
+          printerId: item.printer_id,
+          targetModel: null,
+          isUnassigned: false,
+        };
+      }
+      if (item.target_model) {
+        return {
+          key: `model:${item.target_model}`,
+          label: `${t('queue.filter.any')} ${item.target_model}`,
+          printerId: null,
+          targetModel: item.target_model,
+          isUnassigned: false,
+        };
+      }
+      return {
+        key: 'unassigned',
+        label: t('queue.filter.unassigned'),
+        printerId: null,
+        targetModel: null,
+        isUnassigned: true,
+      };
+    };
+
+    for (const row of groupedRows) {
+      const representative = row.kind === 'item' ? row.item : row.items[0];
+      if (!representative) continue;
+      const meta = bucketForItem(representative);
+      if (!buckets.has(meta.key)) {
+        buckets.set(meta.key, { ...meta, rows: [] });
+      }
+      buckets.get(meta.key)!.rows.push(row);
+    }
+    return Array.from(buckets.values()).sort((a, b) => {
+      if (a.isUnassigned && !b.isUnassigned) return 1;
+      if (!a.isUnassigned && b.isUnassigned) return -1;
+      return a.label.localeCompare(b.label);
+    });
+  }, [groupedRows, t]);
+
+  // #1818: printers whose queue is gated by a prior failure that's poisoning
+  // downstream `require_previous_success` items. We surface a per-printer
+  // Resume banner above the active queue so the user can clear the gate +
+  // restore the skipped jobs in one click, without re-queuing each one.
+  // Detection key: skipped + the scheduler's exact gate string. Other skip
+  // reasons (filament deficit, etc.) get their own UX and stay untouched.
+  const gateBlockedPrinters = useMemo<
+    Array<{ printerId: number; printerName: string; skippedCount: number }>
+  >(() => {
+    const counts = new Map<number, { name: string; count: number }>();
+    queue?.forEach((item) => {
+      if (
+        item.status === 'skipped' &&
+        item.error_message === 'Previous print failed or was aborted' &&
+        item.printer_id
+      ) {
+        const existing = counts.get(item.printer_id);
+        if (existing) {
+          existing.count += 1;
+        } else {
+          counts.set(item.printer_id, {
+            name: item.printer_name || `Printer #${item.printer_id}`,
+            count: 1,
+          });
+        }
+      }
+    });
+    return Array.from(counts.entries())
+      .map(([printerId, { name, count }]) => ({
+        printerId,
+        printerName: name,
+        skippedCount: count,
+      }))
+      .sort((a, b) => a.printerName.localeCompare(b.printerName));
+  }, [queue]);
+
+  const aggregateForRows = (rows: QueueRow[]) => {
+    let count = 0;
+    let time = 0;
+    let weight = 0;
+    for (const row of rows) {
+      const items = row.kind === 'item' ? [row.item] : row.items;
+      for (const item of items) {
+        count += 1;
+        time += item.print_time_seconds || 0;
+        weight += item.filament_used_grams || 0;
+      }
+    }
+    return { count, time, weight };
   };
 
   return (
     <div className="p-4 md:p-8">
       {/* Header */}
-      <div className="flex items-center justify-between mb-8">
+      <div className="flex items-center justify-between mb-6">
         <div>
           <h1 className="text-2xl font-bold text-white flex items-center gap-3">
             <ListOrdered className="w-7 h-7 text-bambu-green" />
@@ -1077,17 +2288,91 @@ export function QueuePage() {
         </div>
       </div>
 
-      {/* Summary Stats */}
-      <QueueStatsBar
+      {/* Tab strip — Active queue is the main view; History and Timeline
+          live in their own tabs so the queue page stays focused. */}
+      <div className="flex gap-1 border-b border-bambu-dark-tertiary mb-6 overflow-x-auto">
+        {([
+          { id: 'queue' as const, label: t('queue.tabs.queue'), icon: Clock, count: pendingItems.length + activeItems.length },
+          { id: 'history' as const, label: t('queue.tabs.history'), icon: ListOrdered, count: historyItems.length },
+          { id: 'timeline' as const, label: t('queue.tabs.timeline'), icon: GanttChart, count: null as number | null },
+          // Slicer Pipelines dashboard (#1425 PR C). Lives here instead of
+          // its own sidebar entry so the Print Queue page is the single
+          // place an operator looks for "what's running / what ran".
+          { id: 'pipelines' as const, label: t('queue.tabs.pipelines'), icon: Workflow, count: null as number | null },
+        ]).map(({ id, label, icon: Icon, count }) => (
+          <button
+            key={id}
+            onClick={() => setActiveTab(id)}
+            className={`px-4 py-2.5 text-sm flex items-center gap-2 border-b-2 -mb-px transition-colors whitespace-nowrap ${
+              activeTab === id
+                ? 'text-white border-bambu-green font-medium'
+                : 'text-bambu-gray border-transparent hover:text-white'
+            }`}
+          >
+            <Icon className="w-4 h-4" />
+            {label}
+            {count !== null && count > 0 && (
+              <span className={`text-xs px-1.5 py-0.5 rounded-full ${
+                activeTab === id ? 'bg-bambu-green/20 text-bambu-green' : 'bg-bambu-dark-tertiary text-bambu-gray'
+              }`}>
+                {count}
+              </span>
+            )}
+          </button>
+        ))}
+      </div>
+
+      {/* Summary Stats — about the print queue, not pipelines. */}
+      {activeTab !== 'pipelines' && <QueueStatsBar
         activeCount={activeItems.length}
         pendingCount={pendingItems.length}
         totalTime={totalQueueTime}
         totalWeight={totalWeight}
         historyCount={historyItems.length}
         t={t}
-      />
+      />}
 
-      {/* Filters */}
+      {/* #1818: Resume-after-failure banner. One row per printer whose queue
+          is gated by a prior failed/aborted print. Visible regardless of
+          tab/layout so the user can clear the gate without hunting for
+          skipped items. Hidden entirely when no gates are active. */}
+      {activeTab === 'queue' && gateBlockedPrinters.length > 0 && hasPermission('queue:update_all' as Permission) && (
+        <div className="mb-4 space-y-2">
+          {gateBlockedPrinters.map(({ printerId, printerName, skippedCount }) => (
+            <div
+              key={printerId}
+              className="flex items-center gap-3 px-4 py-3 bg-orange-50 dark:bg-orange-500/10 border border-orange-300 dark:border-orange-500/30 rounded-lg"
+            >
+              <AlertCircle className="w-5 h-5 text-orange-600 dark:text-orange-400 flex-shrink-0" />
+              <div className="flex-1 min-w-0">
+                <div className="text-sm text-orange-800 dark:text-orange-200">
+                  {t('queue.resumeAfterFailure.banner', {
+                    printer: printerName,
+                    count: skippedCount,
+                  })}
+                </div>
+                <div className="text-xs text-orange-800/80 dark:text-orange-200/70 mt-0.5">
+                  {t('queue.resumeAfterFailure.bannerHint')}
+                </div>
+              </div>
+              <button
+                onClick={() =>
+                  setResumeConfirm({ printerId, printerName, skippedCount })
+                }
+                className="flex items-center gap-1.5 px-3 py-1.5 bg-orange-100 dark:bg-orange-500/20 hover:bg-orange-200 dark:hover:bg-orange-500/30 text-orange-900 dark:text-orange-100 text-sm rounded-md border border-orange-300 dark:border-orange-500/40 transition-colors flex-shrink-0"
+              >
+                <PlayCircle className="w-4 h-4" />
+                {t('queue.resumeAfterFailure.button')}
+              </button>
+            </div>
+          ))}
+        </div>
+      )}
+
+      {/* Filters — about the print queue items (printer / status / location).
+          The Pipelines tab has its own pipeline + status filters inside the
+          dashboard, so this row is hidden when that tab is active. */}
+      {activeTab !== 'pipelines' && (
       <div className="flex flex-wrap items-center gap-2 sm:gap-4 mb-6">
         <select
           className="px-2 sm:px-3 py-2 text-sm sm:text-base bg-bambu-dark-secondary border border-bambu-dark-tertiary rounded-lg text-white focus:border-bambu-green focus:outline-none min-w-0 flex-1 sm:flex-none"
@@ -1135,7 +2420,7 @@ export function QueuePage() {
 
         <div className="hidden sm:block flex-1" />
 
-        {historyItems.length > 0 && (
+        {activeTab === 'history' && historyItems.length > 0 && (
           <Button
             className="w-full sm:w-auto"
             variant="secondary"
@@ -1149,28 +2434,58 @@ export function QueuePage() {
           </Button>
         )}
       </div>
+      )}
 
-      {/* View Mode Toggle */}
-      <div className="hidden sm:flex items-center gap-3 mb-6">
-        <div className="flex items-center border border-bambu-dark-tertiary rounded-lg overflow-hidden">
+      {/* Queue-tab controls: layout toggle (Position / Printer) + SJF.
+          Hidden on History/Timeline tabs since they don't apply. */}
+      {activeTab === 'queue' && (
+        <div className="flex flex-wrap items-center gap-3 mb-6">
+          <div className="inline-flex items-center bg-bambu-dark-secondary border border-bambu-dark-tertiary rounded-lg p-0.5">
+            <button
+              className={`px-3 py-1.5 text-xs sm:text-sm rounded-md transition-colors flex items-center gap-1.5 ${
+                activeLayout === 'position' ? 'bg-bambu-dark-tertiary text-white' : 'text-bambu-gray hover:text-white'
+              }`}
+              onClick={() => setActiveLayout('position')}
+              title={t('queue.layout.flatList')}
+            >
+              <List className="w-3.5 h-3.5" />
+              <span className="hidden sm:inline">{t('queue.layout.flatList')}</span>
+            </button>
+            <button
+              className={`px-3 py-1.5 text-xs sm:text-sm rounded-md transition-colors flex items-center gap-1.5 ${
+                activeLayout === 'printer' ? 'bg-bambu-dark-tertiary text-white' : 'text-bambu-gray hover:text-white'
+              }`}
+              onClick={() => setActiveLayout('printer')}
+              title={t('queue.layout.groupByPrinter')}
+            >
+              <Printer className="w-3.5 h-3.5" />
+              <span className="hidden sm:inline">{t('queue.layout.byPrinter')}</span>
+            </button>
+          </div>
           <button
-            className={`p-2 transition-colors ${viewMode === 'list' ? 'bg-bambu-green text-white' : 'bg-bambu-dark text-bambu-gray hover:text-white'}`}
-            onClick={() => setViewMode('list')}
-            title={t('queue.timeline.listView')}
+            onClick={() => {
+              const newValue = !(settings?.queue_shortest_first ?? false);
+              sjfMutation.mutate(newValue);
+            }}
+            className={`flex items-center gap-1 px-2 py-1.5 text-xs rounded-lg border transition-colors ${
+              settings?.queue_shortest_first
+                ? 'bg-bambu-green/20 border-bambu-green text-bambu-green'
+                : 'bg-bambu-dark-secondary border-bambu-dark-tertiary text-bambu-gray hover:text-white hover:border-bambu-gray'
+            }`}
+            title={t('queue.sjf.tooltip', 'Shortest Job First — scheduler prioritizes shorter prints')}
           >
-            <List className="w-4 h-4" />
-          </button>
-          <button
-            className={`p-2 transition-colors ${viewMode === 'timeline' ? 'bg-bambu-green text-white' : 'bg-bambu-dark text-bambu-gray hover:text-white'}`}
-            onClick={() => setViewMode('timeline')}
-            title={t('queue.timeline.timelineView')}
-          >
-            <GanttChart className="w-4 h-4" />
+            <Snail className="w-4 h-4" />
+            <span className="hidden sm:inline">{t('queue.sjf.label', 'SJF')}</span>
+            <span className={`w-1.5 h-1.5 rounded-full ${settings?.queue_shortest_first ? 'bg-bambu-green' : 'bg-bambu-gray'}`} />
           </button>
         </div>
-      </div>
+      )}
 
-      {isLoading ? (
+      {/* Pipelines tab short-circuits before the queue-empty branch so the
+          dashboard renders even when the regular queue is empty. */}
+      {activeTab === 'pipelines' ? (
+        <PipelineRunsView />
+      ) : isLoading ? (
         <div className="text-center py-12 text-bambu-gray">{t('common.loading')}</div>
       ) : queue?.length === 0 ? (
         <Card className="p-12 text-center border-dashed">
@@ -1180,9 +2495,10 @@ export function QueuePage() {
             {t('queue.empty.description')}
           </p>
         </Card>
-      ) : viewMode === 'timeline' ? (
+      ) : activeTab === 'timeline' ? (
         <QueueTimelineView
           queueItems={queue || []}
+          printers={printers || []}
           printerStatuses={printerStatusMap}
           onItemClick={(item) => {
             if (['completed', 'failed', 'skipped', 'cancelled'].includes(item.status)) {
@@ -1193,6 +2509,25 @@ export function QueuePage() {
               setConfirmAction({ type: 'stop', item });
             }
           }}
+          t={t}
+        />
+      ) : activeTab === 'history' ? (
+        <HistorySection
+          items={historyItems}
+          collapsed={false}
+          visibleCount={historyVisibleCount}
+          onShowMore={() => setHistoryVisibleCount((c) => c + HISTORY_PAGE_SIZE)}
+          sortBy={historySortBy}
+          sortAsc={historySortAsc}
+          onSortByChange={setHistorySortBy}
+          onSortAscToggle={() => setHistorySortAsc(!historySortAsc)}
+          onRemove={(item) => setConfirmAction({ type: 'remove', item })}
+          onRequeue={setRequeueItem}
+          timeFormat={timeFormat}
+          batchCollapsed={batchCollapsed}
+          toggleBatchCollapsed={toggleBatchCollapsed}
+          hasPermission={hasPermission}
+          canModify={canModify}
           t={t}
         />
       ) : (
@@ -1231,7 +2566,7 @@ export function QueuePage() {
             <div>
               <div className="flex flex-wrap items-center justify-between gap-2 mb-3 sm:mb-4">
                 <h2 className="text-base sm:text-lg font-semibold text-white flex items-center gap-2">
-                  <Clock className="w-4 h-4 sm:w-5 sm:h-5 text-yellow-400" />
+                  <Clock className="w-4 h-4 sm:w-5 sm:h-5 text-yellow-600 dark:text-yellow-400" />
                   {t('queue.sections.queued')}
                   <span className="text-xs sm:text-sm font-normal text-bambu-gray">
                     ({t('queue.itemCount', { count: pendingItems.length })})
@@ -1241,22 +2576,6 @@ export function QueuePage() {
                   </span>
                 </h2>
                 <div className="flex items-center gap-2">
-                  <button
-                    onClick={() => {
-                      const newValue = !(settings?.queue_shortest_first ?? false);
-                      sjfMutation.mutate(newValue);
-                    }}
-                    className={`flex items-center gap-1 px-2 py-1.5 text-xs rounded-lg border transition-colors ${
-                      settings?.queue_shortest_first
-                        ? 'bg-bambu-green/20 border-bambu-green text-bambu-green'
-                        : 'bg-bambu-dark-secondary border-bambu-dark-tertiary text-bambu-gray hover:text-white hover:border-bambu-gray'
-                    }`}
-                    title={t('queue.sjf.tooltip', 'Shortest Job First — scheduler prioritizes shorter prints')}
-                  >
-                    <Timer className="w-3.5 h-3.5" />
-                    <span className="hidden sm:inline">{t('queue.sjf.label', 'SJF')}</span>
-                    <span className={`w-1.5 h-1.5 rounded-full ${settings?.queue_shortest_first ? 'bg-bambu-green' : 'bg-bambu-gray'}`} />
-                  </button>
                   <select
                     className="px-2 sm:px-3 py-1.5 text-xs sm:text-sm bg-bambu-dark-secondary border border-bambu-dark-tertiary rounded-lg text-white focus:border-bambu-green focus:outline-none"
                     value={pendingSortBy}
@@ -1279,7 +2598,7 @@ export function QueuePage() {
                 </div>
               </div>
 
-              {/* Bulk action toolbar */}
+              {/* Bulk action toolbar (now with "Group as batch") */}
               <div className="flex flex-wrap items-center gap-2 sm:gap-3 mb-3 sm:mb-4 p-2 sm:p-3 bg-bambu-dark rounded-lg">
                 <Button
                   variant="ghost"
@@ -1300,6 +2619,18 @@ export function QueuePage() {
                       {t('queue.bulkEdit.selected', { count: selectedItems.length })}
                     </span>
                     <div className="hidden sm:block h-4 w-px bg-bambu-dark-tertiary" />
+                    {canGroupSelected && (
+                      <Button
+                        variant="ghost"
+                        size="sm"
+                        onClick={() => setGroupBatchModal(true)}
+                        className="flex items-center gap-1.5 sm:gap-2 text-xs sm:text-sm text-cyan-700 dark:text-cyan-300 hover:text-cyan-900 dark:hover:text-cyan-200"
+                        title={t('queue.batch.groupAsBatch')}
+                      >
+                        <Package className="w-3.5 h-3.5 sm:w-4 sm:h-4" />
+                        <span className="hidden sm:inline">{t('queue.batch.groupAsBatch')}</span>
+                      </Button>
+                    )}
                     <Button
                       variant="ghost"
                       size="sm"
@@ -1315,7 +2646,7 @@ export function QueuePage() {
                       variant="ghost"
                       size="sm"
                       onClick={() => bulkCancelMutation.mutate(selectedItems)}
-                      className="flex items-center gap-1.5 sm:gap-2 text-xs sm:text-sm text-red-400 hover:text-red-300"
+                      className="flex items-center gap-1.5 sm:gap-2 text-xs sm:text-sm text-red-600 dark:text-red-400 hover:text-red-700 dark:hover:text-red-300"
                       disabled={bulkCancelMutation.isPending || !hasAnyPermission('queue:delete_own', 'queue:delete_all')}
                       title={!hasAnyPermission('queue:delete_own', 'queue:delete_all') ? t('queue.permissions.noCancelItems') : t('queue.bulkEdit.cancelSelected')}
                     >
@@ -1329,91 +2660,122 @@ export function QueuePage() {
               <DndContext
                 sensors={sensors}
                 collisionDetection={closestCenter}
+                onDragStart={handleDragStart}
                 onDragEnd={handleDragEnd}
               >
                 <SortableContext
-                  items={pendingItems.map(i => i.id)}
+                  items={sortableIds}
                   strategy={verticalListSortingStrategy}
                 >
-                  <div className="space-y-2 sm:space-y-3">
-                    {pendingItems.map((item, index) => (
-                      <SortableQueueItem
-                        key={item.id}
-                        item={item}
-                        position={index + 1}
-                        onEdit={() => setEditItem(item)}
-                        onCancel={() => setConfirmAction({ type: 'cancel', item })}
-                        onRemove={() => {}}
-                        onStop={() => {}}
-                        onRequeue={() => {}}
-                        onStart={() => startMutation.mutate(item.id)}
-                        timeFormat={timeFormat}
-                        isSelected={selectedItems.includes(item.id)}
-                        onToggleSelect={() => handleToggleSelect(item.id)}
-                        hasPermission={hasPermission}
-                        canModify={canModify}
-                        t={t}
-                      />
-                    ))}
-                  </div>
+                  {activeLayout === 'position' ? (
+                    <div className="space-y-2 sm:space-y-3">
+                      {groupedRows.map((row, idx) => (
+                        <QueueRowRender
+                          key={row.kind === 'item' ? `item-${row.item.id}` : `batch-${row.batchId}`}
+                          row={row}
+                          collapsed={row.kind === 'batch' ? (batchCollapsed[row.batchId] ?? true) : false}
+                          onToggleBatch={row.kind === 'batch' ? () => toggleBatchCollapsed(row.batchId) : undefined}
+                          onUngroup={row.kind === 'batch' ? () => setUngroupBatchId(row.batchId) : undefined}
+                          setEditItem={setEditItem}
+                          setConfirmAction={setConfirmAction}
+                          startMutation={startMutation}
+                          selectedItems={selectedItems}
+                          handleToggleSelect={handleToggleSelect}
+                          timeFormat={timeFormat}
+                          hasPermission={hasPermission}
+                          canModify={canModify}
+                          t={t}
+                          etaEligibleIds={etaEligibleIds}
+                          etaNow={etaNow}
+                          aggregateForRows={aggregateForRows}
+                          {...rowMovers(groupedRows, idx)}
+                          onMoveBlock={canReorderManually ? moveBlockRelativeTo : undefined}
+                        />
+                      ))}
+                    </div>
+                  ) : (
+                    <div className="space-y-4">
+                      {printerBuckets.map((bucket) => {
+                        const agg = aggregateForRows(bucket.rows);
+                        return (
+                          <div key={bucket.key}>
+                            <div className="flex items-center gap-3 px-3 py-2 bg-bambu-dark-secondary border border-bambu-dark-tertiary rounded-t-lg">
+                              <Printer className={`w-4 h-4 ${bucket.isUnassigned ? 'text-orange-600 dark:text-orange-400' : bucket.targetModel ? 'text-blue-600 dark:text-blue-400' : 'text-bambu-green'}`} />
+                              <span className="font-semibold text-white text-sm">{bucket.label}</span>
+                              <span className="text-xs text-bambu-gray flex flex-wrap gap-x-3">
+                                <span>{t('queue.itemCount', { count: agg.count })}</span>
+                                {agg.time > 0 && <span>{formatDuration(agg.time)}</span>}
+                                {agg.weight > 0 && <span>{formatWeight(agg.weight)}</span>}
+                              </span>
+                            </div>
+                            <div className="bg-bambu-dark/40 border border-t-0 border-bambu-dark-tertiary rounded-b-lg p-2 space-y-2">
+                              {bucket.rows.map((row, idx) => (
+                                <QueueRowRender
+                                  key={row.kind === 'item' ? `item-${row.item.id}` : `batch-${row.batchId}`}
+                                  row={row}
+                                  collapsed={row.kind === 'batch' ? (batchCollapsed[row.batchId] ?? true) : false}
+                                  onToggleBatch={row.kind === 'batch' ? () => toggleBatchCollapsed(row.batchId) : undefined}
+                                  onUngroup={row.kind === 'batch' ? () => setUngroupBatchId(row.batchId) : undefined}
+                                  setEditItem={setEditItem}
+                                  setConfirmAction={setConfirmAction}
+                                  startMutation={startMutation}
+                                  selectedItems={selectedItems}
+                                  handleToggleSelect={handleToggleSelect}
+                                  timeFormat={timeFormat}
+                                  hasPermission={hasPermission}
+                                  canModify={canModify}
+                                  t={t}
+                                  etaEligibleIds={etaEligibleIds}
+                                  etaNow={etaNow}
+                                  aggregateForRows={aggregateForRows}
+                                  {...rowMovers(bucket.rows, idx)}
+                                  onMoveBlock={canReorderManually ? moveBlockRelativeTo : undefined}
+                                />
+                              ))}
+                            </div>
+                          </div>
+                        );
+                      })}
+                    </div>
+                  )}
                 </SortableContext>
+                <DragOverlay>
+                  {(() => {
+                    if (activeDragId === null) return null;
+                    // Batch drag — show the group ghost with copy count.
+                    if (typeof activeDragId === 'string' && activeDragId.startsWith('batch-')) {
+                      const batchId = Number(activeDragId.slice('batch-'.length));
+                      const siblings = pendingItems.filter((i) => i.batch_id === batchId);
+                      if (siblings.length === 0) return null;
+                      const name = siblings[0].batch_name || t('queue.batch.defaultName');
+                      return (
+                        <div className="flex items-center gap-3 px-3 py-2 bg-bambu-dark-secondary border-2 border-cyan-400 rounded-lg shadow-2xl">
+                          <Package className="w-4 h-4 text-cyan-700 dark:text-cyan-300" />
+                          <span className="text-sm text-white font-medium">
+                            {t('queue.dragGhost.batch', {
+                              defaultValue: '{{name}} ({{count}} copies)',
+                              name,
+                              count: siblings.length,
+                            })}
+                          </span>
+                        </div>
+                      );
+                    }
+                    // Multi-row drag — show the N-item ghost.
+                    if (typeof activeDragId === 'number' && selectedItems.includes(activeDragId) && selectedItems.length > 1) {
+                      return (
+                        <div className="flex items-center gap-3 px-3 py-2 bg-bambu-dark-secondary border-2 border-cyan-400 rounded-lg shadow-2xl">
+                          <Package className="w-4 h-4 text-cyan-700 dark:text-cyan-300" />
+                          <span className="text-sm text-white font-medium">
+                            {t('queue.dragGhost.multiCount', { count: selectedItems.length })}
+                          </span>
+                        </div>
+                      );
+                    }
+                    return null;
+                  })()}
+                </DragOverlay>
               </DndContext>
-            </div>
-          )}
-
-          {/* History */}
-          {historyItems.length > 0 && (
-            <div>
-              <div className="flex flex-wrap items-center justify-between gap-2 mb-3 sm:mb-4">
-                <button
-                  onClick={() => setHistoryCollapsed(!historyCollapsed)}
-                  className="text-base sm:text-lg font-semibold text-white flex items-center gap-2 hover:text-bambu-green transition-colors"
-                >
-                  {historyCollapsed ? <ChevronRight className="w-4 h-4 sm:w-5 sm:h-5" /> : <ChevronDown className="w-4 h-4 sm:w-5 sm:h-5" />}
-                  {t('queue.sections.history')}
-                  <span className="text-xs sm:text-sm font-normal text-bambu-gray">
-                    ({t('queue.itemCount', { count: historyItems.length })})
-                  </span>
-                </button>
-                {!historyCollapsed && (
-                  <div className="flex items-center gap-2">
-                    <select
-                      className="px-2 sm:px-3 py-1.5 text-xs sm:text-sm bg-bambu-dark-secondary border border-bambu-dark-tertiary rounded-lg text-white focus:border-bambu-green focus:outline-none"
-                      value={historySortBy}
-                      onChange={(e) => setHistorySortBy(e.target.value as 'date' | 'name' | 'printer')}
-                    >
-                      <option value="date">{t('queue.sort.byDate')}</option>
-                      <option value="name">{t('queue.sort.byName')}</option>
-                      <option value="printer">{t('queue.sort.byPrinter')}</option>
-                    </select>
-                    <Button
-                      variant="ghost"
-                      size="sm"
-                      onClick={() => setHistorySortAsc(!historySortAsc)}
-                      title={historySortAsc ? t('queue.sort.ascendingOldest') : t('queue.sort.descendingNewest')}
-                      className="px-2"
-                    >
-                      {historySortAsc ? <ArrowUp className="w-4 h-4" /> : <ArrowDown className="w-4 h-4" />}
-                    </Button>
-                  </div>
-                )}
-              </div>
-              {!historyCollapsed && (
-                <div className="space-y-1.5 sm:space-y-2">
-                  {historyItems.slice(0, 50).map((item) => (
-                    <CompactHistoryRow
-                      key={item.id}
-                      item={item}
-                      onRemove={() => setConfirmAction({ type: 'remove', item })}
-                      onRequeue={() => setRequeueItem(item)}
-                      timeFormat={timeFormat}
-                      hasPermission={hasPermission}
-                      canModify={canModify}
-                      t={t}
-                    />
-                  ))}
-                </div>
-              )}
             </div>
           )}
         </div>
@@ -1434,7 +2796,7 @@ export function QueuePage() {
       {/* Re-queue Modal */}
       {requeueItem && (
         <PrintModal
-          mode="add-to-queue"
+          mode="create"
           archiveId={requeueItem.archive_id ?? undefined}
           libraryFileId={requeueItem.library_file_id ?? undefined}
           archiveName={requeueItem.archive_name || requeueItem.library_file_name || `File #${requeueItem.archive_id || requeueItem.library_file_id}`}
@@ -1443,6 +2805,33 @@ export function QueuePage() {
       )}
 
       {/* Confirm Action Modal */}
+      {filamentShortConfirm && (
+        <ConfirmModal
+          title={t('queue.filamentShort.confirmTitle')}
+          message={
+            t('queue.filamentShort.confirmIntro') + '\n\n' +
+            filamentShortConfirm.deficit
+              .map((d) =>
+                t('queue.filamentShort.lineItem', {
+                  slot: d.slot_id,
+                  required: Math.round(d.required_grams),
+                  remaining:
+                    d.remaining_grams == null
+                      ? t('queue.filamentShort.unknown')
+                      : Math.round(d.remaining_grams),
+                }),
+              )
+              .join('\n')
+          }
+          confirmText={t('queue.filamentShort.printAnyway')}
+          variant="warning"
+          onConfirm={() => {
+            startMutation.mutate({ id: filamentShortConfirm.itemId, skipFilamentCheck: true });
+          }}
+          onCancel={() => setFilamentShortConfirm(null)}
+        />
+      )}
+
       {confirmAction && (
         <ConfirmModal
           title={
@@ -1477,6 +2866,21 @@ export function QueuePage() {
         />
       )}
 
+      {/* #1818: Resume-after-failure confirm */}
+      {resumeConfirm && (
+        <ConfirmModal
+          title={t('queue.resumeAfterFailure.confirmTitle')}
+          message={t('queue.resumeAfterFailure.confirmMessage', {
+            printer: resumeConfirm.printerName,
+            count: resumeConfirm.skippedCount,
+          })}
+          confirmText={t('queue.resumeAfterFailure.button')}
+          variant="warning"
+          onConfirm={() => resumeAfterFailureMutation.mutate(resumeConfirm.printerId)}
+          onCancel={() => setResumeConfirm(null)}
+        />
+      )}
+
       {/* Clear History Confirm Modal */}
       {showClearHistoryConfirm && (
         <ConfirmModal
@@ -1496,7 +2900,7 @@ export function QueuePage() {
       {showBulkEditModal && (
         <BulkEditModal
           selectedCount={selectedItems.length}
-          printers={printers?.map(p => ({ id: p.id, name: p.name })) || []}
+          printers={printers?.map(p => ({ id: p.id, name: p.name, nozzle_count: p.nozzle_count })) || []}
           onSave={(data) => {
             if (Object.keys(data).length > 0) {
               bulkUpdateMutation.mutate({ item_ids: selectedItems, ...data });
@@ -1508,6 +2912,90 @@ export function QueuePage() {
           t={t}
         />
       )}
+
+      {/* Group as batch modal — name prompt */}
+      {groupBatchModal && (
+        <GroupBatchModal
+          itemCount={selectedItems.length}
+          isSaving={createBatchMutation.isPending}
+          defaultName={(() => {
+            // Suggest a name derived from the first selected item's source.
+            const first = pendingItems.find((i) => selectedItems.includes(i.id));
+            const raw = first?.archive_name || first?.library_file_name || '';
+            const cleaned = raw.replace(/\.gcode\.3mf$/i, '').replace(/\.3mf$/i, '');
+            return cleaned ? `${cleaned}` : t('queue.batch.defaultName');
+          })()}
+          onSave={(name) => createBatchMutation.mutate({ name, item_ids: selectedItems })}
+          onClose={() => setGroupBatchModal(false)}
+          t={t}
+        />
+      )}
+
+      {/* Ungroup batch confirm */}
+      {ungroupBatchId !== null && (
+        <ConfirmModal
+          title={t('queue.batch.ungroupConfirmTitle')}
+          message={t('queue.batch.ungroupConfirmMessage')}
+          confirmText={t('queue.batch.ungroup')}
+          variant="warning"
+          onConfirm={() => ungroupBatchMutation.mutate(ungroupBatchId)}
+          onCancel={() => setUngroupBatchId(null)}
+        />
+      )}
+    </div>
+  );
+}
+
+interface GroupBatchModalProps {
+  itemCount: number;
+  defaultName: string;
+  isSaving: boolean;
+  onSave: (name: string) => void;
+  onClose: () => void;
+  t: (key: string, options?: Record<string, unknown>) => string;
+}
+
+function GroupBatchModal({ itemCount, defaultName, isSaving, onSave, onClose, t }: GroupBatchModalProps) {
+  const [name, setName] = useState(defaultName);
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-4">
+      <div className="bg-bambu-dark-secondary border border-bambu-dark-tertiary rounded-xl p-6 w-full max-w-md">
+        <h3 className="text-lg font-semibold text-white mb-2 flex items-center gap-2">
+          <Package className="w-5 h-5 text-cyan-700 dark:text-cyan-300" />
+          {t('queue.batch.groupAsBatch')}
+        </h3>
+        <p className="text-sm text-bambu-gray mb-4">
+          {t('queue.batch.groupAsBatchDescription', { count: itemCount })}
+        </p>
+        <label className="block text-sm font-medium text-white mb-2">
+          {t('queue.batch.nameLabel')}
+        </label>
+        <input
+          type="text"
+          autoFocus
+          value={name}
+          onChange={(e) => setName(e.target.value)}
+          placeholder={t('queue.batch.namePlaceholder')}
+          maxLength={120}
+          className="w-full px-3 py-2 bg-bambu-dark border border-bambu-dark-tertiary rounded-lg text-white focus:border-bambu-green focus:outline-none mb-5"
+        />
+        <div className="flex justify-end gap-2">
+          <Button variant="ghost" size="sm" onClick={onClose} disabled={isSaving}>
+            {t('common.cancel')}
+          </Button>
+          <Button
+            variant="primary"
+            size="sm"
+            onClick={() => {
+              const trimmed = name.trim();
+              if (trimmed) onSave(trimmed);
+            }}
+            disabled={isSaving || !name.trim()}
+          >
+            {isSaving ? t('common.saving') : t('queue.batch.create')}
+          </Button>
+        </div>
+      </div>
     </div>
   );
 }

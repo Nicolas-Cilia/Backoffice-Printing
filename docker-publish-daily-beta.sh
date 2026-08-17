@@ -56,6 +56,7 @@ PARALLEL=false
 PUSH_GHCR=true
 PUSH_DOCKERHUB=true
 SKIP_RELEASE=false
+INCLUDE_SIDECARS=false
 for arg in "$@"; do
     case $arg in
         --parallel)
@@ -70,17 +71,22 @@ for arg in "$@"; do
         --skip-release)
             SKIP_RELEASE=true
             ;;
+        --include-sidecars)
+            INCLUDE_SIDECARS=true
+            ;;
         --help|-h)
-            echo "Usage: $0 [--parallel] [--ghcr-only] [--dockerhub-only] [--skip-release]"
+            echo "Usage: $0 [--parallel] [--ghcr-only] [--dockerhub-only] [--skip-release] [--include-sidecars]"
             echo ""
             echo "Build and publish a daily beta Docker image using the APP_VERSION from config.py."
             echo ""
             echo "Options:"
-            echo "  --parallel       Build both architectures simultaneously"
-            echo "  --ghcr-only      Only push to GitHub Container Registry"
-            echo "  --dockerhub-only Only push to Docker Hub"
-            echo "  --skip-release   Build+push without creating/updating GitHub release"
-            echo "  --help, -h       Show this help"
+            echo "  --parallel          Build both architectures simultaneously"
+            echo "  --ghcr-only         Only push to GitHub Container Registry"
+            echo "  --dockerhub-only    Only push to Docker Hub"
+            echo "  --skip-release      Build+push without creating/updating GitHub release"
+            echo "  --include-sidecars  Also rebuild + push orca-slicer-api and bambu-studio-api"
+            echo "                      images (off by default — slicer rebuilds are expensive)"
+            echo "  --help, -h          Show this help"
             exit 0
             ;;
         *)
@@ -296,6 +302,18 @@ else
         CHANGELOG_NOTES="No changelog notes available for this release."
     fi
 
+    # GitHub caps release body at 125000 chars. Reserve ~2000 for the boilerplate
+    # header/pull-commands and truncate the changelog tail with a link to the full file.
+    MAX_NOTES_LEN=122000
+    if [ ${#CHANGELOG_NOTES} -gt $MAX_NOTES_LEN ]; then
+        echo -e "${YELLOW}  Changelog section is ${#CHANGELOG_NOTES} chars; truncating to ${MAX_NOTES_LEN} for GitHub release body${NC}"
+        CHANGELOG_NOTES="${CHANGELOG_NOTES:0:$MAX_NOTES_LEN}
+
+---
+
+_Changelog truncated — see the full [CHANGELOG.md](https://github.com/maziggy/bambuddy/blob/main/CHANGELOG.md) for the complete list._"
+    fi
+
     # Build pull commands for the release body
     PULL_COMMANDS=""
     if [ "$PUSH_GHCR" = true ]; then
@@ -346,11 +364,14 @@ EOF
     git push origin "v${DAILY_TAG}" --force
 
     echo "  Creating release v${DAILY_TAG}..."
+    NOTES_FILE=$(mktemp)
+    trap 'rm -f "$NOTES_FILE"' EXIT
+    printf '%s\n' "$RELEASE_BODY" > "$NOTES_FILE"
     gh release create "v${DAILY_TAG}" \
         --title "Daily Beta Build v${DAILY_TAG}" \
         --prerelease \
         --generate-notes=false \
-        --notes "$RELEASE_BODY"
+        --notes-file "$NOTES_FILE"
     echo -e "${GREEN}  Created GitHub release: v${DAILY_TAG}${NC}"
 fi
 
@@ -403,4 +424,27 @@ fi
 if [ "$PUSH_DOCKERHUB" = true ]; then
     echo "  docker pull ${DOCKERHUB_IMAGE}:daily"
     echo "  docker pull ${IMAGE_NAME}:daily  # shorthand"
+fi
+
+# ============================================================
+# Sidecar images (orca-slicer-api + bambu-studio-api) — opt-in for daily
+# ============================================================
+SIDECAR_SCRIPT="/opt/claude/projects/orca-slicer-api/docker-publish-sidecars.sh"
+if [ "$INCLUDE_SIDECARS" != true ]; then
+    echo ""
+    echo -e "${YELLOW}Sidecar images not rebuilt (daily default).${NC}"
+    echo -e "${YELLOW}Pass --include-sidecars to also publish orca-slicer-api + bambu-studio-api.${NC}"
+elif [ ! -x "$SIDECAR_SCRIPT" ]; then
+    echo ""
+    echo -e "${YELLOW}Sidecar helper not found at ${SIDECAR_SCRIPT} — skipping sidecar build.${NC}"
+else
+    echo ""
+    echo -e "${GREEN}================================================${NC}"
+    echo -e "${GREEN}  Publishing sidecar images (daily channel)${NC}"
+    echo -e "${GREEN}================================================${NC}"
+    SIDECAR_ARGS="--channel daily --version ${VERSION}"
+    [ "$PARALLEL" = true ]        && SIDECAR_ARGS="$SIDECAR_ARGS --parallel"
+    [ "$PUSH_GHCR" = false ]      && SIDECAR_ARGS="$SIDECAR_ARGS --dockerhub-only"
+    [ "$PUSH_DOCKERHUB" = false ] && SIDECAR_ARGS="$SIDECAR_ARGS --ghcr-only"
+    "$SIDECAR_SCRIPT" $SIDECAR_ARGS
 fi

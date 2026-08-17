@@ -1,6 +1,6 @@
 from datetime import datetime
 
-from sqlalchemy import Boolean, DateTime, Float, Integer, String, func
+from sqlalchemy import Boolean, DateTime, Float, ForeignKey, Integer, String, func
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from backend.app.core.database import Base
@@ -16,6 +16,14 @@ class Spool(Base):
     subtype: Mapped[str | None] = mapped_column(String(50))  # Basic, Matte, Silk, etc.
     color_name: Mapped[str | None] = mapped_column(String(100))  # "Jade White"
     rgba: Mapped[str | None] = mapped_column(String(8))  # RRGGBBAA hex
+    # Multi-colour gradient stops for filaments with more than one colour
+    # (e.g. tri-colour, multi-colour). Stored as comma-separated 6- or 8-char
+    # hex tokens without `#`. Empty/NULL means solid (uses `rgba`). Up to 8
+    # stops; combination mode is driven by `subtype` (Gradient, Multicolor).
+    extra_colors: Mapped[str | None] = mapped_column(String(255))
+    # Visual effect overlay independent of subtype: sparkle, wood, marble,
+    # glow, matte. Purely a rendering hint — does not affect MQTT/firmware.
+    effect_type: Mapped[str | None] = mapped_column(String(20))
     brand: Mapped[str | None] = mapped_column(String(100))  # "Polymaker"
     label_weight: Mapped[int] = mapped_column(Integer, default=1000)  # Advertised net weight (g)
     core_weight: Mapped[int] = mapped_column(Integer, default=250)  # Empty spool weight (g)
@@ -23,6 +31,12 @@ class Spool(Base):
         Integer
     )  # Reference to spool_catalog entry for core weight
     weight_used: Mapped[float] = mapped_column(Float, default=0)  # Consumed grams
+    # Anchor for the resettable "Total Consumed" stat. The displayed counter
+    # is `weight_used - weight_used_baseline`; the Inventory page's "Reset
+    # usage to 0" action stamps baseline = weight_used so the counter zeroes
+    # without disturbing remaining (= label_weight - weight_used). Matches
+    # Spoolman's split between used_weight and remaining_weight (#1390).
+    weight_used_baseline: Mapped[float] = mapped_column(Float, default=0)
     weight_locked: Mapped[bool] = mapped_column(Boolean, default=False)  # Lock weight from AMS auto-sync
     last_scale_weight: Mapped[int | None] = mapped_column(Integer)  # Last gross weight from scale (g)
     last_weighed_at: Mapped[datetime | None] = mapped_column(DateTime)  # When last weighed
@@ -33,12 +47,25 @@ class Spool(Base):
     note: Mapped[str | None] = mapped_column(String(500))
     added_full: Mapped[bool | None] = mapped_column()  # Whether spool was added as full (unused)
 
+    # User-defined category (e.g. "Production", "Prototype", "Client A") for
+    # filtering and per-group low-stock thresholds (#729). Free text — the
+    # form autocompletes from categories already present on other spools.
+    category: Mapped[str | None] = mapped_column(String(50))
+    # Per-spool override of the global inventory low-stock threshold (%).
+    # NULL falls back to the `low_stock_threshold` setting. Lets users mark
+    # production spools with a higher threshold (alert earlier) and prototype
+    # spools with a lower one without changing the global default.
+    low_stock_threshold_pct: Mapped[int | None] = mapped_column(Integer)
+
     # Cost tracking
     cost_per_kg: Mapped[float | None] = mapped_column(Float)  # Cost per kilogram
 
+    storage_location: Mapped[str | None] = mapped_column(String(255))  # User-editable storage location
+    location_id: Mapped[int | None] = mapped_column(ForeignKey("locations.id"), index=True)
+
     last_used: Mapped[datetime | None] = mapped_column(DateTime)  # Last time this spool was used in a print
     encode_time: Mapped[datetime | None] = mapped_column(DateTime)  # When spool was encoded/written to tag
-    tag_uid: Mapped[str | None] = mapped_column(String(16))  # RFID tag UID (16 hex chars)
+    tag_uid: Mapped[str | None] = mapped_column(String(32))  # RFID tag UID (up to 32 hex chars)
     tray_uuid: Mapped[str | None] = mapped_column(String(32))  # Bambu Lab spool UUID (32 hex chars)
     data_origin: Mapped[str | None] = mapped_column(String(20))  # How data was populated: manual, rfid_auto, nfc_link
     tag_type: Mapped[str | None] = mapped_column(String(20))  # Tag vendor: bambulab, generic, etc.
@@ -48,7 +75,9 @@ class Spool(Base):
 
     k_profiles: Mapped[list["SpoolKProfile"]] = relationship(back_populates="spool", cascade="all, delete-orphan")
     assignments: Mapped[list["SpoolAssignment"]] = relationship(back_populates="spool", cascade="all, delete-orphan")
+    location: Mapped["Location | None"] = relationship(back_populates="spools")
 
 
+from backend.app.models.location import Location  # noqa: E402
 from backend.app.models.spool_assignment import SpoolAssignment  # noqa: E402
 from backend.app.models.spool_k_profile import SpoolKProfile  # noqa: E402

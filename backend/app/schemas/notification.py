@@ -19,6 +19,7 @@ class ProviderType(StrEnum):
     DISCORD = "discord"
     WEBHOOK = "webhook"
     HOMEASSISTANT = "homeassistant"
+    BARK = "bark"
 
 
 class NotificationProviderBase(BaseModel):
@@ -43,6 +44,10 @@ class NotificationProviderBase(BaseModel):
     # Event triggers - printer status
     on_printer_offline: bool = Field(default=False, description="Notify when printer goes offline")
     on_printer_error: bool = Field(default=False, description="Notify on printer errors (AMS, etc.)")
+    on_ai_failure_detection: bool = Field(
+        default=False,
+        description="Notify when Obico AI detects a possible print failure (spaghetti)",
+    )
     on_filament_low: bool = Field(default=False, description="Notify when filament is running low")
     on_maintenance_due: bool = Field(default=False, description="Notify when maintenance is due")
 
@@ -58,6 +63,9 @@ class NotificationProviderBase(BaseModel):
 
     # Event triggers - Build plate detection
     on_plate_not_empty: bool = Field(default=True, description="Notify when objects detected on plate before print")
+    on_plate_clear_required: bool = Field(
+        default=False, description="Notify when a finished print is waiting for plate-clear confirmation"
+    )
 
     # Event triggers - Bed cooled
     on_bed_cooled: bool = Field(default=False, description="Notify when bed cools after print")
@@ -128,6 +136,7 @@ class NotificationProviderUpdate(BaseModel):
     # Event triggers - printer status
     on_printer_offline: bool | None = None
     on_printer_error: bool | None = None
+    on_ai_failure_detection: bool | None = None
     on_filament_low: bool | None = None
     on_maintenance_due: bool | None = None
 
@@ -141,6 +150,7 @@ class NotificationProviderUpdate(BaseModel):
 
     # Event triggers - Build plate detection
     on_plate_not_empty: bool | None = None
+    on_plate_clear_required: bool | None = None
 
     # Event triggers - Bed cooled
     on_bed_cooled: bool | None = None
@@ -212,6 +222,14 @@ class NtfyConfig(BaseModel):
     server: str = Field(default="https://ntfy.sh", description="ntfy server URL")
     topic: str = Field(..., description="Topic name to publish to")
     auth_token: str | None = Field(default=None, description="Optional authentication token")
+    event_priorities: dict[str, int] | None = Field(
+        default=None,
+        description=(
+            "Per-event priority override. Keys are event names (e.g. 'on_print_failed'); "
+            "values are ntfy priorities 1-5 (1=min, 2=low, 3=default, 4=high, 5=urgent). "
+            "Events without an entry use ntfy's server-side default."
+        ),
+    )
 
 
 class PushoverConfig(BaseModel):
@@ -220,6 +238,10 @@ class PushoverConfig(BaseModel):
     user_key: str = Field(..., description="Your Pushover user key")
     app_token: str = Field(..., description="Your Pushover application token")
     priority: int = Field(default=0, ge=-2, le=2, description="Message priority (-2 to 2)")
+    # Emergency priority (2) only: how often to re-alert and when to stop.
+    # Pushover requires retry >= 30s and expire <= 10800s (3h).
+    retry: int = Field(default=60, ge=30, le=10800, description="Emergency re-alert interval in seconds (priority 2)")
+    expire: int = Field(default=3600, ge=30, le=10800, description="Emergency alert expiry in seconds (priority 2)")
 
 
 class TelegramConfig(BaseModel):

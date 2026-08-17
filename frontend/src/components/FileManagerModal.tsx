@@ -300,10 +300,15 @@ export function FileManagerModal({ printerId, printerName, onClose }: FileManage
     return () => window.removeEventListener('keydown', handleKeyDown);
   }, [onClose]);
 
+  // No auto-poll: every refetch opens a fresh FTPS connection (TLS handshake
+  // and all) to the printer, and a 30s interval saturated fragile printer
+  // controllers like the P1S — MQTT, FTP and the camera all timed out
+  // together while this modal sat open (#1480). A printer's file list only
+  // changes on upload / delete (the mutations below invalidate the query)
+  // or when a print finishes; the manual Refresh button covers the rest.
   const { data, isLoading, refetch } = useQuery({
     queryKey: ['printerFiles', printerId, currentPath],
     queryFn: () => api.getPrinterFiles(printerId, currentPath),
-    refetchInterval: 30000,
   });
 
   const { data: storageData } = useQuery({
@@ -697,7 +702,7 @@ export function FileManagerModal({ printerId, printerName, onClose }: FileManage
               variant="secondary"
               disabled={selectedFiles.size === 0 || deleteMutation.isPending}
               onClick={handleDelete}
-              className="text-red-400 hover:text-red-300"
+              className="text-red-700 hover:text-red-800 dark:text-red-400 dark:hover:text-red-300"
             >
               {deleteMutation.isPending ? (
                 <Loader2 className="w-4 h-4 animate-spin" />

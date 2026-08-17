@@ -1,5 +1,27 @@
 @import "tailwindcss";
-@import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap');
+
+/* Inter, self-hosted (#1460).  Bambuddy is a local-first, offline-capable PWA;
+   pulling the font from fonts.googleapis.com at runtime broke the install on
+   Android (CSP-blocked cross-origin fetch) and meant the UI couldn't render
+   offline.  These are the variable woff2 files Google Fonts serves — one file
+   covers every weight via the variable axis, so font-weight is a 100-900 range.
+   Files live in frontend/public/fonts/ and are served same-origin. */
+@font-face {
+  font-family: 'Inter';
+  font-style: normal;
+  font-weight: 100 900;
+  font-display: swap;
+  src: url('/fonts/inter-latin.woff2') format('woff2');
+  unicode-range: U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC, U+0304, U+0308, U+0329, U+2000-206F, U+20AC, U+2122, U+2191, U+2193, U+2212, U+2215, U+FEFF, U+FFFD;
+}
+@font-face {
+  font-family: 'Inter';
+  font-style: normal;
+  font-weight: 100 900;
+  font-display: swap;
+  src: url('/fonts/inter-latin-ext.woff2') format('woff2');
+  unicode-range: U+0100-02BA, U+02BD-02C5, U+02C7-02CC, U+02CE-02D7, U+02DD-02FF, U+0304, U+0308, U+0329, U+1D00-1DBF, U+1E00-1E9F, U+1EF2-1EFF, U+2020, U+20A0-20AB, U+20AD-20C0, U+2113, U+2C60-2C7F, U+A720-A7FF;
+}
 
 /* Enable class-based dark mode for Tailwind v4 */
 @custom-variant dark (&:where(.dark, .dark *));
@@ -28,11 +50,15 @@
    BASE DEFAULTS
    ============================================ */
 
+html {
+  font-size: 14.4px;
+}
+
 :root {
-  /* Default accent color (green) */
-  --accent: #00ae42;
-  --accent-light: #00c64d;
-  --accent-dark: #009438;
+  /* Default accent color (Atos blue) */
+  --accent: #07bcec;
+  --accent-light: #15c9f8;
+  --accent-dark: #07a8d3;
 
   /* Semantic status colors - these never change with accent theme */
   --status-ok: #22c55e;      /* green-500 - always green for success/online/ok */
@@ -220,6 +246,14 @@
    LAYER 3: ACCENT COLORS
    ============================================ */
 
+/* Brand accent for this fork, and the default. Kept first so it reads as the
+   primary choice; the upstream accents below stay selectable. */
+.accent-atos {
+  --accent: #07bcec;
+  --accent-light: #15c9f8;
+  --accent-dark: #07a8d3;
+}
+
 .accent-green {
   --accent: #00ae42;
   --accent-light: #00c64d;
@@ -387,6 +421,56 @@ body {
   animation: slide-in-left 0.3s ease-out;
 }
 
+/* SpoolBuddy idle scan animation: transform/opacity only for low-power devices */
+@keyframes spoolbuddy-optimized-ping {
+  0% {
+    transform: scale(0.8);
+    opacity: 0.8;
+  }
+  80%,
+  100% {
+    transform: scale(2.2);
+    opacity: 0;
+  }
+}
+
+.spoolbuddy-optimized-ping {
+  will-change: auto;
+  contain: layout;
+  animation: spoolbuddy-optimized-ping 3.5s cubic-bezier(0, 0, 0.2, 1) infinite;
+}
+
+.spoolbuddy-spool-glow {
+  transform: scale(2.0);
+  will-change: auto;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .spoolbuddy-optimized-ping {
+    animation: none;
+    opacity: 0.25;
+    transform: scale(1.2);
+  }
+
+  .spoolbuddy-spool-glow {
+    transition: none;
+  }
+}
+
+/* SpoolBuddy quick menu slide-down */
+@keyframes slide-down {
+  from {
+    transform: translateY(-100%);
+  }
+  to {
+    transform: translateY(0);
+  }
+}
+
+.animate-slide-down {
+  animation: slide-down 0.25s ease-out;
+}
+
 /* Card shadows - uses theme-specific shadow */
 .card-shadow {
   box-shadow: var(--card-shadow);
@@ -446,4 +530,11 @@ body {
 
 .calendar-scroll::-webkit-scrollbar-thumb:hover {
   background-color: color-mix(in srgb, var(--text-muted) 80%, transparent);
+}
+
+/* History row thumbnail hover-to-enlarge — desktop only (no hover on touch). */
+@media (hover: hover) and (pointer: fine) {
+  .history-thumb-hover:hover .history-thumb-preview {
+    opacity: 1;
+  }
 }

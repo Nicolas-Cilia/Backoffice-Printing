@@ -3,8 +3,7 @@ import { useParams, useSearchParams } from 'react-router-dom';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { useTranslation } from 'react-i18next';
 import { Layers, Clock, Timer, Printer } from 'lucide-react';
-import { api, withStreamToken } from '../api/client';
-import type { PrinterStatus } from '../api/client';
+import { api, ApiError, withStreamToken } from '../api/client';
 import { formatDuration, formatETA, type TimeFormat } from '../utils/date';
 
 type TFunction = (key: string, options?: Record<string, unknown>) => string;
@@ -57,7 +56,9 @@ function parseConfig(params: URLSearchParams): OverlayConfig {
   };
 }
 
-function getStatusText(status: PrinterStatus, t: TFunction): string {
+// Accepts the minimal shape shared by PrinterStatus (logged-in path) and the
+// token-authed OverlayStatus (kiosk path) — both carry state + stg_cur_name.
+function getStatusText(status: { state: string | null; stg_cur_name?: string | null }, t: TFunction): string {
   if (status.stg_cur_name) return status.stg_cur_name;
 
   switch (status.state) {
@@ -117,38 +118,92 @@ export function StreamOverlayPage() {
   const config = useMemo(() => parseConfig(searchParams), [searchParams]);
   const sizes = getSizeClasses(config.size);
 
-  // Fetch printer info
-  const { data: printer } = useQuery({
-    queryKey: ['printer', id],
-    queryFn: () => api.getPrinter(id),
-    enabled: id > 0,
-  });
+  // Kiosk mode (#2613): OBS and other embeds have no login session, so they
+  // pass an `overlay`-scoped token in the URL. When present, every data call
+  // (status + camera stream) is authenticated by that token instead of a JWT.
+  const token = searchParams.get('token');
+  const kiosk = token != null && token !== '';
 
-  // Fetch printer status with polling
-  const { data: status } = useQuery({
-    queryKey: ['printerStatus', id],
-    queryFn: () => api.getPrinterStatus(id),
-    enabled: id > 0,
+  // Kiosk path: one token-authenticated call for name + live status + the one
+  // setting the overlay reads. No JWT, so this is the only feed available.
+  const { data: overlay } = useQuery({
+    queryKey: ['overlayStatus', id, token],
+    queryFn: () => api.getOverlayStatus(id, token ?? undefined),
+    enabled: id > 0 && kiosk,
     refetchInterval: 2000,
   });
 
-  // Fetch settings info
+  // Logged-in path: the ordinary JWT-authenticated queries, unchanged. Disabled
+  // in kiosk mode so an unauthenticated OBS browser never fires a doomed 401.
+  const { data: printerData } = useQuery({
+    queryKey: ['printer', id],
+    queryFn: () => api.getPrinter(id),
+    enabled: id > 0 && !kiosk,
+  });
+
+  const { data: statusData } = useQuery({
+    queryKey: ['printerStatus', id],
+    queryFn: () => api.getPrinterStatus(id),
+    enabled: id > 0 && !kiosk,
+    refetchInterval: 2000,
+  });
+
   const { data: settings } = useQuery({
     queryKey: ['settings'],
     queryFn: api.getSettings,
+    enabled: !kiosk,
   });
 
-  const timeFormat: TimeFormat = settings?.time_format || 'system';
+  // Normalize the two sources into the shape the render below reads. Memoized
+  // because the title effect depends on `printer` — a fresh object literal each
+  // render would re-run it (and reset document.title) on every poll tick.
+  const printer = useMemo(
+    () =>
+      kiosk
+        ? overlay && { name: overlay.name, camera_rotation: overlay.camera_rotation }
+        : printerData,
+    [kiosk, overlay, printerData],
+  );
+  const status = kiosk ? overlay : statusData;
+  const timeFormat: TimeFormat = (kiosk ? overlay?.time_format : settings?.time_format) || 'system';
 
-  // WebSocket for real-time updates
+  // WebSocket for real-time updates (JWT-authenticated; skipped in kiosk mode,
+  // where the token can't mint a ws-token — the 2s poll above is the feed).
   useEffect(() => {
-    if (!id) return;
+    if (!id || kiosk) return;
 
-    const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
-    const wsUrl = `${protocol}//${window.location.host}/api/v1/ws`;
-    const ws = new WebSocket(wsUrl);
+    let ws: WebSocket | null = null;
+    let cancelled = false;
 
-    ws.onmessage = (event) => {
+    // GHSA-r2qv follow-up: mint a ws-token before connecting. Uses
+    // api.getWebSocketToken so the JWT Authorization header rides along
+    // (raw fetch+credentials:'include' would miss it — Bambuddy uses
+    // Bearer tokens, not cookies, for JWT auth). Auth-disabled deployments
+    // succeed even without a token.
+    (async () => {
+      let wsToken: string | undefined;
+      try {
+        const resp = await api.getWebSocketToken();
+        wsToken = resp.token;
+      } catch (err) {
+        // A 401 (JWT expired) / 403 (no WEBSOCKET_CONNECT permission) is an
+        // auth decision — a tokenless socket would just be closed 4401, so
+        // skip opening one and let the REST polling fallback keep the overlay
+        // fresh. There's no reconnect loop on this page, so this is purely
+        // avoiding one doomed socket per mount. A network/5xx error is not
+        // auth: fall through and try anyway (auth-disabled deployments land
+        // here with no token and connect fine).
+        const status = err instanceof ApiError ? err.status : 0;
+        if (status === 401 || status === 403) return;
+      }
+      if (cancelled) return;
+
+      const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+      const tokenParam = wsToken ? `?token=${encodeURIComponent(wsToken)}` : '';
+      const wsUrl = `${protocol}//${window.location.host}/api/v1/ws${tokenParam}`;
+      ws = new WebSocket(wsUrl);
+
+      ws.onmessage = (event) => {
       try {
         const data = JSON.parse(event.data);
         if (data.type === 'printer_status' && data.printer_id === id) {
@@ -159,14 +214,16 @@ export function StreamOverlayPage() {
       }
     };
 
-    ws.onerror = () => {
-      // WebSocket error - polling will continue as fallback
-    };
+      ws.onerror = () => {
+        // WebSocket error - polling will continue as fallback
+      };
+    })();
 
     return () => {
-      ws.close();
+      cancelled = true;
+      if (ws) ws.close();
     };
-  }, [id, queryClient]);
+  }, [id, kiosk, queryClient]);
 
   // Update document title
   useEffect(() => {
@@ -201,7 +258,13 @@ export function StreamOverlayPage() {
 
   const isPrinting = status.state === 'RUNNING' || status.state === 'PAUSE';
   const progress = status.progress || 0;
-  const streamUrl = withStreamToken(`/api/v1/printers/${id}/camera/stream?fps=${config.fps}&t=${imageKey}`);
+  // Append the kiosk token directly rather than leaning on withStreamToken's
+  // module cache — the cache is populated by an effect and would miss the first
+  // render (a 401 flash before the retry). The logged-in path keeps the cache.
+  const camPath = `/api/v1/printers/${id}/camera/stream?fps=${config.fps}&t=${imageKey}`;
+  const streamUrl = kiosk && token
+    ? `${camPath}&token=${encodeURIComponent(token)}`
+    : withStreamToken(camPath);
 
   return (
     <div className="min-h-screen bg-black relative overflow-hidden">
@@ -225,8 +288,8 @@ export function StreamOverlayPage() {
         className="absolute top-4 right-4 z-10"
       >
         <img
-          src="/img/bambuddy_logo_dark_transparent.png"
-          alt="Bambuddy"
+          src="/img/backoffice_printing_logo.png"
+          alt="Backoffice Printing"
           className={`${sizes.logoHeight} object-contain drop-shadow-lg hover:scale-105 transition-transform`}
         />
       </a>

@@ -3,6 +3,7 @@ import { useTranslation } from 'react-i18next';
 import { Circle, RotateCcw, Palette } from 'lucide-react';
 import { getColorName } from '../../utils/colors';
 import { canonicalFilamentType } from '../../utils/amsHelpers';
+import { useFilamentLabels } from './useFilamentLabels';
 import type { FilamentReqsData } from './types';
 
 interface FilamentOverrideProps {
@@ -15,6 +16,12 @@ interface FilamentOverrideProps {
   forceColorMatch?: Record<number, boolean>;
   /** Called when a slot's force color match checkbox is toggled. */
   onForceColorMatchChange?: (slotId: number, value: boolean) => void;
+  /** Names the plate these requirements belong to, when one panel is rendered per
+   *  selected plate. Each plate prints its own subset of the file's slots (#2552). */
+  plateLabel?: string;
+  /** Whether to print the explanatory hint. A stack of per-plate panels only needs
+   *  it once, above the first one. Defaults to true. */
+  showHint?: boolean;
 }
 
 /**
@@ -29,8 +36,15 @@ export function FilamentOverride({
   onChange,
   forceColorMatch,
   onForceColorMatchChange,
+  plateLabel,
+  showHint = true,
 }: FilamentOverrideProps) {
   const { t } = useTranslation();
+
+  // Per-slot sub-brand + material-disambiguated colour labels (#1718). The
+  // shared hook fronts the three queries that power the resolution so this
+  // component and ``FilamentMapping`` cannot drift apart on label content.
+  const labels = useFilamentLabels(filamentReqs?.filaments);
 
   // Index available filaments by canonical type for per-slot filtering.
   // Types in the same equivalence group (e.g. PA-CF / PA12-CF / PAHT-CF) share one bucket.
@@ -65,11 +79,15 @@ export function FilamentOverride({
   return (
     <div className="mb-4">
       <div className="flex items-center gap-2 text-sm text-bambu-gray mb-2">
-        <span>{t('printModal.filamentOverride')}</span>
+        <span>
+          {plateLabel
+            ? `${t('printModal.filamentOverride')} — ${plateLabel}`
+            : t('printModal.filamentOverride')}
+        </span>
       </div>
-      <p className="text-xs text-bambu-gray mb-2">{t('printModal.filamentOverrideHint')}</p>
+      {showHint && <p className="text-xs text-bambu-gray mb-2">{t('printModal.filamentOverrideHint')}</p>}
       <div className="bg-bambu-dark rounded-lg p-3 space-y-2">
-        {filaments.map((req) => {
+        {filaments.map((req, slotIdx) => {
           const override = overrides[req.slot_id];
           const isOverridden = !!override;
           // Only show filaments of the same type AND compatible nozzle/extruder
@@ -81,6 +99,14 @@ export function FilamentOverride({
             ? sameType.filter((f) => f.extruder_id == null || f.extruder_id === req.nozzle_id)
             : sameType;
 
+          // #1718: sub-brand resolved from the 3MF's tray_info_idx via the
+          // builtin / cloud-id maps, plus the material-disambiguated catalogue
+          // colour for the hex. Both fall back gracefully (resolvedName →
+          // req.type when the SKU is unknown; colorLabel → getColorName(hex)
+          // when the by-material lookup hasn't resolved yet, returned null,
+          // or errored) so a slow query never blanks out the row.
+          const { resolvedName, colorLabel } = labels[slotIdx] ?? { resolvedName: req.type, colorLabel: getColorName(req.color) };
+
           return (
             <div key={req.slot_id} className="space-y-1">
               <div
@@ -88,12 +114,12 @@ export function FilamentOverride({
                 style={{ gridTemplateColumns: '16px minmax(70px, 1fr) auto 2fr 20px' }}
               >
                 {/* Original color swatch */}
-                <span title={`${t('printModal.originalFilament')}: ${req.type} - ${getColorName(req.color)}`}>
+                <span title={`${t('printModal.originalFilament')}: ${resolvedName} - ${colorLabel}`}>
                   <Circle className="w-3 h-3" fill={req.color} stroke={req.color} />
                 </span>
                 {/* Original type + grams */}
                 <span className="text-white truncate">
-                  {req.type} <span className="text-bambu-gray">({req.used_grams}g)</span>
+                  {resolvedName} <span className="text-bambu-gray">({req.used_grams}g)</span>
                 </span>
                 {/* Arrow */}
                 <span className="text-bambu-gray">→</span>
@@ -104,12 +130,12 @@ export function FilamentOverride({
                   disabled={compatible.length === 0}
                   className={`flex-1 px-2 py-1 rounded border text-xs bg-bambu-dark-secondary focus:outline-none focus:ring-1 focus:ring-bambu-green ${
                     isOverridden
-                      ? 'border-blue-400/50 text-blue-400'
+                      ? 'border-blue-500/50 dark:border-blue-400/50 text-blue-700 dark:text-blue-400'
                       : 'border-bambu-gray/30 text-bambu-gray'
                   }`}
                 >
                   <option value="" className="bg-bambu-dark text-bambu-gray">
-                    {t('printModal.originalFilament')}: {req.type} ({getColorName(req.color)})
+                    {t('printModal.originalFilament')}: {resolvedName} ({colorLabel})
                   </option>
                   {compatible.map((f, idx) => (
                     <option
