@@ -1751,8 +1751,12 @@ class TestSoftDeletedArchivesAreExcluded:
     The soft delete keeps the row so global Quick Stats can still count it, but
     the archive is gone from every listing. Two consumers never got the memo:
     the CSV export handed back rows the UI says do not exist, and per-project
-    failure analysis kept counting prints the user had deleted from the project
-    — disagreeing with the project's own figures.
+    failure analysis kept counting prints the user had deleted.
+
+    NOTE: the failure-analysis half of #2731 only ever filtered the
+    project-scoped path, which this fork removed. Printer-scoped analysis still
+    counts soft-deleted archives — verified while removing Projects, and left
+    as-is because fixing it is a behaviour change, not a removal.
     """
 
     @staticmethod
@@ -1783,48 +1787,11 @@ class TestSoftDeletedArchivesAreExcluded:
 
     @pytest.mark.asyncio
     @pytest.mark.integration
-    async def test_project_failure_analysis_omits_soft_deleted_archives(
-        self, async_client: AsyncClient, archive_factory, printer_factory, db_session
-    ):
-        from backend.app.models.project import Project
-
-        project = Project(name="Analysis Project")
-        db_session.add(project)
-        await db_session.commit()
-        await db_session.refresh(project)
-        project_id = project.id
-
-        printer = await printer_factory()
-        await archive_factory(
-            printer.id,
-            print_name="Kept Failure",
-            status="failed",
-            failure_reason="bed_adhesion",
-            project_id=project_id,
-        )
-        gone = await archive_factory(
-            printer.id,
-            print_name="Deleted Failure",
-            status="failed",
-            failure_reason="filament_runout",
-            project_id=project_id,
-        )
-        await self._soft_delete(db_session, gone)
-
-        response = await async_client.get(f"/api/v1/archives/analysis/failures?project_id={project_id}")
-
-        assert response.status_code == 200
-        result = response.json()
-        assert result["failed_prints"] == 1
-        assert result["failures_by_reason"] == {"bed_adhesion": 1}
-
-    @pytest.mark.asyncio
-    @pytest.mark.integration
     async def test_unscoped_failure_analysis_is_unchanged(
         self, async_client: AsyncClient, archive_factory, printer_factory, db_session
     ):
-        """Only the project-scoped path filters. Global analysis still counts
-        every run, including orphans, exactly as #1390 established."""
+        """Only the scoped path filters. Global analysis still counts every
+        run, including orphans, exactly as #1390 established."""
         printer = await printer_factory()
         gone = await archive_factory(
             printer.id, print_name="Deleted Failure", status="failed", failure_reason="filament_runout"

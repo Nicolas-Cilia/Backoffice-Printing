@@ -666,8 +666,6 @@ export interface ArchiveDuplicate {
 export interface Archive {
   id: number;
   printer_id: number | null;
-  project_id: number | null;
-  project_name: string | null;
   filename: string;
   file_path: string;
   file_size: number;
@@ -834,7 +832,6 @@ export interface ComparisonArchiveInfo {
   status: string;
   created_at: string | null;
   printer_id: number | null;
-  project_name: string | null;
 }
 
 export interface ComparisonField {
@@ -882,241 +879,6 @@ export interface SimilarArchive {
   match_score: number;
 }
 
-// Project types
-export interface ProjectStats {
-  total_archives: number;
-  total_items: number;  // Sum of quantities (total items printed)
-  completed_prints: number;  // Sum of quantities for completed prints (parts)
-  failed_prints: number;
-  queued_prints: number;
-  in_progress_prints: number;
-  total_print_time_hours: number;
-  total_filament_grams: number;
-  progress_percent: number | null;  // Plates progress (total_archives / target_count)
-  parts_progress_percent: number | null;  // Parts progress (completed_prints / target_parts_count)
-  estimated_cost: number;
-  total_energy_kwh: number;
-  total_energy_cost: number;
-  remaining_prints: number | null;  // Remaining plates
-  remaining_parts: number | null;  // Remaining parts
-  bom_total_items: number;
-  bom_completed_items: number;
-  bom_cost: number;
-}
-
-export interface ProjectChildPreview {
-  id: number;
-  name: string;
-  color: string | null;
-  status: string;
-  progress_percent: number | null;
-}
-
-export interface Project {
-  id: number;
-  name: string;
-  description: string | null;
-  color: string | null;
-  status: string;  // active, completed, archived
-  target_count: number | null;  // Target number of plates/print jobs
-  target_parts_count: number | null;  // Target number of parts/objects
-  target_sets: number | null;  // Copies-per-file target (#1897)
-  notes: string | null;
-  attachments: ProjectAttachment[] | null;
-  tags: string | null;
-  due_date: string | null;
-  priority: string;  // low, normal, high, urgent
-  budget: number | null;
-  is_template: boolean;
-  template_source_id: number | null;
-  parent_id: number | null;
-  parent_name: string | null;
-  children: ProjectChildPreview[];
-  created_at: string;
-  updated_at: string;
-  stats?: ProjectStats;
-  url: string | null;  // External link rendered next to project name on the card (#1155)
-  cover_image_filename: string | null;  // Filename within project attachments dir (#1155)
-}
-
-export interface ProjectAttachment {
-  filename: string;
-  original_name: string;
-  size: number;
-  uploaded_at: string;
-}
-
-// Completed-run count for one library file inside a project (#1897)
-export interface ProjectFileProgress {
-  file_id: number;
-  completed_count: number;
-}
-
-export interface ArchivePreview {
-  id: number;
-  print_name: string | null;
-  thumbnail_path: string | null;
-  status: string;
-  filament_type: string | null;
-  filament_color: string | null;
-}
-
-export interface ProjectListItem {
-  id: number;
-  name: string;
-  description: string | null;
-  color: string | null;
-  status: string;
-  target_count: number | null;  // Target number of plates/print jobs
-  target_parts_count: number | null;  // Target number of parts/objects
-  target_sets: number | null;  // #1897 — the shared edit dialog seeds itself from this
-  budget: number | null;
-  tags: string | null;  // #2536 — the shared edit dialog seeds itself from this
-  due_date: string | null;  // #2536
-  priority: string;  // #2536
-  created_at: string;
-  archive_count: number;  // Number of print jobs (plates)
-  total_items: number;  // Sum of quantities (total items printed, including failed)
-  completed_count: number;  // Sum of quantities for completed prints only (parts)
-  failed_count: number;  // Sum of quantities for failed prints
-  queue_count: number;
-  progress_percent: number | null;  // Plates progress
-  archives: ArchivePreview[];
-  url: string | null;  // #1155
-  cover_image_filename: string | null;  // #1155
-}
-
-export interface ProjectCreate {
-  name: string;
-  description?: string;
-  color?: string;
-  target_count?: number;
-  target_parts_count?: number;
-  target_sets?: number;
-  notes?: string;
-  tags?: string;
-  due_date?: string;
-  priority?: string;
-  budget?: number | null;
-  parent_id?: number;
-  url?: string | null;  // #1155
-}
-
-export interface ProjectUpdate {
-  name?: string;
-  description?: string;
-  color?: string;
-  status?: string;
-  target_count?: number;
-  target_parts_count?: number;
-  target_sets?: number | null;  // #1897 — explicit null clears the copies-per-file target
-  notes?: string;
-  tags?: string | null;  // #2536 — explicit null clears the tags
-  due_date?: string | null;  // #2536 — explicit null clears the due date
-  priority?: string;
-  budget?: number | null;
-  parent_id?: number;
-  url?: string | null;  // #1155 — explicit null clears the URL
-}
-
-// BOM Types - Tracks sourced/purchased parts (hardware, electronics, etc.)
-export interface BOMItem {
-  id: number;
-  project_id: number;
-  name: string;
-  quantity_needed: number;
-  quantity_acquired: number;
-  unit_price: number | null;
-  sourcing_url: string | null;
-  archive_id: number | null;
-  archive_name: string | null;
-  stl_filename: string | null;
-  remarks: string | null;
-  sort_order: number;
-  is_complete: boolean;
-  created_at: string;
-  updated_at: string;
-}
-
-export interface BOMItemCreate {
-  name: string;
-  quantity_needed?: number;
-  unit_price?: number;
-  sourcing_url?: string;
-  archive_id?: number;
-  stl_filename?: string;
-  remarks?: string;
-}
-
-export interface BOMItemUpdate {
-  name?: string;
-  quantity_needed?: number;
-  quantity_acquired?: number;
-  unit_price?: number;
-  sourcing_url?: string;
-  archive_id?: number;
-  stl_filename?: string;
-  remarks?: string;
-}
-
-// Project Export/Import Types
-export interface BOMItemExport {
-  name: string;
-  quantity_needed: number;
-  quantity_acquired: number;
-  unit_price: number | null;
-  sourcing_url: string | null;
-  stl_filename: string | null;
-  remarks: string | null;
-}
-
-export interface LinkedFolderExport {
-  name: string;
-}
-
-export interface ProjectExport {
-  name: string;
-  description: string | null;
-  color: string | null;
-  status: string;
-  target_count: number | null;
-  target_parts_count: number | null;
-  target_sets: number | null;  // #1897
-  notes: string | null;
-  tags: string | null;
-  due_date: string | null;
-  priority: string;
-  budget: number | null;
-  bom_items: BOMItemExport[];
-  linked_folders: LinkedFolderExport[];
-}
-
-export interface ProjectImport {
-  name: string;
-  description?: string;
-  color?: string;
-  status?: string;
-  target_count?: number;
-  target_parts_count?: number;
-  target_sets?: number;  // #1897
-  notes?: string;
-  tags?: string;
-  due_date?: string;
-  priority?: string;
-  budget?: number | null;
-  bom_items?: BOMItemExport[];
-  linked_folders?: LinkedFolderExport[];
-}
-
-// Timeline Types
-export interface TimelineEvent {
-  event_type: string;
-  timestamp: string;
-  title: string;
-  description: string | null;
-  metadata: Record<string, unknown> | null;
-}
-
 // API Key types
 export interface APIKey {
   id: number;
@@ -1130,7 +892,6 @@ export interface APIKey {
   can_manage_inventory: boolean;
   can_manage_maintenance: boolean;
   can_manage_archives: boolean;
-  can_manage_projects: boolean;
   can_access_cloud: boolean;
   can_update_energy_cost: boolean;
   printer_ids: number[] | null;
@@ -1149,7 +910,6 @@ export interface APIKeyCreate {
   can_manage_inventory?: boolean;
   can_manage_maintenance?: boolean;
   can_manage_archives?: boolean;
-  can_manage_projects?: boolean;
   can_access_cloud?: boolean;
   can_update_energy_cost?: boolean;
   printer_ids?: number[] | null;
@@ -1169,7 +929,6 @@ export interface APIKeyUpdate {
   can_manage_inventory?: boolean;
   can_manage_maintenance?: boolean;
   can_manage_archives?: boolean;
-  can_manage_projects?: boolean;
   can_access_cloud?: boolean;
   can_update_energy_cost?: boolean;
   printer_ids?: number[] | null;
@@ -1194,9 +953,7 @@ export interface AppSettings {
   currency: string;
   energy_cost_per_kwh: number;
   energy_tracking_mode: 'print' | 'total';
-  check_updates: boolean;
   check_printer_firmware: boolean;
-  include_beta_updates: boolean;
   // #1589: false hides the local username/password form on the login page;
   // BAMBUDDY_LOCAL_LOGIN=true on the server flips the reported value back to
   // true so the env-var recovery path is visible to the SPA.
@@ -2320,8 +2077,6 @@ export interface PrintQueueItemCreate {
   quantity?: number;
   // Existing batch to add this item into (multi-plate auto-batch flow).
   batch_id?: number | null;
-  // Project to associate the resulting archive with
-  project_id?: number;
   // Delete transient uploaded library file after scheduler creates the archive
   cleanup_library_after_dispatch?: boolean;
 }
@@ -3183,30 +2938,6 @@ export interface VersionInfo {
   repo: string;
 }
 
-export interface UpdateCheckResult {
-  update_available: boolean;
-  current_version: string;
-  latest_version: string | null;
-  release_name?: string;
-  release_notes?: string;
-  release_url?: string;
-  published_at?: string;
-  error?: string;
-  message?: string;
-  is_docker?: boolean;
-  is_ha_addon?: boolean;
-  is_windows_installer?: boolean;
-  update_method?: 'docker' | 'git' | 'ha_addon' | 'windows_installer';
-  installer_download_url?: string | null;
-}
-
-export interface UpdateStatus {
-  status: 'idle' | 'checking' | 'downloading' | 'installing' | 'complete' | 'error';
-  progress: number;
-  message: string;
-  error: string | null;
-}
-
 // Maintenance types
 export interface MaintenanceType {
   id: number;
@@ -3319,7 +3050,6 @@ export type Permission =
   | 'library:read' | 'library:read_own' | 'library:read_all' | 'library:upload'
   | 'library:update_own' | 'library:update_all' | 'library:delete_own' | 'library:delete_all'
   | 'library:purge'
-  | 'projects:read' | 'projects:create' | 'projects:update' | 'projects:delete'
   | 'filaments:read' | 'filaments:create' | 'filaments:update' | 'filaments:delete'
   | 'inventory:read' | 'inventory:create' | 'inventory:update' | 'inventory:delete' | 'inventory:view_assignments'
   | 'inventory:forecast_read' | 'inventory:forecast_write'
@@ -4199,10 +3929,9 @@ export const api = {
     request<{ used_bytes: number | null; free_bytes: number | null }>(`/printers/${printerId}/storage`),
 
   // Archives
-  getArchives: (printerId?: number, projectId?: number, limit = 10000, offset = 0, dateFrom?: string, dateTo?: string) => {
+  getArchives: (printerId?: number, limit = 10000, offset = 0, dateFrom?: string, dateTo?: string) => {
     const params = new URLSearchParams();
     if (printerId) params.set('printer_id', String(printerId));
-    if (projectId) params.set('project_id', String(projectId));
     params.set('limit', String(limit));
     params.set('offset', String(offset));
     if (dateFrom) params.set('date_from', dateFrom);
@@ -4230,7 +3959,6 @@ export const api = {
     ),
   searchArchives: (query: string, options?: {
     printerId?: number;
-    projectId?: number;
     status?: string;
     limit?: number;
     offset?: number;
@@ -4238,7 +3966,6 @@ export const api = {
     const params = new URLSearchParams();
     params.set('q', query);
     if (options?.printerId) params.set('printer_id', String(options.printerId));
-    if (options?.projectId) params.set('project_id', String(options.projectId));
     if (options?.status) params.set('status', options.status);
     if (options?.limit) params.set('limit', String(options.limit));
     if (options?.offset) params.set('offset', String(options.offset));
@@ -4248,7 +3975,6 @@ export const api = {
   getNo3MFWarning: () => request<{ has_fallback: boolean }>('/archives/no-3mf-warning'),
   updateArchive: (id: number, data: {
     printer_id?: number | null;
-    project_id?: number | null;
     print_name?: string;
     is_favorite?: boolean;
     tags?: string;
@@ -4315,13 +4041,12 @@ export const api = {
     }),
   recalculateCosts: () =>
     request<{ message: string; updated: number }>('/archives/recalculate-costs', { method: 'POST' }),
-  getFailureAnalysis: (options?: { days?: number; dateFrom?: string; dateTo?: string; printerId?: number; projectId?: number; createdById?: number }) => {
+  getFailureAnalysis: (options?: { days?: number; dateFrom?: string; dateTo?: string; printerId?: number; createdById?: number }) => {
     const params = new URLSearchParams();
     if (options?.days) params.set('days', String(options.days));
     if (options?.dateFrom) params.set('date_from', options.dateFrom);
     if (options?.dateTo) params.set('date_to', options.dateTo);
     if (options?.printerId) params.set('printer_id', String(options.printerId));
-    if (options?.projectId) params.set('project_id', String(options.projectId));
     if (options?.createdById !== undefined) params.set('created_by_id', String(options.createdById));
     const qs = params.toString();
     return request<FailureAnalysis>(`/archives/analysis/failures${qs ? `?${qs}` : ''}`);
@@ -4334,7 +4059,6 @@ export const api = {
     format?: 'csv' | 'xlsx';
     fields?: string[];
     printerId?: number;
-    projectId?: number;
     status?: string;
     dateFrom?: string;
     dateTo?: string;
@@ -4344,7 +4068,6 @@ export const api = {
     if (options?.format) params.set('format', options.format);
     if (options?.fields) params.set('fields', options.fields.join(','));
     if (options?.printerId) params.set('printer_id', String(options.printerId));
-    if (options?.projectId) params.set('project_id', String(options.projectId));
     if (options?.status) params.set('status', options.status);
     if (options?.dateFrom) params.set('date_from', options.dateFrom);
     if (options?.dateTo) params.set('date_to', options.dateTo);
@@ -4374,14 +4097,12 @@ export const api = {
     format?: 'csv' | 'xlsx';
     days?: number;
     printerId?: number;
-    projectId?: number;
     createdById?: number;
   }): Promise<{ blob: Blob; filename: string }> => {
     const params = new URLSearchParams();
     if (options?.format) params.set('format', options.format);
     if (options?.days) params.set('days', String(options.days));
     if (options?.printerId) params.set('printer_id', String(options.printerId));
-    if (options?.projectId) params.set('project_id', String(options.projectId));
     if (options?.createdById !== undefined) params.set('created_by_id', String(options.createdById));
 
     const headers: Record<string, string> = {};
@@ -5768,12 +5489,6 @@ export const api = {
 
   // Updates
   getVersion: () => request<VersionInfo>('/updates/version'),
-  checkForUpdates: () => request<UpdateCheckResult>('/updates/check'),
-  applyUpdate: () =>
-    request<{ success: boolean; message: string; status?: UpdateStatus; is_docker?: boolean; is_ha_addon?: boolean; is_windows_installer?: boolean }>('/updates/apply', {
-      method: 'POST',
-    }),
-  getUpdateStatus: () => request<UpdateStatus>('/updates/status'),
 
   // Maintenance
   getMaintenanceTypes: () => request<MaintenanceType[]>('/maintenance/types'),
@@ -5987,182 +5702,6 @@ export const api = {
     request<ExternalLink>(`/external-links/${id}/icon`, { method: 'DELETE' }),
   getExternalLinkIconUrl: (id: number) => withStreamToken(`${API_BASE}/external-links/${id}/icon`),
 
-  // Projects
-  getProjects: (status?: string) => {
-    const params = new URLSearchParams();
-    if (status) params.set('status', status);
-    return request<ProjectListItem[]>(`/projects/?${params}`);
-  },
-  getProject: (id: number) => request<Project>(`/projects/${id}`),
-  createProject: (data: ProjectCreate) =>
-    request<Project>('/projects/', {
-      method: 'POST',
-      body: JSON.stringify(data),
-    }),
-  updateProject: (id: number, data: ProjectUpdate) =>
-    request<Project>(`/projects/${id}`, {
-      method: 'PATCH',
-      body: JSON.stringify(data),
-    }),
-  deleteProject: (id: number) =>
-    request<{ message: string }>(`/projects/${id}`, { method: 'DELETE' }),
-  getProjectArchives: (id: number, limit = 100, offset = 0) =>
-    request<Archive[]>(`/projects/${id}/archives?limit=${limit}&offset=${offset}`),
-  // Completed-run counts per library file (#1897); files with 0 runs are omitted
-  getProjectFileProgress: (id: number) =>
-    request<ProjectFileProgress[]>(`/projects/${id}/file-progress`),
-  addArchivesToProject: (projectId: number, archiveIds: number[]) =>
-    request<{ message: string }>(`/projects/${projectId}/add-archives`, {
-      method: 'POST',
-      body: JSON.stringify({ archive_ids: archiveIds }),
-    }),
-  removeArchivesFromProject: (projectId: number, archiveIds: number[]) =>
-    request<{ message: string }>(`/projects/${projectId}/remove-archives`, {
-      method: 'POST',
-      body: JSON.stringify({ archive_ids: archiveIds }),
-    }),
-  addQueueItemsToProject: (projectId: number, queueItemIds: number[]) =>
-    request<{ message: string }>(`/projects/${projectId}/add-queue`, {
-      method: 'POST',
-      body: JSON.stringify({ queue_item_ids: queueItemIds }),
-    }),
-
-  // Project Attachments
-  uploadProjectAttachment: async (projectId: number, file: File): Promise<{
-    status: string;
-    filename: string;
-    original_name: string;
-    attachments: ProjectAttachment[];
-  }> => {
-    const formData = new FormData();
-    formData.append('file', file);
-    const headers: Record<string, string> = {};
-    if (authToken) {
-      headers['Authorization'] = `Bearer ${authToken}`;
-    }
-    const response = await fetch(`${API_BASE}/projects/${projectId}/attachments`, {
-      method: 'POST',
-      headers,
-      body: formData,
-    });
-    if (!response.ok) {
-      const error = await response.json().catch(() => ({}));
-      throw new Error(error.detail || `HTTP ${response.status}`);
-    }
-    return response.json();
-  },
-  getProjectAttachmentUrl: (projectId: number, filename: string) =>
-    `${API_BASE}/projects/${projectId}/attachments/${encodeURIComponent(filename)}`,
-  deleteProjectAttachment: (projectId: number, filename: string) =>
-    request<{ status: string; message: string; attachments: ProjectAttachment[] | null }>(
-      `/projects/${projectId}/attachments/${encodeURIComponent(filename)}`,
-      { method: 'DELETE' }
-    ),
-
-  // #1155: Cover image
-  // Browsers can't attach `Authorization: Bearer ...` to `<img src>`, so we
-  // append the stream-token query string the same way archive thumbnails do.
-  getProjectCoverImageUrl: (projectId: number) =>
-    withStreamToken(`${API_BASE}/projects/${projectId}/cover-image`),
-  uploadProjectCoverImage: async (
-    projectId: number,
-    file: File
-  ): Promise<{ status: string; filename: string; size: number }> => {
-    const formData = new FormData();
-    formData.append('file', file);
-    const headers: Record<string, string> = {};
-    if (authToken) {
-      headers['Authorization'] = `Bearer ${authToken}`;
-    }
-    const response = await fetch(`${API_BASE}/projects/${projectId}/cover-image`, {
-      method: 'POST',
-      headers,
-      body: formData,
-    });
-    if (!response.ok) {
-      const error = await response.json().catch(() => ({}));
-      throw new Error(error.detail || `HTTP ${response.status}`);
-    }
-    return response.json();
-  },
-  deleteProjectCoverImage: (projectId: number) =>
-    request<{ status: string }>(`/projects/${projectId}/cover-image`, { method: 'DELETE' }),
-
-  // BOM (Bill of Materials)
-  getProjectBOM: (projectId: number) =>
-    request<BOMItem[]>(`/projects/${projectId}/bom`),
-  createBOMItem: (projectId: number, data: BOMItemCreate) =>
-    request<BOMItem>(`/projects/${projectId}/bom`, {
-      method: 'POST',
-      body: JSON.stringify(data),
-    }),
-  updateBOMItem: (projectId: number, itemId: number, data: BOMItemUpdate) =>
-    request<BOMItem>(`/projects/${projectId}/bom/${itemId}`, {
-      method: 'PATCH',
-      body: JSON.stringify(data),
-    }),
-  deleteBOMItem: (projectId: number, itemId: number) =>
-    request<{ status: string; message: string }>(`/projects/${projectId}/bom/${itemId}`, {
-      method: 'DELETE',
-    }),
-
-  // Templates
-  getTemplates: () => request<ProjectListItem[]>('/projects/templates/'),
-  createTemplateFromProject: (projectId: number) =>
-    request<Project>(`/projects/${projectId}/create-template`, { method: 'POST' }),
-  createProjectFromTemplate: (templateId: number, name?: string) =>
-    request<Project>(`/projects/from-template/${templateId}${name ? `?name=${encodeURIComponent(name)}` : ''}`, {
-      method: 'POST',
-    }),
-
-  // Timeline
-  getProjectTimeline: (projectId: number, limit = 50) =>
-    request<TimelineEvent[]>(`/projects/${projectId}/timeline?limit=${limit}`),
-
-  // Project Export/Import
-  exportProjectJson: (projectId: number) =>
-    request<ProjectExport>(`/projects/${projectId}/export?format=json`),
-  importProject: (data: ProjectImport) =>
-    request<Project>('/projects/import', {
-      method: 'POST',
-      body: JSON.stringify(data),
-    }),
-  importProjectFile: async (file: File): Promise<Project> => {
-    const formData = new FormData();
-    formData.append('file', file);
-    const headers: Record<string, string> = {};
-    if (authToken) {
-      headers['Authorization'] = `Bearer ${authToken}`;
-    }
-    const response = await fetch(`${API_BASE}/projects/import/file`, {
-      method: 'POST',
-      headers,
-      body: formData,
-    });
-    if (!response.ok) {
-      const error = await response.json().catch(() => ({}));
-      throw new Error(error.detail || `HTTP ${response.status}`);
-    }
-    return response.json();
-  },
-  exportProjectZip: async (projectId: number): Promise<{ blob: Blob; filename: string }> => {
-    const headers: Record<string, string> = {};
-    if (authToken) {
-      headers['Authorization'] = `Bearer ${authToken}`;
-    }
-    const response = await fetch(`${API_BASE}/projects/${projectId}/export`, {
-      headers,
-    });
-    if (!response.ok) {
-      const error = await response.json().catch(() => ({}));
-      throw new Error(error.detail || `HTTP ${response.status}`);
-    }
-    const contentDisposition = response.headers.get('Content-Disposition');
-    const filename = parseContentDispositionFilename(contentDisposition) || `project_${projectId}.zip`;
-    const blob = await response.blob();
-    return { blob, filename };
-  },
-
   // API Keys
   getAPIKeys: () => request<APIKey[]>('/api-keys/'),
   createAPIKey: (data: APIKeyCreate) =>
@@ -6224,15 +5763,12 @@ export const api = {
     request<{ status: string; added: number; removed: number }>(`/library/folders/${folderId}/scan`, {
       method: 'POST',
     }),
-  getLibraryFoldersByProject: (projectId: number) =>
-    request<LibraryFolder[]>(`/library/folders/by-project/${projectId}`),
   getLibraryFoldersByArchive: (archiveId: number) =>
     request<LibraryFolder[]>(`/library/folders/by-archive/${archiveId}`),
 
   getLibraryFiles: (
     folderId?: number | null,
     includeRoot = true,
-    projectId?: number,
     scope?: 'internal' | 'external',
     recursive = false,
     tagIds: number[] = [],
@@ -6240,9 +5776,6 @@ export const api = {
     const params = new URLSearchParams();
     if (folderId !== undefined && folderId !== null) {
       params.set('folder_id', String(folderId));
-    }
-    if (projectId !== undefined) {
-      params.set('project_id', String(projectId));
     }
     params.set('include_root', String(includeRoot));
     if (scope === 'internal') params.set('internal_only', 'true');
@@ -6769,7 +6302,6 @@ export interface SystemInfo {
     archives_printing: number;
     printers: number;
     filaments: number;
-    projects: number;
     smart_plugs: number;
     total_print_time_seconds: number;
     total_print_time_formatted: string;
@@ -6864,9 +6396,7 @@ export interface LibraryFolderTree {
   id: number;
   name: string;
   parent_id: number | null;
-  project_id: number | null;
   archive_id: number | null;
-  project_name: string | null;
   archive_name: string | null;
   is_external: boolean;
   external_path: string | null;
@@ -6882,9 +6412,7 @@ export interface LibraryFolder {
   id: number;
   name: string;
   parent_id: number | null;
-  project_id: number | null;
   archive_id: number | null;
-  project_name: string | null;
   archive_name: string | null;
   is_external: boolean;
   external_path: string | null;
@@ -6899,7 +6427,6 @@ export interface LibraryFolder {
 export interface LibraryFolderCreate {
   name: string;
   parent_id?: number | null;
-  project_id?: number | null;
   archive_id?: number | null;
 }
 
@@ -6914,7 +6441,6 @@ export interface ExternalFolderCreate {
 export interface LibraryFolderUpdate {
   name?: string;
   parent_id?: number | null;
-  project_id?: number | null;  // 0 to unlink
   archive_id?: number | null;  // 0 to unlink
 }
 
@@ -6930,8 +6456,6 @@ export interface LibraryFile {
   id: number;
   folder_id: number | null;
   folder_name: string | null;
-  project_id: number | null;
-  project_name: string | null;
   is_external: boolean;
   filename: string;
   file_path: string;
@@ -7008,7 +6532,6 @@ export interface LibraryTagBulkAssignResult {
 export interface LibraryFileUpdate {
   filename?: string;
   folder_id?: number | null;
-  project_id?: number | null;
   notes?: string | null;
 }
 
@@ -7258,7 +6781,6 @@ export interface PendingUpload {
   status: string;
   tags: string | null;
   notes: string | null;
-  project_id: number | null;
   uploaded_at: string;
 }
 
@@ -7430,7 +6952,7 @@ export const pendingUploadsApi = {
 
   get: (id: number) => request<PendingUpload>(`/pending-uploads/${id}`),
 
-  archive: (id: number, data?: { tags?: string; notes?: string; project_id?: number }) =>
+  archive: (id: number, data?: { tags?: string; notes?: string }) =>
     request<{ id: number; print_name: string; filename: string }>(`/pending-uploads/${id}/archive`, {
       method: 'POST',
       body: JSON.stringify(data || {}),

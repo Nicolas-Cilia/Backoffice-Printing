@@ -1,5 +1,5 @@
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
-import { Loader2, Plus, Plug, AlertTriangle, RotateCcw, Bell, Download, RefreshCw, ExternalLink, Globe, Droplets, Thermometer, FileText, Edit2, Send, CheckCircle, XCircle, History, Trash2, Zap, TrendingUp, Calendar, DollarSign, Power, PowerOff, Key, Copy, Database, X, Shield, Printer, Cylinder, Wifi, Home, Video, Users, Lock, Unlock, ChevronDown, Save, Mail, Flame, Layers, ListOrdered, Code, Search, Scale, Settings as SettingsIcon, ScanEye, Cog, QrCode, Heart, Briefcase, Workflow, UploadCloud } from 'lucide-react';
+import { Loader2, Plus, Plug, AlertTriangle, RotateCcw, Bell, RefreshCw, ExternalLink, Globe, Droplets, Thermometer, FileText, Edit2, Send, CheckCircle, XCircle, History, Trash2, Zap, TrendingUp, Calendar, DollarSign, Power, PowerOff, Key, Copy, Database, X, Shield, Printer, Cylinder, Wifi, Home, Video, Users, Lock, Unlock, ChevronDown, Save, Mail, Flame, Layers, ListOrdered, Code, Search, Scale, Settings as SettingsIcon, ScanEye, Cog, QrCode, Heart, Briefcase, Workflow, UploadCloud } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
 import { useNavigate, useSearchParams } from 'react-router-dom';
 import { api } from '../api/client';
@@ -11,7 +11,7 @@ import { fleetAudience, sponsorHref } from '../utils/fleetAudience';
 import { PRESET_CATEGORIES, parsePresetTriple } from '../utils/temperatureFanPresets';
 import { CALIBRATION_MODES, CALIBRATION_MODE_ACTIVE, CALIBRATION_MODE_INACTIVE } from '../utils/calibrationMode';
 import { PreheatFilamentTargetsEditor } from '../components/PreheatFilamentTargetsEditor';
-import type { APIKey, AppSettings, AppSettingsUpdate, SmartPlug, SmartPlugStatus, NotificationProvider, NotificationTemplate, UpdateStatus, GitHubBackupStatus, CloudAuthStatus, UserCreate, UserUpdate, UserResponse, StorageUsageResponse, CalibrationMode } from '../api/client';
+import type { APIKey, AppSettings, AppSettingsUpdate, SmartPlug, SmartPlugStatus, NotificationProvider, NotificationTemplate, GitHubBackupStatus, CloudAuthStatus, UserCreate, UserUpdate, UserResponse, StorageUsageResponse, CalibrationMode } from '../api/client';
 import { Card, CardContent, CardDensityProvider, CardHeader } from '../components/Card';
 import { SlicerBundlesPanel } from '../components/SlicerBundlesPanel';
 import { SlicerPipelinesPanel } from '../components/SlicerPipelinesPanel';
@@ -240,7 +240,6 @@ export function SettingsPage() {
     can_manage_inventory: true,
     can_manage_maintenance: true,
     can_manage_archives: true,
-    can_manage_projects: true,
     can_access_cloud: false,
     can_update_energy_cost: false,
   });
@@ -253,7 +252,6 @@ export function SettingsPage() {
   const [showClearLogsConfirm, setShowClearLogsConfirm] = useState(false);
   const [showClearStorageConfirm, setShowClearStorageConfirm] = useState(false);
   const [showBulkPlugConfirm, setShowBulkPlugConfirm] = useState<'on' | 'off' | null>(null);
-  const [showReleaseNotes, setShowReleaseNotes] = useState(false);
   const [showDisableAuthConfirm, setShowDisableAuthConfirm] = useState(false);
   const [showChangePasswordModal, setShowChangePasswordModal] = useState(false);
   const [changePasswordData, setChangePasswordData] = useState({ currentPassword: '', newPassword: '', confirmPassword: '' });
@@ -400,7 +398,7 @@ export function SettingsPage() {
   });
 
   const createAPIKeyMutation = useMutation({
-    mutationFn: (data: { name: string; can_queue: boolean; can_control_printer: boolean; can_read_status: boolean; can_manage_library: boolean; can_manage_inventory: boolean; can_manage_maintenance: boolean; can_manage_archives: boolean; can_manage_projects: boolean; can_access_cloud: boolean }) =>
+    mutationFn: (data: { name: string; can_queue: boolean; can_control_printer: boolean; can_read_status: boolean; can_manage_library: boolean; can_manage_inventory: boolean; can_manage_maintenance: boolean; can_manage_archives: boolean; can_access_cloud: boolean }) =>
       api.createAPIKey(data),
     onSuccess: (data) => {
       setCreatedAPIKey(data.key || null);
@@ -545,26 +543,6 @@ export function SettingsPage() {
       ...patch,
     });
   };
-
-  const { data: updateCheck, refetch: refetchUpdateCheck, isRefetching: isCheckingUpdate } = useQuery({
-    queryKey: ['updateCheck'],
-    queryFn: api.checkForUpdates,
-    enabled: settings?.check_updates !== false,
-    staleTime: 5 * 60 * 1000,
-  });
-
-  const { data: updateStatus, refetch: refetchUpdateStatus } = useQuery({
-    queryKey: ['updateStatus'],
-    queryFn: api.getUpdateStatus,
-    refetchInterval: (query) => {
-      const status = query.state.data as UpdateStatus | undefined;
-      // Poll while update is in progress
-      if (status?.status === 'downloading' || status?.status === 'installing') {
-        return 1000;
-      }
-      return false;
-    },
-  });
 
   // MQTT status for Network tab
   const { data: mqttStatus } = useQuery({
@@ -802,17 +780,6 @@ export function SettingsPage() {
     }));
   };
 
-  const applyUpdateMutation = useMutation({
-    mutationFn: api.applyUpdate,
-    onSuccess: (data) => {
-      if (data.is_ha_addon || data.is_docker || data.is_windows_installer) {
-        showToast(data.message, 'error');
-      } else {
-        refetchUpdateStatus();
-      }
-    },
-  });
-
   // Test all notification providers
   const [testAllResult, setTestAllResult] = useState<{
     tested: number;
@@ -1006,9 +973,7 @@ export function SettingsPage() {
       baseline.currency !== localSettings.currency ||
       baseline.energy_cost_per_kwh !== localSettings.energy_cost_per_kwh ||
       baseline.energy_tracking_mode !== localSettings.energy_tracking_mode ||
-      baseline.check_updates !== localSettings.check_updates ||
       (baseline.check_printer_firmware ?? true) !== (localSettings.check_printer_firmware ?? true) ||
-      (baseline.include_beta_updates ?? false) !== (localSettings.include_beta_updates ?? false) ||
       (baseline.local_login_enabled ?? true) !== (localSettings.local_login_enabled ?? true) ||
       baseline.notification_language !== localSettings.notification_language ||
       (baseline.bed_cooled_threshold ?? 35) !== (localSettings.bed_cooled_threshold ?? 35) ||
@@ -1110,9 +1075,7 @@ export function SettingsPage() {
         currency: localSettings.currency,
         energy_cost_per_kwh: localSettings.energy_cost_per_kwh,
         energy_tracking_mode: localSettings.energy_tracking_mode,
-        check_updates: localSettings.check_updates,
         check_printer_firmware: localSettings.check_printer_firmware,
-        include_beta_updates: localSettings.include_beta_updates,
         local_login_enabled: localSettings.local_login_enabled,
         notification_language: localSettings.notification_language,
         bed_cooled_threshold: localSettings.bed_cooled_threshold,
@@ -2586,171 +2549,13 @@ export function SettingsPage() {
               <div className="border-t border-bambu-dark-tertiary pt-4">
                 <p className="text-xs font-medium text-bambu-gray uppercase tracking-wider mb-4">{t('settings.bambuddySoftware')}</p>
               </div>
+              {/* This fork has no in-app updater — updating is a deliberate
+                  `git pull` on the host. Only the version is shown. */}
               <div className="flex items-center justify-between">
                 <div>
-                  <p className="text-white">{t('settings.checkForUpdatesLabel')}</p>
-                  <p className="text-sm text-bambu-gray">
-                    {t('settings.autoCheckDescription')}
-                  </p>
+                  <p className="text-white">{t('settings.currentVersion')}</p>
+                  <p className="text-sm text-bambu-gray">v{versionInfo?.version || '...'}</p>
                 </div>
-                <label className="relative inline-flex items-center cursor-pointer">
-                  <input
-                    type="checkbox"
-                    checked={localSettings.check_updates}
-                    onChange={(e) => updateSetting('check_updates', e.target.checked)}
-                    className="sr-only peer"
-                  />
-                  <div className="w-11 h-6 bg-bambu-dark-tertiary peer-focus:outline-none rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:rounded-full after:h-5 after:w-5 after:transition-all peer-checked:bg-bambu-green"></div>
-                </label>
-              </div>
-              <div className={`flex items-center justify-between ${!localSettings.check_updates ? 'opacity-50' : ''}`}>
-                <div>
-                  <p className="text-white">{t('settings.includeBetaUpdates')}</p>
-                  <p className="text-sm text-bambu-gray">
-                    {t('settings.includeBetaUpdatesDesc')}
-                  </p>
-                </div>
-                <label className="relative inline-flex items-center cursor-pointer">
-                  <input
-                    type="checkbox"
-                    checked={localSettings.include_beta_updates ?? false}
-                    onChange={(e) => updateSetting('include_beta_updates', e.target.checked)}
-                    disabled={!localSettings.check_updates}
-                    className="sr-only peer"
-                  />
-                  <div className="w-11 h-6 bg-bambu-dark-tertiary peer-focus:outline-none rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:rounded-full after:h-5 after:w-5 after:transition-all peer-checked:bg-bambu-green"></div>
-                </label>
-              </div>
-              <div>
-                <div className="flex items-center justify-between mb-2">
-                  <div>
-                    <p className="text-white">{t('settings.currentVersion')}</p>
-                    <p className="text-sm text-bambu-gray">v{versionInfo?.version || '...'}</p>
-                  </div>
-                  <Button
-                    variant="secondary"
-                    size="sm"
-                    onClick={() => refetchUpdateCheck()}
-                    disabled={isCheckingUpdate}
-                  >
-                    {isCheckingUpdate ? (
-                      <Loader2 className="w-4 h-4 animate-spin" />
-                    ) : (
-                      <RefreshCw className="w-4 h-4" />
-                    )}
-                    {t('settings.checkNow')}
-                  </Button>
-                </div>
-
-                {updateCheck?.update_available ? (
-                  <div className="mt-4 p-3 bg-bambu-green/10 border border-bambu-green/30 rounded-lg">
-                    <div className="flex items-start justify-between">
-                      <div>
-                        <p className="text-bambu-green font-medium">
-                          Update available: v{updateCheck.latest_version}
-                        </p>
-                        {updateCheck.release_name && updateCheck.release_name !== updateCheck.latest_version && (
-                          <p className="text-sm text-bambu-gray mt-1">{updateCheck.release_name}</p>
-                        )}
-                      </div>
-                      <div className="flex items-center gap-2">
-                        {updateCheck.release_notes && (
-                          <button
-                            onClick={() => setShowReleaseNotes(true)}
-                            className="text-bambu-gray hover:text-white transition-colors text-sm underline"
-                          >
-                            {t('settings.releaseNotes')}
-                          </button>
-                        )}
-                        {updateCheck.release_url && (
-                          <a
-                            href={updateCheck.release_url}
-                            target="_blank"
-                            rel="noopener noreferrer"
-                            className="text-bambu-gray hover:text-white transition-colors"
-                            title={t('settings.viewReleaseOnGitHub')}
-                          >
-                            <ExternalLink className="w-4 h-4" />
-                          </a>
-                        )}
-                      </div>
-                    </div>
-
-                    {updateStatus?.status === 'downloading' || updateStatus?.status === 'installing' ? (
-                      <div className="mt-3">
-                        <div className="flex items-center gap-2 text-sm text-bambu-gray">
-                          <Loader2 className="w-4 h-4 animate-spin" />
-                          <span>{updateStatus.message}</span>
-                        </div>
-                        <div className="mt-2 w-full bg-bambu-dark-tertiary rounded-full h-2">
-                          <div
-                            className="bg-bambu-green h-2 rounded-full transition-all duration-300"
-                            style={{ width: `${updateStatus.progress}%` }}
-                          />
-                        </div>
-                      </div>
-                    ) : updateStatus?.status === 'complete' ? (
-                      <div className="mt-3 p-2 bg-bambu-green/20 rounded text-sm text-bambu-green">
-                        {updateStatus.message}
-                      </div>
-                    ) : updateStatus?.status === 'error' ? (
-                      <div className="mt-3 p-2 bg-red-100 dark:bg-red-500/20 rounded text-sm text-red-700 dark:text-red-400">
-                        {updateStatus.error || updateStatus.message}
-                      </div>
-                    ) : updateCheck?.is_ha_addon ? (
-                      <div className="mt-3 p-3 bg-bambu-dark-tertiary rounded-lg">
-                        <p className="text-sm text-bambu-gray">
-                          {t('settings.updateViaHomeAssistant')}
-                        </p>
-                      </div>
-                    ) : updateCheck?.is_docker ? (
-                      <div className="mt-3 p-3 bg-bambu-dark-tertiary rounded-lg">
-                        <p className="text-sm text-bambu-gray mb-2">
-                          {t('settings.updateViaDocker')}
-                        </p>
-                        <code className="block text-xs bg-bambu-dark p-2 rounded text-bambu-green font-mono">
-                          docker compose pull && docker compose up -d
-                        </code>
-                      </div>
-                    ) : updateCheck?.update_method === 'windows_installer' ? (
-                      <div className="mt-3 p-3 bg-bambu-dark-tertiary rounded-lg">
-                        <p className="text-sm text-bambu-gray mb-3">
-                          {t('settings.updateViaWindowsInstaller')}
-                        </p>
-                        <a
-                          href={updateCheck.installer_download_url || updateCheck.release_url || `https://github.com/maziggy/bambuddy/releases/tag/v${updateCheck.latest_version}`}
-                          target="_blank"
-                          rel="noopener noreferrer"
-                          className="inline-flex items-center justify-center font-medium rounded-lg transition-colors focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-offset-bambu-dark disabled:opacity-50 bg-bambu-green hover:bg-bambu-green-light text-white focus:ring-bambu-green px-4 py-2 text-sm gap-2 min-h-[44px] md:min-h-0"
-                        >
-                          <Download className="w-4 h-4" />
-                          {t('settings.downloadWindowsInstaller', { version: updateCheck.latest_version })}
-                        </a>
-                      </div>
-                    ) : (
-                      <Button
-                        className="mt-3"
-                        onClick={() => applyUpdateMutation.mutate()}
-                        disabled={applyUpdateMutation.isPending}
-                      >
-                        {applyUpdateMutation.isPending ? (
-                          <Loader2 className="w-4 h-4 animate-spin" />
-                        ) : (
-                          <Download className="w-4 h-4" />
-                        )}
-                        {t('settings.installUpdate')}
-                      </Button>
-                    )}
-                  </div>
-                ) : updateCheck?.error ? (
-                  <div className="mt-2 p-2 bg-red-50 dark:bg-red-500/10 border border-red-300 dark:border-red-500/30 rounded text-sm text-red-700 dark:text-red-400">
-                    {t('settings.failedToCheckUpdates', { error: updateCheck.error })}
-                  </div>
-                ) : updateCheck && !updateCheck.update_available ? (
-                  <p className="mt-2 text-sm text-bambu-gray">
-                    {t('settings.latestVersionRunning')}
-                  </p>
-                ) : null}
               </div>
             </CardContent>
           </Card>
@@ -4007,18 +3812,6 @@ export function SettingsPage() {
                       <label className="flex items-center gap-3 cursor-pointer">
                         <input
                           type="checkbox"
-                          checked={newAPIKeyPermissions.can_manage_projects}
-                          onChange={(e) => setNewAPIKeyPermissions(prev => ({ ...prev, can_manage_projects: e.target.checked }))}
-                          className="w-4 h-4 text-bambu-green rounded border-bambu-dark-tertiary bg-bambu-dark focus:ring-bambu-green"
-                        />
-                        <div>
-                          <span className="text-white">{t('settings.manageProjects')}</span>
-                          <p className="text-xs text-bambu-gray">{t('settings.manageProjectsDescription')}</p>
-                        </div>
-                      </label>
-                      <label className="flex items-center gap-3 cursor-pointer">
-                        <input
-                          type="checkbox"
                           checked={newAPIKeyPermissions.can_access_cloud}
                           onChange={(e) => setNewAPIKeyPermissions(prev => ({ ...prev, can_access_cloud: e.target.checked }))}
                           className="w-4 h-4 text-bambu-green rounded border-bambu-dark-tertiary bg-bambu-dark focus:ring-bambu-green"
@@ -4108,9 +3901,6 @@ export function SettingsPage() {
                             )}
                             {key.can_manage_archives && (
                               <span className="px-1.5 py-0.5 bg-indigo-100 dark:bg-indigo-500/20 text-indigo-700 dark:text-indigo-400 rounded">{t('settings.archivesBadge')}</span>
-                            )}
-                            {key.can_manage_projects && (
-                              <span className="px-1.5 py-0.5 bg-lime-100 dark:bg-lime-500/20 text-lime-700 dark:text-lime-400 rounded">{t('settings.projectsBadge')}</span>
                             )}
                             {key.can_access_cloud && (
                               <span className="px-1.5 py-0.5 bg-purple-100 dark:bg-purple-500/20 text-purple-700 dark:text-purple-400 rounded">{t('settings.cloudBadge', 'Cloud')}</span>
@@ -5575,59 +5365,6 @@ export function SettingsPage() {
           }}
           onCancel={() => setShowBulkPlugConfirm(null)}
         />
-      )}
-
-      {/* Release Notes Modal */}
-      {showReleaseNotes && updateCheck?.release_notes && (
-        <div
-          className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-4"
-          onClick={() => setShowReleaseNotes(false)}
-        >
-          <Card className="w-full max-w-2xl max-h-[80vh] flex flex-col" onClick={(e: React.MouseEvent) => e.stopPropagation()}>
-            <CardHeader className="flex flex-row items-center justify-between shrink-0">
-              <div>
-                <h2 className="text-lg font-semibold text-white">
-                  Release Notes - v{updateCheck.latest_version}
-                </h2>
-                {updateCheck.release_name && updateCheck.release_name !== updateCheck.latest_version && (
-                  <p className="text-sm text-bambu-gray">{updateCheck.release_name}</p>
-                )}
-              </div>
-              <button
-                onClick={() => setShowReleaseNotes(false)}
-                className="p-1 rounded hover:bg-bambu-dark-tertiary text-bambu-gray hover:text-white"
-              >
-                <X className="w-5 h-5" />
-              </button>
-            </CardHeader>
-            <CardContent className="overflow-y-auto flex-1">
-              <pre className="text-sm text-bambu-gray whitespace-pre-wrap font-sans">
-                {updateCheck.release_notes}
-              </pre>
-            </CardContent>
-            <div className="p-4 border-t border-bambu-dark-tertiary shrink-0 flex gap-2">
-              {updateCheck.release_url && (
-                <a
-                  href={updateCheck.release_url}
-                  target="_blank"
-                  rel="noopener noreferrer"
-                  className="flex-1"
-                >
-                  <Button variant="secondary" className="w-full">
-                    <ExternalLink className="w-4 h-4" />
-                    View on GitHub
-                  </Button>
-                </a>
-              )}
-              <Button
-                onClick={() => setShowReleaseNotes(false)}
-                className="flex-1"
-              >
-                Close
-              </Button>
-            </div>
-          </Card>
-        </div>
       )}
 
       {/* Users Tab */}

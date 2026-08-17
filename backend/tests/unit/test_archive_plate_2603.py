@@ -147,8 +147,6 @@ async def test_run_migrations_adds_column_and_backfills_in_order(force_sqlite_di
         notification_template,
         oidc_provider,
         print_log,
-        project,
-        project_bom,
         slot_preset,
         smart_plug,
         smart_plug_energy_snapshot,

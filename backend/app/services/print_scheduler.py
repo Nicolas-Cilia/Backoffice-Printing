@@ -3237,8 +3237,7 @@ class PrintScheduler:
                     source_file=file_path,
                     original_filename=filename,
                     created_by_id=item.created_by_id,
-                    project_id=item.project_id,
-                    library_file_id=item.library_file_id,  # per-file project progress (#1897)
+                    library_file_id=item.library_file_id,
                     plate_id=item.plate_id,  # selected plate → Print History (#2603)
                 )
                 if archive:

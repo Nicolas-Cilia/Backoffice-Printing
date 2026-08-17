@@ -54,8 +54,6 @@ def _register_all_models():
         print_log,
         print_queue,
         printer,
-        project,
-        project_bom,
         settings,
         slot_preset,
         smart_plug,

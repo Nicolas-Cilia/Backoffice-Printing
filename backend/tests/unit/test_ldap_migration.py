@@ -53,8 +53,6 @@ async def legacy_engine():
         notification_template,
         print_queue,
         printer,
-        project,
-        project_bom,
         settings,
         slot_preset,
         smart_plug,

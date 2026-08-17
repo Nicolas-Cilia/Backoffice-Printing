@@ -149,8 +149,6 @@ async def test_engine():
         print_log,
         print_queue,
         printer,
-        project,
-        project_bom,
         settings,
         slot_preset,
         smart_plug,
@@ -205,7 +203,7 @@ async def async_client(test_engine, db_session) -> AsyncGenerator[AsyncClient, N
     async def override_get_db():
         # Mirror production get_db (core/database.py): commit on success,
         # rollback on error. Endpoints that rely on the request-scoped
-        # implicit commit (e.g. create_project, which only flushes) would
+        # implicit commit (e.g. a create route that only flushes) would
         # otherwise silently lose their writes in tests (#1897).
         async with test_async_session() as session:
             try:

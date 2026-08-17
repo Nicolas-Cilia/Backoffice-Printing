@@ -17,7 +17,6 @@ class ArchiveBase(BaseModel):
 
 class ArchiveUpdate(ArchiveBase):
     printer_id: int | None = None
-    project_id: int | None = None
     # Allow changing status (e.g., clearing failed flag)
     status: str | None = None
 
@@ -34,8 +33,6 @@ class ArchiveDuplicate(BaseModel):
 class ArchiveResponse(BaseModel):
     id: int
     printer_id: int | None
-    project_id: int | None = None
-    project_name: str | None = None  # Included for convenience
     filename: str
     file_path: str
     file_size: int

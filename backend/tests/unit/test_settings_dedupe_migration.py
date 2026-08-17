@@ -52,8 +52,6 @@ def _register_all_models():
         notification_template,
         print_queue,
         printer,
-        project,
-        project_bom,
         settings,
         slot_preset,
         smart_plug,

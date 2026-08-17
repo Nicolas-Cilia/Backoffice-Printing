@@ -56,7 +56,6 @@ export function PrintModal({
   initialSelectedPrinterIds,
   onClose,
   onSuccess,
-  projectId,
   cleanupLibraryAfterDispatch,
 }: PrintModalProps) {
   const { t } = useTranslation();
@@ -940,7 +939,6 @@ export function PrintModal({
         ? new Date(scheduleOptions.scheduledTime).toISOString()
         : undefined,
       ...printOptions,
-      project_id: projectId ?? undefined,
       batch_id: autoBatchId ?? undefined,
       cleanup_library_after_dispatch: cleanupLibraryAfterDispatch,
       };

@@ -12,7 +12,6 @@ class FolderCreate(BaseModel):
 
     name: str = Field(..., min_length=1, max_length=255)
     parent_id: int | None = None
-    project_id: int | None = None
     archive_id: int | None = None
 
 
@@ -31,7 +30,6 @@ class FolderUpdate(BaseModel):
 
     name: str | None = Field(None, min_length=1, max_length=255)
     parent_id: int | None = None
-    project_id: int | None = None  # 0 to unlink
     archive_id: int | None = None  # 0 to unlink
 
 
@@ -41,9 +39,7 @@ class FolderResponse(BaseModel):
     id: int
     name: str
     parent_id: int | None
-    project_id: int | None = None
     archive_id: int | None = None
-    project_name: str | None = None
     archive_name: str | None = None
     is_external: bool = False
     external_path: str | None = None
@@ -82,9 +78,7 @@ class FolderTreeItem(BaseModel):
     id: int
     name: str
     parent_id: int | None
-    project_id: int | None = None
     archive_id: int | None = None
-    project_name: str | None = None
     archive_name: str | None = None
     is_external: bool = False
     external_path: str | None = None
@@ -112,7 +106,6 @@ class FileCreate(BaseModel):
     thumbnail_path: str | None = None
     metadata: dict | None = None
     folder_id: int | None = None
-    project_id: int | None = None
 
 
 class FileUpdate(BaseModel):
@@ -120,7 +113,6 @@ class FileUpdate(BaseModel):
 
     filename: str | None = Field(None, min_length=1, max_length=255)
     folder_id: int | None = None
-    project_id: int | None = None
     notes: str | None = None
 
 
@@ -140,8 +132,6 @@ class FileResponse(BaseModel):
     id: int
     folder_id: int | None
     folder_name: str | None = None
-    project_id: int | None
-    project_name: str | None = None
     is_external: bool = False
 
     filename: str

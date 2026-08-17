@@ -305,8 +305,6 @@ def archive_to_response(
     data = {
         "id": archive.id,
         "printer_id": archive.printer_id,
-        "project_id": archive.project_id,
-        "project_name": archive.project.name if archive.project else None,
         "filename": archive.filename,
         "file_path": archive.file_path,
         "file_size": archive.file_size,
@@ -373,7 +371,6 @@ def archive_to_response(
 @router.get("/", response_model=list[ArchiveResponse])
 async def list_archives(
     printer_id: int | None = None,
-    project_id: int | None = None,
     date_from: date | None = Query(None),
     date_to: date | None = Query(None),
     limit: int = 50,
@@ -392,7 +389,6 @@ async def list_archives(
     service = ArchiveService(db)
     archives = await service.list_archives(
         printer_id=printer_id,
-        project_id=project_id,
         date_from=date_from,
         date_to=date_to,
         limit=limit,
@@ -654,7 +650,6 @@ async def list_archives_slim(
 async def search_archives(
     q: str = Query(..., min_length=2, description="Search query"),
     printer_id: int | None = None,
-    project_id: int | None = None,
     status: str | None = None,
     limit: int = 50,
     offset: int = 0,
@@ -672,7 +667,6 @@ async def search_archives(
     Supports partial matches with wildcards (e.g., 'vor*' matches 'voron').
     """
     from sqlalchemy import text
-    from sqlalchemy.orm import selectinload
 
     from backend.app.core.db_dialect import is_sqlite
 
@@ -717,7 +711,6 @@ async def search_archives(
         like_pattern = f"%{q}%"
         query = (
             select(PrintArchive)
-            .options(selectinload(PrintArchive.project))
             .where(
                 (
                     (PrintArchive.print_name.ilike(like_pattern))
@@ -734,8 +727,6 @@ async def search_archives(
 
         if printer_id:
             query = query.where(PrintArchive.printer_id == printer_id)
-        if project_id:
-            query = query.where(PrintArchive.project_id == project_id)
         if status:
             query = query.where(PrintArchive.status == status)
         if own_only:
@@ -753,19 +744,13 @@ async def search_archives(
         return []
 
     # Fetch full archive records for matched IDs (excluding soft-deleted, #1343)
-    query = (
-        select(PrintArchive)
-        .options(selectinload(PrintArchive.project))
-        .where(PrintArchive.id.in_(matched_ids), PrintArchive.deleted_at.is_(None))
-    )
+    query = select(PrintArchive).where(PrintArchive.id.in_(matched_ids), PrintArchive.deleted_at.is_(None))
     if own_only:
         query = query.where(PrintArchive.created_by_id == user.id)
 
     # Apply additional filters
     if printer_id:
         query = query.where(PrintArchive.printer_id == printer_id)
-    if project_id:
-        query = query.where(PrintArchive.project_id == project_id)
     if status:
         query = query.where(PrintArchive.status == status)
 
@@ -830,7 +815,6 @@ async def analyze_failures(
     date_from: date | None = Query(None),
     date_to: date | None = Query(None),
     printer_id: int | None = None,
-    project_id: int | None = None,
     created_by_id: int | None = Query(None, description="Filter by user who created the print (-1 for no user)"),
     db: AsyncSession = Depends(get_db),
     auth_result: tuple[User | None, bool] = Depends(
@@ -863,7 +847,6 @@ async def analyze_failures(
         date_from=date_from,
         date_to=date_to,
         printer_id=printer_id,
-        project_id=project_id,
         created_by_id=created_by_id,
     )
 
@@ -928,7 +911,6 @@ async def export_archives(
     format: str = Query("csv", description="Export format: csv or xlsx"),
     fields: str | None = Query(None, description="Comma-separated field names"),
     printer_id: int | None = None,
-    project_id: int | None = None,
     status: str | None = None,
     date_from: str | None = Query(None, description="Start date (ISO format)"),
     date_to: str | None = Query(None, description="End date (ISO format)"),
@@ -982,7 +964,6 @@ async def export_archives(
             format=format,
             fields=field_list,
             printer_id=printer_id,
-            project_id=project_id,
             status=status,
             date_from=date_from_dt,
             date_to=date_to_dt,
@@ -1004,7 +985,6 @@ async def export_stats(
     format: str = Query("csv", description="Export format: csv or xlsx"),
     days: int = 30,
     printer_id: int | None = None,
-    project_id: int | None = None,
     created_by_id: int | None = Query(None, description="Filter by user who created the print (-1 for no user)"),
     db: AsyncSession = Depends(get_db),
     current_user: User | None = RequirePermissionIfAuthEnabled(Permission.STATS_READ),
@@ -1025,7 +1005,6 @@ async def export_stats(
             format=format,
             days=days,
             printer_id=printer_id,
-            project_id=project_id,
             created_by_id=created_by_id,
         )
     except ImportError as e:
@@ -1629,15 +1608,13 @@ async def update_archive(
         )
     ),
 ):
-    """Update archive metadata (tags, notes, cost, is_favorite, project_id)."""
+    """Update archive metadata (tags, notes, cost, is_favorite)."""
     from sqlalchemy.orm import selectinload
 
     user, can_modify_all = auth_result
 
     result = await db.execute(
-        select(PrintArchive)
-        .options(selectinload(PrintArchive.project), selectinload(PrintArchive.created_by))
-        .where(PrintArchive.id == archive_id)
+        select(PrintArchive).options(selectinload(PrintArchive.created_by)).where(PrintArchive.id == archive_id)
     )
     archive = result.scalar_one_or_none()
     if not archive:
@@ -1681,9 +1658,7 @@ async def update_archive(
 
     # Re-fetch with relationships loaded after commit
     result = await db.execute(
-        select(PrintArchive)
-        .options(selectinload(PrintArchive.project), selectinload(PrintArchive.created_by))
-        .where(PrintArchive.id == archive_id)
+        select(PrintArchive).options(selectinload(PrintArchive.created_by)).where(PrintArchive.id == archive_id)
     )
     archive = result.scalar_one_or_none()
 

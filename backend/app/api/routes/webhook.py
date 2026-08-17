@@ -22,7 +22,6 @@ router = APIRouter(prefix="/webhook", tags=["webhook"])
 class QueueAddRequest(BaseModel):
     archive_id: int
     printer_id: int
-    project_id: int | None = None
     scheduled_time: str | None = None  # ISO format datetime
     require_previous_success: bool = False
     auto_off_after: bool = False
@@ -110,7 +109,6 @@ async def webhook_add_to_queue(
     queue_item = PrintQueueItem(
         printer_id=data.printer_id,
         archive_id=data.archive_id,
-        project_id=data.project_id,
         position=next_position,
         scheduled_time=scheduled_time,
         require_previous_success=data.require_previous_success,
