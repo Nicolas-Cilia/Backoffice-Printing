@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="static/img/bambuddy_logo_dark.png" alt="Bambuddy Logo" width="300">
+  <img src="static/img/backoffice_printing_logo.png" alt="Backoffice Printing Logo" width="300">
 </p>
 
 <h1 align="center">Bambuddy</h1>
