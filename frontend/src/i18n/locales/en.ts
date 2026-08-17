@@ -3330,10 +3330,7 @@ export default {
     title: 'Profiles',
     subtitle: 'Manage your slicer presets and pressure advance calibrations',
     tabs: {
-      bambuCloud: 'Bambu Cloud',
-      orcaCloud: 'Orca Cloud',
       local: 'Local Profiles',
-      kprofiles: 'K-Profiles',
     },
     orcaCloud: {
       connectedAs: 'Connected as',
@@ -3649,6 +3646,9 @@ export default {
     free: 'Free',
     allFiles: 'All Files',
     allExternal: 'External',
+    backToFolders: 'Back to folders',
+    chooseFolderTitle: 'Choose a folder to browse',
+    chooseFolderDescription: 'Select "All Files", "External", or a specific folder to view its contents.',
     externalIsEmpty: 'No external files',
     externalEmptyDescription: 'Files in your linked external folders will appear here.',
     wrap: 'Wrap',
