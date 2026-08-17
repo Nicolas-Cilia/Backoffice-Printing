@@ -667,7 +667,6 @@ async def search_archives(
     Supports partial matches with wildcards (e.g., 'vor*' matches 'voron').
     """
     from sqlalchemy import text
-    from sqlalchemy.orm import selectinload
 
     from backend.app.core.db_dialect import is_sqlite
 
@@ -745,10 +744,7 @@ async def search_archives(
         return []
 
     # Fetch full archive records for matched IDs (excluding soft-deleted, #1343)
-    query = (
-        select(PrintArchive)
-        .where(PrintArchive.id.in_(matched_ids), PrintArchive.deleted_at.is_(None))
-    )
+    query = select(PrintArchive).where(PrintArchive.id.in_(matched_ids), PrintArchive.deleted_at.is_(None))
     if own_only:
         query = query.where(PrintArchive.created_by_id == user.id)
 
@@ -1618,9 +1614,7 @@ async def update_archive(
     user, can_modify_all = auth_result
 
     result = await db.execute(
-        select(PrintArchive)
-        .options(selectinload(PrintArchive.created_by))
-        .where(PrintArchive.id == archive_id)
+        select(PrintArchive).options(selectinload(PrintArchive.created_by)).where(PrintArchive.id == archive_id)
     )
     archive = result.scalar_one_or_none()
     if not archive:
@@ -1664,9 +1658,7 @@ async def update_archive(
 
     # Re-fetch with relationships loaded after commit
     result = await db.execute(
-        select(PrintArchive)
-        .options(selectinload(PrintArchive.created_by))
-        .where(PrintArchive.id == archive_id)
+        select(PrintArchive).options(selectinload(PrintArchive.created_by)).where(PrintArchive.id == archive_id)
     )
     archive = result.scalar_one_or_none()
 

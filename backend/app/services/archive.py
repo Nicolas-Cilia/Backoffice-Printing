@@ -1365,9 +1365,7 @@ class ArchiveService:
         from sqlalchemy.orm import selectinload
 
         result = await self.db.execute(
-            select(PrintArchive)
-            .options(selectinload(PrintArchive.created_by))
-            .where(PrintArchive.id == archive_id)
+            select(PrintArchive).options(selectinload(PrintArchive.created_by)).where(PrintArchive.id == archive_id)
         )
         return result.scalar_one_or_none()
 
@@ -1421,7 +1419,6 @@ class ArchiveService:
 
         if printer_id:
             query = query.where(PrintArchive.printer_id == printer_id)
-
 
         if date_from:
             dt_from = datetime.combine(date_from, time.min, tzinfo=timezone.utc)

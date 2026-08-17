@@ -5,7 +5,6 @@ from typing import Any
 
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy.orm import selectinload
 
 from backend.app.models.archive import PrintArchive
 
@@ -99,11 +98,7 @@ class ExportService:
         # is the list the user is looking at, saved to a file, and that list
         # hides them — an export that silently contains rows the UI says are
         # gone is worse than useless for reconciling anything (#2731).
-        query = (
-            select(PrintArchive)
-            .where(PrintArchive.deleted_at.is_(None))
-            .order_by(PrintArchive.created_at.desc())
-        )
+        query = select(PrintArchive).where(PrintArchive.deleted_at.is_(None)).order_by(PrintArchive.created_at.desc())
 
         # Apply filters
         if printer_id:
