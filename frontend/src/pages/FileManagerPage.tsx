@@ -11,6 +11,7 @@ import {
   Download,
   MoreVertical,
   ChevronRight,
+  ChevronLeft,
   FolderPlus,
   FileBox,
   Clock,
@@ -1013,6 +1014,11 @@ export function FileManagerPage() {
   // combined view across every linked external folder (#1621). Per-folder
   // selection bypasses this (selectedFolderId !== null disables the filter).
   const [topLevelView, setTopLevelView] = useState<'internal' | 'external'>('internal');
+  // The page now starts on a folder-picker landing screen instead of
+  // auto-loading "All Files" on open. Deep links that already specify a
+  // folder (e.g. navigating in from the Archive/Project page) skip the
+  // picker and go straight to that folder's contents.
+  const [viewEntered, setViewEntered] = useState(!!initialFolderId);
   const [selectedFiles, setSelectedFiles] = useState<number[]>([]);
   const [showNewFolderModal, setShowNewFolderModal] = useState(false);
   const [showExternalFolderModal, setShowExternalFolderModal] = useState(false);
@@ -1128,6 +1134,7 @@ export function FileManagerPage() {
     if (folderParam) {
       const newFolderId = parseInt(folderParam, 10);
       setSelectedFolderId(newFolderId);
+      setViewEntered(true);
     }
   }, [searchParams]);
 
@@ -1249,6 +1256,7 @@ export function FileManagerPage() {
         searchExpandsSubfolders,
         tagFilterKey,
       ),
+    enabled: viewEntered,
   });
 
   const { data: stats } = useQuery({
@@ -1641,6 +1649,16 @@ export function FileManagerPage() {
       <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 mb-6">
         <div>
           <h1 className="text-2xl font-bold text-white flex items-center gap-3">
+            {viewEntered && (
+              <button
+                onClick={() => setViewEntered(false)}
+                className="text-bambu-gray hover:text-white hover:bg-bambu-dark p-1 rounded transition-colors"
+                title={t('fileManager.backToFolders')}
+                aria-label={t('fileManager.backToFolders')}
+              >
+                <ChevronLeft className="w-5 h-5" />
+              </button>
+            )}
             <FolderOpen className="w-7 h-7 text-bambu-green" />
             {t('fileManager.title')}
           </h1>
@@ -1799,6 +1817,7 @@ export function FileManagerPage() {
               } else {
                 setSelectedFolderId(parseInt(v, 10));
               }
+              setViewEntered(true);
             }}
             className="w-full bg-bambu-dark-secondary border border-bambu-dark-tertiary rounded-lg px-3 py-2.5 text-white focus:outline-none focus:border-bambu-green"
           >
@@ -1925,13 +1944,14 @@ export function FileManagerPage() {
                 a linked NAS from drowning the user's own uploads (#1621). */}
             <div
               className={`flex items-center gap-2 px-2 py-1.5 rounded cursor-pointer transition-colors ${
-                selectedFolderId === null && topLevelView === 'internal'
+                viewEntered && selectedFolderId === null && topLevelView === 'internal'
                   ? 'bg-bambu-green/20 text-bambu-green'
                   : 'hover:bg-bambu-dark text-white'
               }`}
               onClick={() => {
                 setSelectedFolderId(null);
                 setTopLevelView('internal');
+                setViewEntered(true);
               }}
             >
               <FileBox className="w-4 h-4" />
@@ -1951,6 +1971,7 @@ export function FileManagerPage() {
                 onClick={() => {
                   setSelectedFolderId(null);
                   setTopLevelView('external');
+                  setViewEntered(true);
                 }}
               >
                 <FolderSymlink className="w-4 h-4 text-purple-600 dark:text-purple-400" />
@@ -1966,7 +1987,10 @@ export function FileManagerPage() {
                 key={`${folder.id}-${collapseFoldersByDefault ? 'c' : 'e'}`}
                 folder={folder}
                 selectedFolderId={selectedFolderId}
-                onSelect={setSelectedFolderId}
+                onSelect={(id) => {
+                  setSelectedFolderId(id);
+                  setViewEntered(true);
+                }}
                 onDelete={(id) => setDeleteConfirm({ type: 'folder', id })}
                 onLink={setLinkFolder}
                 onRename={(f) => setRenameItem({ type: 'folder', id: f.id, name: f.name })}
@@ -2281,7 +2305,19 @@ export function FileManagerPage() {
           )}
 
           {/* File grid/list */}
-          {isLoading ? (
+          {!viewEntered ? (
+            <div className="flex-1 flex flex-col items-center justify-center">
+              <div className="p-4 bg-bambu-dark rounded-2xl mb-4">
+                <FolderOpen className="w-12 h-12 text-bambu-gray/50" />
+              </div>
+              <h3 className="text-lg font-medium text-white mb-2">
+                {t('fileManager.chooseFolderTitle')}
+              </h3>
+              <p className="text-bambu-gray text-center max-w-md">
+                {t('fileManager.chooseFolderDescription')}
+              </p>
+            </div>
+          ) : isLoading ? (
             <div className="flex-1 flex items-center justify-center">
               <div className="flex flex-col items-center gap-3">
                 <Loader2 className="w-8 h-8 animate-spin text-bambu-green" />

@@ -269,7 +269,11 @@ describe('FileManagerPage', () => {
 
   describe('file display', () => {
     it('shows files in grid', async () => {
+      const user = userEvent.setup();
       render(<FileManagerPage />);
+
+      await waitFor(() => expect(screen.getByText('All Files')).toBeInTheDocument());
+      await user.click(screen.getByText('All Files'));
 
       await waitFor(() => {
         expect(screen.getByText('Benchy')).toBeInTheDocument();
@@ -277,7 +281,11 @@ describe('FileManagerPage', () => {
     });
 
     it('shows file type badges', async () => {
+      const user = userEvent.setup();
       render(<FileManagerPage />);
+
+      await waitFor(() => expect(screen.getByText('All Files')).toBeInTheDocument());
+      await user.click(screen.getByText('All Files'));
 
       await waitFor(() => {
         // File type badges show uppercase type
@@ -287,7 +295,11 @@ describe('FileManagerPage', () => {
     });
 
     it('shows print count', async () => {
+      const user = userEvent.setup();
       render(<FileManagerPage />);
+
+      await waitFor(() => expect(screen.getByText('All Files')).toBeInTheDocument());
+      await user.click(screen.getByText('All Files'));
 
       await waitFor(() => {
         expect(screen.getByText('Printed 5x')).toBeInTheDocument();
@@ -327,6 +339,9 @@ describe('FileManagerPage', () => {
       const user = userEvent.setup();
       render(<FileManagerPage />);
 
+      await waitFor(() => expect(screen.getByText('All Files')).toBeInTheDocument());
+      await user.click(screen.getByText('All Files'));
+
       // Wait for files to load first
       await waitFor(() => {
         expect(screen.getByText('Benchy')).toBeInTheDocument();
@@ -352,7 +367,11 @@ describe('FileManagerPage', () => {
 
   describe('search and filter', () => {
     it('has search input', async () => {
+      const user = userEvent.setup();
       render(<FileManagerPage />);
+
+      await waitFor(() => expect(screen.getByText('All Files')).toBeInTheDocument());
+      await user.click(screen.getByText('All Files'));
 
       await waitFor(() => {
         expect(screen.getByPlaceholderText('Search files...')).toBeInTheDocument();
@@ -360,7 +379,11 @@ describe('FileManagerPage', () => {
     });
 
     it('has type filter', async () => {
+      const user = userEvent.setup();
       render(<FileManagerPage />);
+
+      await waitFor(() => expect(screen.getByText('All Files')).toBeInTheDocument());
+      await user.click(screen.getByText('All Files'));
 
       await waitFor(() => {
         expect(screen.getByText('All types')).toBeInTheDocument();
@@ -368,7 +391,11 @@ describe('FileManagerPage', () => {
     });
 
     it('has sort options', async () => {
+      const user = userEvent.setup();
       render(<FileManagerPage />);
+
+      await waitFor(() => expect(screen.getByText('All Files')).toBeInTheDocument());
+      await user.click(screen.getByText('All Files'));
 
       await waitFor(() => {
         // Sort dropdown should show Name as default option (persisted to localStorage)
@@ -379,7 +406,11 @@ describe('FileManagerPage', () => {
 
   describe('selection', () => {
     it('shows select all button', async () => {
+      const user = userEvent.setup();
       render(<FileManagerPage />);
+
+      await waitFor(() => expect(screen.getByText('All Files')).toBeInTheDocument());
+      await user.click(screen.getByText('All Files'));
 
       await waitFor(() => {
         expect(screen.getByText('Select All')).toBeInTheDocument();
@@ -389,6 +420,9 @@ describe('FileManagerPage', () => {
     it('can select files', async () => {
       const user = userEvent.setup();
       render(<FileManagerPage />);
+
+      await waitFor(() => expect(screen.getByText('All Files')).toBeInTheDocument());
+      await user.click(screen.getByText('All Files'));
 
       await waitFor(() => {
         expect(screen.getByText('Benchy')).toBeInTheDocument();
@@ -408,6 +442,9 @@ describe('FileManagerPage', () => {
     it('shows bulk actions when files selected', async () => {
       const user = userEvent.setup();
       render(<FileManagerPage />);
+
+      await waitFor(() => expect(screen.getByText('All Files')).toBeInTheDocument());
+      await user.click(screen.getByText('All Files'));
 
       await waitFor(() => {
         expect(screen.getByText('Select All')).toBeInTheDocument();
@@ -468,6 +505,7 @@ describe('FileManagerPage', () => {
 
   describe('empty state', () => {
     it('shows empty state when no files', async () => {
+      const user = userEvent.setup();
       server.use(
         http.get('/api/v1/library/files', () => {
           return HttpResponse.json([]);
@@ -475,6 +513,9 @@ describe('FileManagerPage', () => {
       );
 
       render(<FileManagerPage />);
+
+      await waitFor(() => expect(screen.getByText('All Files')).toBeInTheDocument());
+      await user.click(screen.getByText('All Files'));
 
       await waitFor(() => {
         expect(screen.getByText('No files yet')).toBeInTheDocument();
@@ -495,6 +536,9 @@ describe('FileManagerPage', () => {
       const user = userEvent.setup();
       render(<FileManagerPage />);
 
+      await waitFor(() => expect(screen.getByText('All Files')).toBeInTheDocument());
+      await user.click(screen.getByText('All Files'));
+
       await waitFor(() => {
         expect(screen.getByText('Benchy')).toBeInTheDocument();
       });
@@ -513,6 +557,9 @@ describe('FileManagerPage', () => {
     it('hides the bulk Print button when multiple files are selected', async () => {
       const user = userEvent.setup();
       render(<FileManagerPage />);
+
+      await waitFor(() => expect(screen.getByText('All Files')).toBeInTheDocument());
+      await user.click(screen.getByText('All Files'));
 
       await waitFor(() => {
         expect(screen.getByText('Select All')).toBeInTheDocument();
@@ -575,7 +622,11 @@ describe('FileManagerPage', () => {
     });
 
     it('shows STL file without thumbnail in file list', async () => {
+      const user = userEvent.setup();
       render(<FileManagerPage />);
+
+      await waitFor(() => expect(screen.getByText('All Files')).toBeInTheDocument());
+      await user.click(screen.getByText('All Files'));
 
       await waitFor(() => {
         // bracket.stl has no thumbnail_path
@@ -796,14 +847,17 @@ describe('FileManagerPage', () => {
         })
       );
 
+      const user = userEvent.setup();
       render(<FileManagerPage />);
+
+      await waitFor(() => expect(screen.getByText('All Files')).toBeInTheDocument());
+      await user.click(screen.getByText('All Files'));
 
       // Switch to list view to see the column headers
       await waitFor(() => {
         expect(screen.getByText('Test File')).toBeInTheDocument();
       });
 
-      const user = userEvent.setup();
       const listViewButton = screen.getByRole('button', { name: /list/i });
       await user.click(listViewButton);
 
@@ -852,14 +906,17 @@ describe('FileManagerPage', () => {
         })
       );
 
+      const user = userEvent.setup();
       render(<FileManagerPage />);
+
+      await waitFor(() => expect(screen.getByText('All Files')).toBeInTheDocument());
+      await user.click(screen.getByText('All Files'));
 
       // Switch to list view to see the column headers
       await waitFor(() => {
         expect(screen.getByText('Test File')).toBeInTheDocument();
       });
 
-      const user = userEvent.setup();
       const listViewButton = screen.getByRole('button', { name: /list/i });
       await user.click(listViewButton);
 
@@ -1011,7 +1068,11 @@ describe('FileManagerPage', () => {
         }),
       );
 
+      const user = userEvent.setup();
       render(<FileManagerPage />);
+      await waitFor(() => expect(screen.getByText('All Files')).toBeInTheDocument());
+      await user.click(screen.getByText('All Files'));
+
       await waitFor(() => {
         expect(scopes).toContain('internal');
       });
@@ -1087,7 +1148,11 @@ describe('FileManagerPage', () => {
         }),
       );
 
+      const user = userEvent.setup();
       render(<FileManagerPage />);
+
+      await waitFor(() => expect(screen.getByText('All Files')).toBeInTheDocument());
+      await user.click(screen.getByText('All Files'));
 
       await waitFor(() => {
         expect(screen.getByText('Root File')).toBeInTheDocument();
@@ -1102,6 +1167,9 @@ describe('FileManagerPage', () => {
     it('is hidden by default and revealed by the toolbar toggle', async () => {
       const user = userEvent.setup();
       render(<FileManagerPage />);
+
+      await waitFor(() => expect(screen.getByText('All Files')).toBeInTheDocument());
+      await user.click(screen.getByText('All Files'));
 
       await waitFor(() => {
         expect(screen.getByText('Benchy')).toBeInTheDocument();
@@ -1129,6 +1197,9 @@ describe('FileManagerPage', () => {
     it('the same toggle reveals latest activity on folder rows, including nested ones', async () => {
       const user = userEvent.setup();
       render(<FileManagerPage />);
+
+      await waitFor(() => expect(screen.getByText('All Files')).toBeInTheDocument());
+      await user.click(screen.getByText('All Files'));
 
       await waitFor(() => {
         expect(screen.getByText('Functional Parts')).toBeInTheDocument();
