@@ -1,3 +1,6 @@
+// Deliberately unimported. This was the `calendar` view mode of the Archives
+// page, which this fork removed (FORK_PLAN.md entry #2a). It is kept so the
+// print calendar can be rehomed elsewhere later — do not delete as dead code.
 import { useState, useMemo } from 'react';
 import { ChevronLeft, ChevronRight } from 'lucide-react';
 import type { Archive } from '../api/client';

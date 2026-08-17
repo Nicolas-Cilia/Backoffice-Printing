@@ -405,10 +405,11 @@ describe('Layout', () => {
   describe('Sidebar gate accepts granular read tiers (#1755)', () => {
     // Default Operators group is seeded with `*:read_own` only — never the
     // legacy `*:read`. Previously the sidebar gate checked the legacy alone,
-    // so Archives / Queue / Files were hidden from every non-admin even
-    // though the underlying API endpoints accepted their requests. These
-    // tests pin that the gate accepts ANY of the three tiers (legacy /
-    // _own / _all) for the three resources that ship granular variants.
+    // so Queue / Files were hidden from every non-admin even though the
+    // underlying API endpoints accepted their requests. These tests pin that
+    // the gate accepts ANY of the three tiers (legacy / _own / _all) for the
+    // resources that ship granular variants. Archives was a third such
+    // resource until its sidebar entry was removed in this fork.
     const enableAuthWithUser = (permissions: string[]) => {
       server.use(
         http.get('/api/v1/auth/status', () =>
@@ -454,16 +455,6 @@ describe('Layout', () => {
       });
     });
 
-    it('shows Archives in the sidebar when the user only has archives:read_own', async () => {
-      enableAuthWithUser(['archives:read_own']);
-
-      render(<Layout />);
-
-      await waitFor(() => {
-        expect(sidebarLink('/archives')).toBeInTheDocument();
-      });
-    });
-
     it('shows Queue in the sidebar when the user only has queue:read_own', async () => {
       enableAuthWithUser(['queue:read_own']);
 
@@ -484,7 +475,6 @@ describe('Layout', () => {
       });
 
       expect(sidebarLink('/files')).toBeNull();
-      expect(sidebarLink('/archives')).toBeNull();
       expect(sidebarLink('/queue')).toBeNull();
     });
   });

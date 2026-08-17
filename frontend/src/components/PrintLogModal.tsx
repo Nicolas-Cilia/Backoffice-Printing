@@ -1,3 +1,6 @@
+// Deliberately unimported. This was the `log` view mode of the Archives page,
+// which this fork removed (FORK_PLAN.md entry #2a). It is kept so the print log
+// can be rehomed elsewhere later — do not delete as dead code.
 import { useEffect } from 'react';
 import { useTranslation } from 'react-i18next';
 import { X, History } from 'lucide-react';

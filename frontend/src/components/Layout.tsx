@@ -1,13 +1,13 @@
 import { useState, useEffect, useCallback, useRef, useMemo } from 'react';
 import { NavLink, Outlet, useNavigate, useLocation } from 'react-router-dom';
-import { Printer, Archive, ListOrdered, BarChart3, Cloud, Settings, Sun, Moon, Monitor, ChevronLeft, ChevronRight, Keyboard, Github, ArrowUpCircle, Wrench, FolderKanban, FolderOpen, X, Menu, Info, Plug, Bug, LogOut, Key, Loader2, Disc3, ShieldAlert, Bell, type LucideIcon } from 'lucide-react';
+import { Printer, ListOrdered, BarChart3, Cloud, Settings, Sun, Moon, Monitor, ChevronLeft, ChevronRight, Keyboard, Github, ArrowUpCircle, Wrench, FolderKanban, FolderOpen, X, Menu, Info, Plug, Bug, LogOut, Key, Loader2, Disc3, ShieldAlert, Bell, type LucideIcon } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
 import { useTheme } from '../contexts/ThemeContext';
 import { KeyboardShortcutsModal } from './KeyboardShortcutsModal';
 import { InstallAppButton } from './InstallAppButton';
 import { SwitchbarPopover } from './SwitchbarPopover';
 import { useQuery, useQueries } from '@tanstack/react-query';
-import { api, supportApi, pendingUploadsApi, type Permission } from '../api/client';
+import { api, supportApi, type Permission } from '../api/client';
 import { getIconByName } from './IconPicker';
 import { useIsSidebarCompact } from '../hooks/useIsSidebarCompact';
 import { useColorCatalogVersion } from '../hooks/useColorCatalogVersion';
@@ -40,7 +40,6 @@ interface NavItem {
 export const defaultNavItems: NavItem[] = [
   { id: 'printers', to: '/', icon: Printer, labelKey: 'nav.printers' },
   { id: 'inventory', to: '/inventory', icon: Disc3, labelKey: 'nav.inventory' },
-  { id: 'archives', to: '/archives', icon: Archive, labelKey: 'nav.archives' },
   { id: 'queue', to: '/queue', icon: ListOrdered, labelKey: 'nav.queue' },
   { id: 'projects', to: '/projects', icon: FolderKanban, labelKey: 'nav.projects' },
   { id: 'files', to: '/files', icon: FolderOpen, labelKey: 'nav.files' },
@@ -224,16 +223,6 @@ export function Layout() {
   });
   const pendingQueueCount = queueItems?.length ?? 0;
 
-  // Fetch pending uploads count for archive badge (virtual printer review items)
-  const { data: pendingUploadsData } = useQuery({
-    queryKey: ['pending-uploads', 'count'],
-    queryFn: pendingUploadsApi.getCount,
-    staleTime: 5 * 1000, // 5 seconds
-    refetchInterval: 5 * 1000, // Refresh every 5 seconds
-    refetchOnWindowFocus: true,
-  });
-  const pendingUploadsCount = pendingUploadsData?.count ?? 0;
-
   // Check if any printer with pending queue items needs plate clearing
   const queuePrinterIds = useMemo(() => {
     const ids = new Set<number>();
@@ -290,7 +279,6 @@ export function Layout() {
     // every non-admin user even though the underlying API accepts their
     // request (#1755).
     const navPermissions: Record<string, Permission | Permission[]> = {
-      archives: ['archives:read', 'archives:read_own', 'archives:read_all'],
       queue: ['queue:read', 'queue:read_own', 'queue:read_all'],
       stats: 'stats:read',
       profiles: 'kprofiles:read',
@@ -586,9 +574,8 @@ export function Layout() {
 
                 const { to, icon: Icon, labelKey } = navItem;
                 const showQueueBadge = id === 'queue' && pendingQueueCount > 0;
-                const showArchiveBadge = id === 'archives' && pendingUploadsCount > 0;
-                const badgeCount = showQueueBadge ? pendingQueueCount : showArchiveBadge ? pendingUploadsCount : 0;
-                const showBadge = showQueueBadge || showArchiveBadge;
+                const badgeCount = showQueueBadge ? pendingQueueCount : 0;
+                const showBadge = showQueueBadge;
                 const showClearPlateDot = id === 'printers' && needsClearPlate;
 
                 return (
@@ -610,9 +597,7 @@ export function Layout() {
                           <span className="absolute -top-0.5 -right-0.5 w-2.5 h-2.5 bg-yellow-500 rounded-full border-2 border-bambu-dark-secondary" />
                         )}
                         {showBadge && (
-                          <span className={`absolute -top-1.5 -right-1.5 min-w-[18px] h-[18px] px-1 flex items-center justify-center text-[10px] font-bold rounded-full ${
-                            showArchiveBadge ? 'bg-blue-500 text-white' : 'bg-yellow-500 text-black'
-                          }`}>
+                          <span className="absolute -top-1.5 -right-1.5 min-w-[18px] h-[18px] px-1 flex items-center justify-center text-[10px] font-bold rounded-full bg-yellow-500 text-black">
                             {badgeCount > 99 ? '99+' : badgeCount}
                           </span>
                         )}
