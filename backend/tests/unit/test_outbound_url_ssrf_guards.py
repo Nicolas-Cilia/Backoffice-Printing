@@ -597,10 +597,6 @@ GUARDED_BODY_URLS = {
 NOT_A_FETCH_TARGET = {
     ("AppSettingsUpdate", "external_url"),  # Bambuddy's own address (see exempt list above)
     ("AppSettingsUpdate", "ldap_server_url"),  # ldap://, handed to an LDAP client
-    ("ProjectCreate", "url"),  # stored link, rendered in the UI, never fetched
-    ("ProjectUpdate", "url"),
-    ("BOMItemCreate", "sourcing_url"),  # stored supplier link, never fetched
-    ("BOMItemUpdate", "sourcing_url"),
     ("MakerWorldResolveRequest", "url"),  # parsed for a model id; fetches go to a pinned CDN allowlist
     ("DeviceRegisterRequest", "backend_url"),  # the device's view of Bambuddy's own address
     ("HeartbeatRequest", "backend_url"),
