@@ -79,9 +79,7 @@ class AppSettings(BaseModel):
     )
 
     # Updates
-    check_updates: bool = Field(default=True, description="Automatically check for updates on startup")
     check_printer_firmware: bool = Field(default=True, description="Check for printer firmware updates from Bambu Lab")
-    include_beta_updates: bool = Field(default=False, description="Include beta/prerelease versions in update checks")
 
     # Language
     language: str = Field(default="en", description="UI language (en, de, fr, ja, it, pt-BR)")
@@ -541,9 +539,7 @@ class AppSettingsUpdate(BaseModel):
     auto_add_unknown_rfid: bool | None = None
     disable_filament_warnings: bool | None = None
     prefer_lowest_filament: bool | None = None
-    check_updates: bool | None = None
     check_printer_firmware: bool | None = None
-    include_beta_updates: bool | None = None
     local_login_enabled: bool | None = None
     language: str | None = None
     notification_language: str | None = None

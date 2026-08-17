@@ -953,9 +953,7 @@ export interface AppSettings {
   currency: string;
   energy_cost_per_kwh: number;
   energy_tracking_mode: 'print' | 'total';
-  check_updates: boolean;
   check_printer_firmware: boolean;
-  include_beta_updates: boolean;
   // #1589: false hides the local username/password form on the login page;
   // BAMBUDDY_LOCAL_LOGIN=true on the server flips the reported value back to
   // true so the env-var recovery path is visible to the SPA.
@@ -2938,30 +2936,6 @@ export interface ShoppingListItemCreate {
 export interface VersionInfo {
   version: string;
   repo: string;
-}
-
-export interface UpdateCheckResult {
-  update_available: boolean;
-  current_version: string;
-  latest_version: string | null;
-  release_name?: string;
-  release_notes?: string;
-  release_url?: string;
-  published_at?: string;
-  error?: string;
-  message?: string;
-  is_docker?: boolean;
-  is_ha_addon?: boolean;
-  is_windows_installer?: boolean;
-  update_method?: 'docker' | 'git' | 'ha_addon' | 'windows_installer';
-  installer_download_url?: string | null;
-}
-
-export interface UpdateStatus {
-  status: 'idle' | 'checking' | 'downloading' | 'installing' | 'complete' | 'error';
-  progress: number;
-  message: string;
-  error: string | null;
 }
 
 // Maintenance types
@@ -5515,12 +5489,6 @@ export const api = {
 
   // Updates
   getVersion: () => request<VersionInfo>('/updates/version'),
-  checkForUpdates: () => request<UpdateCheckResult>('/updates/check'),
-  applyUpdate: () =>
-    request<{ success: boolean; message: string; status?: UpdateStatus; is_docker?: boolean; is_ha_addon?: boolean; is_windows_installer?: boolean }>('/updates/apply', {
-      method: 'POST',
-    }),
-  getUpdateStatus: () => request<UpdateStatus>('/updates/status'),
 
   // Maintenance
   getMaintenanceTypes: () => request<MaintenanceType[]>('/maintenance/types'),

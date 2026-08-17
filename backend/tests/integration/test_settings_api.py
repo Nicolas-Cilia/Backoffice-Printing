@@ -230,13 +230,13 @@ class TestSettingsAPI:
     async def test_settings_persist_after_update(self, async_client: AsyncClient):
         """CRITICAL: Verify settings changes persist across requests."""
         # Update settings
-        await async_client.put("/api/v1/settings/", json={"currency": "JPY", "check_updates": False})
+        await async_client.put("/api/v1/settings/", json={"currency": "JPY", "check_printer_firmware": False})
 
         # Verify persistence in new request
         response = await async_client.get("/api/v1/settings/")
         result = response.json()
         assert result["currency"] == "JPY"
-        assert result["check_updates"] is False
+        assert result["check_printer_firmware"] is False
 
     @pytest.mark.asyncio
     @pytest.mark.integration

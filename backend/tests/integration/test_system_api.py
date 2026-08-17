@@ -98,7 +98,6 @@ class TestSystemAPI:
         assert "archives_failed" in db_info
         assert "printers" in db_info
         assert "filaments" in db_info
-        assert "projects" in db_info
         assert "smart_plugs" in db_info
         assert "total_print_time_seconds" in db_info
         assert "total_print_time_formatted" in db_info

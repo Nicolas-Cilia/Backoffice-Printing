@@ -54,7 +54,6 @@ def _register_all_models():
         external_link,
         print_log,
         print_queue,
-        project_bom,
         slot_preset,
         spoolman_k_profile,
         spoolman_slot_assignment,
