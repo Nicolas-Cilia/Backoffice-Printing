@@ -95,3 +95,7 @@ security/
 
 test_pipeline_archive_source.3mf
 test_pipeline_run_1.3mf
+
+# Fork working notes — local only, deliberately untracked
+FORK_PLAN.md
+FORK_CHANGELOG.md
