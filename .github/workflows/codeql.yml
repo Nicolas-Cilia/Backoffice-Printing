@@ -15,7 +15,17 @@ jobs:
   analyze:
     name: Analyze (${{ matrix.language }})
     runs-on: ubuntu-latest
+    # Code scanning needs GitHub Advanced Security on a private repo, which this
+    # fork does not have: the SARIF upload is rejected with "Resource not
+    # accessible by integration". Skip the job while the repo is private rather
+    # than fail every run; it resumes by itself if the repo is ever made public.
+    if: ${{ !github.event.repository.private }}
     permissions:
+      # Job-level permissions REPLACE the workflow-level block rather than
+      # merging with it, so omitting contents: read here left the token unable
+      # to clone a private repo — checkout failed with "repository not found"
+      # before CodeQL ran at all.
+      contents: read
       security-events: write
     strategy:
       fail-fast: false
@@ -23,7 +33,7 @@ jobs:
         language: [python, javascript-typescript, actions]
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
 
       - name: Initialize CodeQL
         uses: github/codeql-action/init@v4
