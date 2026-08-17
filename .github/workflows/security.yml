@@ -41,7 +41,6 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       contents: read
-      security-events: write
     steps:
       - uses: actions/checkout@v6
 
@@ -55,59 +54,86 @@ jobs:
 
       - name: Run Bandit
         run: |
+          # Human-readable findings in the job log, plus SARIF kept as an artifact.
+          # Uploading SARIF to GitHub code scanning needs Advanced Security on a
+          # private repo, which this fork does not have — see the artifact step.
+          bandit -r backend/ --severity-level medium || true
           bandit -r backend/ -f sarif -o bandit-results.sarif --severity-level medium || true
 
-      - name: Upload Bandit results to GitHub Security
-        uses: github/codeql-action/upload-sarif@v4
+      - name: Upload Bandit results
         if: always()
+        uses: actions/upload-artifact@v7
         with:
-          sarif_file: bandit-results.sarif
-          category: bandit
+          name: bandit-results
+          path: bandit-results.sarif
+          retention-days: 30
 
   trivy:
     name: Container Security Scan (Trivy)
     runs-on: ubuntu-latest
     permissions:
       contents: read
-      security-events: write
+    env:
+      # Keep the image scan and the config scan on one pinned Trivy version.
+      # Stay reasonably current: Trivy's vulnerability DB schema moves, and old
+      # binaries eventually stop being able to read it.
+      TRIVY_IMAGE: aquasec/trivy:0.74.0
     steps:
       - uses: actions/checkout@v6
 
       - name: Build Docker image
         run: docker build -t bambuddy:security-scan .
 
+      # Trivy runs from its official container rather than via
+      # aquasecurity/trivy-action. That action installs the binary with
+      # aquasecurity/trivy@main's contrib/install.sh, which downloads from
+      # get.trivy.dev — and that endpoint only serves recent releases. The
+      # pinned v0.69.1 now 404s there, which install.sh swallows and turns into
+      # a bare "exit code 1" before any scan runs. Docker Hub keeps old tags, so
+      # pulling the published image is not exposed to that retention window.
+      # It also drops the action's bundled actions/cache, the source of the
+      # Node 20 deprecation warning.
       - name: Run Trivy vulnerability scanner
-        uses: aquasecurity/trivy-action@v0.35.0
-        with:
-          image-ref: 'bambuddy:security-scan'
-          format: 'sarif'
-          output: 'trivy-results.sarif'
-          severity: 'CRITICAL,HIGH,MEDIUM'
-          version: 'v0.69.1'
-
-      - name: Upload Trivy results to GitHub Security
-        uses: github/codeql-action/upload-sarif@v4
-        if: always() && hashFiles('trivy-results.sarif') != ''
-        with:
-          sarif_file: trivy-results.sarif
-          category: trivy
+        run: |
+          mkdir -p trivy-out "$HOME/.cache/trivy"
+          docker run --rm \
+            -v /var/run/docker.sock:/var/run/docker.sock \
+            -v "$PWD/trivy-out:/out" \
+            -v "$HOME/.cache/trivy:/root/.cache/trivy" \
+            "$TRIVY_IMAGE" image \
+              --severity CRITICAL,HIGH,MEDIUM \
+              --format sarif --output /out/trivy-results.sarif \
+              bambuddy:security-scan
+          # Same scan again as a table, so findings are readable in the job log.
+          docker run --rm \
+            -v /var/run/docker.sock:/var/run/docker.sock \
+            -v "$HOME/.cache/trivy:/root/.cache/trivy" \
+            "$TRIVY_IMAGE" image \
+              --severity CRITICAL,HIGH,MEDIUM \
+              bambuddy:security-scan || true
 
       - name: Run Trivy for Dockerfile/IaC
-        uses: aquasecurity/trivy-action@v0.35.0
-        with:
-          scan-type: 'config'
-          scan-ref: '.'
-          format: 'sarif'
-          output: 'trivy-config-results.sarif'
-          severity: 'CRITICAL,HIGH,MEDIUM'
-          version: 'v0.69.1'
+        if: always()
+        run: |
+          mkdir -p trivy-out "$HOME/.cache/trivy"
+          docker run --rm \
+            -v "$PWD:/workspace" \
+            -v "$PWD/trivy-out:/out" \
+            -v "$HOME/.cache/trivy:/root/.cache/trivy" \
+            "$TRIVY_IMAGE" config \
+              --severity CRITICAL,HIGH,MEDIUM \
+              --format sarif --output /out/trivy-config-results.sarif \
+              /workspace
 
-      - name: Upload Trivy config results
-        uses: github/codeql-action/upload-sarif@v4
-        if: always() && hashFiles('trivy-config-results.sarif') != ''
+      # Uploading to GitHub code scanning needs Advanced Security on a private
+      # repo, which this fork does not have, so results are kept as artifacts.
+      - name: Upload Trivy results
+        if: always()
+        uses: actions/upload-artifact@v7
         with:
-          sarif_file: trivy-config-results.sarif
-          category: trivy-config
+          name: trivy-results
+          path: trivy-out/
+          retention-days: 30
 
   backend-audit:
     name: Backend Security Audit
