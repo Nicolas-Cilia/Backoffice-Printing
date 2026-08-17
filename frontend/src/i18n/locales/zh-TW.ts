@@ -2437,6 +2437,7 @@ export default {
     bgOled: 'OLED 純黑',
     bgSlate: '石板藍',
     bgForest: '森林綠',
+    accentAtos: 'Atos Blue',
     accentGreen: '綠色',
     accentTeal: '青色',
     accentBlue: '藍色',

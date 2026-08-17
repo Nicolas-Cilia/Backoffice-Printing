@@ -525,7 +525,7 @@ function buildModelGroup(
 
   // Create materials for each extruder color
   const getMaterial = (extruder: number): THREE.MeshPhongMaterial => {
-    const defaultColor = '#00ae42';
+    const defaultColor = '#07bcec';
     const colorStr = filamentColors?.[extruder] || defaultColor;
     // Convert hex color string to THREE.js color
     const color = new THREE.Color(colorStr);
@@ -693,7 +693,7 @@ export function ModelViewer({
     // Build plate indicator
     const plateGeometry = new THREE.PlaneGeometry(buildVolume.x, buildVolume.y);
     const plateMaterial = new THREE.MeshBasicMaterial({
-      color: 0x00ae42,
+      color: 0x07bcec,
       transparent: true,
       opacity: 0.15,
       side: THREE.DoubleSide,
@@ -807,7 +807,7 @@ export function ModelViewer({
     const isStlModel = !!stlGeometry;
     const group = isStlModel
       ? (() => {
-          const materialColor = filamentColors?.[0] || '#00ae42';
+          const materialColor = filamentColors?.[0] || '#07bcec';
           const material = new THREE.MeshPhongMaterial({ color: new THREE.Color(materialColor), shininess: 30 });
           const mesh = new THREE.Mesh(stlGeometry!, material);
           const stlGroup = new THREE.Group();

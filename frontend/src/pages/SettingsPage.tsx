@@ -1794,6 +1794,7 @@ export function SettingsPage() {
                       onChange={(e) => { setDarkAccent(e.target.value as ThemeAccent); showToast(t('settings.toast.settingsSaved'), 'success'); }}
                       className="w-full px-2 py-1.5 text-sm bg-bambu-dark border border-bambu-dark-tertiary rounded-lg text-white focus:border-bambu-green focus:outline-none"
                     >
+                      <option value="atos">{t('settings.accentAtos')}</option>
                       <option value="green">{t('settings.accentGreen')}</option>
                       <option value="teal">{t('settings.accentTeal')}</option>
                       <option value="blue">{t('settings.accentBlue')}</option>
@@ -1843,6 +1844,7 @@ export function SettingsPage() {
                       onChange={(e) => { setLightAccent(e.target.value as ThemeAccent); showToast(t('settings.toast.settingsSaved'), 'success'); }}
                       className="w-full px-2 py-1.5 text-sm bg-bambu-dark border border-bambu-dark-tertiary rounded-lg text-white focus:border-bambu-green focus:outline-none"
                     >
+                      <option value="atos">{t('settings.accentAtos')}</option>
                       <option value="green">{t('settings.accentGreen')}</option>
                       <option value="teal">{t('settings.accentTeal')}</option>
                       <option value="blue">{t('settings.accentBlue')}</option>

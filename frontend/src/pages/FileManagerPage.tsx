@@ -495,7 +495,7 @@ function LinkFolderModal({ folder, onClose, onLink, isLoading, t }: LinkFolderMo
                   >
                     <div
                       className="w-3 h-3 rounded-full flex-shrink-0"
-                      style={{ backgroundColor: project.color || '#00ae42' }}
+                      style={{ backgroundColor: project.color || '#07bcec' }}
                     />
                     <span className="truncate">{project.name}</span>
                   </button>

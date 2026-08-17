@@ -145,12 +145,12 @@ function formatKValue(k: number | null | undefined): string {
 // Nozzle side indicators (Bambu Lab style - square badge with L/R)
 function NozzleBadge({ side }: { side: 'L' | 'R' }) {
   const { mode } = useTheme();
-  // Light mode: #e7f5e9 (light green), Dark mode: #1a4d2e (dark green)
-  const bgColor = mode === 'dark' ? '#1a4d2e' : '#e7f5e9';
+  // Light mode: #e0f4fd (light blue), Dark mode: #0a3a4d (dark blue)
+  const bgColor = mode === 'dark' ? '#0a3a4d' : '#e0f4fd';
   return (
     <span
       className="inline-flex items-center justify-center w-4 h-4 text-[10px] font-bold rounded"
-      style={{ backgroundColor: bgColor, color: '#00ae42' }}
+      style={{ backgroundColor: bgColor, color: '#07bcec' }}
     >
       {side}
     </span>
@@ -7840,6 +7840,9 @@ export function PrintersPage() {
   const { resolvedMode, darkAccent, lightAccent } = useTheme();
   const activeAccent = resolvedMode === 'dark' ? darkAccent : lightAccent;
   const accentButtonClass = {
+    // Atos blue is the brand accent, so it uses the accent token rather than a
+    // fixed Tailwind palette step like the upstream options below.
+    atos: 'bg-bambu-green text-white hover:bg-bambu-green-light border-bambu-green-light/60',
     green: 'bg-green-500 text-white hover:bg-green-400 border-green-400/60',
     teal: 'bg-teal-500 text-white hover:bg-teal-400 border-teal-400/60',
     blue: 'bg-blue-500 text-white hover:bg-blue-400 border-blue-400/60',

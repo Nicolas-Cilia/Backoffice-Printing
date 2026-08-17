@@ -2392,6 +2392,7 @@ export default {
     bgOled: 'OLED Nero',
     bgSlate: 'Blu ardesia',
     bgForest: 'Verde foresta',
+    accentAtos: 'Atos Blue',
     accentGreen: 'Verde',
     accentTeal: 'Verde acqua',
     accentBlue: 'Blu',

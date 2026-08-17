@@ -6,7 +6,7 @@ type ThemeMode = 'light' | 'dark' | 'system';
 type ThemeStyle = 'classic' | 'glow' | 'vibrant';
 type DarkBackground = 'neutral' | 'warm' | 'cool' | 'oled' | 'slate' | 'forest';
 type LightBackground = 'neutral' | 'warm' | 'cool';
-type ThemeAccent = 'green' | 'teal' | 'blue' | 'orange' | 'purple' | 'red';
+type ThemeAccent = 'atos' | 'green' | 'teal' | 'blue' | 'orange' | 'purple' | 'red';
 
 interface ThemeContextType {
   mode: ThemeMode;
@@ -76,7 +76,7 @@ export function ThemeProvider({ children }: { children: ReactNode }) {
     return (localStorage.getItem('dark-background') as DarkBackground) || 'cool';
   });
   const [darkAccent, setDarkAccentState] = useState<ThemeAccent>(() => {
-    return (localStorage.getItem('dark-accent') as ThemeAccent) || 'green';
+    return (localStorage.getItem('dark-accent') as ThemeAccent) || 'atos';
   });
 
   // Light mode settings
@@ -87,7 +87,7 @@ export function ThemeProvider({ children }: { children: ReactNode }) {
     return (localStorage.getItem('light-background') as LightBackground) || 'neutral';
   });
   const [lightAccent, setLightAccentState] = useState<ThemeAccent>(() => {
-    return (localStorage.getItem('light-accent') as ThemeAccent) || 'green';
+    return (localStorage.getItem('light-accent') as ThemeAccent) || 'atos';
   });
 
   // Client-only pref (localStorage), no api.updateSettings sync — the tab
@@ -150,7 +150,7 @@ export function ThemeProvider({ children }: { children: ReactNode }) {
       'dark',
       'style-classic', 'style-glow', 'style-vibrant',
       'bg-neutral', 'bg-warm', 'bg-cool', 'bg-oled', 'bg-slate', 'bg-forest',
-      'accent-green', 'accent-teal', 'accent-blue', 'accent-orange', 'accent-purple', 'accent-red'
+      'accent-atos', 'accent-green', 'accent-teal', 'accent-blue', 'accent-orange', 'accent-purple', 'accent-red'
     );
 
     // Apply based on resolved mode

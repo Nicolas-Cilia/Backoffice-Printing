@@ -230,7 +230,7 @@ function SuccessRateWidget({
             cy={gaugeSize / 2}
             r={radius}
             fill="none"
-            stroke="#00ae42"
+            stroke="#07bcec"
             strokeWidth="10"
             strokeLinecap="round"
             strokeDasharray={`${(successRate / 100) * circumference} ${circumference}`}
@@ -623,7 +623,7 @@ function PrinterStatsWidget({
 
   const metricStyle = (m: Metric) => ({
     unit: m === 'weight' ? 'g' : m === 'time' ? 'h' : '',
-    color: m === 'weight' ? '#00ae42' : m === 'time' ? '#3b82f6' : '#f59e0b',
+    color: m === 'weight' ? '#07bcec' : m === 'time' ? '#3b82f6' : '#f59e0b',
   });
   const ps = metricStyle(printerMetric);
   const pLabel = printerMetric === 'weight' ? t('stats.filamentByWeight') : printerMetric === 'time' ? t('stats.hours') : t('common.prints');
@@ -670,7 +670,7 @@ function PrinterStatsWidget({
                 <XAxis dataKey="name" stroke="#9ca3af" tick={{ fontSize: 11 }} />
                 <YAxis stroke="#9ca3af" tick={{ fontSize: 11 }} allowDecimals={false} />
                 <Tooltip contentStyle={RECHARTS_TOOLTIP_STYLE} />
-                <Bar dataKey="count" name={t('common.prints')} fill="#00ae42" radius={[4, 4, 0, 0]} />
+                <Bar dataKey="count" name={t('common.prints')} fill="#07bcec" radius={[4, 4, 0, 0]} />
               </BarChart>
             </ResponsiveContainer>
           ) : (
@@ -709,7 +709,7 @@ function PrinterStatsWidget({
                 <XAxis dataKey="label" stroke="#9ca3af" tick={{ fontSize: 10 }} interval={5} />
                 <YAxis stroke="#9ca3af" tick={{ fontSize: 11 }} allowDecimals={false} />
                 <Tooltip contentStyle={RECHARTS_TOOLTIP_STYLE} />
-                <Bar dataKey="total" name={t('stats.totalPrints')} fill="#00ae42" radius={[2, 2, 0, 0]} />
+                <Bar dataKey="total" name={t('stats.totalPrints')} fill="#07bcec" radius={[2, 2, 0, 0]} />
                 <Bar dataKey="failures" name={t('stats.failed')} fill="#ef4444" radius={[2, 2, 0, 0]} />
               </BarChart>
             </ResponsiveContainer>
