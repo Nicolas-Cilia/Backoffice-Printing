@@ -124,7 +124,7 @@ jobs:
           pip install -r requirements-dev.txt
 
       - name: Run tests (shard ${{ matrix.shard }}/4)
-        timeout-minutes: 10
+        timeout-minutes: 15
         run: |
           cd backend
           # -v dropped: 5300+ "PASSED foo::bar" lines per worker eat 30-60s

@@ -3297,10 +3297,7 @@ export default {
     title: 'Profile',
     subtitle: 'Verwalten Sie Ihre Slicer-Voreinstellungen und Druckvorschub-Kalibrierungen',
     tabs: {
-      bambuCloud: 'Bambu Cloud',
-      orcaCloud: 'Orca Cloud',
       local: 'Lokale Profile',
-      kprofiles: 'K-Profile',
     },
     orcaCloud: {
       connectedAs: 'Verbunden als',
