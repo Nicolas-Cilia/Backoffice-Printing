@@ -55,6 +55,7 @@ import type {
   AppSettings,
   Archive,
   Permission,
+  ProductionActiveFile,
 } from '../api/client';
 import { Button } from '../components/Button';
 import { ConfirmModal } from '../components/ConfirmModal';
@@ -65,6 +66,7 @@ import { RunWithPipelineModal } from '../components/RunWithPipelineModal';
 import { BulkTagsPickerModal } from '../components/BulkTagsPickerModal';
 import { FileUploadModal } from '../components/FileUploadModal';
 import { FolderReadmePanel } from '../components/FolderReadmePanel';
+import { ProductionFolderView } from '../components/production/ProductionFolderView';
 import { LibraryTagsModal } from '../components/LibraryTagsModal';
 import { PurgeOldFilesModal } from '../components/PurgeOldFilesModal';
 import { useToast } from '../contexts/ToastContext';
@@ -1602,14 +1604,29 @@ export function FileManagerPage() {
     queryClient.invalidateQueries({ queryKey: ['library-stats'] });
   };
 
+  // Find the selected folder in the tree to check external / production status
+  const selectedFolder = useMemo(() => {
+    if (!selectedFolderId || !folders) return null;
+    const findFolder = (items: LibraryFolderTree[]): LibraryFolderTree | null => {
+      for (const item of items) {
+        if (item.id === selectedFolderId) return item;
+        const found = findFolder(item.children);
+        if (found) return found;
+      }
+      return null;
+    };
+    return findFolder(folders);
+  }, [selectedFolderId, folders]);
+  const isProductionFolder = Boolean(selectedFolder?.production_printer_model);
+
   // Page-wide drag-and-drop upload (#1510). Disabled when the user lacks
   // library:upload so a non-uploader can't accidentally show the overlay,
   // and also disabled while the upload modal itself is open so drags into
   // the modal's own drop zone don't bubble up and flash the page overlay
-  // behind it.
+  // behind it. Production folders use their own Add/Replace flow.
   const canUpload = hasPermission('library:upload');
   const { isDraggingOver, dragHandlers } = usePageFileDrop({
-    disabled: !canUpload || showUploadModal,
+    disabled: !canUpload || showUploadModal || isProductionFolder,
     onFiles: (files) => {
       setDroppedFiles(files);
       setShowUploadModal(true);
@@ -1642,19 +1659,28 @@ export function FileManagerPage() {
 
   const isLoading = foldersLoading || filesLoading;
 
-  // Find the selected folder in the tree to check external status
-  const selectedFolder = useMemo(() => {
-    if (!selectedFolderId || !folders) return null;
-    const findFolder = (items: LibraryFolderTree[]): LibraryFolderTree | null => {
-      for (const item of items) {
-        if (item.id === selectedFolderId) return item;
-        const found = findFolder(item.children);
-        if (found) return found;
-      }
-      return null;
-    };
-    return findFolder(folders);
-  }, [selectedFolderId, folders]);
+  const handleProductionPrint = (file: ProductionActiveFile) => {
+    const lower = file.filename.toLowerCase();
+    setPrintFile({
+      id: file.id,
+      folder_id: selectedFolderId,
+      is_external: false,
+      filename: file.filename,
+      file_type: lower.endsWith('.gcode.3mf') ? 'gcode.3mf' : lower.endsWith('.gcode') ? 'gcode' : '3mf',
+      file_size: file.file_size,
+      thumbnail_path: file.thumbnail_path,
+      print_count: 0,
+      duplicate_count: 0,
+      created_by_id: null,
+      created_by_username: null,
+      created_at: '',
+      fs_modified_at: null,
+      print_name: file.filename,
+      print_time_seconds: file.print_time_seconds,
+      filament_used_grams: null,
+      sliced_for_model: file.sliced_for_model,
+    });
+  };
 
   return (
     <div
@@ -1728,6 +1754,7 @@ export function FileManagerPage() {
             )}
             {t('fileManager.generateThumbnails')}
           </Button>
+          {!isProductionFolder && (
           <Button
             variant="secondary"
             onClick={() => setShowExternalFolderModal(true)}
@@ -1737,6 +1764,8 @@ export function FileManagerPage() {
             <FolderSymlink className="w-4 h-4 mr-2" />
             {t('fileManager.linkExternal')}
           </Button>
+          )}
+          {!isProductionFolder && (
           <Button
             variant="secondary"
             onClick={() => setShowNewFolderModal(true)}
@@ -1746,6 +1775,7 @@ export function FileManagerPage() {
             <FolderPlus className="w-4 h-4 mr-2" />
             {t('fileManager.newFolder')}
           </Button>
+          )}
           {!viewEntered && (
             <Button
               variant="secondary"
@@ -1790,6 +1820,7 @@ export function FileManagerPage() {
               )}
             </Link>
           )}
+          {!isProductionFolder && (
           <Button
             onClick={() => setShowUploadModal(true)}
             disabled={!hasPermission('library:upload')}
@@ -1798,6 +1829,7 @@ export function FileManagerPage() {
             <Upload className="w-4 h-4 mr-2" />
             {t('common.upload')}
           </Button>
+          )}
         </div>
       </div>
 
@@ -2000,6 +2032,15 @@ export function FileManagerPage() {
               ))}
             </nav>
           )}
+          {isProductionFolder && selectedFolderId && selectedFolder?.production_printer_model ? (
+            <ProductionFolderView
+              folderId={selectedFolderId}
+              printerModel={selectedFolder.production_printer_model}
+              canUpload={canUpload}
+              onPrint={handleProductionPrint}
+            />
+          ) : (
+          <>
           {childFolders.length > 0 && (
             <div className="mb-6">
               <FolderCardGrid
@@ -2644,6 +2685,8 @@ export function FileManagerPage() {
                 ))}
               </div>
             </div>
+          )}
+          </>
           )}
         </div>
           {/* README rail — collapsible right column on lg+, stacks on top

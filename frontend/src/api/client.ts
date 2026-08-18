@@ -209,6 +209,42 @@ async function uploadSpoolsCsv<T>(file: File, dryRun: boolean): Promise<T> {
   return response.json();
 }
 
+/** Multipart POST that does not set Content-Type (browser sets the boundary).
+ *  Parses FastAPI `detail` as a string, validation array, or `{message}` object. */
+async function postFormData<T>(endpoint: string, formData: FormData): Promise<T> {
+  const headers: Record<string, string> = {};
+  if (authToken) {
+    headers.Authorization = `Bearer ${authToken}`;
+  }
+  const response = await fetch(`${API_BASE}${endpoint}`, {
+    method: 'POST',
+    headers,
+    body: formData,
+    credentials: 'include',
+    cache: 'no-store',
+  });
+  if (!response.ok) {
+    const error = await response.json().catch(() => ({}));
+    const detail = (error as { detail?: unknown }).detail;
+    let message: string;
+    if (typeof detail === 'string') {
+      message = detail;
+    } else if (Array.isArray(detail)) {
+      const joined = detail
+        .map((e: { msg?: string }) => (e.msg ?? '').replace(/^Value error,\s*/i, ''))
+        .filter(Boolean)
+        .join('; ');
+      message = joined || `HTTP ${response.status}`;
+    } else if (detail && typeof detail === 'object' && typeof (detail as { message?: unknown }).message === 'string') {
+      message = (detail as { message: string }).message;
+    } else {
+      message = `HTTP ${response.status}`;
+    }
+    throw new ApiError(message, response.status);
+  }
+  return response.json();
+}
+
 // Camera diagnostic result (#1395 follow-up). Returned by
 // POST /printers/{id}/camera/diagnose; the frontend modal renders one
 // row per stage and looks up the summary code in i18n for the user-
@@ -5816,6 +5852,59 @@ export const api = {
       `/library/folders/${folderId}/readme`,
     ),
 
+  getProductionFolder: (folderId: number) =>
+    request<ProductionFolderView>(`/production/folders/${folderId}`),
+  createProductionSlot: async (
+    file: File,
+    fields: {
+      folder_id?: number | null;
+      code?: string | null;
+      quantity?: number | null;
+      major?: number | null;
+      revision?: number | null;
+      minor?: number | null;
+      printer?: string | null;
+    } = {},
+  ): Promise<ProductionSlotResponse> => {
+    const formData = new FormData();
+    formData.append('file', file);
+    if (fields.folder_id != null) formData.append('folder_id', String(fields.folder_id));
+    if (fields.code) formData.append('code', fields.code);
+    if (fields.quantity != null) formData.append('quantity', String(fields.quantity));
+    if (fields.major != null) formData.append('major', String(fields.major));
+    if (fields.revision != null) formData.append('revision', String(fields.revision));
+    if (fields.minor != null) formData.append('minor', String(fields.minor));
+    if (fields.printer) formData.append('printer', fields.printer);
+    return postFormData<ProductionSlotResponse>('/production/slots', formData);
+  },
+  previewReplaceProductionSlot: async (slotId: number, file: File): Promise<ProductionReplacePreview> => {
+    const formData = new FormData();
+    formData.append('file', file);
+    return postFormData<ProductionReplacePreview>(`/production/slots/${slotId}/preview-replace`, formData);
+  },
+  replaceProductionSlot: async (
+    slotId: number,
+    file: File,
+    fields: {
+      resolution: 'proceed' | 'accept_baseline';
+      reason?: string | null;
+      major?: number | null;
+      revision?: number | null;
+      minor?: number | null;
+    },
+  ): Promise<ProductionSlotResponse> => {
+    const formData = new FormData();
+    formData.append('file', file);
+    formData.append('resolution', fields.resolution);
+    if (fields.reason) formData.append('reason', fields.reason);
+    if (fields.major != null) formData.append('major', String(fields.major));
+    if (fields.revision != null) formData.append('revision', String(fields.revision));
+    if (fields.minor != null) formData.append('minor', String(fields.minor));
+    return postFormData<ProductionSlotResponse>(`/production/slots/${slotId}/replace`, formData);
+  },
+  getProductionSlotHistory: (slotId: number) =>
+    request<ProductionRevisionResponse[]>(`/production/slots/${slotId}/history`),
+
   // ============ Library tag catalog (#1268) ============
   getLibraryTags: () =>
     request<LibraryTag[]>('/library/tags'),
@@ -6420,6 +6509,7 @@ export interface LibraryFolderTree {
   external_path: string | null;
   external_readonly: boolean;
   section_id: number | null;
+  production_printer_model: string | null;
   file_count: number;
   // max(folder.updated_at, max(immediate-child file.updated_at)). Used by
   // the File Manager folder tree's "sort by recent activity" mode (#1770).
@@ -6447,10 +6537,105 @@ export interface LibraryFolder {
   external_readonly: boolean;
   external_show_hidden: boolean;
   section_id: number | null;
+  production_printer_model: string | null;
   file_count: number;
   latest_activity_at: string | null;
   created_at: string;
   updated_at: string;
+}
+
+export interface ProductionActiveFile {
+  id: number;
+  filename: string;
+  thumbnail_path: string | null;
+  file_size: number;
+  print_time_seconds: number | null;
+  sliced_for_model: string | null;
+}
+
+export interface ProductionSlotNested {
+  id: number;
+  quantity: number;
+  major: number;
+  revision: number;
+  minor: number;
+  version: string;
+  active_file: ProductionActiveFile | null;
+  has_overrides: boolean;
+  last_mismatch: boolean | null;
+}
+
+export interface ProductionPartView {
+  id: number;
+  code: string;
+  name: string;
+  instance_id: number | null;
+  locked_parameters: Record<string, unknown> | null;
+  slots: ProductionSlotNested[];
+}
+
+export interface ProductionFolderView {
+  folder_id: number;
+  printer_model: string;
+  section_id: number | null;
+  parts: ProductionPartView[];
+}
+
+export interface ProductionSlotResponse {
+  id: number;
+  instance_id: number;
+  part_id: number;
+  code: string;
+  name: string;
+  quantity: number;
+  major: number;
+  revision: number;
+  minor: number;
+  version: string;
+  active_file: ProductionActiveFile | null;
+  has_overrides: boolean;
+  last_mismatch: boolean | null;
+  folder_id: number;
+  printer_model: string;
+  locked_parameters: Record<string, unknown> | null;
+}
+
+export interface ParsedProductionFilenameOut {
+  code: string;
+  quantity: number;
+  major: number;
+  revision: number;
+  minor: number;
+  printer: string;
+  version: string;
+}
+
+export interface ProductionParameterDiff {
+  key: string;
+  locked: unknown;
+  incoming: unknown;
+  match: boolean;
+}
+
+export interface ProductionReplacePreview {
+  parsed_filename: ParsedProductionFilenameOut | null;
+  current_version: string;
+  incoming_version: string | null;
+  version_is_newer: boolean;
+  suggested_next_version: string;
+  parameter_diff: ProductionParameterDiff[];
+  has_mismatches: boolean;
+  printer_matches_folder: boolean;
+}
+
+export interface ProductionRevisionResponse {
+  version: string;
+  filename: string | null;
+  mismatch: boolean;
+  accepted_new_baseline: boolean;
+  reason: string | null;
+  created_at: string;
+  file_id: number | null;
 }
 
 export interface LibraryFolderCreate {

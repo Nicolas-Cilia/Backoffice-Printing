@@ -2,7 +2,7 @@
  * Tests for the FileManagerPage component.
  */
 
-import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
+import { describe, it, expect, beforeEach } from 'vitest';
 import { screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { render } from '../utils';
@@ -1109,6 +1109,82 @@ describe('FileManagerPage', () => {
         expect(screen.getByText('Brackets')).toBeInTheDocument();
       });
       expect(screen.queryByText(/Invalid/)).not.toBeInTheDocument();
+    });
+  });
+
+  describe('production folder view', () => {
+    it('renders production slots and hides generic upload when the folder is tagged', async () => {
+      const user = userEvent.setup();
+      server.use(
+        http.get('/api/v1/library/folders', () => {
+          return HttpResponse.json([
+            ...mockFolders,
+            {
+              id: 99,
+              name: 'X1C',
+              parent_id: null,
+              file_count: 1,
+              project_id: null,
+              archive_id: null,
+              project_name: null,
+              archive_name: null,
+              latest_activity_at: null,
+              section_id: null,
+              production_printer_model: 'X1C',
+              children: [],
+            },
+          ]);
+        }),
+        http.get('/api/v1/production/folders/99', () => {
+          return HttpResponse.json({
+            folder_id: 99,
+            printer_model: 'X1C',
+            section_id: null,
+            parts: [
+              {
+                id: 1,
+                code: 'TOP',
+                name: 'Top',
+                instance_id: 10,
+                locked_parameters: {},
+                slots: [
+                  {
+                    id: 5,
+                    quantity: 1,
+                    major: 1,
+                    revision: 13,
+                    minor: 2,
+                    version: '1.13.2',
+                    active_file: {
+                      id: 42,
+                      filename: 'TOP - 1.13.2 - X1C.gcode.3mf',
+                      thumbnail_path: null,
+                      file_size: 1024,
+                      print_time_seconds: 3600,
+                      sliced_for_model: 'X1C',
+                    },
+                    has_overrides: false,
+                    last_mismatch: false,
+                  },
+                ],
+              },
+            ],
+          });
+        }),
+      );
+
+      render(<FileManagerPage />);
+      await waitFor(() => expect(screen.getByText('X1C')).toBeInTheDocument());
+      await user.click(screen.getByText('X1C'));
+
+      await waitFor(() => {
+        expect(screen.getByText('Production files')).toBeInTheDocument();
+      });
+      expect(screen.getByText('Replace')).toBeInTheDocument();
+      expect(screen.getByText('Add production file')).toBeInTheDocument();
+      expect(screen.queryByText('Upload')).not.toBeInTheDocument();
+      expect(screen.queryByText('New Folder')).not.toBeInTheDocument();
+      expect(screen.queryByText('Upload Files')).not.toBeInTheDocument();
     });
   });
 });
