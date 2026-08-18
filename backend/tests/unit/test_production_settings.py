@@ -191,6 +191,109 @@ class TestExtractProductionSettings:
         contract = extract_production_settings(_3mf(_config(fuzzy_skin="painted")))
         assert contract["fuzzy_skin"] == "paint"
 
+    def test_fuzzy_skin_paint_from_single_quoted_attr_outside_model(self):
+        xml = '<triangle v1="0" v2="1" v3="2" paint_fuzzy_skin=\'8F\'/>'
+        contract = extract_production_settings(
+            _3mf(_config(fuzzy_skin="none"), extra_files={"Metadata/model_settings.config": xml})
+        )
+        assert contract["fuzzy_skin"] == "paint"
+
+    def test_sliced_smooth_gcode_stays_allow_paint(self):
+        gcode = "G1 Z1.0\n"
+        for _ in range(3):
+            gcode += "; FEATURE: Outer wall\n"
+            x = 0.0
+            for _pt in range(50):
+                x += 2.0
+                gcode += f"G1 X{x:.3f} Y0.000 E0.02\n"
+            gcode += "; FEATURE: Inner wall\n"
+        contract = extract_production_settings(
+            _3mf(_config(fuzzy_skin="none"), extra_files={"Metadata/plate_1.gcode": gcode})
+        )
+        assert contract["fuzzy_skin"] == "none"
+
+    def test_sliced_jagged_gcode_detects_paint(self):
+        gcode = "G1 Z1.0\n"
+        for _ in range(3):
+            gcode += "; FEATURE: Outer wall\n"
+            x = 0.0
+            y = 0.0
+            for i in range(50):
+                x += 0.3
+                y += 0.12 if i % 2 == 0 else -0.12
+                gcode += f"G1 X{x:.3f} Y{y:.3f} E0.02\n"
+            gcode += "; FEATURE: Inner wall\n"
+        contract = extract_production_settings(
+            _3mf(
+                _config(fuzzy_skin="none", fuzzy_skin_point_distance="0.3"),
+                extra_files={"Metadata/plate_1.gcode": gcode},
+            )
+        )
+        assert contract["fuzzy_skin"] == "paint"
+
+    def test_one_jagged_outer_wall_is_not_enough(self):
+        gcode = "G1 Z1.0\n; FEATURE: Outer wall\n"
+        x = y = 0.0
+        for i in range(50):
+            x += 0.3
+            y += 0.12 if i % 2 == 0 else -0.12
+            gcode += f"G1 X{x:.3f} Y{y:.3f} E0.02\n"
+        gcode += "; FEATURE: Inner wall\n"
+        contract = extract_production_settings(
+            _3mf(_config(fuzzy_skin="none"), extra_files={"Metadata/plate_1.gcode": gcode})
+        )
+        assert contract["fuzzy_skin"] == "none"
+
+    def test_sliced_customized_fuzzy_settings_stay_none_without_mesh_paint(self):
+        config = _config(
+            fuzzy_skin="none",
+            different_settings_to_system=[
+                "brim_type;fuzzy_skin_point_distance;fuzzy_skin_thickness;wall_loops"
+            ],
+        )
+        contract = extract_production_settings(
+            _3mf(config, extra_files={"Metadata/plate_1.gcode": "; fuzzy_skin = none\n"})
+        )
+        assert contract["fuzzy_skin"] == "none"
+        assert contract["fuzzy_skin_thickness"] == 0.3
+
+    def test_unsliced_customized_fuzzy_settings_stay_none_without_paint(self):
+        config = _config(
+            fuzzy_skin="none",
+            different_settings_to_system=["fuzzy_skin_thickness;fuzzy_skin_point_distance"],
+        )
+        contract = extract_production_settings(_3mf(config))
+        assert contract["fuzzy_skin"] == "none"
+
+    def test_disabled_fuzzy_not_upgraded_by_sliced_settings(self):
+        config = _config(
+            fuzzy_skin="disabled_fuzzy",
+            different_settings_to_system=["fuzzy_skin_thickness;fuzzy_skin_point_distance"],
+        )
+        contract = extract_production_settings(
+            _3mf(config, extra_files={"Metadata/plate_1.gcode": "G1 X0 Y0\n"})
+        )
+        assert contract["fuzzy_skin"] == "disabled_fuzzy"
+
+    def test_fuzzy_skin_paint_from_utf16_model(self):
+        xml = (
+            '<?xml version="1.0"?>'
+            '<model><triangles>'
+            '<triangle v1="0" v2="1" v3="2" paint_fuzzy_skin="8"/>'
+            "</triangles></model>"
+        )
+        buffer = io.BytesIO()
+        with zipfile.ZipFile(buffer, "w") as zf:
+            zf.writestr("3D/3dmodel.model", "<model/>")
+            zf.writestr("Metadata/project_settings.config", json.dumps(_config(fuzzy_skin="none")))
+            zf.writestr("3D/Objects/object_1.model", xml.encode("utf-16-le"))
+        contract = extract_production_settings(buffer.getvalue())
+        assert contract["fuzzy_skin"] == "paint"
+
+    def test_zigzag_infill_normalizes_to_rectilinear(self):
+        contract = extract_production_settings(_3mf(_config(sparse_infill_pattern="zig-zag")))
+        assert contract["sparse_infill_pattern"] == "rectilinear"
+
     def test_unwraps_list_values(self):
         contract = extract_production_settings(_3mf(_config(layer_height=["0.16"])))
         assert contract["layer_height"] == 0.16

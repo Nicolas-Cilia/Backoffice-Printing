@@ -70,6 +70,7 @@ _DEFAULT_PART_NAMES = dict(DEFAULT_PARTS)
 _DEFAULT_CODE_ORDER = {code: i for i, (code, _) in enumerate(DEFAULT_PARTS)}
 _SLOT_EXISTS_DETAIL = "Use replace for existing production slots"
 _VALID_RESOLUTIONS = frozenset({"proceed", "accept_baseline"})
+_OWN_FILES_ONLY_DETAIL = "You can only delete your own files"
 
 
 def _format_version(major: int, revision: int, minor: int) -> str:
@@ -122,6 +123,39 @@ def _slot_nested(slot: ProductionSlot) -> ProductionSlotNested:
         last_mismatch=None if latest is None else latest.mismatch,
         parameter_overrides=slot.parameter_overrides,
     )
+
+
+def _fuzzy_skin_token(value: Any) -> str:
+    if value is None:
+        return ""
+    return str(value).strip().lower().replace("-", "_").replace(" ", "_")
+
+
+def _refresh_locked_fuzzy_from_active_file(
+    instance: ProductionPartInstance, slots: list[ProductionSlot]
+) -> bool:
+    """Upgrade stored `none` to `paint` when the active sliced 3MF has fuzzy G-code."""
+    locked = instance.locked_parameters or {}
+    if _fuzzy_skin_token(locked.get("fuzzy_skin")) == "paint":
+        return False
+    for slot in slots:
+        library_file = slot.active_file
+        if library_file is None or not library_file.file_path:
+            continue
+        abs_path = to_absolute_path(library_file.file_path)
+        if abs_path is None or not abs_path.is_file():
+            continue
+        try:
+            extracted = extract_production_settings(abs_path.read_bytes())
+        except OSError:
+            continue
+        if _fuzzy_skin_token(extracted.get("fuzzy_skin")) != "paint":
+            continue
+        updated = dict(locked)
+        updated["fuzzy_skin"] = "paint"
+        instance.locked_parameters = updated
+        return True
+    return False
 
 
 def _unique_slots(slots: list[ProductionSlot]) -> list[ProductionSlot]:
@@ -349,6 +383,55 @@ async def _load_slot(db: AsyncSession, slot_id: int) -> ProductionSlot:
     return slot
 
 
+def _slot_library_file_ids(slot: ProductionSlot) -> set[int]:
+    file_ids: set[int] = set()
+    if slot.active_file_id is not None:
+        file_ids.add(slot.active_file_id)
+    for revision in slot.revisions:
+        if revision.library_file_id is not None:
+            file_ids.add(revision.library_file_id)
+    return file_ids
+
+
+def _assert_can_delete_slot_files(
+    *,
+    user: User | None,
+    can_modify_all: bool,
+    files: list[LibraryFile],
+    slot: ProductionSlot,
+) -> None:
+    """Match File Manager: delete_all can trash anything; delete_own only own files."""
+    if can_modify_all:
+        return
+    if user is None:
+        raise HTTPException(status_code=403, detail=_OWN_FILES_ONLY_DETAIL)
+    if files:
+        if any(library_file.created_by_id != user.id for library_file in files):
+            raise HTTPException(status_code=403, detail=_OWN_FILES_ONLY_DETAIL)
+        return
+    owners = {revision.created_by_id for revision in slot.revisions}
+    if not owners or any(owner_id != user.id for owner_id in owners):
+        raise HTTPException(status_code=403, detail=_OWN_FILES_ONLY_DETAIL)
+
+
+async def _trash_library_files(db: AsyncSession, files: list[LibraryFile]) -> None:
+    """Soft-delete managed files; hard-delete external files. Same as File Manager."""
+    now = datetime.now(timezone.utc)
+    for library_file in files:
+        if library_file.deleted_at is not None:
+            continue
+        if library_file.is_external:
+            abs_thumb_path = to_absolute_path(library_file.thumbnail_path)
+            if abs_thumb_path and abs_thumb_path.exists():
+                try:
+                    abs_thumb_path.unlink()
+                except OSError as exc:
+                    logger.warning("Failed to delete thumbnail from disk: %s", exc)
+            await db.delete(library_file)
+        else:
+            library_file.deleted_at = now
+
+
 # ============ Endpoints ============
 
 
@@ -419,9 +502,14 @@ async def get_production_folder(
     )
     instance_by_part: dict[int, ProductionPartInstance] = {}
     slots_by_part: dict[int, list[ProductionSlot]] = {}
+    refreshed = False
     for inst in instances:
         instance_by_part.setdefault(inst.part_id, inst)
         slots_by_part.setdefault(inst.part_id, []).extend(inst.slots)
+        if _refresh_locked_fuzzy_from_active_file(inst, _unique_slots(inst.slots)):
+            refreshed = True
+    if refreshed:
+        await db.commit()
 
     seen_codes: set[str] = set()
     part_views: list[ProductionPartView] = []
@@ -672,6 +760,38 @@ async def replace_slot(
     db.add(revision_row)
     await db.flush()
     return _slot_response(slot, instance, part, latest=revision_row, active_file=library_file)
+
+
+@router.delete("/slots/{slot_id}")
+async def delete_slot(
+    slot_id: int,
+    db: AsyncSession = Depends(get_db),
+    auth_result: tuple[User | None, bool] = Depends(
+        require_ownership_permission(
+            Permission.LIBRARY_DELETE_ALL,
+            Permission.LIBRARY_DELETE_OWN,
+        )
+    ),
+):
+    """Remove a production slot and trash its active file plus revision history files.
+
+    The part instance and locked_parameters are kept so a later add of the same
+    part on this printer still has the contract. Managed library files go to
+    File Manager trash (``deleted_at``); restore is possible from /files/trash.
+    """
+    user, can_modify_all = auth_result
+    slot = await _load_slot(db, slot_id)
+    file_ids = _slot_library_file_ids(slot)
+    files: list[LibraryFile] = []
+    if file_ids:
+        files = list((await db.execute(select(LibraryFile).where(LibraryFile.id.in_(file_ids)))).scalars().all())
+    _assert_can_delete_slot_files(user=user, can_modify_all=can_modify_all, files=files, slot=slot)
+
+    await db.delete(slot)
+    await db.flush()
+    await _trash_library_files(db, files)
+    await db.flush()
+    return {"deleted": True}
 
 
 @router.get("/slots/{slot_id}/history", response_model=list[ProductionRevisionResponse])

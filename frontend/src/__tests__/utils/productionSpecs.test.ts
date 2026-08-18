@@ -20,6 +20,7 @@ const t = (key: string, options?: Record<string, unknown>) => {
   if (key.endsWith('brimOuter')) return 'Outer only';
   if (key.endsWith('nozzlesBoth')) return 'Both';
   if (key.endsWith('fuzzySkinPainted')) return 'Painted';
+  if (key.endsWith('fuzzySkinAllowPaint')) return 'Allow paint';
   if (key.endsWith('fuzzySkin')) return 'Fuzzy skin';
   if (key.endsWith('supportTreeAuto')) return 'Tree auto';
   if (key.endsWith('supportNormalAuto')) return 'Normal auto';
@@ -58,7 +59,7 @@ describe('formatSpecValue', () => {
     expect(formatSpecValue('sparse_infill_density', 20, t)).toBe('20%');
     expect(formatSpecValue('brim_type', 'auto_brim', t)).toBe('Auto brim');
     expect(formatSpecValue('brim_object_gap', 0.1, t)).toBe('0.1 mm');
-    expect(formatSpecValue('fuzzy_skin', 'none', t)).toBe('Off');
+    expect(formatSpecValue('fuzzy_skin', 'none', t)).toBe('Allow paint');
     expect(formatSpecValue('fuzzy_skin', 'all', t)).toBe('On');
     expect(formatSpecValue('fuzzy_skin', 'paint', t)).toBe('Painted');
     expect(formatSpecValue('fuzzy_skin', 'disabled_fuzzy', t)).toBe('Off');
@@ -118,7 +119,7 @@ describe('compactSpecItems', () => {
         },
         t,
       ),
-    ).toEqual(['0.2 mm', '20% infill', 'Auto brim', 'Fuzzy skin Off']);
+    ).toEqual(['0.2 mm', '20% infill', 'Auto brim', 'Fuzzy skin Allow paint']);
   });
 
   it('summarizes painted fuzzy skin instead of Off', () => {

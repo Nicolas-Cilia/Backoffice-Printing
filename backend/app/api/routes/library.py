@@ -16,7 +16,7 @@ from pathlib import Path
 
 from fastapi import APIRouter, Depends, File, HTTPException, Query, Response, UploadFile
 from fastapi.responses import FileResponse as FastAPIFileResponse
-from sqlalchemy import distinct, func, select
+from sqlalchemy import and_, distinct, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
@@ -33,6 +33,7 @@ from backend.app.core.tasks import spawn_background_task
 from backend.app.models.archive import PrintArchive
 from backend.app.models.library import LibraryFile, LibraryFileTag, LibraryFolder, LibraryFolderSection
 from backend.app.models.print_queue import PrintQueueItem
+from backend.app.models.production import ProductionPartInstance, ProductionSlot
 from backend.app.models.user import User
 from backend.app.schemas.library import (
     AddToQueueError,
@@ -728,6 +729,60 @@ async def _backfill_external_stl_thumbnails(folder_ids: list[int]) -> None:
 PRODUCTION_FOLDER_BLOCK_DETAIL = (
     "This folder is managed by Production. Use the production add/replace endpoints instead of a generic upload."
 )
+PRODUCTION_ACTIVE_FILE_DELETE_DETAIL = (
+    "This file is an active production slot. Use the production slot delete endpoint instead."
+)
+
+
+async def _apply_production_slot_file_counts(
+    db: AsyncSession, file_counts: dict[int, int], production_folder_ids: list[int]
+) -> None:
+    """Count active production slots instead of every library file in the folder.
+
+    Replace keeps superseded history files in the same folder, so a raw
+    ``LibraryFile`` count would show 2 after a single-slot replace.
+    """
+    if not production_folder_ids:
+        return
+    for folder_id in production_folder_ids:
+        file_counts[folder_id] = 0
+    result = await db.execute(
+        select(ProductionPartInstance.folder_id, func.count(ProductionSlot.id))
+        .join(ProductionSlot, ProductionSlot.instance_id == ProductionPartInstance.id)
+        .where(
+            ProductionPartInstance.folder_id.in_(production_folder_ids),
+            ProductionSlot.active_file_id.isnot(None),
+        )
+        .group_by(ProductionPartInstance.folder_id)
+    )
+    for folder_id, count in result.all():
+        file_counts[folder_id] = count
+
+
+async def _production_display_file_count(db: AsyncSession, folder: LibraryFolder, raw_count: int) -> int:
+    """Return the folder-card count: active slots for production folders."""
+    if not folder.production_printer_model:
+        return raw_count
+    overlay: dict[int, int] = {}
+    await _apply_production_slot_file_counts(db, overlay, [folder.id])
+    return overlay.get(folder.id, 0)
+
+
+def _not_superseded_production_file():
+    """Exclude replace-history files that remain in production folders.
+
+    Those rows stay in the folder with ``deleted_at`` null but are not any
+    slot's ``active_file_id``. Folder cards overlay ``file_count`` the same
+    way; library stats must match so Files/Size agree with what users see.
+    Non-production folders (and root) still count every non-trashed file.
+    """
+    production_folder_ids = select(LibraryFolder.id).where(LibraryFolder.production_printer_model.isnot(None))
+    active_file_ids = select(ProductionSlot.active_file_id).where(ProductionSlot.active_file_id.isnot(None))
+    return ~and_(
+        LibraryFile.folder_id.isnot(None),
+        LibraryFile.folder_id.in_(production_folder_ids),
+        LibraryFile.id.notin_(active_file_ids),
+    )
 
 
 async def _production_folder_block(db: AsyncSession, folder: LibraryFolder | None) -> None:
@@ -789,6 +844,8 @@ async def list_folders(
         .group_by(LibraryFile.folder_id)
     )
     file_counts = dict(file_counts_result.all())
+    production_folder_ids = [folder.id for folder, _ in rows if folder.production_printer_model]
+    await _apply_production_slot_file_counts(db, file_counts, production_folder_ids)
 
     # Latest immediate-child file activity per folder (#1770/#2680). Real on-disk
     # mtime when we have it (external scans populate ``fs_modified_at``), else the
@@ -902,7 +959,7 @@ async def get_folders_by_archive(
             )
         )
         file_count, latest_file = agg_result.one()
-        file_count = file_count or 0
+        file_count = await _production_display_file_count(db, folder, file_count or 0)
         own_activity = folder.fs_modified_at or folder.updated_at
         latest_activity_at = max(own_activity, latest_file) if latest_file is not None else own_activity
 
@@ -1017,7 +1074,7 @@ async def get_folder(
         )
     )
     file_count, latest_file = agg_result.one()
-    file_count = file_count or 0
+    file_count = await _production_display_file_count(db, folder, file_count or 0)
     latest_activity_at = max(folder.updated_at, latest_file) if latest_file is not None else folder.updated_at
 
     return FolderResponse(
@@ -1169,7 +1226,7 @@ async def update_folder(
         )
     )
     file_count, latest_file = agg_result.one()
-    file_count = file_count or 0
+    file_count = await _production_display_file_count(db, folder, file_count or 0)
     latest_activity_at = max(folder.updated_at, latest_file) if latest_file is not None else folder.updated_at
 
     # Get archive name
@@ -1235,7 +1292,7 @@ async def assign_folder_section(
         )
     )
     file_count, latest_file = agg_result.one()
-    file_count = file_count or 0
+    file_count = await _production_display_file_count(db, folder, file_count or 0)
     latest_activity_at = max(folder.updated_at, latest_file) if latest_file is not None else folder.updated_at
 
     archive_name = None
@@ -4657,6 +4714,12 @@ async def delete_file(
         if file.created_by_id != user.id:
             raise HTTPException(status_code=403, detail="You can only delete your own files")
 
+    active_slot = (
+        await db.execute(select(ProductionSlot.id).where(ProductionSlot.active_file_id == file_id).limit(1))
+    ).scalar_one_or_none()
+    if active_slot is not None:
+        raise HTTPException(status_code=409, detail=PRODUCTION_ACTIVE_FILE_DELETE_DETAIL)
+
     if file.is_external:
         # External files bypass the trash — just drop the DB row + our thumbnail.
         abs_thumb_path = to_absolute_path(file.thumbnail_path)
@@ -5038,7 +5101,9 @@ async def get_library_stats(
     # Stats exclude trashed files — users see counts/sizes for what's actually in the library.
     # Without LIBRARY_READ_ALL the stats reflect only the caller's own files —
     # match what the file list endpoint shows so the numbers stay consistent.
-    file_filters = [LibraryFile.deleted_at.is_(None)]
+    # Superseded production history stays in the folder after replace; omit it
+    # so Files/Size match the active-slot counts on production folder cards.
+    file_filters = [LibraryFile.deleted_at.is_(None), _not_superseded_production_file()]
     if user is not None and not can_read_all:
         file_filters.append(LibraryFile.created_by_id == user.id)
 

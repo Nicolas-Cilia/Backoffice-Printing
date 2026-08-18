@@ -115,7 +115,8 @@ export function isEnabledFlag(value: unknown): boolean {
   return false;
 }
 
-const FUZZY_SKIN_OFF = new Set(['none', 'off', '0', 'false', 'disabled', 'disabled_fuzzy']);
+const FUZZY_SKIN_OFF = new Set(['off', '0', 'false', 'disabled', 'disabled_fuzzy']);
+const FUZZY_SKIN_ALLOW_PAINT = new Set(['none']);
 const FUZZY_SKIN_PAINT = new Set(['paint', 'painted', 'selected', 'fuzzy_skin_paint', 'paint_only']);
 
 export function isFuzzySkinPaint(value: unknown): boolean {
@@ -126,11 +127,13 @@ export function isFuzzySkinPaint(value: unknown): boolean {
 export function isFuzzySkinOn(value: unknown): boolean {
   if (value == null) return false;
   const text = String(value).trim().toLowerCase().replace(/[\s-]+/g, '_');
-  return text !== '' && !FUZZY_SKIN_OFF.has(text);
+  return text !== '' && !FUZZY_SKIN_OFF.has(text) && !FUZZY_SKIN_ALLOW_PAINT.has(text);
 }
 
 function fuzzySkinLabel(value: unknown, t: Translate): string {
   if (isFuzzySkinPaint(value)) return t('fileManager.production.specs.fuzzySkinPainted');
+  const text = String(value).trim().toLowerCase().replace(/[\s-]+/g, '_');
+  if (FUZZY_SKIN_ALLOW_PAINT.has(text)) return t('fileManager.production.specs.fuzzySkinAllowPaint');
   return isFuzzySkinOn(value) ? t('fileManager.production.specs.on') : t('fileManager.production.specs.off');
 }
 

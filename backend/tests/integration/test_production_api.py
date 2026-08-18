@@ -12,6 +12,7 @@ from backend.app.models.production import PRODUCTION_PRINTER_MODELS
 _PRODUCTION_BLOCK = (
     "This folder is managed by Production. Use the production add/replace endpoints instead of a generic upload."
 )
+_PRODUCTION_ACTIVE_DELETE = "This file is an active production slot. Use the production slot delete endpoint instead."
 
 
 def _config(**overrides) -> dict:
@@ -36,11 +37,14 @@ def _config(**overrides) -> dict:
     return base
 
 
-def _3mf(config: dict | None = None) -> bytes:
+def _3mf(config: dict | None = None, extra_files: dict[str, str] | None = None) -> bytes:
     buffer = io.BytesIO()
     with zipfile.ZipFile(buffer, "w") as zf:
         zf.writestr("3D/3dmodel.model", "<model/>")
         zf.writestr("Metadata/project_settings.config", json.dumps(config if config is not None else _config()))
+        if extra_files:
+            for path, content in extra_files.items():
+                zf.writestr(path, content)
     return buffer.getvalue()
 
 
@@ -119,6 +123,59 @@ class TestProductionAPI:
         assert len(top["slots"]) == 1
         assert top["slots"][0]["id"] == slot["id"]
         assert {part["code"] for part in payload["parts"]} >= {"TOP", "BOT", "KNB", "BUT"}
+
+    async def test_list_folders_file_count_excludes_superseded(self, async_client: AsyncClient):
+        boot = (await async_client.post("/api/v1/production/bootstrap")).json()
+        x1c = next(folder for folder in boot["folders"] if folder["production_printer_model"] == "X1C")
+        files, data = _upload("TOP - 1.13.2 - X1C.3mf", folder_id=x1c["id"])
+        created = await async_client.post("/api/v1/production/slots", files=files, data=data)
+        assert created.status_code == 200, created.text
+
+        incoming, form = _upload("TOP - 1.14.0 - X1C.3mf", resolution="proceed")
+        replaced = await async_client.post(
+            f"/api/v1/production/slots/{created.json()['id']}/replace", files=incoming, data=form
+        )
+        assert replaced.status_code == 200, replaced.text
+
+        folders = (await async_client.get("/api/v1/library/folders")).json()
+        x1c_tree = next(folder for folder in folders if folder["id"] == x1c["id"])
+        assert x1c_tree["file_count"] == 1
+
+        other_production = [
+            folder for folder in folders if folder.get("production_printer_model") and folder["id"] != x1c["id"]
+        ]
+        assert all(folder["file_count"] == 0 for folder in other_production)
+
+        detail = await async_client.get(f"/api/v1/library/folders/{x1c['id']}")
+        assert detail.status_code == 200
+        assert detail.json()["file_count"] == 1
+
+    async def test_library_stats_excludes_superseded_production_files(self, async_client: AsyncClient):
+        boot = (await async_client.post("/api/v1/production/bootstrap")).json()
+        x1c = next(folder for folder in boot["folders"] if folder["production_printer_model"] == "X1C")
+        files, data = _upload("TOP - 1.13.2 - X1C.3mf", folder_id=x1c["id"])
+        created = await async_client.post("/api/v1/production/slots", files=files, data=data)
+        assert created.status_code == 200, created.text
+        slot_id = created.json()["id"]
+
+        active_size = None
+        for version in ("1.14.0", "1.15.0"):
+            incoming, form = _upload(f"TOP - {version} - X1C.3mf", resolution="proceed")
+            replaced = await async_client.post(f"/api/v1/production/slots/{slot_id}/replace", files=incoming, data=form)
+            assert replaced.status_code == 200, replaced.text
+            active_size = replaced.json()["active_file"]["file_size"]
+
+        regular = await async_client.post(
+            "/api/v1/library/files",
+            files={"file": ("extra.3mf", _3mf(), "application/octet-stream")},
+        )
+        assert regular.status_code == 200, regular.text
+
+        stats = await async_client.get("/api/v1/library/stats")
+        assert stats.status_code == 200
+        body = stats.json()
+        assert body["total_files"] == 2
+        assert body["total_size_bytes"] == active_size + regular.json()["file_size"]
 
     async def test_preview_replace_match_and_mismatch(self, async_client: AsyncClient):
         boot = (await async_client.post("/api/v1/production/bootstrap")).json()
@@ -266,3 +323,96 @@ class TestProductionAPI:
 
         ordinary = await async_client.get(f"/api/v1/production/folders/{folder.id}")
         assert ordinary.status_code == 400
+
+    async def test_delete_slot_trashes_files_and_allows_readd(self, async_client: AsyncClient):
+        boot = (await async_client.post("/api/v1/production/bootstrap")).json()
+        x1c = next(folder for folder in boot["folders"] if folder["production_printer_model"] == "X1C")
+        filename = "TOP x2 - 1.13.2 - X1C.3mf"
+        files, data = _upload(filename, folder_id=x1c["id"])
+        created = await async_client.post("/api/v1/production/slots", files=files, data=data)
+        assert created.status_code == 200, created.text
+        slot = created.json()
+        slot_id = slot["id"]
+        file_id = slot["active_file"]["id"]
+        instance_id = slot["instance_id"]
+        locked_height = slot["locked_parameters"]["layer_height"]
+
+        missing = await async_client.delete("/api/v1/production/slots/999999")
+        assert missing.status_code == 404
+
+        generic = await async_client.delete(f"/api/v1/library/files/{file_id}")
+        assert generic.status_code == 409
+        assert generic.json()["detail"] == _PRODUCTION_ACTIVE_DELETE
+
+        deleted = await async_client.delete(f"/api/v1/production/slots/{slot_id}")
+        assert deleted.status_code == 200
+        assert deleted.json() == {"deleted": True}
+
+        view = await async_client.get(f"/api/v1/production/folders/{x1c['id']}")
+        top = next(part for part in view.json()["parts"] if part["code"] == "TOP")
+        assert top["slots"] == []
+        assert top["instance_id"] == instance_id
+        assert top["locked_parameters"]["layer_height"] == locked_height
+
+        gone = await async_client.get(f"/api/v1/library/files/{file_id}")
+        assert gone.status_code == 404
+
+        trash = await async_client.get("/api/v1/library/trash")
+        assert trash.status_code == 200
+        assert file_id in {item["id"] for item in trash.json()["items"]}
+
+        files, data = _upload(filename, folder_id=x1c["id"])
+        readded = await async_client.post("/api/v1/production/slots", files=files, data=data)
+        assert readded.status_code == 200, readded.text
+        assert readded.json()["code"] == "TOP"
+        assert readded.json()["quantity"] == 2
+
+        view_after = await async_client.get(f"/api/v1/production/folders/{x1c['id']}")
+        top_after = next(part for part in view_after.json()["parts"] if part["code"] == "TOP")
+        assert len(top_after["slots"]) == 1
+        assert top_after["slots"][0]["quantity"] == 2
+
+    async def test_delete_slot_trashes_history_files(self, async_client: AsyncClient):
+        boot = (await async_client.post("/api/v1/production/bootstrap")).json()
+        x1c = next(folder for folder in boot["folders"] if folder["production_printer_model"] == "X1C")
+        files, data = _upload("TOP - 1.13.2 - X1C.3mf", folder_id=x1c["id"])
+        created = (await async_client.post("/api/v1/production/slots", files=files, data=data)).json()
+        slot_id = created["id"]
+        old_file_id = created["active_file"]["id"]
+
+        incoming, form = _upload("TOP - 1.14.0 - X1C.3mf", resolution="proceed")
+        replaced = await async_client.post(f"/api/v1/production/slots/{slot_id}/replace", files=incoming, data=form)
+        assert replaced.status_code == 200, replaced.text
+        new_file_id = replaced.json()["active_file"]["id"]
+        assert new_file_id != old_file_id
+
+        deleted = await async_client.delete(f"/api/v1/production/slots/{slot_id}")
+        assert deleted.status_code == 200
+
+        trash_ids = {item["id"] for item in (await async_client.get("/api/v1/library/trash")).json()["items"]}
+        assert old_file_id in trash_ids
+        assert new_file_id in trash_ids
+
+        history = await async_client.get(f"/api/v1/production/slots/{slot_id}/history")
+        assert history.status_code == 404
+
+    async def test_sliced_fuzzy_without_mesh_paint_stays_none(self, async_client: AsyncClient):
+        boot = (await async_client.post("/api/v1/production/bootstrap")).json()
+        a1 = next(folder for folder in boot["folders"] if folder["production_printer_model"] == "A1")
+        content = _3mf(
+            _config(
+                different_settings_to_system=[
+                    "fuzzy_skin_point_distance;fuzzy_skin_thickness;wall_loops"
+                ]
+            ),
+            extra_files={"Metadata/plate_1.gcode": "; fuzzy_skin = none\nG1 X0 Y0\n"},
+        )
+        files, data = _upload("TOP - 1.13.2 - A1.3mf", content, folder_id=a1["id"])
+        created = await async_client.post("/api/v1/production/slots", files=files, data=data)
+        assert created.status_code == 200, created.text
+        assert created.json()["locked_parameters"]["fuzzy_skin"] == "none"
+
+        view = await async_client.get(f"/api/v1/production/folders/{a1['id']}")
+        assert view.status_code == 200
+        top = next(part for part in view.json()["parts"] if part["code"] == "TOP")
+        assert top["locked_parameters"]["fuzzy_skin"] == "none"

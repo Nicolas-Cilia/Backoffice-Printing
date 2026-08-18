@@ -5904,6 +5904,8 @@ export const api = {
   },
   getProductionSlotHistory: (slotId: number) =>
     request<ProductionRevisionResponse[]>(`/production/slots/${slotId}/history`),
+  deleteProductionSlot: (slotId: number) =>
+    request<{ deleted: boolean }>(`/production/slots/${slotId}`, { method: 'DELETE' }),
 
   // ============ Library tag catalog (#1268) ============
   getLibraryTags: () =>

@@ -4,6 +4,7 @@ import { CheckCircle, Loader2, Upload, X, XCircle } from 'lucide-react';
 import { api } from '../../api/client';
 import type { ProductionParameterDiff, ProductionReplacePreview } from '../../api/client';
 import { Button } from '../Button';
+import { formatSpecValue, specLabelKey } from '../../utils/productionSpecs';
 
 interface ReplaceProductionFileModalProps {
   slotId: number;
@@ -13,15 +14,14 @@ interface ReplaceProductionFileModalProps {
   onReplaced: () => void;
 }
 
-function formatDiffValue(value: unknown): string {
+function formatDiffValue(key: string, value: unknown, t: (k: string, o?: Record<string, unknown>) => string): string {
   if (value === null || value === undefined) return '—';
-  if (typeof value === 'string') return value;
-  if (typeof value === 'number' || typeof value === 'boolean') return String(value);
-  try {
-    return JSON.stringify(value);
-  } catch {
-    return String(value);
-  }
+  return formatSpecValue(key, value, t);
+}
+
+function formatDiffKey(key: string, t: (k: string, o?: Record<string, unknown>) => string): string {
+  const labelKey = specLabelKey(key);
+  return labelKey ? t(labelKey) : key;
 }
 
 export function ReplaceProductionFileModal({
@@ -187,9 +187,9 @@ export function ReplaceProductionFileModal({
                         key={row.key}
                         className={row.match ? 'bg-green-500/10' : 'bg-red-500/10'}
                       >
-                        <td className="px-3 py-2 text-white font-mono text-xs">{row.key}</td>
-                        <td className="px-3 py-2 text-bambu-gray font-mono text-xs">{formatDiffValue(row.locked)}</td>
-                        <td className="px-3 py-2 font-mono text-xs">
+                        <td className="px-3 py-2 text-white text-xs">{formatDiffKey(row.key, t)}</td>
+                        <td className="px-3 py-2 text-bambu-gray text-xs">{formatDiffValue(row.key, row.locked, t)}</td>
+                        <td className="px-3 py-2 text-xs">
                           <span className="inline-flex items-center gap-1">
                             {row.match ? (
                               <CheckCircle className="w-3.5 h-3.5 text-green-500" />
@@ -197,7 +197,7 @@ export function ReplaceProductionFileModal({
                               <XCircle className="w-3.5 h-3.5 text-red-500" />
                             )}
                             <span className={row.match ? 'text-green-400' : 'text-red-400'}>
-                              {formatDiffValue(row.incoming)}
+                              {formatDiffValue(row.key, row.incoming, t)}
                             </span>
                           </span>
                         </td>

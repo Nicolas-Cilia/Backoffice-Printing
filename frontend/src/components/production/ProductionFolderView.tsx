@@ -1,10 +1,11 @@
 import { useMemo, useState, type DragEvent } from 'react';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { useTranslation } from 'react-i18next';
-import { FileBox, Loader2, Plus, Printer, RefreshCw, X } from 'lucide-react';
+import { ChevronRight, FileBox, Loader2, Plus, Printer, RefreshCw, Trash2, X } from 'lucide-react';
 import { api } from '../../api/client';
 import type { ProductionActiveFile, ProductionPartView, ProductionSlotNested } from '../../api/client';
 import { Button } from '../Button';
+import { ConfirmModal } from '../ConfirmModal';
 import { useAuth } from '../../contexts/AuthContext';
 import { useToast } from '../../contexts/ToastContext';
 import { AddProductionFileModal } from './AddProductionFileModal';
@@ -99,13 +100,17 @@ function SlotCard({
   slot,
   lockedParameters,
   canUpload,
+  canDelete,
   onReplace,
+  onDelete,
   onPrint,
 }: {
   slot: ProductionSlotNested;
   lockedParameters: Record<string, unknown> | null;
   canUpload: boolean;
+  canDelete: boolean;
   onReplace: () => void;
+  onDelete: () => void;
   onPrint?: (file: ProductionActiveFile) => void;
 }) {
   const { t } = useTranslation();
@@ -125,7 +130,9 @@ function SlotCard({
         ? 'bg-amber-500/20 text-amber-400'
         : 'bg-bambu-green/20 text-bambu-green';
   const specs = mergeProductionSpecs(lockedParameters, slot.parameter_overrides);
-  const summary = file && hasViewableSpecs(specs) ? compactSpecItems(specs, t) : [];
+  const canViewSpecs = Boolean(file && hasViewableSpecs(specs));
+  const summary = canViewSpecs ? compactSpecItems(specs, t) : [];
+  const statusChipClass = `text-xs px-1.5 py-0.5 rounded ${statusClass}`;
 
   return (
     <div className="bg-bambu-dark-secondary rounded-lg border border-bambu-dark-tertiary overflow-hidden flex flex-col">
@@ -142,6 +149,19 @@ function SlotCard({
         <span className="absolute top-2 left-2 text-xs px-1.5 py-0.5 rounded font-medium bg-bambu-dark/80 text-white">
           x{slot.quantity}
         </span>
+        {canDelete && (
+          <button
+            type="button"
+            onClick={(e) => {
+              e.stopPropagation();
+              onDelete();
+            }}
+            className="absolute top-1.5 right-1.5 z-10 p-1 rounded-md bg-white/85 border border-black/15 text-gray-800/70 hover:text-red-700 hover:bg-white hover:border-red-300 dark:bg-black/55 dark:border-white/25 dark:text-white/75 dark:hover:text-red-400 dark:hover:bg-black/75 dark:hover:border-red-400/40 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-gray-500 dark:focus-visible:ring-white/40 transition-colors"
+            aria-label={t('fileManager.production.delete')}
+          >
+            <Trash2 className="w-3.5 h-3.5" aria-hidden />
+          </button>
+        )}
       </div>
       <div className="p-3 flex-1 flex flex-col gap-2">
         <h3 className="text-sm font-medium text-white truncate" title={file?.filename}>
@@ -151,7 +171,20 @@ function SlotCard({
           <span className="text-xs px-1.5 py-0.5 rounded bg-bambu-dark text-bambu-gray font-mono">
             {slot.version}
           </span>
-          <span className={`text-xs px-1.5 py-0.5 rounded ${statusClass}`}>{statusLabel}</span>
+          {canViewSpecs ? (
+            <button
+              type="button"
+              onClick={() => setShowSpecs(true)}
+              className={`${statusChipClass} inline-flex items-center gap-0.5 cursor-pointer hover:brightness-125 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-current`}
+              aria-haspopup="dialog"
+              aria-expanded={showSpecs}
+            >
+              {statusLabel}
+              <ChevronRight className="w-3 h-3 opacity-80" aria-hidden />
+            </button>
+          ) : (
+            <span className={statusChipClass}>{statusLabel}</span>
+          )}
         </div>
         {summary.length > 0 && (
           <p className="text-[11px] text-bambu-gray leading-snug" data-testid="production-spec-summary">
@@ -159,11 +192,6 @@ function SlotCard({
           </p>
         )}
         <div className="mt-auto flex flex-col gap-2 pt-1">
-          {summary.length > 0 && (
-            <Button variant="ghost" onClick={() => setShowSpecs(true)} className="w-full">
-              {t('fileManager.production.specs.view')}
-            </Button>
-          )}
           {canUpload && (
             <Button onClick={onReplace} className="w-full">
               {t('fileManager.production.replace')}
@@ -196,12 +224,18 @@ export function ProductionFolderView({
 }: ProductionFolderViewProps) {
   const { t } = useTranslation();
   const { showToast } = useToast();
-  const { hasPermission } = useAuth();
+  const { hasPermission, hasAnyPermission } = useAuth();
   const queryClient = useQueryClient();
   const canPrint = hasPermission('queue:create');
+  const canDelete = hasAnyPermission('library:delete_own', 'library:delete_all');
   const [showAdd, setShowAdd] = useState(false);
   const [droppedFile, setDroppedFile] = useState<File | null>(null);
   const [replaceSlot, setReplaceSlot] = useState<ProductionSlotNested | null>(null);
+  const [deleteTarget, setDeleteTarget] = useState<{
+    slot: ProductionSlotNested;
+    part: ProductionPartView;
+  } | null>(null);
+  const [deleting, setDeleting] = useState(false);
   const [isDragging, setIsDragging] = useState(false);
 
   const { data, isLoading, isError, refetch } = useQuery({
@@ -240,6 +274,22 @@ export function ProductionFolderView({
     if (!next) return;
     setDroppedFile(next);
     setShowAdd(true);
+  };
+
+  const handleConfirmDelete = async () => {
+    if (!deleteTarget) return;
+    setDeleting(true);
+    try {
+      await api.deleteProductionSlot(deleteTarget.slot.id);
+      setDeleteTarget(null);
+      showToast(t('fileManager.production.slotDeleted'), 'success');
+      refresh();
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      showToast(t('fileManager.production.deleteFailed', { error: message }), 'error');
+    } finally {
+      setDeleting(false);
+    }
   };
 
   if (isLoading) {
@@ -314,7 +364,9 @@ export function ProductionFolderView({
                       slot={slot}
                       lockedParameters={part.locked_parameters}
                       canUpload={canUpload}
+                      canDelete={canDelete}
                       onReplace={() => setReplaceSlot(slot)}
+                      onDelete={() => setDeleteTarget({ slot, part })}
                       onPrint={canPrint ? onPrint : undefined}
                     />
                   ))}
@@ -354,6 +406,27 @@ export function ProductionFolderView({
             setReplaceSlot(null);
             showToast(t('fileManager.production.slotReplaced'), 'success');
             refresh();
+          }}
+        />
+      )}
+
+      {deleteTarget && (
+        <ConfirmModal
+          variant="danger"
+          title={t('fileManager.production.deleteConfirmTitle')}
+          message={`${t('fileManager.production.deleteConfirm', {
+            code: deleteTarget.part.code,
+            quantity: deleteTarget.slot.quantity,
+            version: deleteTarget.slot.version,
+            printer: printerModel,
+          })}\n\n${t('fileManager.production.deleteConfirmDetail')}`}
+          confirmText={t('fileManager.production.delete')}
+          isLoading={deleting}
+          onConfirm={() => {
+            void handleConfirmDelete();
+          }}
+          onCancel={() => {
+            if (!deleting) setDeleteTarget(null);
           }}
         />
       )}

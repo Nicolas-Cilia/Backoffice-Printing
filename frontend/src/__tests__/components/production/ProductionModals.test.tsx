@@ -62,8 +62,10 @@ describe('ReplaceProductionFileModal', () => {
 
     await waitFor(() => {
       expect(screen.getByText('nozzle_diameter')).toBeInTheDocument();
-      expect(screen.getByText('layer_height')).toBeInTheDocument();
+      expect(screen.getByText('Layer height')).toBeInTheDocument();
     });
+    expect(screen.getByText('0.2 mm')).toBeInTheDocument();
+    expect(screen.getByText('0.16 mm')).toBeInTheDocument();
     expect(screen.getByText('Proceed anyway')).toBeInTheDocument();
     expect(screen.getByText('Accept as new baseline')).toBeInTheDocument();
     expect(screen.getByText('1 parameter(s) differ')).toBeInTheDocument();

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import math
 import re
 import zipfile
 from io import BytesIO
@@ -74,8 +75,32 @@ _BRIM_OFF = frozenset({"no_brim", "none", "off"})
 # Process `none` is Bambu's "None (allow paint)". True off is `disabled_fuzzy`.
 _FUZZY_SKIN_OFF = frozenset({"none", "off", "0", "false", ""})
 _FUZZY_SKIN_PAINT_TOKENS = frozenset({"paint", "painted", "selected", "fuzzy_skin_paint", "paint_only"})
-# Bambu/Orca bbs_3mf writes `paint_fuzzy_skin`; Prusa-style 3MF uses slic3rpe:fuzzy_skin.
-_PAINT_FUZZY_SKIN_ATTR_RE = re.compile(rb'(?:paint_fuzzy_skin|slic3rpe:fuzzy_skin)="[^"]+"')
+# Bambu/Orca bbs_3mf writes paint_fuzzy_skin="…" on triangles (see bbs_3mf.cpp
+# CUSTOM_FUZZY_SKIN_ATTR). Prusa-style 3MF uses slic3rpe:fuzzy_skin. Sliced
+# .gcode.3mf files drop the mesh, so paint cannot be inferred from process
+# settings — thickness/distance are profile values, painted or not.
+_PAINT_FUZZY_SKIN_ATTR_RE = re.compile(
+    rb'(?:paint_fuzzy_skin|slic3rpe:fuzzy_skin)\s*=\s*(?:"[^"]+"|\'[^\']+\')',
+    re.IGNORECASE,
+)
+_PAINT_FUZZY_SKIN_UTF16LE = "paint_fuzzy_skin".encode("utf-16-le")
+_PAINT_FUZZY_SKIN_UTF16BE = "paint_fuzzy_skin".encode("utf-16-be")
+_SKIP_PAINT_SCAN_SUFFIXES = (".gcode", ".png", ".jpg", ".jpeg", ".webp", ".md5")
+_PAINT_SCAN_MAX_BYTES = 2_000_000
+# Sliced .gcode.3mf paint is baked into outer-wall motion: ~point_distance hops
+# with high turning angles. Process settings are identical for allow-paint.
+_FUZZY_GCODE_MIN_POINTS = 40
+_FUZZY_GCODE_MIN_WALLS = 3
+_FUZZY_GCODE_BAND_MIN = 0.45
+_FUZZY_GCODE_JAGGED_MIN = 0.45
+_FUZZY_GCODE_TURN_RAD = 0.35  # ~20°
+_GCODE_XY_RE = re.compile(rb"X(-?\d+(?:\.\d+)?).*Y(-?\d+(?:\.\d+)?)")
+_GCODE_Z_RE = re.compile(rb"Z(-?\d+(?:\.\d+)?)")
+
+# Bambu UI "Rectilinear" is stored as zigzag in older Prusa-descended configs.
+_INFILL_PATTERN_ALIASES = {
+    "zigzag": "rectilinear",
+}
 
 
 def extract_production_settings(source: bytes | zipfile.ZipFile) -> dict[str, Any]:
@@ -280,26 +305,151 @@ def _normalize_fuzzy_skin(value: Any) -> str:
     return text
 
 
+def _normalize_infill_pattern(value: Any) -> str:
+    text = str(value).strip()
+    compact = "".join(ch for ch in text.lower() if ch.isalnum())
+    return _INFILL_PATTERN_ALIASES.get(compact, text)
+
+
+def _bytes_look_like_fuzzy_paint(data: bytes) -> bool:
+    if _PAINT_FUZZY_SKIN_ATTR_RE.search(data):
+        return True
+    if _PAINT_FUZZY_SKIN_UTF16LE in data or _PAINT_FUZZY_SKIN_UTF16BE in data:
+        return True
+    # UTF-16 with NULs stripped still has to be an assignment with a value,
+    # not the process key fuzzy_skin = none in project_settings.
+    stripped = data.replace(b"\x00", b"")
+    return stripped is not data and _PAINT_FUZZY_SKIN_ATTR_RE.search(stripped) is not None
+
+
+def _should_scan_member_for_paint(name: str, info: zipfile.ZipInfo) -> bool:
+    lower = name.lower()
+    if lower.endswith(_SKIP_PAINT_SCAN_SUFFIXES):
+        return False
+    if info.file_size > _PAINT_SCAN_MAX_BYTES and not lower.endswith(".model"):
+        return False
+    return True
+
+
 def _has_fuzzy_skin_paint(zf: zipfile.ZipFile) -> bool:
-    """True if any mesh triangle carries Bambu/Prusa fuzzy-skin paint data."""
+    """True if any archive member carries Bambu/Prusa fuzzy-skin paint data."""
     for name in zf.namelist():
-        if not name.endswith(".model"):
+        try:
+            info = zf.getinfo(name)
+        except KeyError:
+            continue
+        if not _should_scan_member_for_paint(name, info):
             continue
         try:
             data = zf.read(name)
         except OSError:
             continue
-        if _PAINT_FUZZY_SKIN_ATTR_RE.search(data):
+        if _bytes_look_like_fuzzy_paint(data):
+            return True
+    return False
+
+
+def _as_positive_float(value: Any, default: float) -> float:
+    number = _as_number(value)
+    if number is None:
+        return default
+    magnitude = abs(float(number))
+    return magnitude if magnitude > 0 else default
+
+
+def _outer_wall_is_fuzzy(points: list[tuple[float, float]], point_distance: float) -> bool:
+    if len(points) < _FUZZY_GCODE_MIN_POINTS:
+        return False
+    dists = [math.hypot(b[0] - a[0], b[1] - a[1]) for a, b in zip(points, points[1:])]
+    if not dists:
+        return False
+    lo = 0.6 * point_distance
+    hi = 1.5 * point_distance
+    band = sum(1 for dist in dists if lo <= dist <= hi) / len(dists)
+    turns: list[float] = []
+    for a, b, c in zip(points, points[1:], points[2:]):
+        v1 = (b[0] - a[0], b[1] - a[1])
+        v2 = (c[0] - b[0], c[1] - b[1])
+        n1 = math.hypot(*v1)
+        n2 = math.hypot(*v2)
+        if n1 <= 1e-6 or n2 <= 1e-6:
+            continue
+        dot = max(-1.0, min(1.0, (v1[0] * v2[0] + v1[1] * v2[1]) / (n1 * n2)))
+        turns.append(abs(math.acos(dot)))
+    if not turns:
+        return False
+    jagged = sum(1 for turn in turns if turn > _FUZZY_GCODE_TURN_RAD) / len(turns)
+    return band >= _FUZZY_GCODE_BAND_MIN and jagged >= _FUZZY_GCODE_JAGGED_MIN
+
+
+def _gcode_member_looks_like_fuzzy_paint(
+    zf: zipfile.ZipFile, name: str, *, point_distance: float, min_z: float
+) -> bool:
+    fuzzy_walls = 0
+    z = 0.0
+    feature: bytes | None = None
+    points: list[tuple[float, float]] = []
+    try:
+        handle = zf.open(name)
+    except OSError:
+        return False
+    with handle:
+        for raw in handle:
+            if raw.startswith(b"G0 ") or raw.startswith(b"G1 "):
+                zm = _GCODE_Z_RE.search(raw)
+                if zm:
+                    try:
+                        z = float(zm.group(1))
+                    except ValueError:
+                        pass
+            if raw.startswith(b"; FEATURE:"):
+                if feature == b"Outer wall" and z >= min_z and _outer_wall_is_fuzzy(points, point_distance):
+                    fuzzy_walls += 1
+                    if fuzzy_walls >= _FUZZY_GCODE_MIN_WALLS:
+                        return True
+                feature = raw.split(b":", 1)[1].strip()
+                points = []
+                continue
+            if (
+                feature == b"Outer wall"
+                and raw.startswith(b"G1 ")
+                and b"E" in raw
+                and b"X" in raw
+                and b"Y" in raw
+            ):
+                xy = _GCODE_XY_RE.search(raw)
+                if xy:
+                    try:
+                        points.append((float(xy.group(1)), float(xy.group(2))))
+                    except ValueError:
+                        pass
+        if feature == b"Outer wall" and z >= min_z and _outer_wall_is_fuzzy(points, point_distance):
+            fuzzy_walls += 1
+    return fuzzy_walls >= _FUZZY_GCODE_MIN_WALLS
+
+
+def _gcode_looks_like_fuzzy_paint(zf: zipfile.ZipFile, contract: dict[str, Any]) -> bool:
+    """True when sliced G-code outer walls show painted fuzzy-skin jitter."""
+    point_distance = _as_positive_float(contract.get("fuzzy_skin_point_distance"), 0.3)
+    layer_height = _as_positive_float(contract.get("layer_height"), 0.2)
+    min_z = max(layer_height * 1.6, 0.35)
+    for name in zf.namelist():
+        lower = name.lower()
+        if not lower.endswith(".gcode") or lower.endswith(".md5"):
+            continue
+        if _gcode_member_looks_like_fuzzy_paint(
+            zf, name, point_distance=point_distance, min_z=min_z
+        ):
             return True
     return False
 
 
 def _apply_fuzzy_skin_paint(zf: zipfile.ZipFile, contract: dict[str, Any]) -> None:
-    """Upgrade process `none` to `paint` when triangles were painted for fuzzy skin."""
+    """Upgrade process `none` to `paint` from mesh attributes or sliced G-code jitter."""
     token = _fuzzy_skin_token(contract.get("fuzzy_skin"))
     if token not in _FUZZY_SKIN_OFF:
         return
-    if _has_fuzzy_skin_paint(zf):
+    if _has_fuzzy_skin_paint(zf) or _gcode_looks_like_fuzzy_paint(zf, contract):
         contract["fuzzy_skin"] = "paint"
 
 
@@ -311,6 +461,8 @@ def _normalize_value(key: str, value: Any) -> Any:
         return _normalize_line_width(value)
     if key == "fuzzy_skin":
         return _normalize_fuzzy_skin(value)
+    if key == "sparse_infill_pattern":
+        return _normalize_infill_pattern(value)
     if key in BOOL_KEYS:
         return _as_bool(value)
     if key in STRING_KEYS:
