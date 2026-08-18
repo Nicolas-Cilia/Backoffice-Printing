@@ -28,7 +28,9 @@ MULTI_COLOR_KEY = "_multi_color"
 # support_style: Bambu/Orca tree *style* (`tree_slim`, `tree_hybrid`, `organic`, …),
 # distinct from support_type (`tree(auto)`, `normal(auto)`, …). Some 3MFs store
 # the same value on tree_support_style; extract normalizes to support_style.
+# curr_bed_type: Bambu process key (sometimes `bed_type`); omitted when absent.
 CONTRACT_KEYS: tuple[str, ...] = (
+    "curr_bed_type",
     "layer_height",
     "initial_layer_line_width",
     "sparse_infill_density",
@@ -61,6 +63,7 @@ MM_KEYS = frozenset(
 )
 STRING_KEYS = frozenset(
     {
+        "curr_bed_type",
         "sparse_infill_pattern",
         "brim_type",
         "fuzzy_skin",
@@ -100,6 +103,31 @@ _GCODE_Z_RE = re.compile(rb"Z(-?\d+(?:\.\d+)?)")
 # Bambu UI "Rectilinear" is stored as zigzag in older Prusa-descended configs.
 _INFILL_PATTERN_ALIASES = {
     "zigzag": "rectilinear",
+}
+
+# Canonical BambuStudio / OrcaSlicer curr_bed_type strings. Compact keys are
+# alphanumeric lowercased so "Smooth PEI", "smooth_pei", and "Smooth PEI Plate"
+# collapse to the same plate. Unknown values are kept as-is (never invented).
+_BED_TYPE_ALIASES = {
+    "texturedpeiplate": "Textured PEI Plate",
+    "texturedpei": "Textured PEI Plate",
+    "btpte": "Textured PEI Plate",
+    "smoothpeiplate": "Smooth PEI Plate",
+    "smoothpei": "Smooth PEI Plate",
+    "btpeismooth": "Smooth PEI Plate",
+    "coolplate": "Cool Plate",
+    "pcplate": "Cool Plate",
+    "btpc": "Cool Plate",
+    "coolplatesupertack": "Cool Plate (SuperTack)",
+    "supertackplate": "Cool Plate (SuperTack)",
+    "bambucoolplatesupertack": "Cool Plate (SuperTack)",
+    "supertack": "Cool Plate (SuperTack)",
+    "btsupertack": "Cool Plate (SuperTack)",
+    "engineeringplate": "Engineering Plate",
+    "btep": "Engineering Plate",
+    "hightempplate": "High Temp Plate",
+    "hotplate": "High Temp Plate",
+    "btpei": "High Temp Plate",
 }
 
 
@@ -165,7 +193,10 @@ def _extract_from_zip(zf: zipfile.ZipFile) -> dict[str, Any]:
         present, raw = _contract_source_value(key, config)
         if not present:
             continue
-        contract[key] = _normalize_value(key, raw)
+        normalized = _normalize_value(key, raw)
+        if key == "curr_bed_type" and not normalized:
+            continue
+        contract[key] = normalized
 
     mapping = extract_nozzle_mapping_from_3mf(zf)
     if mapping:
@@ -309,6 +340,14 @@ def _normalize_infill_pattern(value: Any) -> str:
     text = str(value).strip()
     compact = "".join(ch for ch in text.lower() if ch.isalnum())
     return _INFILL_PATTERN_ALIASES.get(compact, text)
+
+
+def _normalize_bed_type(value: Any) -> str | None:
+    text = str(value).strip()
+    if not text:
+        return None
+    compact = "".join(ch for ch in text.lower() if ch.isalnum())
+    return _BED_TYPE_ALIASES.get(compact, text)
 
 
 def _bytes_look_like_fuzzy_paint(data: bytes) -> bool:
@@ -463,6 +502,8 @@ def _normalize_value(key: str, value: Any) -> Any:
         return _normalize_fuzzy_skin(value)
     if key == "sparse_infill_pattern":
         return _normalize_infill_pattern(value)
+    if key == "curr_bed_type":
+        return _normalize_bed_type(value)
     if key in BOOL_KEYS:
         return _as_bool(value)
     if key in STRING_KEYS:
@@ -480,6 +521,12 @@ def _contract_source_value(key: str, config: dict[str, Any]) -> tuple[bool, Any]
             return True, config["support_style"]
         if "tree_support_style" in config:
             return True, config["tree_support_style"]
+        return False, None
+    if key == "curr_bed_type":
+        if "curr_bed_type" in config:
+            return True, config["curr_bed_type"]
+        if "bed_type" in config:
+            return True, config["bed_type"]
         return False, None
     if key in config:
         return True, config[key]

@@ -7722,21 +7722,27 @@ async def auth_middleware(request, call_next):
     # probe — GHSA-6mf4-q26m-47pv: the previous fail-open path here let
     # an attacker who could force a DB exception (e.g. file-descriptor
     # exhaustion via login flood) bypass auth on every protected endpoint.
+    #
+    # ``call_next`` MUST stay outside this try. When auth is disabled the
+    # probe succeeds and the route runs; wrapping dispatch here turned
+    # every handler exception (SQLite lock, 404 HTTPException that
+    # BaseHTTPMiddleware re-raises, …) into a fake "Authentication
+    # service temporarily unavailable" 503.
     try:
         async with async_session() as db:
             from backend.app.core.auth import is_auth_enabled
 
             auth_enabled = await is_auth_enabled(db)
-
-        if not auth_enabled:
-            # Auth disabled, allow all requests
-            return await call_next(request)
     except Exception:
         logging.getLogger(__name__).exception("auth_middleware: failing closed on auth-probe error from %s", path)
         return JSONResponse(
             status_code=503,
             content={"detail": "Authentication service temporarily unavailable"},
         )
+
+    if not auth_enabled:
+        # Auth disabled, allow all requests
+        return await call_next(request)
 
     # Auth is enabled - require valid token
     auth_header = request.headers.get("Authorization")

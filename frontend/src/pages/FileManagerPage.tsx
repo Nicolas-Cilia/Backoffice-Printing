@@ -73,6 +73,7 @@ import { usePageFileDrop } from '../hooks/usePageFileDrop';
 import { useAuth } from '../contexts/AuthContext';
 import { formatDuration, parseUTCDate, formatDate } from '../utils/date';
 import { formatFileSize } from '../utils/file';
+import { libraryTagsQueryKey } from '../utils/libraryTagsQuery';
 
 type SortField = 'name' | 'date' | 'size' | 'type' | 'prints';
 type SortDirection = 'asc' | 'desc';
@@ -84,6 +85,9 @@ function isTrackingFolder(folder: {
 }): boolean {
   return Boolean(folder.parameter_tracking || folder.production_printer_model);
 }
+
+/** Temporarily hide File Manager "Link External". Flip to true to restore the UI. */
+const SHOW_LINK_EXTERNAL = false;
 
 // New Folder Modal
 interface NewFolderModalProps {
@@ -975,6 +979,8 @@ interface FileCardProps {
   onRename?: (file: LibraryFileListItem) => void;
   onGenerateThumbnail?: (file: LibraryFileListItem) => void;
   onTagClick?: (tagId: number) => void;
+  onEditTags?: (file: LibraryFileListItem) => void;
+  onRemoveTag?: (fileId: number, tagId: number) => void;
   thumbnailVersion?: number;
   hasPermission: (permission: Permission) => boolean;
   canModify: (resource: 'queue' | 'archives' | 'library', action: 'update' | 'delete' | 'reprint', createdById: number | null | undefined) => boolean;
@@ -983,8 +989,10 @@ interface FileCardProps {
   t: TFunction;
 }
 
-function FileCard({ file, isSelected, isMobile, onSelect, onDelete, onDownload, onPrint, onSlice, onRunPipeline, useSlicerApi, onPreview3d, onRename, onGenerateThumbnail, onTagClick, thumbnailVersion, hasPermission, canModify, authEnabled, showModified, t }: FileCardProps) {
+function FileCard({ file, isSelected, isMobile, onSelect, onDelete, onDownload, onPrint, onSlice, onRunPipeline, useSlicerApi, onPreview3d, onRename, onGenerateThumbnail, onTagClick, onEditTags, onRemoveTag, thumbnailVersion, hasPermission, canModify, authEnabled, showModified, t }: FileCardProps) {
   const [showActions, setShowActions] = useState(false);
+  const canEditTags = Boolean(onEditTags) && canModify('library', 'update', file.created_by_id);
+  const attachedTags = file.tags ?? [];
 
   return (
     <div
@@ -1058,29 +1066,61 @@ function FileCard({ file, isSelected, isMobile, onSelect, onDelete, onDownload, 
             {formatDate(file.fs_modified_at ?? file.created_at)}
           </div>
         )}
-        {(file.tags?.length ?? 0) > 0 && (
+        {(attachedTags.length > 0 || canEditTags) && (
           <div className="mt-2 flex flex-wrap gap-1" onClick={(e) => e.stopPropagation()}>
-            {file.tags!.map((tg) => (
-              <button
+            {attachedTags.map((tg) => (
+              <span
                 key={tg.id}
-                type="button"
-                onClick={() => onTagClick?.(tg.id)}
-                className="inline-flex items-center gap-0.5 px-1.5 py-0.5 rounded-full text-[10px] bg-bambu-green/10 text-bambu-green hover:bg-bambu-green/20 transition-colors max-w-full"
-                title={tg.name}
+                className="inline-flex items-center max-w-full rounded-full bg-bambu-green/10 text-bambu-green text-[10px]"
               >
-                <TagIcon className="w-2.5 h-2.5 flex-shrink-0" />
-                <span className="truncate">{tg.name}</span>
-              </button>
+                <button
+                  type="button"
+                  onClick={() => onTagClick?.(tg.id)}
+                  className={`inline-flex items-center gap-0.5 pl-1.5 py-0.5 hover:bg-bambu-green/20 transition-colors min-w-0 ${
+                    canEditTags && onRemoveTag ? 'rounded-l-full' : 'pr-1.5 rounded-full'
+                  }`}
+                  title={tg.name}
+                >
+                  <TagIcon className="w-2.5 h-2.5 flex-shrink-0" />
+                  <span className="truncate">{tg.name}</span>
+                </button>
+                {canEditTags && onRemoveTag && (
+                  <button
+                    type="button"
+                    className="pr-1 pl-0.5 py-0.5 hover:text-white rounded-r-full"
+                    onClick={() => onRemoveTag(file.id, tg.id)}
+                    aria-label={t('fileManager.tags.removeFromFileAria', { name: tg.name })}
+                    title={t('fileManager.tags.removeFromFileAria', { name: tg.name })}
+                  >
+                    <X className="w-2.5 h-2.5" />
+                  </button>
+                )}
+              </span>
             ))}
+            {canEditTags && (
+              <button
+                type="button"
+                onClick={() => onEditTags?.(file)}
+                className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full border border-dashed border-bambu-green/70 text-bambu-green text-[11px] font-medium hover:bg-bambu-green/10 transition-colors"
+                aria-label={t('fileManager.tags.addToFileAria')}
+                title={t('fileManager.tags.fileTooltip')}
+              >
+                <Plus className="w-3 h-3" />
+                {t('fileManager.tags.title')}
+              </button>
+            )}
           </div>
         )}
       </div>
 
-      {/* Actions - always visible on mobile, hover on desktop */}
-      <div className={`absolute bottom-2 right-2 transition-opacity ${isMobile ? 'opacity-100' : 'opacity-0 group-hover:opacity-100'}`} onClick={(e) => e.stopPropagation()}>
+      {/* Actions — always visible so Tags / rename / delete are discoverable */}
+      <div className="absolute bottom-2 right-2" onClick={(e) => e.stopPropagation()}>
         <button
           onClick={() => setShowActions(!showActions)}
           className="p-1.5 rounded bg-bambu-dark-secondary/90 hover:bg-bambu-dark-tertiary"
+          aria-label={t('common.actions')}
+          aria-haspopup="menu"
+          aria-expanded={showActions}
         >
           <MoreVertical className="w-4 h-4 text-bambu-gray" />
         </button>
@@ -1164,6 +1204,19 @@ function FileCard({ file, isSelected, isMobile, onSelect, onDelete, onDownload, 
                   {t('common.rename')}
                 </button>
               )}
+              {onEditTags && (
+                <button
+                  className={`w-full px-3 py-1.5 text-left text-sm flex items-center gap-2 ${
+                    canEditTags ? 'text-white hover:bg-bambu-dark' : 'text-bambu-gray cursor-not-allowed'
+                  }`}
+                  onClick={() => { if (canEditTags) { onEditTags(file); setShowActions(false); } }}
+                  disabled={!canEditTags}
+                  title={!canEditTags ? t('fileManager.tags.noPermission') : t('fileManager.tags.fileTooltip')}
+                >
+                  <TagIcon className="w-3.5 h-3.5" />
+                  {t('fileManager.tags.title')}
+                </button>
+              )}
               {onGenerateThumbnail && file.file_type === 'stl' && (
                 <button
                   className={`w-full px-3 py-1.5 text-left text-sm flex items-center gap-2 ${
@@ -1236,7 +1289,10 @@ export function FileManagerPage() {
   // the listing; setting it bypasses folder scoping on the server so
   // "every toy" works regardless of which folder is currently selected.
   const [showTagsModal, setShowTagsModal] = useState(false);
-  const [showBulkTagsModal, setShowBulkTagsModal] = useState(false);
+  const [tagPickerTarget, setTagPickerTarget] = useState<{
+    fileIds: number[];
+    currentTagIds?: number[];
+  } | null>(null);
   const [selectedTagIds, setSelectedTagIds] = useState<number[]>([]);
   const [linkFolder, setLinkFolder] = useState<LibraryFolderTree | null>(null);
   const [deleteConfirm, setDeleteConfirm] = useState<{ type: 'file' | 'folder' | 'bulk'; id: number; count?: number } | null>(null);
@@ -1396,7 +1452,7 @@ export function FileManagerPage() {
   // Cheap query, shared with LibraryTagsModal / BulkTagsPickerModal via the
   // same queryKey so they all invalidate together on tag CRUD.
   const { data: tagCatalog = [] } = useQuery({
-    queryKey: ['library-tags'],
+    queryKey: libraryTagsQueryKey,
     queryFn: api.getLibraryTags,
   });
   const tagsById = useMemo(() => {
@@ -1627,6 +1683,37 @@ export function FileManagerPage() {
     },
     onError: (error: Error) => showToast(error.message, 'error'),
   });
+
+  const removeFileTagMutation = useMutation({
+    mutationFn: ({ fileId, tagId }: { fileId: number; tagId: number }) =>
+      api.bulkAssignLibraryTags([fileId], [tagId], 'remove'),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['library-files'] });
+      queryClient.invalidateQueries({ queryKey: libraryTagsQueryKey });
+    },
+    onError: (error: Error) => {
+      showToast(error.message || t('fileManager.tags.applyFailed'), 'error');
+    },
+  });
+
+  const openFileTagPicker = useCallback((file: LibraryFileListItem) => {
+    setTagPickerTarget({
+      fileIds: [file.id],
+      currentTagIds: (file.tags ?? []).map((tg) => tg.id),
+    });
+  }, []);
+
+  const openSelectionTagPicker = useCallback(() => {
+    if (selectedFiles.length === 1) {
+      const file = files?.find((f) => f.id === selectedFiles[0]);
+      setTagPickerTarget({
+        fileIds: selectedFiles,
+        currentTagIds: (file?.tags ?? []).map((tg) => tg.id),
+      });
+      return;
+    }
+    setTagPickerTarget({ fileIds: selectedFiles });
+  }, [files, selectedFiles]);
 
   const updateFolderMutation = useMutation({
     mutationFn: ({ id, data }: { id: number; data: LibraryFolderUpdate }) =>
@@ -1918,7 +2005,7 @@ export function FileManagerPage() {
             )}
             {t('fileManager.generateThumbnails')}
           </Button>
-          {!isProductionFolder && (
+          {SHOW_LINK_EXTERNAL && !isProductionFolder && (
           <Button
             variant="secondary"
             onClick={() => setShowExternalFolderModal(true)}
@@ -2194,6 +2281,16 @@ export function FileManagerPage() {
                           <span className="hidden sm:inline">{t('common.move')}</span>
                         </Button>
                         <Button
+                          variant="secondary"
+                          size="sm"
+                          onClick={openSelectionTagPicker}
+                          disabled={!hasAnyPermission('library:update_own', 'library:update_all')}
+                          title={!hasAnyPermission('library:update_own', 'library:update_all') ? t('fileManager.tags.noPermission') : t('fileManager.tags.bulkTooltip')}
+                        >
+                          <TagIcon className="w-4 h-4 sm:mr-1" />
+                          <span className="hidden sm:inline">{t('fileManager.tags.tagAction')}</span>
+                        </Button>
+                        <Button
                           variant="danger"
                           size="sm"
                           onClick={() => {
@@ -2241,6 +2338,8 @@ export function FileManagerPage() {
                         onRename={(f) => setRenameItem({ type: 'file', id: f.id, name: f.filename })}
                         onGenerateThumbnail={(f) => singleThumbnailMutation.mutate(f.id)}
                         onTagClick={toggleTagFilter}
+                        onEditTags={openFileTagPicker}
+                        onRemoveTag={(fileId, tagId) => removeFileTagMutation.mutate({ fileId, tagId })}
                         thumbnailVersion={thumbnailVersions[file.id]}
                         hasPermission={hasPermission}
                         canModify={canModify}
@@ -2567,7 +2666,7 @@ export function FileManagerPage() {
                     <Button
                       variant="secondary"
                       size="sm"
-                      onClick={() => setShowBulkTagsModal(true)}
+                      onClick={openSelectionTagPicker}
                       disabled={!hasAnyPermission('library:update_own', 'library:update_all')}
                       title={!hasAnyPermission('library:update_own', 'library:update_all') ? t('fileManager.tags.noPermission') : t('fileManager.tags.bulkTooltip')}
                     >
@@ -2676,6 +2775,8 @@ export function FileManagerPage() {
                     onRename={(f) => setRenameItem({ type: 'file', id: f.id, name: f.filename })}
                     onGenerateThumbnail={(f) => singleThumbnailMutation.mutate(f.id)}
                     onTagClick={toggleTagFilter}
+                    onEditTags={openFileTagPicker}
+                    onRemoveTag={(fileId, tagId) => removeFileTagMutation.mutate({ fileId, tagId })}
                     thumbnailVersion={thumbnailVersions[file.id]}
                     hasPermission={hasPermission}
                     canModify={canModify}
@@ -2736,7 +2837,7 @@ export function FileManagerPage() {
         />
       )}
 
-      {showExternalFolderModal && (
+      {SHOW_LINK_EXTERNAL && showExternalFolderModal && (
         <ExternalFolderModal
           onClose={() => setShowExternalFolderModal(false)}
           onSave={(data) => createExternalFolderMutation.mutate(data)}
@@ -2785,9 +2886,10 @@ export function FileManagerPage() {
       />
 
       <BulkTagsPickerModal
-        open={showBulkTagsModal}
-        fileIds={selectedFiles}
-        onClose={() => setShowBulkTagsModal(false)}
+        open={tagPickerTarget !== null}
+        fileIds={tagPickerTarget?.fileIds ?? []}
+        currentTagIds={tagPickerTarget?.currentTagIds}
+        onClose={() => setTagPickerTarget(null)}
       />
 
       {linkFolder && (

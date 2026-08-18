@@ -6593,6 +6593,7 @@ export interface ProductionActiveFile {
   file_size: number;
   print_time_seconds: number | null;
   sliced_for_model: string | null;
+  tags?: LibraryTagSummary[];
 }
 
 export interface ProductionSlotNested {

@@ -505,6 +505,36 @@ class TestProductionAPI:
         assert "TOP" not in {part["code"] for part in view["parts"]}
         assert file_id in {item["id"] for item in (await async_client.get("/api/v1/library/trash")).json()["items"]}
 
+    async def test_remove_part_route_error_is_not_masked_as_auth_unavailable(
+        self, async_client: AsyncClient, monkeypatch: pytest.MonkeyPatch
+    ):
+        """Auth-disabled File Manager must not toast the auth-probe 503 when
+        a production delete handler raises. The middleware used to wrap
+        ``call_next`` in that fail-closed except.
+        """
+        boot = (await async_client.post("/api/v1/production/bootstrap")).json()
+        a1 = next(folder for folder in boot["folders"] if folder["production_printer_model"] == "A1")
+        view = (await async_client.get(f"/api/v1/production/folders/{a1['id']}")).json()
+        knb = next(part for part in view["parts"] if part["code"] == "KNB")
+
+        async def boom(*_args, **_kwargs):
+            raise RuntimeError("simulated part-remove failure")
+
+        monkeypatch.setattr("backend.app.api.routes.production._load_production_folder", boom)
+        # BaseHTTPMiddleware re-raises unhandled route errors. The bug was
+        # converting that into a 503 "Authentication service temporarily
+        # unavailable" JSON body when auth is disabled.
+        try:
+            removed = await async_client.delete(
+                f"/api/v1/production/folders/{a1['id']}/parts/{knb['id']}"
+            )
+        except BaseException as exc:
+            assert "Authentication service temporarily unavailable" not in str(exc)
+            assert "simulated part-remove failure" in str(exc)
+        else:
+            assert removed.status_code != 503
+            assert "Authentication service temporarily unavailable" not in removed.text
+
     async def test_second_quantity_shares_instance_contract(self, async_client: AsyncClient):
         boot = (await async_client.post("/api/v1/production/bootstrap")).json()
         x1c = next(folder for folder in boot["folders"] if folder["production_printer_model"] == "X1C")

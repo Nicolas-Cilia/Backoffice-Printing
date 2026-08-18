@@ -10,7 +10,7 @@ from datetime import datetime, timezone
 from typing import Any
 
 from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile
-from sqlalchemy import select
+from sqlalchemy import inspect as sa_inspect, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
@@ -38,6 +38,7 @@ from backend.app.models.production import (
     ProductionSlot,
 )
 from backend.app.models.user import User
+from backend.app.schemas.library import TagSummary
 from backend.app.schemas.production import (
     ParsedProductionFilenameOut,
     ProductionActiveFile,
@@ -77,6 +78,7 @@ _OWN_FILES_ONLY_DETAIL = "You can only delete your own files"
 _CONTRACT_RESOLUTION_DETAIL = (
     "This part already has a print-settings contract. Pass resolution 'proceed' or 'accept_baseline'."
 )
+_ACTIVE_FILE_WITH_TAGS = selectinload(ProductionSlot.active_file).selectinload(LibraryFile.tags)
 _PART_ALREADY_VISIBLE = "This part is already on this printer"
 _PART_CODE_RE = re.compile(r"^[A-Z]{1,32}$")
 
@@ -97,6 +99,13 @@ def _parsed_out(parsed: ParsedProductionFilename) -> ParsedProductionFilenameOut
     )
 
 
+def _file_tag_summaries(file: LibraryFile) -> list[TagSummary]:
+    """Return chip tags when the relationship is already loaded."""
+    if "tags" in sa_inspect(file).unloaded:
+        return []
+    return [TagSummary(id=tag.id, name=tag.name) for tag in file.tags]
+
+
 def _active_file_out(file: LibraryFile | None) -> ProductionActiveFile | None:
     if file is None:
         return None
@@ -108,6 +117,7 @@ def _active_file_out(file: LibraryFile | None) -> ProductionActiveFile | None:
         file_size=file.file_size,
         print_time_seconds=meta.get("print_time_seconds"),
         sliced_for_model=meta.get("sliced_for_model"),
+        tags=_file_tag_summaries(file),
     )
 
 
@@ -410,8 +420,10 @@ async def _find_part_instance(
     if load_slots:
         stmt = stmt.options(
             selectinload(ProductionPartInstance.part),
-            selectinload(ProductionPartInstance.slots).selectinload(ProductionSlot.active_file),
-            selectinload(ProductionPartInstance.slots).selectinload(ProductionSlot.revisions),
+            selectinload(ProductionPartInstance.slots).options(
+                _ACTIVE_FILE_WITH_TAGS,
+                selectinload(ProductionSlot.revisions),
+            ),
         )
     return (await db.execute(stmt)).scalars().first()
 
@@ -438,7 +450,7 @@ async def _load_slot(db: AsyncSession, slot_id: int) -> ProductionSlot:
             select(ProductionSlot)
             .where(ProductionSlot.id == slot_id)
             .options(
-                selectinload(ProductionSlot.active_file),
+                _ACTIVE_FILE_WITH_TAGS,
                 selectinload(ProductionSlot.revisions),
                 selectinload(ProductionSlot.instance).selectinload(ProductionPartInstance.part),
                 selectinload(ProductionSlot.instance).selectinload(ProductionPartInstance.folder),
@@ -637,8 +649,10 @@ async def get_production_folder(
                 )
                 .options(
                     selectinload(ProductionPartInstance.part),
-                    selectinload(ProductionPartInstance.slots).selectinload(ProductionSlot.active_file),
-                    selectinload(ProductionPartInstance.slots).selectinload(ProductionSlot.revisions),
+                    selectinload(ProductionPartInstance.slots).options(
+                        _ACTIVE_FILE_WITH_TAGS,
+                        selectinload(ProductionSlot.revisions),
+                    ),
                 )
             )
         )
@@ -880,8 +894,10 @@ async def remove_folder_part(
                 ProductionPartInstance.hidden.is_(False),
             )
             .options(
-                selectinload(ProductionPartInstance.slots).selectinload(ProductionSlot.revisions),
-                selectinload(ProductionPartInstance.slots).selectinload(ProductionSlot.active_file),
+                selectinload(ProductionPartInstance.slots).options(
+                    selectinload(ProductionSlot.revisions),
+                    _ACTIVE_FILE_WITH_TAGS,
+                ),
             )
         )
     ).scalar_one_or_none()

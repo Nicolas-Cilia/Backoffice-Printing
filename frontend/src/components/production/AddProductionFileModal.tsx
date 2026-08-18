@@ -281,7 +281,7 @@ export function AddProductionFileModal({
               {t('fileManager.production.newPartHint', { code: code.trim().toUpperCase() })}
             </p>
           )}
-          {existingSlot && (
+          {file && existingSlot && (
             <p className="text-sm text-amber-500">{t('fileManager.production.slotExists')}</p>
           )}
 

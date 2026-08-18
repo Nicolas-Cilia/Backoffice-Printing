@@ -56,6 +56,7 @@ describe('Button', () => {
 
       const button = screen.getByRole('button');
       expect(button.className).toContain('bg-bambu-dark-tertiary');
+      expect(button.className).toContain('hover:text-[color:var(--text-primary)]');
     });
 
     it('applies danger variant styles', () => {
@@ -70,6 +71,7 @@ describe('Button', () => {
 
       const button = screen.getByRole('button');
       expect(button.className).toContain('bg-transparent');
+      expect(button.className).toContain('hover:text-[color:var(--text-primary)]');
     });
   });
 

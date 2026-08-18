@@ -13,12 +13,20 @@ const t = (key: string, options?: Record<string, unknown>) => {
   if (key.endsWith('summaryInfill')) return `${options?.value}% infill`;
   if (key.endsWith('summarySupports')) return `Supports: ${options?.detail}`;
   if (key.endsWith('summaryBrimGap')) return `${options?.value} mm gap`;
+  if (key.endsWith('summaryBed')) return `Bed: ${options?.value}`;
   if (key.endsWith('.on')) return 'On';
   if (key.endsWith('.off')) return 'Off';
   if (key.endsWith('brimAuto')) return 'Auto brim';
   if (key.endsWith('brimNone')) return 'No brim';
   if (key.endsWith('brimOuter')) return 'Outer only';
   if (key.endsWith('nozzlesBoth')) return 'Both';
+  if (key.endsWith('bedTypeTexturedPei')) return 'Textured PEI';
+  if (key.endsWith('bedTypeSmoothPei')) return 'Smooth PEI';
+  if (key.endsWith('bedTypeCool')) return 'Cool Plate';
+  if (key.endsWith('bedTypeSuperTack')) return 'SuperTack';
+  if (key.endsWith('bedTypeEngineering')) return 'Engineering Plate';
+  if (key.endsWith('bedTypeHighTemp')) return 'High Temp Plate';
+  if (key.endsWith('.bed')) return 'Bed';
   if (key.endsWith('fuzzySkinPainted')) return 'Painted';
   if (key.endsWith('fuzzySkinAllowPaint')) return 'Allow paint';
   if (key.endsWith('fuzzySkin')) return 'Fuzzy skin';
@@ -65,6 +73,11 @@ describe('formatSpecValue', () => {
     expect(formatSpecValue('fuzzy_skin', 'disabled_fuzzy', t)).toBe('Off');
     expect(formatSpecValue('enable_support', false, t)).toBe('Off');
     expect(formatSpecValue('nozzles_used', 'both', t)).toBe('Both');
+    expect(formatSpecValue('curr_bed_type', 'Textured PEI Plate', t)).toBe('Textured PEI');
+    expect(formatSpecValue('curr_bed_type', 'Smooth PEI', t)).toBe('Smooth PEI');
+    expect(formatSpecValue('curr_bed_type', 'textured_pei', t)).toBe('Textured PEI');
+    expect(formatSpecValue('curr_bed_type', 'Cool Plate (SuperTack)', t)).toBe('SuperTack');
+    expect(formatSpecValue('curr_bed_type', 'Custom Carbon Plate', t)).toBe('Custom Carbon Plate');
   });
 
   it('formats tree_slim and tree_hybrid readably', () => {
@@ -113,13 +126,14 @@ describe('compactSpecItems', () => {
       compactSpecItems(
         {
           layer_height: 0.2,
+          curr_bed_type: 'Textured PEI Plate',
           sparse_infill_density: 20,
           brim_type: 'auto_brim',
           fuzzy_skin: 'none',
         },
         t,
       ),
-    ).toEqual(['0.2 mm', '20% infill', 'Auto brim', 'Fuzzy skin Allow paint']);
+    ).toEqual(['0.2 mm', 'Bed: Textured PEI', '20% infill', 'Auto brim', 'Fuzzy skin Allow paint']);
   });
 
   it('summarizes painted fuzzy skin instead of Off', () => {
@@ -158,8 +172,9 @@ describe('orderedSpecEntries', () => {
       nozzles_used: 'left',
       layer_height: 0.2,
       wall_loops: 3,
+      curr_bed_type: 'Smooth PEI Plate',
     });
-    expect(rows.map(([key]) => key)).toEqual(['layer_height', 'wall_loops', 'nozzles_used']);
+    expect(rows.map(([key]) => key)).toEqual(['curr_bed_type', 'layer_height', 'wall_loops', 'nozzles_used']);
   });
 
   it('folds support type and style into Supports and hides gap when brim is off', () => {

@@ -1601,4 +1601,93 @@ describe('FileManagerPage', () => {
       expect(screen.queryByText('Upload Files')).not.toBeInTheDocument();
     });
   });
+
+  describe('file tags', () => {
+    const taggedFiles = [
+      { ...mockFiles[0], tags: [{ id: 1, name: 'toy' }] },
+      mockFiles[1],
+      mockFiles[2],
+    ];
+    const catalog = [
+      { id: 1, name: 'toy', file_count: 1, created_at: '2026-01-01T00:00:00Z', updated_at: '2026-01-01T00:00:00Z' },
+      { id: 2, name: 'petg', file_count: 0, created_at: '2026-01-01T00:00:00Z', updated_at: '2026-01-01T00:00:00Z' },
+    ];
+
+    beforeEach(() => {
+      server.use(
+        http.get('/api/v1/library/files', () => HttpResponse.json(taggedFiles)),
+        http.get('/api/v1/library/tags', () => HttpResponse.json(catalog)),
+        http.post('/api/v1/library/tags/bulk-assign', () => {
+          return HttpResponse.json({
+            files_updated: 1,
+            associations_added: 1,
+            associations_removed: 1,
+          });
+        }),
+      );
+    });
+
+    it('opens the file tag picker from the add-tags control', async () => {
+      const user = userEvent.setup();
+      render(<FileManagerPage />);
+
+      await waitFor(() => expect(screen.getByText('Benchy')).toBeInTheDocument());
+      const fileCard = screen.getByText('Benchy').closest('div[class*="cursor-pointer"]') as HTMLElement;
+      await user.click(within(fileCard).getByLabelText('Add tags to this file'));
+
+      expect(await screen.findByText('Tags on this file')).toBeInTheDocument();
+      const toyCheckbox = screen
+        .getAllByRole('checkbox')
+        .find((el) => el.parentElement?.textContent?.includes('toy'));
+      expect(toyCheckbox).toBeChecked();
+    });
+
+    it('detaches a tag from the chip remove button', async () => {
+      const user = userEvent.setup();
+      let body: { file_ids?: number[]; tag_ids?: number[]; action?: string } | null = null;
+      server.use(
+        http.post('/api/v1/library/tags/bulk-assign', async ({ request }) => {
+          body = await request.json() as { file_ids?: number[]; tag_ids?: number[]; action?: string };
+          return HttpResponse.json({
+            files_updated: 1,
+            associations_added: 0,
+            associations_removed: 1,
+          });
+        }),
+      );
+
+      render(<FileManagerPage />);
+      await waitFor(() => expect(screen.getByText('Benchy')).toBeInTheDocument());
+      await user.click(screen.getByLabelText('Remove tag toy from this file'));
+
+      await waitFor(() => {
+        expect(body).toEqual({ file_ids: [1], tag_ids: [1], action: 'remove' });
+      });
+    });
+
+    it('opens the picker from the landing selection toolbar', async () => {
+      const user = userEvent.setup();
+      render(<FileManagerPage />);
+
+      await waitFor(() => expect(screen.getByText('Benchy')).toBeInTheDocument());
+      const fileCard = screen.getByText('Benchy').closest('div[class*="cursor-pointer"]');
+      await user.click(fileCard!);
+      await waitFor(() => expect(screen.getByText('1 selected')).toBeInTheDocument());
+
+      await user.click(screen.getByText('Tag'));
+      expect(await screen.findByText('Tags on this file')).toBeInTheDocument();
+    });
+
+    it('opens the picker from the file card overflow menu', async () => {
+      const user = userEvent.setup();
+      render(<FileManagerPage />);
+
+      await waitFor(() => expect(screen.getByText('Benchy')).toBeInTheDocument());
+      const fileCard = screen.getByText('Benchy').closest('div[class*="cursor-pointer"]') as HTMLElement;
+      await user.click(within(fileCard).getByLabelText('Actions'));
+      await user.click(within(fileCard).getByRole('button', { name: 'Tags' }));
+
+      expect(await screen.findByText('Tags on this file')).toBeInTheDocument();
+    });
+  });
 });

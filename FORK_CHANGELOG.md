@@ -3,6 +3,35 @@
 Changes made in this fork on top of upstream Bambuddy. Upstream's own release notes stay
 in `CHANGELOG.md`. Planned work lives in `FORK_PLAN.md`.
 
+## 2026-08-18: Attach tags to library files
+
+Tags already had a catalog (create / rename / delete) and a bulk-assign API,
+but File Manager only surfaced attach/detach after multi-selecting files in a
+folder. Creating a tag therefore felt disconnected from using it. The existing
+`POST /library/tags/bulk-assign` route is enough — no new backend.
+
+Each File Manager card has a labeled Tags control (not a hover-only plus), a
+Tags overflow action, and a Tag button on the selection toolbar — including
+Unfiled on the landing page. Production slot cards (A1/TOP, etc.) use the
+same picker on the live library file. Save replaces that file's tags; chip X
+removes one immediately. Multi-select still uses add/remove bulk assign.
+
+Verified: BulkTagsPickerModal, File Manager, and ProductionFolderView tag
+vitest; `check:i18n`. Not run: full backend suite, live browser pass.
+
+### Changes
+
+- `frontend/src/components/BulkTagsPickerModal.tsx`: single-file replace mode
+  when tagging one file; bulk add/remove unchanged for multi-select.
+- `frontend/src/pages/FileManagerPage.tsx`: per-file picker, labeled Tags chip,
+  overflow Tags action, Tag button on the landing selection toolbar.
+- `frontend/src/components/production/ProductionFolderView.tsx`: Tags on the
+  active library file of a production slot.
+- `backend/app/schemas/production.py`, `backend/app/api/routes/production.py`:
+  include library tags on `active_file`.
+- `frontend/src/i18n/locales/*.ts`: `fileManager.tags` strings for the picker.
+- Tag vitest for File Manager and production folder view.
+
 ## 2026-08-18: Production file slots
 
 Fork plan entry #14. Production parts need exactly one live 3MF per quantity slot so an

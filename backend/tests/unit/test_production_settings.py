@@ -29,6 +29,7 @@ def _config(**overrides) -> dict:
         "support_style": "default",
         "enable_prime_tower": "0",
         "seam_position": "aligned",
+        "curr_bed_type": "Textured PEI Plate",
         "filament_settings_id": ["Bambu PLA Basic @BBL X1C"],
     }
     base.update(overrides)
@@ -107,6 +108,7 @@ class TestExtractProductionSettings:
         assert contract["wall_loops"] == 3
         assert contract["enable_support"] is False
         assert contract["support_style"] == "default"
+        assert contract["curr_bed_type"] == "Textured PEI Plate"
         assert contract[MULTI_COLOR_KEY] is False
         assert "nozzles_used" not in contract
 
@@ -310,6 +312,35 @@ class TestExtractProductionSettings:
         assert right["nozzles_used"] == "right"
         assert both["nozzles_used"] == "both"
 
+    def test_extracts_curr_bed_type_and_falls_back_to_bed_type(self):
+        present = extract_production_settings(_3mf(_config(curr_bed_type="Smooth PEI Plate")))
+        assert present["curr_bed_type"] == "Smooth PEI Plate"
+
+        fallback_config = _config(bed_type="Engineering Plate")
+        fallback_config.pop("curr_bed_type", None)
+        fallback = extract_production_settings(_3mf(fallback_config))
+        assert fallback["curr_bed_type"] == "Engineering Plate"
+
+        preferred = extract_production_settings(
+            _3mf(_config(curr_bed_type="Textured PEI Plate", bed_type="Cool Plate"))
+        )
+        assert preferred["curr_bed_type"] == "Textured PEI Plate"
+
+    def test_normalizes_bed_type_aliases_and_omits_missing(self):
+        short = extract_production_settings(_3mf(_config(curr_bed_type="Smooth PEI")))
+        assert short["curr_bed_type"] == "Smooth PEI Plate"
+
+        enum_name = extract_production_settings(_3mf(_config(curr_bed_type="textured_pei")))
+        assert enum_name["curr_bed_type"] == "Textured PEI Plate"
+
+        missing_config = _config()
+        missing_config.pop("curr_bed_type", None)
+        missing = extract_production_settings(_3mf(missing_config))
+        assert "curr_bed_type" not in missing
+
+        empty = extract_production_settings(_3mf(_config(curr_bed_type="  ")))
+        assert "curr_bed_type" not in empty
+
 
 class TestDiffParameters:
     def test_percent_infill_matches_numeric(self):
@@ -443,3 +474,24 @@ class TestDiffParameters:
         assert row["match"] is False
         assert row["locked"] == "left"
         assert row["incoming"] == "both"
+
+    def test_bed_type_mismatch_when_plates_differ(self):
+        locked = extract_production_settings(_3mf(_config(curr_bed_type="Textured PEI Plate")))
+        incoming = extract_production_settings(_3mf(_config(curr_bed_type="Smooth PEI Plate")))
+        row = _diff_by_key(locked, incoming)["curr_bed_type"]
+        assert row["match"] is False
+        assert row["locked"] == "Textured PEI Plate"
+        assert row["incoming"] == "Smooth PEI Plate"
+
+        alias_match = extract_production_settings(_3mf(_config(curr_bed_type="Smooth PEI")))
+        assert _diff_by_key(incoming, alias_match)["curr_bed_type"]["match"] is True
+
+    def test_missing_incoming_bed_type_is_mismatch(self):
+        locked = extract_production_settings(_3mf(_config(curr_bed_type="Textured PEI Plate")))
+        incoming_config = _config()
+        incoming_config.pop("curr_bed_type", None)
+        incoming = extract_production_settings(_3mf(incoming_config))
+        row = _diff_by_key(locked, incoming)["curr_bed_type"]
+        assert row["match"] is False
+        assert row["locked"] == "Textured PEI Plate"
+        assert row["incoming"] is None
