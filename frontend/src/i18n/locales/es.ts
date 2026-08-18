@@ -3300,10 +3300,7 @@ export default {
     title: 'Perfiles',
     subtitle: 'Gestione sus preajustes del laminador y las calibraciones de avance de presión',
     tabs: {
-      bambuCloud: 'Bambu Cloud',
-      orcaCloud: 'Orca Cloud',
       local: 'Perfiles locales',
-      kprofiles: 'Perfiles K',
     },
     orcaCloud: {
       connectedAs: 'Conectado como',

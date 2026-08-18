@@ -3121,10 +3121,7 @@ export default {
     title: '프로필',
     subtitle: '슬라이서 프리셋 및 압력 전진 보정 관리',
     tabs: {
-      bambuCloud: 'Bambu Cloud',
-      orcaCloud: 'Orca Cloud',
-      local: '로컬 프로필',
-      kprofiles: 'K-프로필'
+      local: '로컬 프로필'
     },
     orcaCloud: {
       connectedAs: '연결됨',

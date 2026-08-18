@@ -3297,10 +3297,7 @@ export default {
     title: 'フィラメントプロファイル',
     subtitle: 'スライサープリセットと圧力キャリブレーションの管理',
     tabs: {
-      bambuCloud: 'Bambu Cloud',
-      orcaCloud: 'Orca Cloud',
       local: 'ローカルプロファイル',
-      kprofiles: 'Kプロファイル',
     },
     orcaCloud: {
       connectedAs: '接続中',

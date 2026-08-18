@@ -3301,10 +3301,7 @@ export default {
     title: 'Profiller',
     subtitle: 'Dilimleyici ön ayarlarını ve basınç ilerleme kalibrasyonlarını yönetin',
     tabs: {
-      bambuCloud: 'Bambu Cloud',
-      orcaCloud: 'Orca Cloud',
       local: 'Yerel Profiller',
-      kprofiles: 'K-Profilleri',
     },
     orcaCloud: {
       connectedAs: 'Bağlı kullanıcı',

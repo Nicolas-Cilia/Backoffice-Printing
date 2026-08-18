@@ -3286,10 +3286,7 @@ export default {
     title: 'Profils',
     subtitle: 'Gérez vos presets slicer et calibrations Pressure Advance',
     tabs: {
-      bambuCloud: 'Bambu Cloud',
-      orcaCloud: 'Orca Cloud',
       local: 'Profils Locaux',
-      kprofiles: 'Profils K',
     },
     orcaCloud: {
       connectedAs: 'Connecté en tant que',

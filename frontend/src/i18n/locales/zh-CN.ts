@@ -3285,10 +3285,7 @@ export default {
     title: '配置文件',
     subtitle: '管理您的切片预设和压力推进校准',
     tabs: {
-      bambuCloud: 'Bambu Cloud',
-      orcaCloud: 'Orca Cloud',
       local: '本地配置文件',
-      kprofiles: 'K 值配置',
     },
     orcaCloud: {
       connectedAs: '已连接',
