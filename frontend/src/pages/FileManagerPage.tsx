@@ -32,7 +32,6 @@ import {
   X,
   Link2,
   Unlink,
-  Archive as ArchiveIcon,
   Cog,
   Play,
   Printer,
