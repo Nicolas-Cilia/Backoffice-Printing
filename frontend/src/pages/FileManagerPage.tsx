@@ -75,6 +75,7 @@ import { useAuth } from '../contexts/AuthContext';
 import { formatDuration, parseUTCDate, formatDate } from '../utils/date';
 import { formatFileSize } from '../utils/file';
 import { libraryTagsQueryKey } from '../utils/libraryTagsQuery';
+import { FILE_MANAGER_HOME_EVENT } from '../utils/fileManagerNav';
 
 type SortField = 'name' | 'date' | 'size' | 'type' | 'prints';
 type SortDirection = 'asc' | 'desc';
@@ -1343,8 +1344,18 @@ export function FileManagerPage() {
       const newFolderId = parseInt(folderParam, 10);
       setSelectedFolderId(newFolderId);
       setViewEntered(true);
+      return;
     }
   }, [searchParams]);
+
+  useEffect(() => {
+    const goHome = () => {
+      setSelectedFolderId(null);
+      setViewEntered(false);
+    };
+    window.addEventListener(FILE_MANAGER_HOME_EVENT, goHome);
+    return () => window.removeEventListener(FILE_MANAGER_HOME_EVENT, goHome);
+  }, []);
 
   // Queries
   const { data: settings } = useQuery({
@@ -1421,6 +1432,9 @@ export function FileManagerPage() {
   const goToRoot = () => {
     setSelectedFolderId(null);
     setViewEntered(false);
+    if (searchParams.get('folder')) {
+      navigate('/files', { replace: true });
+    }
   };
 
   // Trash count for the header badge (#1008). Empty/error are silently treated

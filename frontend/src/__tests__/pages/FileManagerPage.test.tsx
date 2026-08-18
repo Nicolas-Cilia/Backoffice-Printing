@@ -298,6 +298,26 @@ describe('FileManagerPage', () => {
       });
     });
 
+    it('returns to the landing grid when the File Manager sidebar tab is clicked', async () => {
+      const user = userEvent.setup();
+      render(<FileManagerPage />);
+
+      await waitFor(() => expect(screen.getByText('Functional Parts')).toBeInTheDocument());
+      await user.click(screen.getByText('Functional Parts'));
+      await waitFor(() => {
+        expect(screen.getByText('Brackets')).toBeInTheDocument();
+        expect(screen.getByLabelText('Back to folders')).toBeInTheDocument();
+      });
+
+      window.dispatchEvent(new Event('bambuddy:file-manager-home'));
+
+      await waitFor(() => {
+        expect(screen.queryByLabelText('Back to folders')).not.toBeInTheDocument();
+        expect(screen.getByText('Functional Parts')).toBeInTheDocument();
+        expect(screen.queryByText('Brackets')).not.toBeInTheDocument();
+      });
+    });
+
     it('shows linked folder indicator', async () => {
       render(<FileManagerPage />);
 
