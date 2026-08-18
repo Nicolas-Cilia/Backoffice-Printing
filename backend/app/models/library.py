@@ -7,6 +7,9 @@ from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from backend.app.core.database import Base
 
+SECTION_KIND_NORMAL = "normal"
+SECTION_KIND_PRODUCTION = "production"
+
 
 class LibraryFolder(Base):
     """Folder for organizing library files."""
@@ -35,9 +38,15 @@ class LibraryFolder(Base):
 
     # Production file-slots: which printer model this folder represents
     # (e.g. "X1C", "A1M", "A1", "H2D", "H2S"). Null for ordinary library
-    # folders; set by production bootstrap on the root printer folders under
+    # folders and for user-created tracking folders that are not bound to a
+    # printer; set by production bootstrap on the root printer folders under
     # the Production section.
     production_printer_model: Mapped[str | None] = mapped_column(String(32), nullable=True)
+
+    # Parameter tracking: replace-only uploads, ProductionFolderView slots,
+    # and locked print-settings. Independent of ``production_printer_model``
+    # so a Tests folder can track settings without picking X1C/A1/….
+    parameter_tracking: Mapped[bool] = mapped_column(Boolean, default=False, server_default="0")
 
     # Timestamps
     created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
@@ -70,6 +79,10 @@ class LibraryFolder(Base):
     )
     archive: Mapped["PrintArchive | None"] = relationship()
     section: Mapped["LibraryFolderSection | None"] = relationship(back_populates="folders")
+
+    def is_tracking(self) -> bool:
+        """True when this folder uses production slots / replace-only uploads."""
+        return bool(self.parameter_tracking or self.production_printer_model)
 
 
 class LibraryFile(Base):
@@ -188,6 +201,13 @@ class LibraryFolderSection(Base):
     UNIQUE index and the route returns 409 instead of creating a duplicate.
     ``sort_order`` controls display order on the landing grid; new sections
     are appended after the current max (see ``library_sections.create_section``).
+    ``kind`` is ``normal`` (folders choose tracking) or ``production``
+    (every folder in the section is forced to track; the New Folder
+    toggle is on and locked). Production-kind is opt-in at create time;
+    the bootstrapped Production section is this kind. Mixed tracking and
+    normal folders are allowed only in ``normal`` sections. Folder
+    behavior keys off ``LibraryFolder.parameter_tracking`` (and
+    ``production_printer_model`` on bootstrapped printer folders).
     """
 
     __tablename__ = "library_folder_sections"
@@ -196,6 +216,7 @@ class LibraryFolderSection(Base):
     name: Mapped[str] = mapped_column(String(255), nullable=False)
     name_key: Mapped[str] = mapped_column(String(255), nullable=False, unique=True, index=True)
     sort_order: Mapped[int] = mapped_column(Integer, default=0)
+    kind: Mapped[str] = mapped_column(String(32), default=SECTION_KIND_NORMAL, server_default=SECTION_KIND_NORMAL)
     created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
     updated_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now(), onupdate=func.now())
 

@@ -7,7 +7,7 @@ from dataclasses import dataclass, field
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from backend.app.models.library import LibraryFolder, LibraryFolderSection
+from backend.app.models.library import SECTION_KIND_PRODUCTION, LibraryFolder, LibraryFolderSection
 from backend.app.models.production import (
     DEFAULT_PARTS,
     PRODUCTION_PRINTER_MODELS,
@@ -90,6 +90,9 @@ async def _ensure_production_section(db: AsyncSession) -> tuple[LibraryFolderSec
     )
     section = result.scalar_one_or_none()
     if section is not None:
+        if section.kind != SECTION_KIND_PRODUCTION:
+            section.kind = SECTION_KIND_PRODUCTION
+            await db.flush()
         return section, False
 
     max_order = (await db.execute(select(func.max(LibraryFolderSection.sort_order)))).scalar_one()
@@ -97,6 +100,7 @@ async def _ensure_production_section(db: AsyncSession) -> tuple[LibraryFolderSec
         name=PRODUCTION_SECTION_NAME,
         name_key=PRODUCTION_SECTION_NAME_KEY,
         sort_order=(max_order or 0) + 1,
+        kind=SECTION_KIND_PRODUCTION,
     )
     db.add(section)
     await db.flush()
@@ -114,6 +118,9 @@ async def _ensure_printer_folder(db: AsyncSession, section_id: int, model: str) 
         .first()
     )
     if tagged is not None:
+        if not tagged.parameter_tracking:
+            tagged.parameter_tracking = True
+            await db.flush()
         return tagged, False
 
     named = (
@@ -130,6 +137,7 @@ async def _ensure_printer_folder(db: AsyncSession, section_id: int, model: str) 
     if named is not None:
         named.section_id = section_id
         named.production_printer_model = model
+        named.parameter_tracking = True
         await db.flush()
         return named, False
 
@@ -138,6 +146,7 @@ async def _ensure_printer_folder(db: AsyncSession, section_id: int, model: str) 
         parent_id=None,
         section_id=section_id,
         production_printer_model=model,
+        parameter_tracking=True,
     )
     db.add(folder)
     await db.flush()
@@ -167,6 +176,7 @@ async def _ensure_default_instance(
             select(ProductionPartInstance.id).where(
                 ProductionPartInstance.part_id == part.id,
                 ProductionPartInstance.printer_model == printer_model,
+                ProductionPartInstance.folder_id == folder_id,
             )
         )
     ).scalar_one_or_none()
@@ -181,3 +191,19 @@ async def _ensure_default_instance(
             hidden=False,
         )
     )
+
+
+async def seed_printer_folder_defaults(db: AsyncSession, folder: LibraryFolder) -> None:
+    """Ensure catalog parts and default visible instances exist for this printer folder."""
+    printer_model = (folder.production_printer_model or "").strip()
+    if not printer_model:
+        return
+    parts_by_code: dict[str, ProductionPart] = {}
+    for code, name in DEFAULT_PARTS:
+        _, part = await _ensure_part(db, code, name)
+        parts_by_code[part.code] = part
+    for code in default_part_codes_for_printer(printer_model):
+        part = parts_by_code.get(code)
+        if part is None:
+            continue
+        await _ensure_default_instance(db, part, folder.id, printer_model)

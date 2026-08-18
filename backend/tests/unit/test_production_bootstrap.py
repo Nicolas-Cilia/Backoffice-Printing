@@ -34,12 +34,14 @@ async def test_bootstrap_creates_section_folders_and_parts(db_session: AsyncSess
     ).scalar_one()
     assert section.name == PRODUCTION_SECTION_NAME
     assert section.name_key == "production"
+    assert section.kind == "production"
 
     folders = (await db_session.execute(select(LibraryFolder).where(LibraryFolder.parent_id.is_(None)))).scalars().all()
     assert {f.name for f in folders} == set(PRODUCTION_PRINTER_MODELS)
     for folder in folders:
         assert folder.section_id == result.section_id
         assert folder.production_printer_model == folder.name
+        assert folder.parameter_tracking is True
         assert result.folder_ids[folder.name] == folder.id
 
     parts = (await db_session.execute(select(ProductionPart))).scalars().all()

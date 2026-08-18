@@ -90,7 +90,7 @@ class TestProductionAPI:
 
         sections = await async_client.get("/api/v1/library/sections")
         assert sections.status_code == 200
-        assert any(section["name"] == "Production" for section in sections.json())
+        assert any(section["name"] == "Production" and section.get("kind") == "production" for section in sections.json())
 
     async def test_create_slot_then_duplicate_409(self, async_client: AsyncClient):
         boot = (await async_client.post("/api/v1/production/bootstrap")).json()

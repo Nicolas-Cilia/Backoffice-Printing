@@ -5802,10 +5802,10 @@ export const api = {
   getLibraryFoldersByArchive: (archiveId: number) =>
     request<LibraryFolder[]>(`/library/folders/by-archive/${archiveId}`),
   getLibraryFolderSections: () => request<LibraryFolderSection[]>('/library/sections'),
-  createLibraryFolderSection: (name: string) =>
+  createLibraryFolderSection: (data: { name: string; kind?: 'normal' | 'production' }) =>
     request<LibraryFolderSection>('/library/sections', {
       method: 'POST',
-      body: JSON.stringify({ name }),
+      body: JSON.stringify(data),
     }),
   renameLibraryFolderSection: (id: number, name: string) =>
     request<LibraryFolderSection>(`/library/sections/${id}`, {
@@ -6549,6 +6549,7 @@ export interface LibraryFolderTree {
   external_readonly: boolean;
   section_id: number | null;
   production_printer_model: string | null;
+  parameter_tracking: boolean;
   file_count: number;
   // max(folder.updated_at, max(immediate-child file.updated_at)). Used by
   // the File Manager folder tree's "sort by recent activity" mode (#1770).
@@ -6561,6 +6562,7 @@ export interface LibraryFolderSection {
   name: string;
   sort_order: number;
   folder_count: number;
+  kind: 'normal' | 'production';
   created_at: string;
   updated_at: string;
 }
@@ -6577,6 +6579,7 @@ export interface LibraryFolder {
   external_show_hidden: boolean;
   section_id: number | null;
   production_printer_model: string | null;
+  parameter_tracking: boolean;
   file_count: number;
   latest_activity_at: string | null;
   created_at: string;
@@ -6682,6 +6685,9 @@ export interface LibraryFolderCreate {
   name: string;
   parent_id?: number | null;
   archive_id?: number | null;
+  section_id?: number | null;
+  production_printer_model?: string | null;
+  parameter_tracking?: boolean;
 }
 
 export interface ExternalFolderCreate {

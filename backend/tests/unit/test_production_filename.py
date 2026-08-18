@@ -5,6 +5,7 @@ from backend.app.services.production_filename import (
     format_production_filename,
     is_newer,
     normalize_production_printer,
+    normalize_production_printer_code,
     parse_production_filename,
     suggest_next_revision,
     version_tuple,
@@ -80,6 +81,11 @@ class TestNormalizeProductionPrinter:
         assert normalize_production_printer("X1 Carbon") == "X1C"
         assert normalize_production_printer("Bambu Lab X1 Carbon") == "X1C"
         assert normalize_production_printer("X1C") == "X1C"
+
+    def test_folder_code_compacts_free_form(self):
+        assert normalize_production_printer_code("A1 Mini") == "A1M"
+        assert normalize_production_printer_code("p1s") == "P1S"
+        assert normalize_production_printer_code("  ") == ""
 
 
 class TestVersionHelpers:

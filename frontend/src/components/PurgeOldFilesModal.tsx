@@ -62,30 +62,30 @@ export function PurgeOldFilesModal({ onClose }: PurgeOldFilesModalProps) {
   const canConfirm = count > 0 && !purgeMutation.isPending;
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4">
-      <div className="bg-white dark:bg-gray-900 rounded-lg shadow-xl max-w-lg w-full">
-        <div className="flex items-center justify-between p-4 border-b border-gray-200 dark:border-gray-700">
-          <h2 className="text-lg font-semibold text-gray-900 dark:text-gray-100 flex items-center gap-2">
-            <Trash2 className="w-5 h-5" />
+    <div className="fixed inset-0 bg-black/70 flex items-center justify-center z-50 p-4">
+      <div className="bg-bambu-dark-secondary rounded-lg w-full max-w-lg border border-bambu-dark-tertiary max-h-[90vh] flex flex-col">
+        <div className="p-4 border-b border-bambu-dark-tertiary flex items-center justify-between shrink-0">
+          <h2 className="text-lg font-semibold text-white flex items-center gap-2">
+            <Trash2 className="w-5 h-5 text-bambu-green" />
             {t('libraryPurge.title')}
           </h2>
           <button
             onClick={onClose}
-            className="text-gray-400 hover:text-gray-600 dark:hover:text-gray-200"
+            className="p-1 hover:bg-bambu-dark rounded"
             aria-label={t('common.close')}
             disabled={purgeMutation.isPending}
           >
-            <X className="w-5 h-5" />
+            <X className="w-5 h-5 text-bambu-gray" />
           </button>
         </div>
 
-        <div className="p-4 space-y-4">
-          <p className="text-sm text-gray-600 dark:text-gray-400">
+        <div className="p-4 space-y-4 overflow-y-auto">
+          <p className="text-sm text-bambu-gray">
             {t('libraryPurge.description')}
           </p>
 
           <div>
-            <label htmlFor="purge-days" className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">
+            <label htmlFor="purge-days" className="block text-sm font-medium text-white mb-1">
               {t('libraryPurge.ageLabel')}
             </label>
             <div className="flex items-center gap-3">
@@ -96,27 +96,27 @@ export function PurgeOldFilesModal({ onClose }: PurgeOldFilesModalProps) {
                 max={3650}
                 value={days}
                 onChange={(e) => setDays(Math.max(1, Math.min(3650, parseInt(e.target.value || '0', 10) || 0)))}
-                className="w-24 rounded border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-800 text-sm px-2 py-1 text-gray-900 dark:text-gray-100"
+                className="w-24 bg-bambu-dark border border-bambu-dark-tertiary rounded px-3 py-2 text-white focus:outline-none focus:border-bambu-green"
               />
-              <span className="text-sm text-gray-600 dark:text-gray-400">{t('libraryPurge.days')}</span>
+              <span className="text-sm text-bambu-gray">{t('libraryPurge.days')}</span>
             </div>
           </div>
 
-          <label className="flex items-center gap-2 text-sm text-gray-700 dark:text-gray-300">
+          <label className="flex items-center gap-2 cursor-pointer">
             <input
               type="checkbox"
               checked={includeNeverPrinted}
               onChange={(e) => setIncludeNeverPrinted(e.target.checked)}
-              className="rounded border-gray-300"
+              className="rounded border-bambu-dark-tertiary bg-bambu-dark text-bambu-green focus:ring-bambu-green"
             />
-            {t('libraryPurge.includeNeverPrinted')}
+            <span className="text-sm text-white">{t('libraryPurge.includeNeverPrinted')}</span>
           </label>
 
-          <div className="rounded border border-gray-200 dark:border-gray-700 bg-gray-50 dark:bg-gray-800/30 p-3">
-            <div className="text-xs font-semibold uppercase tracking-wide text-gray-600 dark:text-gray-300 mb-2">
+          <div className="rounded border border-bambu-dark-tertiary bg-bambu-dark p-3">
+            <div className="text-xs font-medium uppercase tracking-wide text-bambu-gray mb-2">
               {t('libraryPurge.effectsTitle')}
             </div>
-            <ul className="text-xs text-gray-700 dark:text-gray-300 space-y-1 list-disc pl-4">
+            <ul className="text-sm text-bambu-gray space-y-1 list-disc pl-4">
               <li>{t('libraryPurge.effect1')}</li>
               <li>{t('libraryPurge.effect2')}</li>
               <li>{t('libraryPurge.effect3')}</li>
@@ -124,27 +124,27 @@ export function PurgeOldFilesModal({ onClose }: PurgeOldFilesModalProps) {
             </ul>
           </div>
 
-          <div className="rounded border border-gray-200 dark:border-gray-700 bg-gray-50 dark:bg-gray-800/50 p-3">
+          <div className="rounded border border-bambu-dark-tertiary bg-bambu-dark p-3">
             {previewQuery.isLoading || previewQuery.isFetching ? (
-              <div className="flex items-center gap-2 text-sm text-gray-500 dark:text-gray-400">
+              <div className="flex items-center gap-2 text-sm text-bambu-gray">
                 <Loader2 className="w-4 h-4 animate-spin" /> {t('libraryPurge.previewLoading')}
               </div>
             ) : previewQuery.isError ? (
-              <div className="text-sm text-red-600 dark:text-red-400">
+              <div className="text-sm text-red-400">
                 {(previewQuery.error as Error | null)?.message ?? t('libraryPurge.previewFailed')}
               </div>
             ) : (
-              <div className="text-sm text-gray-900 dark:text-gray-100">
+              <div className="text-sm text-white">
                 <div className="font-medium">
                   {t('libraryPurge.previewSummary', { count, size: formatFileSize(totalBytes) })}
                 </div>
                 {preview?.sample_filenames && preview.sample_filenames.length > 0 && (
-                  <ul className="mt-2 text-xs text-gray-600 dark:text-gray-400 space-y-0.5 list-disc pl-4">
+                  <ul className="mt-2 text-xs text-bambu-gray space-y-0.5 list-disc pl-4">
                     {preview.sample_filenames.map((name) => (
                       <li key={name} className="truncate">{name}</li>
                     ))}
                     {count > preview.sample_filenames.length && (
-                      <li className="list-none italic text-gray-500">
+                      <li className="list-none italic text-bambu-gray">
                         {t('libraryPurge.andMore', { count: count - preview.sample_filenames.length })}
                       </li>
                     )}
@@ -154,13 +154,13 @@ export function PurgeOldFilesModal({ onClose }: PurgeOldFilesModalProps) {
             )}
           </div>
 
-          <div className="flex gap-2 items-start text-xs text-amber-700 dark:text-amber-400 bg-amber-50 dark:bg-amber-900/20 rounded px-3 py-2">
+          <div className="flex gap-2 items-start text-xs text-amber-400 bg-amber-900/20 rounded px-3 py-2">
             <AlertTriangle className="w-4 h-4 mt-0.5 shrink-0" />
             <span>{t('libraryPurge.warning')}</span>
           </div>
         </div>
 
-        <div className="flex justify-end gap-2 p-4 border-t border-gray-200 dark:border-gray-700">
+        <div className="flex justify-end gap-2 p-4 border-t border-bambu-dark-tertiary shrink-0">
           <Button variant="secondary" onClick={onClose} disabled={purgeMutation.isPending}>
             {t('common.cancel')}
           </Button>

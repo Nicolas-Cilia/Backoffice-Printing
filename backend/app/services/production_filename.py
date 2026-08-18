@@ -79,6 +79,15 @@ def normalize_production_printer(raw: str | None) -> str:
     return text
 
 
+def normalize_production_printer_code(raw: str | None) -> str:
+    """Canonical production folder code: known models stay X1C/A1/…; free-form is compacted uppercase."""
+    normalized = normalize_production_printer(raw)
+    if not normalized:
+        return ""
+    compact = _compact_printer(normalized)
+    return _PRODUCTION_PRINTER_COMPACT.get(compact, compact[:32])
+
+
 def _strip_production_extension(name: str) -> str:
     lower = name.lower()
     for ext in _STRIP_EXTENSIONS:

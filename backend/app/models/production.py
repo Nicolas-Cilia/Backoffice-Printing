@@ -56,7 +56,14 @@ class ProductionPartInstance(Base):
     """A catalog part bound to one printer model and its library folder."""
 
     __tablename__ = "production_part_instances"
-    __table_args__ = (UniqueConstraint("part_id", "printer_model", name="uq_production_part_instance_part_printer"),)
+    __table_args__ = (
+        UniqueConstraint(
+            "part_id",
+            "printer_model",
+            "folder_id",
+            name="uq_production_part_instance_part_printer_folder",
+        ),
+    )
 
     id: Mapped[int] = mapped_column(primary_key=True)
     part_id: Mapped[int] = mapped_column(ForeignKey("production_parts.id", ondelete="CASCADE"))

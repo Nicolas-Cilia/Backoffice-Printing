@@ -22,8 +22,6 @@ import {
   MoveRight,
   CheckSquare,
   Square,
-  LayoutGrid,
-  List,
   Search,
   SortAsc,
   SortDesc,
@@ -80,21 +78,61 @@ type SortField = 'name' | 'date' | 'size' | 'type' | 'prints';
 type SortDirection = 'asc' | 'desc';
 type TFunction = (key: string, options?: Record<string, unknown>) => string;
 
+function isTrackingFolder(folder: {
+  parameter_tracking?: boolean;
+  production_printer_model?: string | null;
+}): boolean {
+  return Boolean(folder.parameter_tracking || folder.production_printer_model);
+}
+
 // New Folder Modal
 interface NewFolderModalProps {
   parentId: number | null;
+  initialSectionId?: number | null;
+  sections?: LibraryFolderSection[];
   onClose: () => void;
   onSave: (data: LibraryFolderCreate) => void;
   isLoading: boolean;
   t: TFunction;
 }
 
-function NewFolderModal({ parentId, onClose, onSave, isLoading, t }: NewFolderModalProps) {
+function NewFolderModal({
+  parentId,
+  initialSectionId = null,
+  sections = [],
+  onClose,
+  onSave,
+  isLoading,
+  t,
+}: NewFolderModalProps) {
   const [name, setName] = useState('');
+  const [sectionId, setSectionId] = useState<number | null>(initialSectionId);
+  const [trackPrintSettings, setTrackPrintSettings] = useState(
+    () => sections.find((section) => section.id === initialSectionId)?.kind === 'production',
+  );
+  const isNested = parentId != null;
+  const showSectionPicker = !isNested && sections.length > 0;
+  const selectedSection = sections.find((section) => section.id === sectionId);
+  const trackingForced = !isNested && selectedSection?.kind === 'production';
+  const trackingOn = trackingForced || trackPrintSettings;
+  const canSubmit = Boolean(name.trim());
+
+  const handleSectionChange = (raw: string) => {
+    const nextId = raw === '' ? null : Number(raw);
+    setSectionId(nextId);
+    const nextSection = sections.find((section) => section.id === nextId);
+    setTrackPrintSettings(nextSection?.kind === 'production');
+  };
 
   const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault();
-    onSave({ name: name.trim(), parent_id: parentId });
+    if (!canSubmit) return;
+    onSave({
+      name: name.trim(),
+      parent_id: parentId,
+      section_id: isNested ? undefined : sectionId,
+      parameter_tracking: !isNested && trackingOn,
+    });
   };
 
   return (
@@ -118,11 +156,51 @@ function NewFolderModal({ parentId, onClose, onSave, isLoading, t }: NewFolderMo
               required
             />
           </div>
+          {showSectionPicker && (
+            <div>
+              <label className="block text-sm font-medium text-white mb-1" htmlFor="new-folder-section">
+                {t('fileManager.folderSection')}
+              </label>
+              <select
+                id="new-folder-section"
+                value={sectionId ?? ''}
+                onChange={(e) => handleSectionChange(e.target.value)}
+                className="w-full bg-bambu-dark border border-bambu-dark-tertiary rounded px-3 py-2 text-white focus:outline-none focus:border-bambu-green"
+              >
+                <option value="">{t('fileManager.ungrouped')}</option>
+                {sections.map((section) => (
+                  <option key={section.id} value={section.id}>
+                    {section.name}
+                    {section.kind === 'production' ? ` (${t('fileManager.parameterTracking')})` : ''}
+                  </option>
+                ))}
+              </select>
+            </div>
+          )}
+          {!isNested && (
+            <label className={`flex items-start gap-2 ${trackingForced ? 'cursor-not-allowed' : 'cursor-pointer'}`}>
+              <input
+                type="checkbox"
+                checked={trackingOn}
+                disabled={trackingForced}
+                onChange={(e) => setTrackPrintSettings(e.target.checked)}
+                className="mt-0.5 rounded border-bambu-dark-tertiary bg-bambu-dark text-bambu-green focus:ring-bambu-green disabled:opacity-60"
+              />
+              <span>
+                <span className="block text-sm font-medium text-white">
+                  {t('fileManager.trackPrintSettings')}
+                </span>
+                <span className="block text-xs text-bambu-gray mt-0.5">
+                  {t(trackingForced ? 'fileManager.trackPrintSettingsForcedHelp' : 'fileManager.trackPrintSettingsHelp')}
+                </span>
+              </span>
+            </label>
+          )}
           <div className="flex justify-end gap-2 pt-2">
             <Button type="button" variant="secondary" onClick={onClose}>
               {t('common.cancel')}
             </Button>
-            <Button type="submit" disabled={!name.trim() || isLoading}>
+            <Button type="submit" disabled={!canSubmit || isLoading}>
               {isLoading ? <Loader2 className="w-4 h-4 animate-spin" /> : t('common.create')}
             </Button>
           </div>
@@ -318,6 +396,7 @@ function RenameModal({ type, currentName, onClose, onSave, isLoading, t }: Renam
 // Move Files Modal
 interface MoveFilesModalProps {
   folders: LibraryFolderTree[];
+  sections?: LibraryFolderSection[];
   selectedFiles: number[];
   currentFolderId: number | null;
   onClose: () => void;
@@ -326,21 +405,88 @@ interface MoveFilesModalProps {
   t: TFunction;
 }
 
-function MoveFilesModal({ folders, selectedFiles, currentFolderId, onClose, onMove, isLoading, t }: MoveFilesModalProps) {
+type MovePickerRow = {
+  id: number | null;
+  name: string;
+  depth: number;
+  isProduction: boolean;
+};
+
+function flattenMoveFolders(items: LibraryFolderTree[], depth = 0): MovePickerRow[] {
+  const result: MovePickerRow[] = [];
+  for (const item of items) {
+    result.push({
+      id: item.id,
+      name: item.name,
+      depth,
+      isProduction: isTrackingFolder(item),
+    });
+    if (item.children.length > 0) {
+      result.push(...flattenMoveFolders(item.children, depth + 1));
+    }
+  }
+  return result;
+}
+
+function MoveFilesModal({
+  folders,
+  sections = [],
+  selectedFiles,
+  currentFolderId,
+  onClose,
+  onMove,
+  isLoading,
+  t,
+}: MoveFilesModalProps) {
   const [targetFolder, setTargetFolder] = useState<number | null>(null);
 
-  const flattenFolders = (items: LibraryFolderTree[], depth = 0): { id: number | null; name: string; depth: number }[] => {
-    const result: { id: number | null; name: string; depth: number }[] = [];
-    for (const item of items) {
-      result.push({ id: item.id, name: item.name, depth });
-      if (item.children.length > 0) {
-        result.push(...flattenFolders(item.children, depth + 1));
-      }
-    }
-    return result;
-  };
+  const ungroupedFolders = folders.filter((folder) => folder.section_id == null);
+  const foldersBySection: Record<number, LibraryFolderTree[]> = {};
+  for (const folder of folders) {
+    if (folder.section_id == null) continue;
+    (foldersBySection[folder.section_id] ||= []).push(folder);
+  }
 
-  const flatFolders = [{ id: null, name: t('fileManager.rootNoFolder'), depth: 0 }, ...flattenFolders(folders)];
+  const productionIds = new Set<number>();
+  const collectProductionIds = (items: LibraryFolderTree[]) => {
+    for (const item of items) {
+      if (isTrackingFolder(item)) productionIds.add(item.id);
+      if (item.children.length > 0) collectProductionIds(item.children);
+    }
+  };
+  collectProductionIds(folders);
+  const targetIsProduction = targetFolder != null && productionIds.has(targetFolder);
+
+  const renderFolderButton = (folder: MovePickerRow) => {
+    const isCurrent = folder.id === currentFolderId;
+    const disabled = isCurrent || folder.isProduction;
+    return (
+      <button
+        key={folder.id ?? 'root'}
+        type="button"
+        onClick={() => setTargetFolder(folder.id)}
+        disabled={disabled}
+        title={folder.isProduction ? t('fileManager.production.moveIntoProductionBlocked') : undefined}
+        className={`w-full text-left px-3 py-2 rounded transition-colors flex items-center gap-2 ${
+          targetFolder === folder.id
+            ? 'bg-bambu-green/20 text-bambu-green'
+            : disabled
+              ? 'opacity-50 cursor-not-allowed text-bambu-gray'
+              : 'hover:bg-bambu-dark text-white'
+        }`}
+        style={{ paddingLeft: `${12 + folder.depth * 16}px` }}
+      >
+        <FolderOpen className="w-4 h-4 shrink-0" />
+        <span className="truncate">{folder.name}</span>
+        {isCurrent && <span className="text-xs text-bambu-gray ml-auto">({t('fileManager.current')})</span>}
+        {!isCurrent && folder.isProduction && (
+          <span className="text-xs text-bambu-gray ml-auto">
+            {t('fileManager.production.moveIntoProductionBlocked')}
+          </span>
+        )}
+      </button>
+    );
+  };
 
   return (
     <div className="fixed inset-0 bg-black/70 flex items-center justify-center z-50 p-4">
@@ -349,32 +495,38 @@ function MoveFilesModal({ folders, selectedFiles, currentFolderId, onClose, onMo
           <h2 className="text-lg font-semibold text-white">{t('fileManager.moveFiles', { count: selectedFiles.length })}</h2>
         </div>
         <div className="p-4 space-y-4">
-          <div className="max-h-64 overflow-y-auto space-y-1">
-            {flatFolders.map((folder) => (
-              <button
-                key={folder.id ?? 'root'}
-                onClick={() => setTargetFolder(folder.id)}
-                disabled={folder.id === currentFolderId}
-                className={`w-full text-left px-3 py-2 rounded transition-colors flex items-center gap-2 ${
-                  targetFolder === folder.id
-                    ? 'bg-bambu-green/20 text-bambu-green'
-                    : folder.id === currentFolderId
-                    ? 'opacity-50 cursor-not-allowed text-bambu-gray'
-                    : 'hover:bg-bambu-dark text-white'
-                }`}
-                style={{ paddingLeft: `${12 + folder.depth * 16}px` }}
-              >
-                <FolderOpen className="w-4 h-4" />
-                {folder.name}
-                {folder.id === currentFolderId && <span className="text-xs text-bambu-gray ml-auto">({t('fileManager.current')})</span>}
-              </button>
-            ))}
+          <div className="max-h-80 overflow-y-auto space-y-1">
+            {renderFolderButton({
+              id: null,
+              name: t('fileManager.rootNoFolder'),
+              depth: 0,
+              isProduction: false,
+            })}
+            {sections.length > 0 && ungroupedFolders.length > 0 && (
+              <div className="px-3 pt-2 pb-0.5 text-xs font-medium text-bambu-gray">
+                {t('fileManager.ungrouped')}
+              </div>
+            )}
+            {ungroupedFolders.flatMap((folder) => flattenMoveFolders([folder])).map(renderFolderButton)}
+            {sections.map((section) => {
+              const sectionFolders = foldersBySection[section.id] ?? [];
+              if (sectionFolders.length === 0) return null;
+              return (
+                <div key={section.id}>
+                  <div className="px-3 pt-2 pb-0.5 text-xs font-medium text-bambu-gray flex items-center gap-1.5">
+                    <Layers className="w-3 h-3 text-bambu-green" />
+                    {section.name}
+                  </div>
+                  {sectionFolders.flatMap((folder) => flattenMoveFolders([folder])).map(renderFolderButton)}
+                </div>
+              );
+            })}
           </div>
           <div className="flex justify-end gap-2 pt-2">
             <Button type="button" variant="secondary" onClick={onClose}>
               {t('common.cancel')}
             </Button>
-            <Button onClick={() => onMove(targetFolder)} disabled={isLoading}>
+            <Button onClick={() => onMove(targetFolder)} disabled={isLoading || targetIsProduction}>
               {isLoading ? <Loader2 className="w-4 h-4 animate-spin" /> : t('common.move')}
             </Button>
           </div>
@@ -617,11 +769,22 @@ function FolderCard({
           </>
         )}
       </div>
-      <div className="w-12 h-12 rounded-lg bg-bambu-dark flex items-center justify-center">
+      <div className="relative w-12 h-12 rounded-lg bg-bambu-dark flex items-center justify-center">
         {isExternal ? (
           <FolderSymlink className="w-6 h-6 text-purple-600 dark:text-purple-400" />
         ) : (
           <FolderOpen className="w-6 h-6 text-blue-600 dark:text-blue-400" />
+        )}
+        {isTrackingFolder(folder) && (
+          <button
+            type="button"
+            title={t('fileManager.parameterTracking')}
+            aria-label={t('fileManager.parameterTracking')}
+            onClick={(e) => e.stopPropagation()}
+            className="absolute -top-1 -right-1 z-[1] inline-flex h-2.5 min-w-[10px] max-w-[10px] items-center justify-center overflow-hidden rounded-full bg-blue-500 p-0 text-[10px] font-medium leading-none text-transparent whitespace-nowrap transition-[max-width,min-width,height,padding,background-color,color] duration-200 ease-out hover:h-4 hover:max-w-[8rem] hover:min-w-0 hover:bg-blue-100 hover:px-1.5 hover:text-blue-700 focus:outline-none focus-visible:h-4 focus-visible:max-w-[8rem] focus-visible:min-w-0 focus-visible:bg-blue-100 focus-visible:px-1.5 focus-visible:text-blue-700 focus-visible:ring-1 focus-visible:ring-blue-400/70 group-hover:h-4 group-hover:max-w-[8rem] group-hover:min-w-0 group-hover:bg-blue-100 group-hover:px-1.5 group-hover:text-blue-700 dark:bg-blue-400 dark:hover:bg-blue-500/20 dark:hover:text-blue-400 dark:focus-visible:bg-blue-500/20 dark:focus-visible:text-blue-400 dark:group-hover:bg-blue-500/20 dark:group-hover:text-blue-400"
+          >
+            <span aria-hidden="true">{t('fileManager.parameterTrackingChip')}</span>
+          </button>
         )}
       </div>
       <span className="text-sm text-white font-medium truncate w-full" title={folder.name}>{folder.name}</span>
@@ -693,6 +856,7 @@ function FolderCardGrid({
 function NewSectionModal({
   title,
   initialName = '',
+  allowKind = false,
   onClose,
   onSave,
   isLoading,
@@ -700,12 +864,14 @@ function NewSectionModal({
 }: {
   title: string;
   initialName?: string;
+  allowKind?: boolean;
   onClose: () => void;
-  onSave: (name: string) => void;
+  onSave: (data: { name: string; kind?: 'normal' | 'production' }) => void;
   isLoading: boolean;
   t: TFunction;
 }) {
   const [name, setName] = useState(initialName);
+  const [trackPrintSettings, setTrackPrintSettings] = useState(false);
   return (
     <div className="fixed inset-0 bg-black/70 flex items-center justify-center z-50 p-4">
       <div className="bg-bambu-dark-secondary rounded-lg w-full max-w-sm border border-bambu-dark-tertiary">
@@ -715,7 +881,11 @@ function NewSectionModal({
         <form
           onSubmit={(e) => {
             e.preventDefault();
-            if (name.trim()) onSave(name.trim());
+            if (!name.trim()) return;
+            onSave({
+              name: name.trim(),
+              kind: allowKind ? (trackPrintSettings ? 'production' : 'normal') : undefined,
+            });
           }}
           className="p-4 space-y-4"
         >
@@ -733,6 +903,24 @@ function NewSectionModal({
               required
             />
           </div>
+          {allowKind && (
+            <label className="flex items-start gap-2 cursor-pointer">
+              <input
+                type="checkbox"
+                checked={trackPrintSettings}
+                onChange={(e) => setTrackPrintSettings(e.target.checked)}
+                className="mt-0.5 rounded border-bambu-dark-tertiary bg-bambu-dark text-bambu-green focus:ring-bambu-green"
+              />
+              <span>
+                <span className="block text-sm font-medium text-white">
+                  {t('fileManager.trackPrintSettings')}
+                </span>
+                <span className="block text-xs text-bambu-gray mt-0.5">
+                  {t('fileManager.trackPrintSettingsSectionHelp')}
+                </span>
+              </span>
+            </label>
+          )}
           <div className="flex justify-end gap-2 pt-2">
             <Button type="button" variant="secondary" onClick={onClose}>
               {t('common.cancel')}
@@ -1035,7 +1223,7 @@ export function FileManagerPage() {
   // specify a folder skip the picker and go straight to that folder.
   const [viewEntered, setViewEntered] = useState(!!initialFolderId);
   const [selectedFiles, setSelectedFiles] = useState<number[]>([]);
-  const [showNewFolderModal, setShowNewFolderModal] = useState(false);
+  const [newFolderTarget, setNewFolderTarget] = useState<{ parentId: number | null; sectionId: number | null } | null>(null);
   const [showSectionModal, setShowSectionModal] = useState<'create' | { id: number; name: string } | null>(null);
   const [sectionMenuId, setSectionMenuId] = useState<number | null>(null);
   const [deleteSectionId, setDeleteSectionId] = useState<number | null>(null);
@@ -1059,9 +1247,6 @@ export function FileManagerPage() {
   const [renameItem, setRenameItem] = useState<{ type: 'file' | 'folder'; id: number; name: string } | null>(null);
   const [thumbnailVersions, setThumbnailVersions] = useState<Record<number, number>>({});
   const [viewerFile, setViewerFile] = useState<LibraryFileListItem | null>(null);
-  const [viewMode, setViewMode] = useState<'grid' | 'list'>(() => {
-    return (localStorage.getItem('library-view-mode') as 'grid' | 'list') || 'grid';
-  });
   // Folder card sort (#1770). 'name' = alphabetical; 'activity' = most recent
   // file activity inside the folder first. Persisted independently from the
   // file-side sort so each can be tuned to taste.
@@ -1237,17 +1422,20 @@ export function FileManagerPage() {
     );
   }, []);
 
+  // Landing (no folder selected) lists root/unfiled files so uploads from the
+  // section grid are visible. include_root=true is required in that case —
+  // false would return every file in the library instead of folder_id IS NULL.
   const { data: files, isLoading: filesLoading } = useQuery({
     queryKey: ['library-files', selectedFolderId, searchExpandsSubfolders, tagFilterKey],
     queryFn: () =>
       api.getLibraryFiles(
         selectedFolderId,
-        false,
+        selectedFolderId == null,
         undefined,
         searchExpandsSubfolders,
         tagFilterKey,
       ),
-    enabled: viewEntered && selectedFolderId !== null,
+    enabled: !viewEntered || selectedFolderId !== null,
   });
 
   const { data: stats } = useQuery({
@@ -1339,7 +1527,8 @@ export function FileManagerPage() {
     mutationFn: (data: LibraryFolderCreate) => api.createLibraryFolder(data),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['library-folders'] });
-      setShowNewFolderModal(false);
+      queryClient.invalidateQueries({ queryKey: ['library-sections'] });
+      setNewFolderTarget(null);
       showToast(t('fileManager.toast.folderCreated'), 'success');
     },
     onError: (error: Error) => showToast(error.message, 'error'),
@@ -1454,7 +1643,8 @@ export function FileManagerPage() {
   });
 
   const createSectionMutation = useMutation({
-    mutationFn: (name: string) => api.createLibraryFolderSection(name),
+    mutationFn: (data: { name: string; kind?: 'normal' | 'production' }) =>
+      api.createLibraryFolderSection(data),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['library-sections'] });
       setShowSectionModal(null);
@@ -1617,7 +1807,7 @@ export function FileManagerPage() {
     };
     return findFolder(folders);
   }, [selectedFolderId, folders]);
-  const isProductionFolder = Boolean(selectedFolder?.production_printer_model);
+  const isProductionFolder = Boolean(selectedFolder && isTrackingFolder(selectedFolder));
 
   // Page-wide drag-and-drop upload (#1510). Disabled when the user lacks
   // library:upload so a non-uploader can't accidentally show the overlay,
@@ -1651,11 +1841,6 @@ export function FileManagerPage() {
   };
 
   const isDeleting = deleteFolderMutation.isPending || deleteFileMutation.isPending || bulkDeleteMutation.isPending;
-
-  const handleViewModeChange = (mode: 'grid' | 'list') => {
-    setViewMode(mode);
-    localStorage.setItem('library-view-mode', mode);
-  };
 
   const isLoading = foldersLoading || filesLoading;
 
@@ -1720,27 +1905,6 @@ export function FileManagerPage() {
           </p>
         </div>
         <div className="flex items-center gap-2">
-          {/* View mode toggle */}
-          <div className="flex items-center bg-bambu-dark rounded-lg p-1">
-            <button
-              onClick={() => handleViewModeChange('grid')}
-              className={`p-1.5 rounded transition-colors ${
-                viewMode === 'grid' ? 'bg-bambu-dark-secondary text-white' : 'text-bambu-gray hover:text-white'
-              }`}
-              title={t('fileManager.gridView')}
-            >
-              <LayoutGrid className="w-4 h-4" />
-            </button>
-            <button
-              onClick={() => handleViewModeChange('list')}
-              className={`p-1.5 rounded transition-colors ${
-                viewMode === 'list' ? 'bg-bambu-dark-secondary text-white' : 'text-bambu-gray hover:text-white'
-              }`}
-              title={t('fileManager.listView')}
-            >
-              <List className="w-4 h-4" />
-            </button>
-          </div>
           <Button
             variant="secondary"
             onClick={() => batchThumbnailMutation.mutate()}
@@ -1768,7 +1932,7 @@ export function FileManagerPage() {
           {!isProductionFolder && (
           <Button
             variant="secondary"
-            onClick={() => setShowNewFolderModal(true)}
+            onClick={() => setNewFolderTarget({ parentId: selectedFolderId, sectionId: null })}
             disabled={!hasPermission('library:upload')}
             title={!hasPermission('library:upload') ? t('fileManager.noPermissionCreateFolder') : undefined}
           >
@@ -1939,7 +2103,22 @@ export function FileManagerPage() {
                   <div className="flex items-center gap-2 mb-3">
                     <Layers className="w-4 h-4 text-bambu-green" />
                     <h2 className="text-sm font-medium text-white">{section.name}</h2>
-                    <div className="relative ml-auto">
+                    {section.kind === 'production' && (
+                      <span className="text-[10px] px-1.5 py-0.5 rounded bg-blue-100 dark:bg-blue-500/20 text-blue-700 dark:text-blue-400">
+                        {t('fileManager.parameterTracking')}
+                      </span>
+                    )}
+                    <div className="relative ml-auto flex items-center gap-1">
+                      {hasPermission('library:upload') && (
+                        <button
+                          onClick={() => setNewFolderTarget({ parentId: null, sectionId: section.id })}
+                          className="p-1 rounded hover:bg-bambu-dark-secondary text-bambu-gray hover:text-white"
+                          title={t('fileManager.addFolderToSection')}
+                          aria-label={t('fileManager.addFolderToSection')}
+                        >
+                          <FolderPlus className="w-4 h-4" />
+                        </button>
+                      )}
                       <button
                         onClick={() => setSectionMenuId(sectionMenuId === section.id ? null : section.id)}
                         className="p-1 rounded hover:bg-bambu-dark-secondary text-bambu-gray hover:text-white"
@@ -1995,6 +2174,83 @@ export function FileManagerPage() {
                   )}
                 </div>
               ))}
+              {files && files.length > 0 && (
+                <div>
+                  <h2 className="text-sm font-medium text-white mb-3">{t('fileManager.unfiled')}</h2>
+                  {selectedFiles.length > 0 && (
+                    <div className="flex flex-wrap items-center gap-2 mb-4 p-2 bg-bambu-dark-secondary rounded-lg border border-bambu-dark-tertiary">
+                      <span className="text-sm text-bambu-gray">
+                        {t('fileManager.selected', { count: selectedFiles.length })}
+                      </span>
+                      <div className="flex flex-wrap items-center gap-2 ml-auto">
+                        <Button
+                          variant="secondary"
+                          size="sm"
+                          onClick={() => setShowMoveModal(true)}
+                          disabled={!hasAnyPermission('library:update_own', 'library:update_all')}
+                          title={!hasAnyPermission('library:update_own', 'library:update_all') ? t('fileManager.noPermissionMoveFiles') : undefined}
+                        >
+                          <MoveRight className="w-4 h-4 sm:mr-1" />
+                          <span className="hidden sm:inline">{t('common.move')}</span>
+                        </Button>
+                        <Button
+                          variant="danger"
+                          size="sm"
+                          onClick={() => {
+                            if (selectedFiles.length === 1) {
+                              setDeleteConfirm({ type: 'file', id: selectedFiles[0] });
+                            } else {
+                              setDeleteConfirm({ type: 'bulk', id: 0, count: selectedFiles.length });
+                            }
+                          }}
+                          disabled={!hasAnyPermission('library:delete_own', 'library:delete_all')}
+                          title={!hasAnyPermission('library:delete_own', 'library:delete_all') ? t('fileManager.noPermissionDeleteFiles') : undefined}
+                        >
+                          <Trash2 className="w-4 h-4 sm:mr-1" />
+                          <span className="hidden sm:inline">{t('common.delete')}</span>
+                        </Button>
+                        <Button variant="secondary" size="sm" onClick={handleDeselectAll}>
+                          <X className="w-4 h-4 sm:mr-1" />
+                          <span className="hidden sm:inline">{t('common.clear')}</span>
+                        </Button>
+                      </div>
+                    </div>
+                  )}
+                  <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 xl:grid-cols-5 2xl:grid-cols-6 gap-4">
+                    {filteredAndSortedFiles.map((file) => (
+                      <FileCard
+                        key={file.id}
+                        file={file}
+                        isSelected={selectedFiles.includes(file.id)}
+                        isMobile={isMobile}
+                        t={t}
+                        onSelect={handleFileSelect}
+                        onDelete={(id) => setDeleteConfirm({ type: 'file', id })}
+                        onDownload={handleDownload}
+                        onPrint={setPrintFile}
+                        onSlice={setSliceFile}
+                        onRunPipeline={setRunPipelineFile}
+                        useSlicerApi={settings?.use_slicer_api ?? false}
+                        onPreview3d={(f) => {
+                          if (isSlicedFilename(f.filename)) {
+                            navigate(`/gcode-viewer?library_file=${f.id}`);
+                          } else {
+                            setViewerFile(f);
+                          }
+                        }}
+                        onRename={(f) => setRenameItem({ type: 'file', id: f.id, name: f.filename })}
+                        onGenerateThumbnail={(f) => singleThumbnailMutation.mutate(f.id)}
+                        onTagClick={toggleTagFilter}
+                        thumbnailVersion={thumbnailVersions[file.id]}
+                        hasPermission={hasPermission}
+                        canModify={canModify}
+                        authEnabled={authEnabled}
+                        showModified={showModified}
+                      />
+                    ))}
+                  </div>
+                </div>
+              )}
             </>
           )}
         </div>
@@ -2032,10 +2288,10 @@ export function FileManagerPage() {
               ))}
             </nav>
           )}
-          {isProductionFolder && selectedFolderId && selectedFolder?.production_printer_model ? (
+          {isProductionFolder && selectedFolderId ? (
             <ProductionFolderView
               folderId={selectedFolderId}
-              printerModel={selectedFolder.production_printer_model}
+              printerModel={selectedFolder?.production_printer_model ?? ''}
               canUpload={canUpload}
               onPrint={handleProductionPrint}
             />
@@ -2348,7 +2604,7 @@ export function FileManagerPage() {
             </div>
           )}
 
-          {/* File grid/list */}
+          {/* File grid */}
           {isLoading ? (
             <div className="flex-1 flex items-center justify-center">
               <div className="flex flex-col items-center gap-3">
@@ -2389,7 +2645,7 @@ export function FileManagerPage() {
                 {t('fileManager.clearFilters')}
               </Button>
             </div>
-          ) : viewMode === 'grid' ? (
+          ) : (
             <div className="flex-1 lg:overflow-y-auto">
               <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 xl:grid-cols-5 2xl:grid-cols-6 gap-4">
                 {filteredAndSortedFiles.map((file) => (
@@ -2429,262 +2685,6 @@ export function FileManagerPage() {
                 ))}
               </div>
             </div>
-          ) : (
-            <div className="flex-1 lg:overflow-y-auto">
-              {/* The wrapper has overflow-x-auto so a narrow viewport scrolls
-                  horizontally instead of clipping the actions column off the
-                  right edge. The previous `overflow-hidden` was there for the
-                  rounded corners but also swallowed any content the actions
-                  column couldn't fit (#1325 follow-up reported in chat). */}
-              <div className="bg-bambu-dark-secondary rounded-lg border border-bambu-dark-tertiary overflow-x-auto">
-                {/* List header - hidden on mobile, show simplified on small screens.
-                    Trailing actions column is fixed at 220px (sliced 3MF = 7 icons
-                    ~220px). It used to be `min-content`, but header + body are sibling
-                    grids that compute `min-content` independently — the header's empty
-                    trailing div resolved to 0px, leaving body columns shifted left of
-                    their headers. Fixed width keeps header and body in lockstep. */}
-                <div className={`hidden sm:grid ${authEnabled ? 'grid-cols-[auto_1fr_120px_100px_100px_100px_minmax(0,200px)_220px]' : 'grid-cols-[auto_1fr_100px_100px_100px_minmax(0,200px)_220px]'} gap-4 px-4 py-2 bg-bambu-dark-secondary border-b border-bambu-dark-tertiary text-xs text-bambu-gray font-medium`}>
-                  <div className="w-6" />
-                  <div>{t('common.name')}</div>
-                  {authEnabled && <div>{t('fileManager.uploadedBy', { defaultValue: 'Uploaded By' })}</div>}
-                  <div>{t('common.type')}</div>
-                  <div>{t('fileManager.size')}</div>
-                  <div>{t('fileManager.prints')}</div>
-                  <div>{t('fileManager.tags.title')}</div>
-                  <div />
-                </div>
-                {/* List rows */}
-                {filteredAndSortedFiles.map((file) => (
-                  <div
-                    key={file.id}
-                    className={`grid ${authEnabled ? 'grid-cols-[auto_1fr_120px_100px_100px_100px_minmax(0,200px)_220px]' : 'grid-cols-[auto_1fr_100px_100px_100px_minmax(0,200px)_220px]'} gap-4 px-4 py-3 items-center border-b border-bambu-dark-tertiary last:border-b-0 cursor-pointer hover:bg-bambu-dark/50 transition-colors ${
-                      selectedFiles.includes(file.id) ? 'bg-bambu-green/10' : ''
-                    }`}
-                    onClick={() => handleFileSelect(file.id)}
-                  >
-                    {/* Checkbox */}
-                    <div className={`w-5 h-5 rounded border-2 flex items-center justify-center ${
-                      selectedFiles.includes(file.id)
-                        ? 'bg-bambu-green border-bambu-green'
-                        : 'border-bambu-gray/50'
-                    }`}>
-                      {selectedFiles.includes(file.id) && <div className="w-2 h-2 bg-white rounded-sm" />}
-                    </div>
-                    {/* Name with thumbnail */}
-                    <div className="flex items-center gap-3 min-w-0">
-                      <div className="relative group/thumb">
-                        <div className="w-10 h-10 rounded bg-bambu-dark flex-shrink-0 overflow-hidden">
-                          {file.thumbnail_path ? (
-                            <img
-                              src={`${api.getLibraryFileThumbnailUrl(file.id)}${thumbnailVersions[file.id] ? ((api.getLibraryFileThumbnailUrl(file.id).includes('?') ? '&' : '?') + `v=${thumbnailVersions[file.id]}`) : ''}`}
-                              alt=""
-                              className="w-full h-full object-cover"
-                            />
-                          ) : (
-                            <div className="w-full h-full flex items-center justify-center">
-                              <FileBox className="w-5 h-5 text-bambu-gray/50" />
-                            </div>
-                          )}
-                        </div>
-                        {/* Hover preview */}
-                        {file.thumbnail_path && (
-                          <div className="absolute left-0 top-full mt-2 z-50 hidden group-hover/thumb:block">
-                            <div className="w-48 h-48 rounded-lg bg-bambu-dark-secondary border border-bambu-dark-tertiary shadow-xl overflow-hidden">
-                              <img
-                                src={`${api.getLibraryFileThumbnailUrl(file.id)}${thumbnailVersions[file.id] ? ((api.getLibraryFileThumbnailUrl(file.id).includes('?') ? '&' : '?') + `v=${thumbnailVersions[file.id]}`) : ''}`}
-                                alt={file.filename}
-                                className="w-full h-full object-contain"
-                              />
-                            </div>
-                          </div>
-                        )}
-                      </div>
-                      <div className="min-w-0">
-                        <div className="text-sm text-white truncate">{file.print_name || file.filename}</div>
-                        {/* #2680: last-modified date under the name, toggled from
-                            the toolbar. Real on-disk mtime when known, else created_at. */}
-                        {showModified && (
-                          <div className="text-xs text-bambu-gray flex items-center gap-1 mt-0.5" title={t('fileManager.lastModified')}>
-                            <CalendarClock className="w-3 h-3 flex-shrink-0" />
-                            <span className="truncate">{formatDate(file.fs_modified_at ?? file.created_at)}</span>
-                          </div>
-                        )}
-                      </div>
-                    </div>
-                    {/* Uploaded By - only show when auth is enabled */}
-                    {authEnabled && (
-                      <div className="text-sm text-bambu-gray flex items-center gap-1">
-                        {file.created_by_username ? (
-                          <>
-                            <User className="w-3 h-3" />
-                            <span className="truncate">{file.created_by_username}</span>
-                          </>
-                        ) : (
-                          '-'
-                        )}
-                      </div>
-                    )}
-                    {/* Type */}
-                    <div>
-                      <span className={`text-xs px-1.5 py-0.5 rounded font-medium ${
-                        file.file_type === '3mf' ? 'bg-bambu-green/20 text-bambu-green'
-                        : (file.file_type === 'gcode' || file.file_type === 'gcode.3mf') ? 'bg-blue-100 dark:bg-blue-500/20 text-blue-700 dark:text-blue-400'
-                        : file.file_type === 'stl' ? 'bg-purple-100 dark:bg-purple-500/20 text-purple-700 dark:text-purple-400'
-                        : 'bg-bambu-gray/20 text-bambu-gray'
-                      }`}>
-                        {file.file_type.toUpperCase()}
-                      </span>
-                    </div>
-                    {/* Size */}
-                    <div className="text-sm text-bambu-gray">{formatFileSize(file.file_size)}</div>
-                    {/* Prints */}
-                    <div className="text-sm text-bambu-gray">{file.print_count > 0 ? `${file.print_count}x` : '-'}</div>
-                    {/* Tags (#1268) — clickable chips push into the active
-                        filter; minmax(0,200px) on the column lets the cell
-                        shrink/wrap on narrow viewports without pushing the
-                        Actions cell off-screen. */}
-                    <div className="min-w-0" onClick={(e) => e.stopPropagation()}>
-                      {!file.tags || file.tags.length === 0 ? (
-                        <span className="text-xs text-bambu-gray/50">-</span>
-                      ) : (
-                        <div className="flex flex-wrap gap-1">
-                          {file.tags.map((tg) => (
-                            <button
-                              key={tg.id}
-                              type="button"
-                              onClick={() => toggleTagFilter(tg.id)}
-                              className="inline-flex items-center gap-0.5 px-1.5 py-0.5 rounded-full text-[10px] bg-bambu-green/10 text-bambu-green hover:bg-bambu-green/20 transition-colors max-w-full"
-                              title={tg.name}
-                            >
-                              <TagIcon className="w-2.5 h-2.5 flex-shrink-0" />
-                              <span className="truncate">{tg.name}</span>
-                            </button>
-                          ))}
-                        </div>
-                      )}
-                    </div>
-                    {/* Actions */}
-                    <div className="flex items-center gap-1" onClick={(e) => e.stopPropagation()}>
-                      {isSlicedFilename(file.filename) && (
-                        <>
-                          <button
-                            onClick={() => hasPermission('queue:create') && setPrintFile(file)}
-                            className={`p-1.5 rounded transition-colors ${
-                              hasPermission('queue:create')
-                                ? 'hover:bg-bambu-dark text-bambu-gray hover:text-bambu-green'
-                                : 'text-bambu-gray/50 cursor-not-allowed'
-                            }`}
-                            title={hasPermission('queue:create') ? t('common.print') : t('fileManager.noPermissionAddToQueue')}
-                            disabled={!hasPermission('queue:create')}
-                          >
-                            <Printer className="w-4 h-4" />
-                          </button>
-                        </>
-                      )}
-                      {(settings?.use_slicer_api ?? false) && isSliceableFilename(file.filename) && (
-                        <button
-                          onClick={() => hasPermission('library:upload') && setSliceFile(file)}
-                          className={`p-1.5 rounded transition-colors ${
-                            hasPermission('library:upload')
-                              ? 'hover:bg-bambu-dark text-bambu-gray hover:text-bambu-green'
-                              : 'text-bambu-gray/50 cursor-not-allowed'
-                          }`}
-                          title={hasPermission('library:upload') ? t('slice.action') : t('fileManager.noPermissionSlice')}
-                          disabled={!hasPermission('library:upload')}
-                        >
-                          <Cog className="w-4 h-4" />
-                        </button>
-                      )}
-                      {(settings?.use_slicer_api ?? false) && isSliceableFilename(file.filename) && (
-                        <button
-                          onClick={() => hasPermission('pipelines:run') && setRunPipelineFile(file)}
-                          className={`p-1.5 rounded transition-colors ${
-                            hasPermission('pipelines:run')
-                              ? 'hover:bg-bambu-dark text-bambu-gray hover:text-bambu-green'
-                              : 'text-bambu-gray/50 cursor-not-allowed'
-                          }`}
-                          title={hasPermission('pipelines:run') ? t('library.runWithPipeline.actionLabel', 'Run with pipeline') : t('library.runWithPipeline.noPermission', 'You do not have permission to run pipelines')}
-                          disabled={!hasPermission('pipelines:run')}
-                        >
-                          <Play className="w-4 h-4" />
-                        </button>
-                      )}
-                      {(file.file_type === '3mf' || file.file_type === 'gcode' || file.file_type === 'gcode.3mf' || file.file_type === 'stl') && (
-                        <button
-                          onClick={() => {
-                            if (!hasPermission('library:read')) return;
-                            if (isSlicedFilename(file.filename)) {
-                              navigate(`/gcode-viewer?library_file=${file.id}`);
-                            } else {
-                              setViewerFile(file);
-                            }
-                          }}
-                          className={`p-1.5 rounded transition-colors ${
-                            hasPermission('library:read')
-                              ? 'hover:bg-bambu-dark text-bambu-gray hover:text-bambu-green'
-                              : 'text-bambu-gray/50 cursor-not-allowed'
-                          }`}
-                          title={hasPermission('library:read') ? '3D Preview' : 'You do not have permission to preview files'}
-                          disabled={!hasPermission('library:read')}
-                        >
-                          <Box className="w-4 h-4" />
-                        </button>
-                      )}
-                      <button
-                        onClick={() => hasPermission('library:read') && handleDownload(file.id)}
-                        className={`p-1.5 rounded transition-colors ${
-                          hasPermission('library:read')
-                            ? 'hover:bg-bambu-dark text-bambu-gray hover:text-white'
-                            : 'text-bambu-gray/50 cursor-not-allowed'
-                        }`}
-                        title={hasPermission('library:read') ? t('common.download') : t('fileManager.noPermissionDownload')}
-                        disabled={!hasPermission('library:read')}
-                      >
-                        <Download className="w-4 h-4" />
-                      </button>
-                      <button
-                        onClick={() => canModify('library', 'update', file.created_by_id) && setRenameItem({ type: 'file', id: file.id, name: file.filename })}
-                        className={`p-1.5 rounded transition-colors ${
-                          canModify('library', 'update', file.created_by_id)
-                            ? 'hover:bg-bambu-dark text-bambu-gray hover:text-white'
-                            : 'text-bambu-gray/50 cursor-not-allowed'
-                        }`}
-                        title={canModify('library', 'update', file.created_by_id) ? t('common.rename') : t('fileManager.noPermissionRenameFile')}
-                        disabled={!canModify('library', 'update', file.created_by_id)}
-                      >
-                        <Pencil className="w-4 h-4" />
-                      </button>
-                      {file.file_type === 'stl' && (
-                        <button
-                          onClick={() => canModify('library', 'update', file.created_by_id) && singleThumbnailMutation.mutate(file.id)}
-                          className={`p-1.5 rounded transition-colors ${
-                            canModify('library', 'update', file.created_by_id)
-                              ? 'hover:bg-bambu-dark text-bambu-gray hover:text-bambu-green'
-                              : 'text-bambu-gray/50 cursor-not-allowed'
-                          }`}
-                          title={canModify('library', 'update', file.created_by_id) ? t('fileManager.generateThumbnail') : t('fileManager.noPermissionGenerateThumbnail')}
-                          disabled={singleThumbnailMutation.isPending || !canModify('library', 'update', file.created_by_id)}
-                        >
-                          <Image className="w-4 h-4" />
-                        </button>
-                      )}
-                      <button
-                        onClick={() => canModify('library', 'delete', file.created_by_id) && setDeleteConfirm({ type: 'file', id: file.id })}
-                        className={`p-1.5 rounded transition-colors ${
-                          canModify('library', 'delete', file.created_by_id)
-                            ? 'hover:bg-bambu-dark text-bambu-gray hover:text-red-700 dark:hover:text-red-400'
-                            : 'text-bambu-gray/50 cursor-not-allowed'
-                        }`}
-                        title={canModify('library', 'delete', file.created_by_id) ? t('common.delete') : t('fileManager.noPermissionDeleteFile')}
-                        disabled={!canModify('library', 'delete', file.created_by_id)}
-                      >
-                        <Trash2 className="w-4 h-4" />
-                      </button>
-                    </div>
-                  </div>
-                ))}
-              </div>
-            </div>
           )}
           </>
           )}
@@ -2697,10 +2697,12 @@ export function FileManagerPage() {
       )}
 
       {/* Modals */}
-      {showNewFolderModal && (
+      {newFolderTarget && (
         <NewFolderModal
-          parentId={selectedFolderId}
-          onClose={() => setShowNewFolderModal(false)}
+          parentId={newFolderTarget.parentId}
+          initialSectionId={newFolderTarget.sectionId}
+          sections={folderSections}
+          onClose={() => setNewFolderTarget(null)}
           onSave={(data) => createFolderMutation.mutate(data)}
           isLoading={createFolderMutation.isPending}
           t={t}
@@ -2711,10 +2713,11 @@ export function FileManagerPage() {
         <NewSectionModal
           title={showSectionModal === 'create' ? t('fileManager.newSection') : t('fileManager.renameSection')}
           initialName={showSectionModal === 'create' ? '' : showSectionModal.name}
+          allowKind={showSectionModal === 'create'}
           onClose={() => setShowSectionModal(null)}
-          onSave={(name) => {
-            if (showSectionModal === 'create') createSectionMutation.mutate(name);
-            else renameSectionMutation.mutate({ id: showSectionModal.id, name });
+          onSave={(data) => {
+            if (showSectionModal === 'create') createSectionMutation.mutate(data);
+            else renameSectionMutation.mutate({ id: showSectionModal.id, name: data.name });
           }}
           isLoading={createSectionMutation.isPending || renameSectionMutation.isPending}
           t={t}
@@ -2745,6 +2748,7 @@ export function FileManagerPage() {
       {showMoveModal && folders && (
         <MoveFilesModal
           folders={folders}
+          sections={folderSections}
           selectedFiles={selectedFiles}
           currentFolderId={selectedFolderId}
           onClose={() => setShowMoveModal(false)}

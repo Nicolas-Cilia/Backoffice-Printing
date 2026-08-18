@@ -270,9 +270,22 @@ async def _load_production_folder(db: AsyncSession, folder_id: int) -> LibraryFo
     folder = (await db.execute(select(LibraryFolder).where(LibraryFolder.id == folder_id))).scalar_one_or_none()
     if folder is None:
         raise HTTPException(status_code=404, detail="Folder not found")
-    if not folder.production_printer_model:
+    if not folder.is_tracking():
         raise HTTPException(status_code=400, detail="Folder is not a production printer folder")
     return folder
+
+
+def _folder_printer(folder: LibraryFolder) -> str | None:
+    printer = (folder.production_printer_model or "").strip()
+    return printer or None
+
+
+def _printer_matches_folder(folder: LibraryFolder, parsed_printer: str | None) -> bool:
+    """Filename printer vs folder printer. No folder printer → skip the check."""
+    folder_printer = _folder_printer(folder)
+    if not folder_printer:
+        return True
+    return parsed_printer == folder_printer
 
 
 async def _resolve_printer_folder(
@@ -284,17 +297,18 @@ async def _resolve_printer_folder(
 ) -> LibraryFolder:
     if folder_id is not None:
         folder = await _load_production_folder(db, folder_id)
-        folder_printer = folder.production_printer_model or ""
-        if parsed is not None and parsed.printer != folder_printer:
-            raise HTTPException(
-                status_code=400,
-                detail=(f"Filename printer {parsed.printer} does not match folder printer {folder_printer}"),
-            )
-        if printer != folder_printer:
-            raise HTTPException(
-                status_code=400,
-                detail=f"Printer {printer} does not match folder printer {folder_printer}",
-            )
+        folder_printer = _folder_printer(folder)
+        if folder_printer:
+            if parsed is not None and parsed.printer != folder_printer:
+                raise HTTPException(
+                    status_code=400,
+                    detail=(f"Filename printer {parsed.printer} does not match folder printer {folder_printer}"),
+                )
+            if printer != folder_printer:
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"Printer {printer} does not match folder printer {folder_printer}",
+                )
         return folder
 
     folder = (
@@ -381,20 +395,29 @@ async def _find_part_instance(
     db: AsyncSession,
     *,
     part_id: int,
-    printer_model: str,
+    folder: LibraryFolder,
     load_slots: bool = False,
 ) -> ProductionPartInstance | None:
     stmt = select(ProductionPartInstance).where(
         ProductionPartInstance.part_id == part_id,
-        ProductionPartInstance.printer_model == printer_model,
+        ProductionPartInstance.folder_id == folder.id,
     )
+    folder_printer = _folder_printer(folder)
+    if folder_printer:
+        stmt = stmt.where(ProductionPartInstance.printer_model == folder_printer)
+    else:
+        stmt = stmt.order_by(ProductionPartInstance.id)
     if load_slots:
         stmt = stmt.options(
             selectinload(ProductionPartInstance.part),
             selectinload(ProductionPartInstance.slots).selectinload(ProductionSlot.active_file),
             selectinload(ProductionPartInstance.slots).selectinload(ProductionSlot.revisions),
         )
-    return (await db.execute(stmt)).scalar_one_or_none()
+    return (await db.execute(stmt)).scalars().first()
+
+
+def _instance_printer_model(folder: LibraryFolder, fallback: str = "") -> str:
+    return _folder_printer(folder) or (fallback or "")
 
 
 def _part_view(instance: ProductionPartInstance) -> ProductionPartView:
@@ -512,8 +535,8 @@ def _settings_preview(
     content: bytes,
 ) -> ProductionReplacePreview:
     parsed = parse_production_filename(filename)
-    folder_printer = folder.production_printer_model or ""
-    printer_matches = parsed is not None and parsed.printer == folder_printer
+    folder_printer = _folder_printer(folder) or ""
+    printer_matches = _printer_matches_folder(folder, parsed.printer if parsed else None)
     incoming_settings = extract_production_settings(content)
     if _instance_has_contract(instance):
         diff = diff_parameters(instance.locked_parameters or {}, incoming_settings)
@@ -678,7 +701,7 @@ async def create_slot(
     instance = await _find_part_instance(
         db,
         part_id=part.id,
-        printer_model=folder.production_printer_model or merged_printer,
+        folder=folder,
     )
 
     if instance is not None:
@@ -697,7 +720,7 @@ async def create_slot(
     if instance is None:
         instance = ProductionPartInstance(
             part_id=part.id,
-            printer_model=folder.production_printer_model or merged_printer,
+            printer_model=_instance_printer_model(folder, merged_printer),
             folder_id=folder.id,
             locked_parameters=incoming_settings,
             hidden=False,
@@ -708,7 +731,6 @@ async def create_slot(
         accepted_new_baseline = True
     else:
         instance.hidden = False
-        instance.folder_id = folder.id
         mismatch, accepted_new_baseline = _apply_shared_contract(instance, incoming_settings, resolution)
 
     library_file = await _save_library_file(
@@ -785,7 +807,7 @@ async def preview_create_slot(
         instance = await _find_part_instance(
             db,
             part_id=part.id,
-            printer_model=folder.production_printer_model or merged_printer,
+            folder=folder,
             load_slots=True,
         )
     return _settings_preview(instance=instance, folder=folder, filename=filename, content=content)
@@ -806,7 +828,7 @@ async def add_folder_part(
     instance = await _find_part_instance(
         db,
         part_id=part.id,
-        printer_model=folder.production_printer_model or "",
+        folder=folder,
         load_slots=True,
     )
     if instance is not None and not instance.hidden:
@@ -814,7 +836,7 @@ async def add_folder_part(
     if instance is None:
         instance = ProductionPartInstance(
             part_id=part.id,
-            printer_model=folder.production_printer_model or "",
+            printer_model=_instance_printer_model(folder),
             folder_id=folder.id,
             locked_parameters=None,
             hidden=False,
@@ -830,7 +852,6 @@ async def add_folder_part(
             slots=[],
         )
     instance.hidden = False
-    instance.folder_id = folder.id
     await db.flush()
     return _part_view(instance)
 
@@ -915,7 +936,11 @@ async def preview_replace(
     version_is_newer = bool(parsed) and is_newer(parsed, (slot.major, slot.revision, slot.minor))
 
     folder_printer = (folder.production_printer_model if folder else instance.printer_model) or ""
-    printer_matches = parsed is not None and parsed.printer == folder_printer
+    printer_matches = (
+        _printer_matches_folder(folder, parsed.printer if parsed else None)
+        if folder is not None
+        else parsed is not None and parsed.printer == folder_printer
+    )
 
     incoming_settings = extract_production_settings(content)
     diff = diff_parameters(instance.locked_parameters or {}, incoming_settings)
@@ -957,8 +982,8 @@ async def replace_slot(
 
     filename, content = await _read_upload(file)
     parsed = parse_production_filename(filename)
-    folder_printer = folder.production_printer_model or instance.printer_model
-    if parsed is not None and parsed.printer != folder_printer:
+    if parsed is not None and not _printer_matches_folder(folder, parsed.printer):
+        folder_printer = _folder_printer(folder) or ""
         raise HTTPException(
             status_code=400,
             detail=f"Filename printer {parsed.printer} does not match folder printer {folder_printer}",

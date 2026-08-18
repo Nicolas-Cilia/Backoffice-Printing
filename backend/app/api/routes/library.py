@@ -16,7 +16,7 @@ from pathlib import Path
 
 from fastapi import APIRouter, Depends, File, HTTPException, Query, Response, UploadFile
 from fastapi.responses import FileResponse as FastAPIFileResponse
-from sqlalchemy import and_, distinct, func, select
+from sqlalchemy import and_, distinct, func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
@@ -31,7 +31,13 @@ from backend.app.core.database import async_session, get_db
 from backend.app.core.permissions import Permission
 from backend.app.core.tasks import spawn_background_task
 from backend.app.models.archive import PrintArchive
-from backend.app.models.library import LibraryFile, LibraryFileTag, LibraryFolder, LibraryFolderSection
+from backend.app.models.library import (
+    SECTION_KIND_PRODUCTION,
+    LibraryFile,
+    LibraryFileTag,
+    LibraryFolder,
+    LibraryFolderSection,
+)
 from backend.app.models.print_queue import PrintQueueItem
 from backend.app.models.production import ProductionPartInstance, ProductionSlot
 from backend.app.models.user import User
@@ -72,6 +78,7 @@ from backend.app.services.design_settings import (
 )
 from backend.app.services.plate_thumbnail import inject_plate_thumbnails_if_missing
 from backend.app.services.production_bootstrap import bootstrap_production
+from backend.app.services.production_filename import normalize_production_printer_code
 from backend.app.services.stl_thumbnail import MIN_USABLE_STL_BYTES, generate_stl_thumbnail
 from backend.app.utils.filename import InvalidFilenameError, validate_print_filename
 from backend.app.utils.threemf_tools import (
@@ -761,7 +768,7 @@ async def _apply_production_slot_file_counts(
 
 async def _production_display_file_count(db: AsyncSession, folder: LibraryFolder, raw_count: int) -> int:
     """Return the folder-card count: active slots for production folders."""
-    if not folder.production_printer_model:
+    if not folder.is_tracking():
         return raw_count
     overlay: dict[int, int] = {}
     await _apply_production_slot_file_counts(db, overlay, [folder.id])
@@ -776,7 +783,9 @@ def _not_superseded_production_file():
     way; library stats must match so Files/Size agree with what users see.
     Non-production folders (and root) still count every non-trashed file.
     """
-    production_folder_ids = select(LibraryFolder.id).where(LibraryFolder.production_printer_model.isnot(None))
+    production_folder_ids = select(LibraryFolder.id).where(
+        or_(LibraryFolder.parameter_tracking.is_(True), LibraryFolder.production_printer_model.isnot(None))
+    )
     active_file_ids = select(ProductionSlot.active_file_id).where(ProductionSlot.active_file_id.isnot(None))
     return ~and_(
         LibraryFile.folder_id.isnot(None),
@@ -797,7 +806,7 @@ async def _production_folder_block(db: AsyncSession, folder: LibraryFolder | Non
         if current.id in seen:
             break
         seen.add(current.id)
-        if current.production_printer_model:
+        if current.is_tracking():
             raise HTTPException(status_code=409, detail=PRODUCTION_FOLDER_BLOCK_DETAIL)
         if current.parent_id is None:
             break
@@ -844,7 +853,7 @@ async def list_folders(
         .group_by(LibraryFile.folder_id)
     )
     file_counts = dict(file_counts_result.all())
-    production_folder_ids = [folder.id for folder, _ in rows if folder.production_printer_model]
+    production_folder_ids = [folder.id for folder, _ in rows if folder.is_tracking()]
     await _apply_production_slot_file_counts(db, file_counts, production_folder_ids)
 
     # Latest immediate-child file activity per folder (#1770/#2680). Real on-disk
@@ -886,6 +895,7 @@ async def list_folders(
             external_readonly=folder.external_readonly,
             section_id=folder.section_id,
             production_printer_model=folder.production_printer_model,
+        parameter_tracking=folder.is_tracking(),
             file_count=file_counts.get(folder.id, 0),
             latest_activity_at=own_activity,
             children=[],
@@ -976,6 +986,7 @@ async def get_folders_by_archive(
                 external_show_hidden=folder.external_show_hidden,
                 section_id=folder.section_id,
                 production_printer_model=folder.production_printer_model,
+        parameter_tracking=folder.is_tracking(),
                 file_count=file_count,
                 latest_activity_at=latest_activity_at,
                 created_at=folder.created_at,
@@ -993,7 +1004,17 @@ async def create_folder(
     db: AsyncSession = Depends(get_db),
     _: User | None = Depends(require_permission_if_auth_enabled(Permission.LIBRARY_UPLOAD)),
 ):
-    """Create a new folder."""
+    """Create a new folder.
+
+    Root folders may be created already in a section (``section_id``) so the
+    landing grid does not require a follow-up "Move to section". Nested
+    folders ignore ``section_id``. Production-kind sections force
+    ``parameter_tracking`` on every root folder (the client cannot opt
+    out). In a normal section, ``parameter_tracking`` is per-folder.
+    Tracking folders start empty — no printer model and no seeded catalog
+    parts. Optional ``production_printer_model`` still tags bootstrap-style
+    printer folders.
+    """
     # Verify parent exists if specified
     if data.parent_id is not None:
         parent_result = await db.execute(select(LibraryFolder).where(LibraryFolder.id == data.parent_id))
@@ -1009,12 +1030,37 @@ async def create_folder(
             raise HTTPException(status_code=404, detail="Archive not found")
         archive_name = archive.print_name
 
+    # Nested folders stay under their parent; section membership is a landing-grid concern.
+    section = None
+    section_id = data.section_id if data.parent_id is None else None
+    if section_id is not None:
+        section = (
+            await db.execute(select(LibraryFolderSection).where(LibraryFolderSection.id == section_id))
+        ).scalar_one_or_none()
+        if section is None:
+            raise HTTPException(status_code=404, detail="Section not found")
+
+    printer_model: str | None = None
+    tracking = False
+    if data.parent_id is None:
+        if data.production_printer_model:
+            printer_model = normalize_production_printer_code(data.production_printer_model) or None
+            if printer_model is None:
+                raise HTTPException(status_code=400, detail="Invalid printer model")
+        tracking = bool(data.parameter_tracking or printer_model)
+        if section is not None and section.kind == SECTION_KIND_PRODUCTION:
+            tracking = True
+
     folder = LibraryFolder(
         name=data.name,
         parent_id=data.parent_id,
         archive_id=data.archive_id,
+        section_id=section.id if section is not None else None,
+        production_printer_model=printer_model,
+        parameter_tracking=tracking,
     )
     db.add(folder)
+    await db.flush()
     await db.commit()
     await db.refresh(folder)
 
@@ -1030,6 +1076,7 @@ async def create_folder(
         external_show_hidden=folder.external_show_hidden,
         section_id=folder.section_id,
         production_printer_model=folder.production_printer_model,
+        parameter_tracking=folder.is_tracking(),
         file_count=0,
         # New folder has no files yet — fall back to the folder's own
         # updated_at so this matches the list-route semantics (#1770).
@@ -1089,6 +1136,7 @@ async def get_folder(
         external_show_hidden=folder.external_show_hidden,
         section_id=folder.section_id,
         production_printer_model=folder.production_printer_model,
+        parameter_tracking=folder.is_tracking(),
         file_count=file_count,
         latest_activity_at=latest_activity_at,
         created_at=folder.created_at,
@@ -1247,6 +1295,7 @@ async def update_folder(
         external_show_hidden=folder.external_show_hidden,
         section_id=folder.section_id,
         production_printer_model=folder.production_printer_model,
+        parameter_tracking=folder.is_tracking(),
         file_count=file_count,
         latest_activity_at=latest_activity_at,
         created_at=folder.created_at,
@@ -1277,6 +1326,8 @@ async def assign_folder_section(
         ).scalar_one_or_none()
         if section is None:
             raise HTTPException(status_code=404, detail="Section not found")
+        if section.kind == SECTION_KIND_PRODUCTION:
+            folder.parameter_tracking = True
 
     folder.section_id = data.section_id
     await db.commit()
@@ -1312,6 +1363,7 @@ async def assign_folder_section(
         external_show_hidden=folder.external_show_hidden,
         section_id=folder.section_id,
         production_printer_model=folder.production_printer_model,
+        parameter_tracking=folder.is_tracking(),
         file_count=file_count,
         latest_activity_at=latest_activity_at,
         created_at=folder.created_at,
