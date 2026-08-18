@@ -3841,6 +3841,15 @@ async def run_migrations(conn):
         " REFERENCES library_folder_sections(id) ON DELETE SET NULL",
     )
 
+    # Migration: Add production_printer_model to library_folders (production
+    # file-slots). Tags a root folder as the library home for a printer model
+    # (X1C, A1M, A1, H2D, H2S). Nullable, no default — identical DDL on
+    # SQLite and Postgres (mirrors the `section_id` migration above).
+    await _safe_execute(
+        conn,
+        "ALTER TABLE library_folders ADD COLUMN production_printer_model VARCHAR(32)",
+    )
+
 
 _USER_PRINT_TEMPLATE_RENAMES: tuple[tuple[str, str, str], ...] = (
     ("user_print_start", "User Print Started", "User Print Started Email"),

@@ -33,6 +33,12 @@ class LibraryFolder(Base):
         ForeignKey("library_folder_sections.id", ondelete="SET NULL"), nullable=True
     )
 
+    # Production file-slots: which printer model this folder represents
+    # (e.g. "X1C", "A1M", "A1", "H2D", "H2S"). Null for ordinary library
+    # folders; set by production bootstrap on the root printer folders under
+    # the Production section.
+    production_printer_model: Mapped[str | None] = mapped_column(String(32), nullable=True)
+
     # Timestamps
     created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
     updated_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now(), onupdate=func.now())

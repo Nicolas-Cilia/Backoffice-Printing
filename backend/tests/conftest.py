@@ -149,6 +149,7 @@ async def test_engine():
         print_log,
         print_queue,
         printer,
+        production,
         settings,
         slot_preset,
         smart_plug,
