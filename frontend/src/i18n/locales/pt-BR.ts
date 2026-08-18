@@ -3285,10 +3285,7 @@ export default {
     title: 'Perfis',
     subtitle: 'Gerencie seus presets de fatiador e calibrações de avanço de pressão',
     tabs: {
-      bambuCloud: 'Bambu Cloud',
-      orcaCloud: 'Orca Cloud',
       local: 'Perfis Locais',
-      kprofiles: 'K-Perfis',
     },
     orcaCloud: {
       connectedAs: 'Conectado como',

@@ -3113,10 +3113,7 @@ export default {
     title: "Профили",
     subtitle: "Управление профилями слайсера и калибровками Pressure Advance",
     tabs: {
-      bambuCloud: "Bambu Cloud",
-      orcaCloud: "Orca Cloud",
       local: "Локальные профили",
-      kprofiles: "K-профили",
     },
     orcaCloud: {
       connectedAs: "Подключено как",
