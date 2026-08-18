@@ -23,6 +23,7 @@ const mockFolders = [
     archive_id: null,
     archive_name: null,
     is_external: false,
+    section_id: null,
     children: [],
   },
   {
@@ -33,6 +34,7 @@ const mockFolders = [
     archive_id: null,
     archive_name: null,
     is_external: false,
+    section_id: null,
     children: [],
   },
   {
@@ -43,6 +45,7 @@ const mockFolders = [
     archive_id: 1,
     archive_name: 'My Archive',
     is_external: false,
+    section_id: null,
     children: [],
   },
 ];
@@ -91,6 +94,7 @@ describe('FileManager folder deletion gating (#1781)', () => {
         }),
       ),
       http.get('/api/v1/archives/', () => HttpResponse.json([])),
+      http.get('/api/v1/library/sections', () => HttpResponse.json([])),
     );
   });
 

@@ -45,6 +45,10 @@ class FolderResponse(BaseModel):
     external_path: str | None = None
     external_readonly: bool = False
     external_show_hidden: bool = False
+    # Folder-picker section membership (folder-sections feature). Only
+    # meaningful for root-level folders (parent_id is None) — see
+    # LibraryFolderSection.
+    section_id: int | None = None
     file_count: int = 0  # Computed field
     # max(folder.updated_at, max(immediate-child file.updated_at)). Used by the
     # File Manager folder tree's "sort by recent activity" mode (#1770) so that
@@ -83,6 +87,8 @@ class FolderTreeItem(BaseModel):
     is_external: bool = False
     external_path: str | None = None
     external_readonly: bool = False
+    # See FolderResponse.section_id — folder-sections feature.
+    section_id: int | None = None
     file_count: int = 0
     # See FolderResponse.latest_activity_at — #1770 folder sort source.
     latest_activity_at: datetime | None = None
@@ -90,6 +96,41 @@ class FolderTreeItem(BaseModel):
 
     class Config:
         from_attributes = True
+
+
+# ============ Folder-picker Section Schemas (folder-sections feature) ============
+
+
+class FolderSectionCreate(BaseModel):
+    """Schema for creating a new folder-picker section."""
+
+    name: str = Field(..., min_length=1, max_length=255)
+
+
+class FolderSectionUpdate(BaseModel):
+    """Schema for renaming a folder-picker section."""
+
+    name: str = Field(..., min_length=1, max_length=255)
+
+
+class FolderSectionResponse(BaseModel):
+    """Schema for a folder-picker section, including its current folder count."""
+
+    id: int
+    name: str
+    sort_order: int
+    folder_count: int = 0
+    created_at: datetime
+    updated_at: datetime
+
+    class Config:
+        from_attributes = True
+
+
+class FolderSectionAssignRequest(BaseModel):
+    """Schema for assigning (or clearing, via null) a folder's section."""
+
+    section_id: int | None = None
 
 
 # ============ File Schemas ============
