@@ -6563,6 +6563,7 @@ export interface ProductionSlotNested {
   active_file: ProductionActiveFile | null;
   has_overrides: boolean;
   last_mismatch: boolean | null;
+  parameter_overrides?: Record<string, unknown> | null;
 }
 
 export interface ProductionPartView {

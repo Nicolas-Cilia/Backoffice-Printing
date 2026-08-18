@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import re
 import zipfile
 from io import BytesIO
 from typing import Any
@@ -23,6 +24,9 @@ MM_EPSILON = 1e-4
 # Stored on the contract for gated comparison; never emitted by diff_parameters.
 MULTI_COLOR_KEY = "_multi_color"
 
+# support_style: Bambu/Orca tree *style* (`tree_slim`, `tree_hybrid`, `organic`, …),
+# distinct from support_type (`tree(auto)`, `normal(auto)`, …). Some 3MFs store
+# the same value on tree_support_style; extract normalizes to support_style.
 CONTRACT_KEYS: tuple[str, ...] = (
     "layer_height",
     "initial_layer_line_width",
@@ -31,11 +35,13 @@ CONTRACT_KEYS: tuple[str, ...] = (
     "wall_loops",
     "brim_type",
     "brim_width",
+    "brim_object_gap",
     "fuzzy_skin",
     "fuzzy_skin_thickness",
     "fuzzy_skin_point_distance",
     "enable_support",
     "support_type",
+    "support_style",
     "enable_prime_tower",
     "seam_position",
     "nozzles_used",
@@ -45,7 +51,9 @@ BOOL_KEYS = frozenset({"enable_support", "enable_prime_tower"})
 MM_KEYS = frozenset(
     {
         "layer_height",
+        "initial_layer_line_width",
         "brim_width",
+        "brim_object_gap",
         "fuzzy_skin_thickness",
         "fuzzy_skin_point_distance",
     }
@@ -56,10 +64,18 @@ STRING_KEYS = frozenset(
         "brim_type",
         "fuzzy_skin",
         "support_type",
+        "support_style",
         "seam_position",
         "nozzles_used",
     }
 )
+_SUPPORT_DETAIL_KEYS = frozenset({"support_type", "support_style"})
+_BRIM_OFF = frozenset({"no_brim", "none", "off"})
+# Process `none` is Bambu's "None (allow paint)". True off is `disabled_fuzzy`.
+_FUZZY_SKIN_OFF = frozenset({"none", "off", "0", "false", ""})
+_FUZZY_SKIN_PAINT_TOKENS = frozenset({"paint", "painted", "selected", "fuzzy_skin_paint", "paint_only"})
+# Bambu/Orca bbs_3mf writes `paint_fuzzy_skin`; Prusa-style 3MF uses slic3rpe:fuzzy_skin.
+_PAINT_FUZZY_SKIN_ATTR_RE = re.compile(rb'(?:paint_fuzzy_skin|slic3rpe:fuzzy_skin)="[^"]+"')
 
 
 def extract_production_settings(source: bytes | zipfile.ZipFile) -> dict[str, Any]:
@@ -82,7 +98,8 @@ def diff_parameters(locked: dict, incoming: dict) -> list[dict[str, Any]]:
     """Compare two contract dicts.
 
     Returns ``{key, locked, incoming, match}`` for each applicable contract key.
-    Gated keys (``support_type`` with supports off, ``enable_prime_tower`` on
+    Gated keys (``support_type`` / ``support_style`` with supports off,
+    ``brim_object_gap`` with brim off, ``enable_prime_tower`` on
     single-color files, ``nozzles_used`` without a dual-nozzle mapping) are
     omitted. A key present on the locked contract but missing on incoming is a
     mismatch.
@@ -120,9 +137,10 @@ def _extract_from_zip(zf: zipfile.ZipFile) -> dict[str, Any]:
     for key in CONTRACT_KEYS:
         if key == "nozzles_used":
             continue
-        if key not in config:
+        present, raw = _contract_source_value(key, config)
+        if not present:
             continue
-        contract[key] = _normalize_value(key, config[key])
+        contract[key] = _normalize_value(key, raw)
 
     mapping = extract_nozzle_mapping_from_3mf(zf)
     if mapping:
@@ -130,6 +148,7 @@ def _extract_from_zip(zf: zipfile.ZipFile) -> dict[str, Any]:
         if nozzles:
             contract["nozzles_used"] = nozzles
 
+    _apply_fuzzy_skin_paint(zf, contract)
     contract[MULTI_COLOR_KEY] = _is_multi_color_file(zf, config)
     return contract
 
@@ -218,6 +237,8 @@ def _as_number(value: Any) -> int | float | None:
         text = value.strip()
         if text.endswith("%"):
             text = text[:-1].strip()
+        elif text.lower().endswith("mm"):
+            text = text[:-2].strip()
         try:
             number = float(text)
         except ValueError:
@@ -229,10 +250,67 @@ def _as_number(value: Any) -> int | float | None:
     return number
 
 
+def _normalize_line_width(value: Any) -> Any:
+    """Keep `%` literals as strings; parse mm floats (including a `mm` suffix)."""
+    if isinstance(value, str):
+        text = value.strip()
+        if text.endswith("%"):
+            return text
+        number = _as_number(text)
+        if number is not None:
+            return number
+        return text
+    number = _as_number(value)
+    if number is not None:
+        return number
+    return value
+
+
+def _fuzzy_skin_token(value: Any) -> str:
+    if value is None:
+        return ""
+    return str(value).strip().lower().replace("-", "_").replace(" ", "_")
+
+
+def _normalize_fuzzy_skin(value: Any) -> str:
+    text = str(value).strip()
+    token = _fuzzy_skin_token(text)
+    if token in _FUZZY_SKIN_PAINT_TOKENS:
+        return "paint"
+    return text
+
+
+def _has_fuzzy_skin_paint(zf: zipfile.ZipFile) -> bool:
+    """True if any mesh triangle carries Bambu/Prusa fuzzy-skin paint data."""
+    for name in zf.namelist():
+        if not name.endswith(".model"):
+            continue
+        try:
+            data = zf.read(name)
+        except OSError:
+            continue
+        if _PAINT_FUZZY_SKIN_ATTR_RE.search(data):
+            return True
+    return False
+
+
+def _apply_fuzzy_skin_paint(zf: zipfile.ZipFile, contract: dict[str, Any]) -> None:
+    """Upgrade process `none` to `paint` when triangles were painted for fuzzy skin."""
+    token = _fuzzy_skin_token(contract.get("fuzzy_skin"))
+    if token not in _FUZZY_SKIN_OFF:
+        return
+    if _has_fuzzy_skin_paint(zf):
+        contract["fuzzy_skin"] = "paint"
+
+
 def _normalize_value(key: str, value: Any) -> Any:
     value = _unwrap(value)
     if value is None:
         return None
+    if key == "initial_layer_line_width":
+        return _normalize_line_width(value)
+    if key == "fuzzy_skin":
+        return _normalize_fuzzy_skin(value)
     if key in BOOL_KEYS:
         return _as_bool(value)
     if key in STRING_KEYS:
@@ -243,15 +321,37 @@ def _normalize_value(key: str, value: Any) -> Any:
     return value
 
 
+def _contract_source_value(key: str, config: dict[str, Any]) -> tuple[bool, Any]:
+    """Look up a contract key in project_settings, with style-key fallback."""
+    if key == "support_style":
+        if "support_style" in config:
+            return True, config["support_style"]
+        if "tree_support_style" in config:
+            return True, config["tree_support_style"]
+        return False, None
+    if key in config:
+        return True, config[key]
+    return False, None
+
+
 def _is_enabled(value: Any) -> bool:
     if value is None:
         return False
     return _as_bool(value)
 
 
+def _is_brim_on(value: Any) -> bool:
+    if value is None:
+        return False
+    token = str(value).strip().lower().replace("-", "_").replace(" ", "_")
+    return token not in _BRIM_OFF and token != ""
+
+
 def _is_comparable(key: str, locked: dict, incoming: dict) -> bool:
-    if key == "support_type":
+    if key in _SUPPORT_DETAIL_KEYS:
         return _is_enabled(locked.get("enable_support")) or _is_enabled(incoming.get("enable_support"))
+    if key == "brim_object_gap":
+        return _is_brim_on(locked.get("brim_type")) or _is_brim_on(incoming.get("brim_type"))
     if key == "enable_prime_tower":
         return bool(locked.get(MULTI_COLOR_KEY)) or bool(incoming.get(MULTI_COLOR_KEY))
     if key == "nozzles_used":

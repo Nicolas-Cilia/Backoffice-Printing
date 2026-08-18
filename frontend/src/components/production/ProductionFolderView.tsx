@@ -1,7 +1,7 @@
 import { useMemo, useState, type DragEvent } from 'react';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { useTranslation } from 'react-i18next';
-import { FileBox, Loader2, Plus, Printer, RefreshCw } from 'lucide-react';
+import { FileBox, Loader2, Plus, Printer, RefreshCw, X } from 'lucide-react';
 import { api } from '../../api/client';
 import type { ProductionActiveFile, ProductionPartView, ProductionSlotNested } from '../../api/client';
 import { Button } from '../Button';
@@ -9,6 +9,15 @@ import { useAuth } from '../../contexts/AuthContext';
 import { useToast } from '../../contexts/ToastContext';
 import { AddProductionFileModal } from './AddProductionFileModal';
 import { ReplaceProductionFileModal } from './ReplaceProductionFileModal';
+import {
+  compactSpecItems,
+  formatSpecValue,
+  formatSupportsValue,
+  hasViewableSpecs,
+  mergeProductionSpecs,
+  orderedSpecEntries,
+  specLabelKey,
+} from '../../utils/productionSpecs';
 
 interface ProductionFolderViewProps {
   folderId: number;
@@ -28,18 +37,79 @@ function specStatus(slot: ProductionSlotNested): 'mismatch' | 'overrides' | 'mat
   return 'match';
 }
 
+function SlotSpecsModal({
+  title,
+  specs,
+  onClose,
+}: {
+  title: string;
+  specs: Record<string, unknown>;
+  onClose: () => void;
+}) {
+  const { t } = useTranslation();
+  const rows = orderedSpecEntries(specs);
+  return (
+    <div
+      className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-4"
+      onClick={onClose}
+      role="presentation"
+    >
+      <div
+        className="bg-bambu-dark-secondary border border-bambu-dark-tertiary rounded-lg shadow-xl w-full max-w-md max-h-[80vh] flex flex-col"
+        onClick={(e) => e.stopPropagation()}
+        role="dialog"
+        aria-labelledby="production-specs-title"
+      >
+        <div className="flex items-center justify-between gap-3 p-4 border-b border-bambu-dark-tertiary">
+          <h2 id="production-specs-title" className="text-sm font-semibold text-white truncate">
+            {t('fileManager.production.specs.title')}
+            {title ? <span className="text-bambu-gray font-normal"> · {title}</span> : null}
+          </h2>
+          <button
+            type="button"
+            onClick={onClose}
+            className="p-1 rounded hover:bg-bambu-dark-tertiary text-bambu-gray hover:text-white"
+            aria-label={t('common.close')}
+          >
+            <X className="w-4 h-4" />
+          </button>
+        </div>
+        <dl className="overflow-y-auto p-4 space-y-0">
+          {rows.map(([key, value]) => {
+            const labelKey = specLabelKey(key);
+            return (
+              <div
+                key={key}
+                className="flex items-baseline justify-between gap-4 py-1.5 border-b border-bambu-dark-tertiary last:border-0"
+              >
+                <dt className="text-xs text-bambu-gray">{labelKey ? t(labelKey) : key}</dt>
+                <dd className="text-xs text-white text-right font-medium">
+                  {key === 'enable_support' ? formatSupportsValue(specs, t) : formatSpecValue(key, value, t)}
+                </dd>
+              </div>
+            );
+          })}
+        </dl>
+      </div>
+    </div>
+  );
+}
+
 function SlotCard({
   slot,
+  lockedParameters,
   canUpload,
   onReplace,
   onPrint,
 }: {
   slot: ProductionSlotNested;
+  lockedParameters: Record<string, unknown> | null;
   canUpload: boolean;
   onReplace: () => void;
   onPrint?: (file: ProductionActiveFile) => void;
 }) {
   const { t } = useTranslation();
+  const [showSpecs, setShowSpecs] = useState(false);
   const file = slot.active_file;
   const status = specStatus(slot);
   const statusLabel =
@@ -54,6 +124,8 @@ function SlotCard({
       : status === 'overrides'
         ? 'bg-amber-500/20 text-amber-400'
         : 'bg-bambu-green/20 text-bambu-green';
+  const specs = mergeProductionSpecs(lockedParameters, slot.parameter_overrides);
+  const summary = file && hasViewableSpecs(specs) ? compactSpecItems(specs, t) : [];
 
   return (
     <div className="bg-bambu-dark-secondary rounded-lg border border-bambu-dark-tertiary overflow-hidden flex flex-col">
@@ -81,7 +153,17 @@ function SlotCard({
           </span>
           <span className={`text-xs px-1.5 py-0.5 rounded ${statusClass}`}>{statusLabel}</span>
         </div>
+        {summary.length > 0 && (
+          <p className="text-[11px] text-bambu-gray leading-snug" data-testid="production-spec-summary">
+            {summary.join(' · ')}
+          </p>
+        )}
         <div className="mt-auto flex flex-col gap-2 pt-1">
+          {summary.length > 0 && (
+            <Button variant="ghost" onClick={() => setShowSpecs(true)} className="w-full">
+              {t('fileManager.production.specs.view')}
+            </Button>
+          )}
           {canUpload && (
             <Button onClick={onReplace} className="w-full">
               {t('fileManager.production.replace')}
@@ -95,6 +177,13 @@ function SlotCard({
           )}
         </div>
       </div>
+      {showSpecs && (
+        <SlotSpecsModal
+          title={file?.filename ?? slot.version}
+          specs={specs}
+          onClose={() => setShowSpecs(false)}
+        />
+      )}
     </div>
   );
 }
@@ -209,31 +298,32 @@ export function ProductionFolderView({
         </div>
       )}
 
-      <div className="space-y-8">
-        {parts.map((part: ProductionPartView) => (
-          <section key={part.id}>
-            <div className="flex items-baseline gap-2 mb-3">
-              <h3 className="text-sm font-semibold text-white tracking-wide">{part.code}</h3>
-              <span className="text-xs text-bambu-gray">{part.name}</span>
-            </div>
-            {part.slots.length === 0 ? (
-              <p className="text-xs text-bambu-gray">{t('fileManager.production.noActiveFile')}</p>
-            ) : (
-              <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 xl:grid-cols-5 2xl:grid-cols-6 gap-4">
-                {part.slots.map((slot) => (
-                  <SlotCard
-                    key={slot.id}
-                    slot={slot}
-                    canUpload={canUpload}
-                    onReplace={() => setReplaceSlot(slot)}
-                    onPrint={canPrint ? onPrint : undefined}
-                  />
-                ))}
+      {hasAnySlots && (
+        <div className="space-y-8">
+          {parts.map((part: ProductionPartView) => (
+            <section key={part.id}>
+              <div className="flex items-baseline gap-2 mb-3">
+                <h3 className="text-sm font-semibold text-white tracking-wide">{part.code}</h3>
+                <span className="text-xs text-bambu-gray">{part.name}</span>
               </div>
-            )}
-          </section>
-        ))}
-      </div>
+              {part.slots.length > 0 && (
+                <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 xl:grid-cols-5 2xl:grid-cols-6 gap-4">
+                  {part.slots.map((slot) => (
+                    <SlotCard
+                      key={slot.id}
+                      slot={slot}
+                      lockedParameters={part.locked_parameters}
+                      canUpload={canUpload}
+                      onReplace={() => setReplaceSlot(slot)}
+                      onPrint={canPrint ? onPrint : undefined}
+                    />
+                  ))}
+                </div>
+              )}
+            </section>
+          ))}
+        </div>
+      )}
 
       {showAdd && (
         <AddProductionFileModal

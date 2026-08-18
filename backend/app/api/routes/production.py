@@ -1,4 +1,4 @@
-"""Production file-slot HTTP API: bootstrap, folder view, add, preview, replace, history."""
+"""Production file-slot HTTP API: bootstrap, folder view, add, preview, replace, delete, history."""
 
 from __future__ import annotations
 
@@ -21,6 +21,7 @@ from backend.app.api.routes.library import (
     calculate_file_hash,
     classify_file_type,
     get_library_thumbnails_dir,
+    to_absolute_path,
     to_relative_path,
     validate_print_file_upload,
 )
@@ -119,7 +120,19 @@ def _slot_nested(slot: ProductionSlot) -> ProductionSlotNested:
         active_file=_active_file_out(slot.active_file),
         has_overrides=bool(slot.parameter_overrides),
         last_mismatch=None if latest is None else latest.mismatch,
+        parameter_overrides=slot.parameter_overrides,
     )
+
+
+def _unique_slots(slots: list[ProductionSlot]) -> list[ProductionSlot]:
+    seen: set[int] = set()
+    unique: list[ProductionSlot] = []
+    for slot in sorted(slots, key=lambda s: (s.quantity, s.id or 0)):
+        if slot.id in seen:
+            continue
+        seen.add(slot.id)
+        unique.append(slot)
+    return unique
 
 
 def _slot_response(
@@ -404,12 +417,20 @@ async def get_production_folder(
         .scalars()
         .all()
     )
-    instance_by_part = {inst.part_id: inst for inst in instances}
+    instance_by_part: dict[int, ProductionPartInstance] = {}
+    slots_by_part: dict[int, list[ProductionSlot]] = {}
+    for inst in instances:
+        instance_by_part.setdefault(inst.part_id, inst)
+        slots_by_part.setdefault(inst.part_id, []).extend(inst.slots)
 
+    seen_codes: set[str] = set()
     part_views: list[ProductionPartView] = []
     for part in parts:
+        if part.code in seen_codes:
+            continue
+        seen_codes.add(part.code)
         instance = instance_by_part.get(part.id)
-        slots = sorted(instance.slots, key=lambda s: s.quantity) if instance else []
+        slots = _unique_slots(slots_by_part.get(part.id, []))
         part_views.append(
             ProductionPartView(
                 id=part.id,

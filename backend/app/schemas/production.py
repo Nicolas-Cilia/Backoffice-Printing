@@ -48,6 +48,7 @@ class ProductionSlotNested(BaseModel):
     active_file: ProductionActiveFile | None = None
     has_overrides: bool = False
     last_mismatch: bool | None = None
+    parameter_overrides: dict[str, Any] | None = None
 
 
 class ProductionPartView(BaseModel):
