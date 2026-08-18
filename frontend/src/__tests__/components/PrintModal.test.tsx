@@ -598,13 +598,17 @@ describe('PrintModal', () => {
       );
 
       await waitFor(() => {
-        expect(screen.getByText('Printing')).toBeInTheDocument();
         expect(screen.getByText('Idle')).toBeInTheDocument();
         expect(screen.getByText('Finished')).toBeInTheDocument();
+        expect(screen.getByRole('button', { name: /currently printing \(1\)/i })).toBeInTheDocument();
       });
+      expect(screen.queryByText('Printing')).not.toBeInTheDocument();
+
+      await userEvent.setup().click(screen.getByRole('button', { name: /currently printing \(1\)/i }));
+      expect(screen.getByText('Printing')).toBeInTheDocument();
     });
 
-    it('allows selecting a busy printer in create mode', async () => {
+    it('does not allow selecting a busy printer in create mode', async () => {
       const user = userEvent.setup();
       render(
         <PrintModal
@@ -616,19 +620,18 @@ describe('PrintModal', () => {
       );
 
       await waitFor(() => {
-        expect(screen.getByText('Printing')).toBeInTheDocument();
+        expect(screen.getByRole('button', { name: /currently printing \(1\)/i })).toBeInTheDocument();
       });
+      await user.click(screen.getByRole('button', { name: /currently printing \(1\)/i }));
 
-      const busyButton = screen.getByText('X1 Carbon').closest('button');
-      expect(busyButton).not.toBeDisabled();
-      await user.click(busyButton!);
+      const busyButton = screen.getByRole('button', { name: /X1 Carbon/i });
+      expect(busyButton).toBeDisabled();
+      await user.click(busyButton);
 
-      await waitFor(() => {
-        expect(screen.getByText('1 printer selected')).toBeInTheDocument();
-      });
+      expect(screen.queryByText('1 printer selected')).not.toBeInTheDocument();
     });
 
-    it('select all includes busy printers in create mode', async () => {
+    it('select all skips busy printers in create mode', async () => {
       const user = userEvent.setup();
       render(
         <PrintModal
@@ -641,17 +644,18 @@ describe('PrintModal', () => {
 
       await waitFor(() => {
         expect(screen.getByText('Select all')).toBeInTheDocument();
-        expect(screen.getByText('Printing')).toBeInTheDocument();
+        expect(screen.getByRole('button', { name: /currently printing \(1\)/i })).toBeInTheDocument();
       });
 
       await user.click(screen.getByText('Select all'));
 
       await waitFor(() => {
-        expect(screen.getByText(/3 printers selected/)).toBeInTheDocument();
+        // Printer 1 is RUNNING; 2 is IDLE and 3 is FINISH — both selectable.
+        expect(screen.getByText(/2 printers selected/)).toBeInTheDocument();
       });
     });
 
-    it('allows selecting busy printers in create mode', async () => {
+    it('does not allow selecting busy printers in create mode', async () => {
       const user = userEvent.setup();
       render(
         <PrintModal
@@ -663,18 +667,16 @@ describe('PrintModal', () => {
       );
 
       await waitFor(() => {
-        expect(screen.getByText('Printing')).toBeInTheDocument();
+        expect(screen.getByRole('button', { name: /currently printing \(1\)/i })).toBeInTheDocument();
       });
+      await user.click(screen.getByRole('button', { name: /currently printing \(1\)/i }));
 
-      // The busy printer button should NOT be disabled in queue mode
-      const busyButton = screen.getByText('X1 Carbon').closest('button');
-      expect(busyButton).not.toBeDisabled();
+      const busyButton = screen.getByRole('button', { name: /X1 Carbon/i });
+      expect(busyButton).toBeDisabled();
 
-      await user.click(busyButton!);
+      await user.click(busyButton);
 
-      await waitFor(() => {
-        expect(screen.getByText('1 printer selected')).toBeInTheDocument();
-      });
+      expect(screen.queryByText('1 printer selected')).not.toBeInTheDocument();
     });
 
     it('shows Offline badge for disconnected printers', async () => {
@@ -697,9 +699,11 @@ describe('PrintModal', () => {
       );
 
       await waitFor(() => {
-        const offlineBadges = screen.getAllByText('Offline');
-        expect(offlineBadges.length).toBeGreaterThanOrEqual(1);
+        expect(screen.getByRole('button', { name: /currently printing \(3\)/i })).toBeInTheDocument();
       });
+      await userEvent.setup().click(screen.getByRole('button', { name: /currently printing \(3\)/i }));
+      const offlineBadges = screen.getAllByText('Offline');
+      expect(offlineBadges.length).toBeGreaterThanOrEqual(1);
     });
 
     it('shows calibration stage name when printer is calibrating', async () => {
@@ -722,9 +726,11 @@ describe('PrintModal', () => {
       );
 
       await waitFor(() => {
-        const badges = screen.getAllByText('Auto bed leveling');
-        expect(badges.length).toBeGreaterThanOrEqual(1);
+        expect(screen.getByRole('button', { name: /currently printing \(3\)/i })).toBeInTheDocument();
       });
+      await userEvent.setup().click(screen.getByRole('button', { name: /currently printing \(3\)/i }));
+      const badges = screen.getAllByText('Auto bed leveling');
+      expect(badges.length).toBeGreaterThanOrEqual(1);
     });
   });
 
@@ -1946,5 +1952,146 @@ describe('PrintModal — per-plate filament override in model mode (#2552)', () 
     expect(plate2?.filament_overrides).toEqual([
       expect.objectContaining({ slot_id: 2, force_color_match: true }),
     ]);
+  });
+});
+
+describe('PrintModal — specific-printer model filter and busy disable', () => {
+  const mockOnClose = vi.fn();
+
+  const farmPrinters = [
+    { id: 1, name: 'Founders', model: 'X1C', ip_address: '192.168.1.100', enabled: true, is_active: true },
+    { id: 2, name: 'Trump', model: 'X1C', ip_address: '192.168.1.101', enabled: true, is_active: true },
+    { id: 10, name: 'Mini Idle', model: 'A1 Mini', ip_address: '192.168.1.110', enabled: true, is_active: true },
+    { id: 11, name: 'Mini Busy', model: 'A1M', ip_address: '192.168.1.111', enabled: true, is_active: true },
+  ];
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    server.use(
+      http.get('/api/v1/printers/', () => HttpResponse.json(farmPrinters)),
+      http.get('/api/v1/archives/:id/plates', () => HttpResponse.json({ is_multi_plate: false, plates: [] })),
+      http.get('/api/v1/archives/:id/filament-requirements', () => HttpResponse.json({ filaments: [] })),
+      http.get('/api/v1/printers/:id/status', ({ params }) => {
+        if (String(params.id) === '11') {
+          return HttpResponse.json({
+            connected: true,
+            state: 'RUNNING',
+            stg_cur_name: 'Printing',
+            ams: [],
+            vt_tray: [],
+          });
+        }
+        return HttpResponse.json({ connected: true, state: 'IDLE', ams: [], vt_tray: [] });
+      }),
+    );
+  });
+
+  it('lists only printers matching the sliced model, including A1M ↔ A1 Mini', async () => {
+    server.use(
+      http.get('/api/v1/archives/:id', () =>
+        HttpResponse.json({ id: 1, sliced_for_model: 'A1 Mini' }),
+      ),
+    );
+
+    render(
+      <PrintModal
+        mode="create"
+        archiveId={1}
+        archiveName="TOP x1 - 1.13.2 - A1M.gcode.3mf"
+        onClose={mockOnClose}
+      />,
+    );
+
+    await waitFor(() => {
+      expect(screen.getByText('Mini Idle')).toBeInTheDocument();
+      expect(screen.getByRole('button', { name: /currently printing \(1\)/i })).toBeInTheDocument();
+    });
+    expect(screen.queryByText('Mini Busy')).not.toBeInTheDocument();
+    expect(screen.queryByText('Founders')).not.toBeInTheDocument();
+    expect(screen.queryByText('Trump')).not.toBeInTheDocument();
+    expect(screen.getByRole('button', { name: /any a1 mini/i })).toBeInTheDocument();
+  });
+
+  it('parses a production filename when slice metadata is unknown', async () => {
+    render(
+      <PrintModal
+        mode="create"
+        archiveId={1}
+        archiveName="TOP x1 - 1.13.2 - A1M.gcode.3mf"
+        onClose={mockOnClose}
+      />,
+    );
+
+    await waitFor(() => {
+      expect(screen.getByText('Mini Idle')).toBeInTheDocument();
+    });
+    expect(screen.queryByText('Founders')).not.toBeInTheDocument();
+    expect(screen.queryByText('Trump')).not.toBeInTheDocument();
+  });
+
+  it('shows an empty state instead of falling back to every printer', async () => {
+    server.use(
+      http.get('/api/v1/printers/', () =>
+        HttpResponse.json(farmPrinters.filter((p) => p.model === 'X1C')),
+      ),
+    );
+
+    render(
+      <PrintModal
+        mode="create"
+        archiveId={1}
+        archiveName="TOP x1 - 1.13.2 - A1M.gcode.3mf"
+        slicedForModel="A1 Mini"
+        onClose={mockOnClose}
+      />,
+    );
+
+    await waitFor(() => {
+      expect(screen.getByText(/No A1 Mini printers available/i)).toBeInTheDocument();
+    });
+    expect(screen.queryByText('Founders')).not.toBeInTheDocument();
+    expect(screen.queryByText('Trump')).not.toBeInTheDocument();
+  });
+
+  it('keeps all printers when the file has no known target model', async () => {
+    render(
+      <PrintModal mode="create" archiveId={1} archiveName="benchy.gcode.3mf" onClose={mockOnClose} />,
+    );
+
+    await waitFor(() => {
+      expect(screen.getByText('Founders')).toBeInTheDocument();
+      expect(screen.getByText('Mini Idle')).toBeInTheDocument();
+    });
+  });
+
+  it('shows printing printers but does not let them be selected or submitted', async () => {
+    const user = userEvent.setup();
+    render(
+      <PrintModal
+        mode="create"
+        archiveId={1}
+        archiveName="TOP x1 - 1.13.2 - A1M.gcode.3mf"
+        slicedForModel="A1 Mini"
+        onClose={mockOnClose}
+      />,
+    );
+
+    const toggle = await waitFor(() => screen.getByRole('button', { name: /currently printing \(1\)/i }));
+    await user.click(toggle);
+
+    const busyButton = screen.getByRole('button', { name: /Mini Busy/i });
+    expect(busyButton).toBeDisabled();
+    expect(busyButton).toHaveTextContent(/Printing/i);
+
+    const idleButton = screen.getByRole('button', { name: /Mini Idle/i });
+    expect(idleButton).toBeEnabled();
+
+    await user.click(busyButton);
+    expect(screen.queryByText(/1 printer selected/)).not.toBeInTheDocument();
+
+    await user.click(idleButton);
+    await waitFor(() => {
+      expect(screen.getByRole('button', { name: /^print$/i })).toBeEnabled();
+    });
   });
 });

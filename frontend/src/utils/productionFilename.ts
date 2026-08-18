@@ -46,6 +46,28 @@ export function normalizeProductionPrinter(raw: string | null | undefined): stri
   return PRODUCTION_PRINTER_COMPACT[compactPrinter(text)] ?? text;
 }
 
+/** True when two model strings are the same printer (A1M ↔ A1 Mini, X1 Carbon ↔ X1C). */
+export function printerModelsMatch(
+  a: string | null | undefined,
+  b: string | null | undefined,
+): boolean {
+  if (!a || !b) return false;
+  const na = normalizeProductionPrinter(a);
+  const nb = normalizeProductionPrinter(b);
+  if (!na || !nb) return false;
+  return compactPrinter(na) === compactPrinter(nb);
+}
+
+/** Prefer slice metadata; fall back to a production filename's printer suffix. */
+export function resolvePrintTargetModel(
+  slicedForModel: string | null | undefined,
+  filename: string | null | undefined,
+): string | null {
+  const sliced = slicedForModel?.trim();
+  if (sliced) return sliced;
+  return parseProductionFilename(filename || '')?.printer || null;
+}
+
 export interface ParsedProductionFilename {
   code: string;
   quantity: number;

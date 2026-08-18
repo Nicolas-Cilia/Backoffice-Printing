@@ -2933,6 +2933,7 @@ export function FileManagerPage() {
           mode="create"
           libraryFileId={printFile.id}
           archiveName={printFile.print_name || printFile.filename}
+          slicedForModel={printFile.sliced_for_model}
           onClose={() => setPrintFile(null)}
           onSuccess={() => {
             setPrintFile(null);

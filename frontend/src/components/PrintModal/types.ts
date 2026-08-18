@@ -25,6 +25,8 @@ export interface PrintModalProps {
   libraryFileId?: number;
   /** Display name for the print */
   archiveName: string;
+  /** Known sliced-for model from the file list (avoids waiting on archive/library fetch) */
+  slicedForModel?: string | null;
   /** Existing queue item (only for edit-queue-item mode) */
   queueItem?: PrintQueueItem;
   /** Pre-select specific printers when opening the modal */
