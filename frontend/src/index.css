@@ -302,9 +302,21 @@ body {
   min-height: 100vh;
 }
 
-/* Override text-white to be theme-aware */
-.text-white {
+/* Override text-white to be theme-aware.
+   Tailwind's .text-white is remapped, but hover/focus/active variants compile
+   to a different selector (literal #fff). In light mode that paints white
+   labels onto pale bambu-* hover backgrounds and the text vanishes. */
+.text-white,
+.hover\:text-white:hover,
+.focus\:text-white:focus,
+.active\:text-white:active {
   color: var(--text-primary);
+}
+
+@media (hover: hover) {
+  .hover\:text-white:hover {
+    color: var(--text-primary);
+  }
 }
 
 /* Smooth transitions for theme changes */
