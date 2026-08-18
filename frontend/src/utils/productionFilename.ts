@@ -66,6 +66,41 @@ function stripProductionExtension(name: string): string {
   return name;
 }
 
+export function productionFileExtension(name: string): string {
+  const basename = String(name).split(/[/\\]/).pop() ?? String(name);
+  const lower = basename.toLowerCase();
+  for (const ext of STRIP_EXTENSIONS) {
+    if (lower.endsWith(ext)) return ext;
+  }
+  const dot = basename.lastIndexOf('.');
+  return dot >= 0 ? basename.slice(dot) : '';
+}
+
+export function formatProductionFilename(
+  code: string,
+  quantity: number,
+  major: number,
+  revision: number,
+  minor: number,
+  printer: string,
+): string {
+  const printerCode = normalizeProductionPrinter(printer) || printer.trim();
+  const qtyPart = quantity !== 1 ? ` x${quantity}` : '';
+  return `${code.trim().toUpperCase()}${qtyPart} - ${major}.${revision}.${minor} - ${printerCode}`;
+}
+
+export function storedProductionFilename(
+  originalName: string,
+  code: string,
+  quantity: number,
+  major: number,
+  revision: number,
+  minor: number,
+  printer: string,
+): string {
+  return `${formatProductionFilename(code, quantity, major, revision, minor, printer)}${productionFileExtension(originalName)}`;
+}
+
 export function parseProductionFilename(name: string): ParsedProductionFilename | null {
   if (!name || !String(name).trim()) return null;
   const basename = String(name).split(/[/\\]/).pop() ?? String(name);

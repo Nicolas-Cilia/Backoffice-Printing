@@ -7,6 +7,8 @@ from backend.app.services.production_filename import (
     normalize_production_printer,
     normalize_production_printer_code,
     parse_production_filename,
+    production_filename_extension,
+    stored_production_filename,
     suggest_next_revision,
     version_tuple,
 )
@@ -69,6 +71,20 @@ class TestParseProductionFilename:
             == "TOP - 1.13.2 - X1C"
         )
         assert format_production_filename("TOP", 2, 1, 13, 2, "X1C") == "TOP x2 - 1.13.2 - X1C"
+        assert format_production_filename("TOP", 1, 1, 0, 0, "A1 Mini") == "TOP - 1.0.0 - A1M"
+
+
+class TestStoredProductionFilename:
+    def test_keeps_original_extension(self):
+        assert production_filename_extension("13_Slot_Buide_Plate_V2(2).3mf") == ".3mf"
+        assert production_filename_extension("random.gcode.3mf") == ".gcode.3mf"
+        assert production_filename_extension("plate.gcode") == ".gcode"
+
+    def test_omitted_quantity_and_explicit_quantity(self):
+        assert stored_production_filename("random.3mf", "TOP", 1, 1, 0, 0, "X1C") == "TOP - 1.0.0 - X1C.3mf"
+        assert (
+            stored_production_filename("random.gcode.3mf", "TOP", 2, 1, 0, 0, "X1C") == "TOP x2 - 1.0.0 - X1C.gcode.3mf"
+        )
 
 
 class TestNormalizeProductionPrinter:

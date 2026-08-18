@@ -165,10 +165,10 @@ function SlotCard({
               e.stopPropagation();
               onDelete();
             }}
-            className="absolute top-1.5 right-1.5 z-10 p-1 rounded-md bg-white/85 border border-black/15 text-gray-800/70 hover:text-red-700 hover:bg-white hover:border-red-300 dark:bg-black/55 dark:border-white/25 dark:text-white/75 dark:hover:text-red-400 dark:hover:bg-black/75 dark:hover:border-red-400/40 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-gray-500 dark:focus-visible:ring-white/40 transition-colors"
+            className="absolute top-1.5 right-1.5 z-10 p-1.5 rounded bg-bambu-dark-secondary/90 text-bambu-gray hover:bg-bambu-dark-tertiary hover:text-red-700 dark:hover:text-red-400 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-bambu-gray transition-colors"
             aria-label={t('fileManager.production.delete')}
           >
-            <Trash2 className="w-3.5 h-3.5" aria-hidden />
+            <Trash2 className="w-4 h-4" aria-hidden />
           </button>
         )}
       </div>
@@ -474,7 +474,7 @@ export function ProductionFolderView({
                     <button
                       type="button"
                       onClick={() => setRemovePartTarget(part)}
-                      className="p-1.5 rounded-md text-bambu-gray hover:text-red-400 hover:bg-bambu-dark-tertiary"
+                      className="p-1.5 rounded text-bambu-gray hover:bg-bambu-dark-tertiary hover:text-red-700 dark:hover:text-red-400 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-bambu-gray transition-colors"
                       aria-label={t('fileManager.production.removePart')}
                     >
                       <Trash2 className="w-4 h-4" aria-hidden />
@@ -545,6 +545,11 @@ export function ProductionFolderView({
       {replaceSlot && (
         <ReplaceProductionFileModal
           slotId={replaceSlot.id}
+          code={parts.find((part) => part.slots.some((slot) => slot.id === replaceSlot.id))?.code ?? ''}
+          quantity={replaceSlot.quantity}
+          major={replaceSlot.major}
+          revision={replaceSlot.revision}
+          minor={replaceSlot.minor}
           currentVersion={replaceSlot.version}
           printerModel={printerModel}
           onClose={() => setReplaceSlot(null)}

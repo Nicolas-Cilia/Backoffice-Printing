@@ -5925,18 +5925,24 @@ export const api = {
     fields: {
       resolution: 'proceed' | 'accept_baseline';
       reason?: string | null;
+      code?: string | null;
+      quantity?: number | null;
       major?: number | null;
       revision?: number | null;
       minor?: number | null;
+      printer?: string | null;
     },
   ): Promise<ProductionSlotResponse> => {
     const formData = new FormData();
     formData.append('file', file);
     formData.append('resolution', fields.resolution);
     if (fields.reason) formData.append('reason', fields.reason);
+    if (fields.code) formData.append('code', fields.code);
+    if (fields.quantity != null) formData.append('quantity', String(fields.quantity));
     if (fields.major != null) formData.append('major', String(fields.major));
     if (fields.revision != null) formData.append('revision', String(fields.revision));
     if (fields.minor != null) formData.append('minor', String(fields.minor));
+    if (fields.printer) formData.append('printer', fields.printer);
     return postFormData<ProductionSlotResponse>(`/production/slots/${slotId}/replace`, formData);
   },
   getProductionSlotHistory: (slotId: number) =>

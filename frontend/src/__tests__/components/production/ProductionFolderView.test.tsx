@@ -239,6 +239,11 @@ describe('ProductionFolderView', () => {
     const deleteControl = await screen.findByRole('button', { name: 'Delete' });
     expect(screen.getByRole('button', { name: 'Replace' })).toBeInTheDocument();
     expect(deleteControl).toBeInTheDocument();
+    expect(deleteControl.className).toContain('bg-bambu-dark-secondary/90');
+    expect(deleteControl.className).toContain('text-bambu-gray');
+    expect(deleteControl.className).toContain('hover:text-red-700');
+    expect(deleteControl.className).not.toContain('bg-white');
+    expect(deleteControl.className).not.toContain('w-full');
 
     await user.click(deleteControl);
     expect(screen.getByText('Delete production file')).toBeInTheDocument();

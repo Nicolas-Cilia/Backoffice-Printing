@@ -4,7 +4,7 @@ import { Loader2, Upload, X } from 'lucide-react';
 import { api } from '../../api/client';
 import type { ProductionPartView, ProductionReplacePreview } from '../../api/client';
 import { Button } from '../Button';
-import { parseProductionFilename } from '../../utils/productionFilename';
+import { parseProductionFilename, storedProductionFilename } from '../../utils/productionFilename';
 import { ProductionParameterDiffTable } from './ProductionParameterDiffTable';
 
 interface AddProductionFileModalProps {
@@ -90,6 +90,19 @@ export function AddProductionFileModal({
     && Number.isInteger(Number(revision))
     && Number.isInteger(Number(minor))
     && printer.trim().length > 0;
+
+  const savedAs = useMemo(() => {
+    if (!file || !identityComplete) return null;
+    return storedProductionFilename(
+      file.name,
+      code.trim().toUpperCase(),
+      qtyNumber,
+      Number(major),
+      Number(revision),
+      Number(minor),
+      printer.trim(),
+    );
+  }, [file, identityComplete, code, qtyNumber, major, revision, minor, printer]);
 
   useEffect(() => {
     if (!file || !identityComplete || !hasContract || existingSlot) {
@@ -202,6 +215,11 @@ export function AddProductionFileModal({
             <Upload className="w-8 h-8 mx-auto mb-2 text-bambu-green" />
             <p className="text-sm">{file ? file.name : t('fileManager.production.pickFile')}</p>
           </button>
+          {savedAs && (
+            <p className="text-xs text-bambu-gray font-mono text-center" data-testid="production-saved-as">
+              {savedAs}
+            </p>
+          )}
 
           {file && parseFailed && (
             <p className="text-sm text-amber-500">{t('fileManager.production.parseFailed')}</p>

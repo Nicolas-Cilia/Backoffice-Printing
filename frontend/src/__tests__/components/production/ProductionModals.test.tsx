@@ -78,6 +78,11 @@ describe('ReplaceProductionFileModal', () => {
     render(
       <ReplaceProductionFileModal
         slotId={7}
+        code="TOP"
+        quantity={1}
+        major={1}
+        revision={13}
+        minor={2}
         currentVersion="1.13.2"
         printerModel="X1C"
         onClose={vi.fn()}
@@ -94,6 +99,11 @@ describe('ReplaceProductionFileModal', () => {
     render(
       <ReplaceProductionFileModal
         slotId={7}
+        code="TOP"
+        quantity={1}
+        major={1}
+        revision={13}
+        minor={2}
         currentVersion="1.13.2"
         printerModel="X1C"
         onClose={vi.fn()}
@@ -159,6 +169,31 @@ describe('AddProductionFileModal', () => {
     expect(create).toBeDisabled();
     await user.click(screen.getByRole('checkbox'));
     expect(create).not.toBeDisabled();
+  });
+
+  it('shows the identity filename for an unparseable upload', async () => {
+    const user = userEvent.setup();
+    render(
+      <AddProductionFileModal
+        folderId={9}
+        printerModel="X1C"
+        parts={emptyParts}
+        onClose={vi.fn()}
+        onCreated={vi.fn()}
+      />,
+    );
+
+    const input = document.querySelector('input[type="file"]') as HTMLInputElement;
+    const file = new File(['3mf'], '13_Slot_Buide_Plate_V2(2).3mf', { type: 'application/octet-stream' });
+    await user.upload(input, file);
+
+    await waitFor(() => {
+      expect(screen.getByText(/Could not parse the filename/)).toBeInTheDocument();
+    });
+    await user.type(screen.getByLabelText(/Part code/i), 'TOP');
+    await waitFor(() => {
+      expect(screen.getByTestId('production-saved-as')).toHaveTextContent('TOP - 1.0.0 - X1C.3mf');
+    });
   });
 
   it('does not warn that the slot exists until a file is chosen', async () => {

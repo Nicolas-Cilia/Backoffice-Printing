@@ -1,5 +1,10 @@
 import { describe, it, expect } from 'vitest';
-import { parseProductionFilename, normalizeProductionPrinter } from '../../utils/productionFilename';
+import {
+  formatProductionFilename,
+  normalizeProductionPrinter,
+  parseProductionFilename,
+  storedProductionFilename,
+} from '../../utils/productionFilename';
 
 describe('parseProductionFilename', () => {
   it('parses CODE xQTY - M.R.m - PRINTER with .gcode.3mf', () => {
@@ -42,6 +47,21 @@ describe('parseProductionFilename', () => {
 
   it('returns null when the name is not a production filename', () => {
     expect(parseProductionFilename('benchy.gcode.3mf')).toBeNull();
+  });
+});
+
+describe('formatProductionFilename', () => {
+  it('omits x1 and keeps quantity in the stem', () => {
+    expect(formatProductionFilename('TOP', 1, 1, 0, 0, 'X1C')).toBe('TOP - 1.0.0 - X1C');
+    expect(formatProductionFilename('TOP', 2, 1, 13, 2, 'X1C')).toBe('TOP x2 - 1.13.2 - X1C');
+    expect(formatProductionFilename('top', 1, 1, 0, 0, 'A1 Mini')).toBe('TOP - 1.0.0 - A1M');
+  });
+
+  it('appends the original print-file extension', () => {
+    expect(storedProductionFilename('13_Slot_Buide_Plate_V2(2).3mf', 'TOP', 1, 1, 0, 0, 'X1C'))
+      .toBe('TOP - 1.0.0 - X1C.3mf');
+    expect(storedProductionFilename('random.gcode.3mf', 'TOP', 2, 1, 0, 0, 'X1C'))
+      .toBe('TOP x2 - 1.0.0 - X1C.gcode.3mf');
   });
 });
 
