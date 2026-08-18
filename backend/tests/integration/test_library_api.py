@@ -39,10 +39,12 @@ class TestLibraryFoldersAPI:
     @pytest.mark.asyncio
     @pytest.mark.integration
     async def test_list_folders_empty(self, async_client: AsyncClient, db_session):
-        """Verify empty folder list returns empty array."""
+        """Folder list bootstraps Production printer folders when none exist yet."""
         response = await async_client.get("/api/v1/library/folders")
         assert response.status_code == 200
-        assert response.json() == []
+        items = response.json()
+        production = {f["production_printer_model"] for f in items if f.get("production_printer_model")}
+        assert production == {"X1C", "A1M", "A1", "H2D", "H2S"}
 
     @pytest.mark.asyncio
     @pytest.mark.integration
@@ -76,9 +78,7 @@ class TestLibraryFoldersAPI:
         response = await async_client.get("/api/v1/library/folders")
         assert response.status_code == 200
         items = response.json()
-        assert len(items) == 1
-        item = items[0]
-        assert item["id"] == folder.id
+        item = next(row for row in items if row["id"] == folder.id)
         assert item["latest_activity_at"] is not None
         # latest_activity_at should be at least the future stamp we set.
         assert item["latest_activity_at"] >= future.isoformat()
@@ -94,8 +94,7 @@ class TestLibraryFoldersAPI:
         response = await async_client.get("/api/v1/library/folders")
         assert response.status_code == 200
         items = response.json()
-        assert len(items) == 1
-        item = items[0]
+        item = next(row for row in items if row["name"] == "Empty Folder")
         # latest_activity_at == folder.updated_at when there are no files
         assert item["latest_activity_at"] is not None
 
