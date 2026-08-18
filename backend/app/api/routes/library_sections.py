@@ -83,10 +83,14 @@ async def list_sections(
 ) -> list[FolderSectionResponse]:
     """List every section ordered for the folder-picker grid (sort_order, then name)."""
     rows = (
-        await db.execute(
-            select(LibraryFolderSection).order_by(LibraryFolderSection.sort_order, LibraryFolderSection.name)
+        (
+            await db.execute(
+                select(LibraryFolderSection).order_by(LibraryFolderSection.sort_order, LibraryFolderSection.name)
+            )
         )
-    ).scalars().all()
+        .scalars()
+        .all()
+    )
     return [await _to_response(db, s) for s in rows]
 
 
