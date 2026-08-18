@@ -1575,6 +1575,7 @@ describe('FileManagerPage', () => {
       await waitFor(() => {
         expect(screen.getByText('Production files')).toBeInTheDocument();
       });
+      expect(screen.getByTestId('scroll-fade-scroller')).toBeInTheDocument();
       expect(screen.getByText('Replace')).toBeInTheDocument();
       expect(screen.getByText('Add production file')).toBeInTheDocument();
       expect(screen.queryByText('Upload')).not.toBeInTheDocument();

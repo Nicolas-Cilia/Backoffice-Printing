@@ -5,6 +5,7 @@ import { ChevronRight, FileBox, Loader2, Plus, Printer, RefreshCw, Tag, Trash2, 
 import { api } from '../../api/client';
 import type { LibraryTagSummary, ProductionActiveFile, ProductionPartView, ProductionSlotNested } from '../../api/client';
 import { Button } from '../Button';
+import { ScrollFadeContainer } from '../ScrollFadeContainer';
 import { BulkTagsPickerModal } from '../BulkTagsPickerModal';
 import { ConfirmModal } from '../ConfirmModal';
 import { useAuth } from '../../contexts/AuthContext';
@@ -412,12 +413,12 @@ export function ProductionFolderView({
 
   return (
     <div
-      className={`flex-1 flex flex-col min-h-0 overflow-y-auto ${isDragging ? 'ring-2 ring-bambu-green rounded-lg' : ''}`}
+      className={`flex-1 flex flex-col min-h-0 overflow-hidden ${isDragging ? 'ring-2 ring-bambu-green rounded-lg' : ''}`}
       onDragOver={handleDragOver}
       onDragLeave={handleDragLeave}
       onDrop={handleDrop}
     >
-      <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 mb-6">
+      <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 mb-6 shrink-0">
         <div>
           <h2 className="text-lg font-semibold text-white">{t('fileManager.production.title')}</h2>
           <p className="text-sm text-bambu-gray">
@@ -447,7 +448,7 @@ export function ProductionFolderView({
       </div>
 
       {!hasAnySlots && (
-        <div className="flex flex-col items-center justify-center py-12 mb-6 border border-dashed border-bambu-dark-tertiary rounded-lg">
+        <div className="flex flex-col items-center justify-center py-12 mb-6 border border-dashed border-bambu-dark-tertiary rounded-lg shrink-0">
           <FileBox className="w-12 h-12 text-bambu-gray/50 mb-3" />
           <p className="text-white font-medium mb-1">{t('fileManager.production.emptyFolder')}</p>
           <p className="text-sm text-bambu-gray">{t('fileManager.production.dropToAdd')}</p>
@@ -455,57 +456,59 @@ export function ProductionFolderView({
       )}
 
       {parts.length > 0 && (
-        <div className="space-y-8">
-          {parts.map((part: ProductionPartView) => (
-            <section key={part.id}>
-              <div className="flex items-center justify-between gap-3 mb-3">
-                <div className="flex items-baseline gap-2 min-w-0">
-                  <h3 className="text-sm font-semibold text-white tracking-wide">{part.code}</h3>
-                  <span className="text-xs text-bambu-gray truncate">{part.name}</span>
+        <ScrollFadeContainer>
+          <div className="space-y-8 pb-4">
+            {parts.map((part: ProductionPartView) => (
+              <section key={part.id}>
+                <div className="flex items-center justify-between gap-3 mb-3">
+                  <div className="flex items-baseline gap-2 min-w-0">
+                    <h3 className="text-sm font-semibold text-white tracking-wide">{part.code}</h3>
+                    <span className="text-xs text-bambu-gray truncate">{part.name}</span>
+                  </div>
+                  <div className="flex items-center gap-1 shrink-0">
+                    {canUpload && (
+                      <Button variant="secondary" onClick={() => openAddFile(part.code)}>
+                        <Plus className="w-4 h-4" />
+                        {t('fileManager.production.addFileToPart')}
+                      </Button>
+                    )}
+                    {canDelete && (
+                      <button
+                        type="button"
+                        onClick={() => setRemovePartTarget(part)}
+                        className="p-1.5 rounded text-bambu-gray hover:bg-bambu-dark-tertiary hover:text-red-700 dark:hover:text-red-400 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-bambu-gray transition-colors"
+                        aria-label={t('fileManager.production.removePart')}
+                      >
+                        <Trash2 className="w-4 h-4" aria-hidden />
+                      </button>
+                    )}
+                  </div>
                 </div>
-                <div className="flex items-center gap-1 shrink-0">
-                  {canUpload && (
-                    <Button variant="secondary" onClick={() => openAddFile(part.code)}>
-                      <Plus className="w-4 h-4" />
-                      {t('fileManager.production.addFileToPart')}
-                    </Button>
-                  )}
-                  {canDelete && (
-                    <button
-                      type="button"
-                      onClick={() => setRemovePartTarget(part)}
-                      className="p-1.5 rounded text-bambu-gray hover:bg-bambu-dark-tertiary hover:text-red-700 dark:hover:text-red-400 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-bambu-gray transition-colors"
-                      aria-label={t('fileManager.production.removePart')}
-                    >
-                      <Trash2 className="w-4 h-4" aria-hidden />
-                    </button>
-                  )}
-                </div>
-              </div>
-              {part.slots.length > 0 ? (
-                <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 xl:grid-cols-5 2xl:grid-cols-6 gap-4">
-                  {part.slots.map((slot) => (
-                    <SlotCard
-                      key={slot.id}
-                      slot={slot}
-                      lockedParameters={part.locked_parameters}
-                      canUpload={canUpload}
-                      canDelete={canDelete}
-                      canEditTags={canEditTags}
-                      onReplace={() => setReplaceSlot(slot)}
-                      onDelete={() => setDeleteTarget({ slot, part })}
-                      onPrint={canPrint ? onPrint : undefined}
-                      onEditTags={openFileTagPicker}
-                      onRemoveTag={handleRemoveTag}
-                    />
-                  ))}
-                </div>
-              ) : (
-                <p className="text-xs text-bambu-gray">{t('fileManager.production.emptyPart')}</p>
-              )}
-            </section>
-          ))}
-        </div>
+                {part.slots.length > 0 ? (
+                  <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 xl:grid-cols-5 2xl:grid-cols-6 gap-4">
+                    {part.slots.map((slot) => (
+                      <SlotCard
+                        key={slot.id}
+                        slot={slot}
+                        lockedParameters={part.locked_parameters}
+                        canUpload={canUpload}
+                        canDelete={canDelete}
+                        canEditTags={canEditTags}
+                        onReplace={() => setReplaceSlot(slot)}
+                        onDelete={() => setDeleteTarget({ slot, part })}
+                        onPrint={canPrint ? onPrint : undefined}
+                        onEditTags={openFileTagPicker}
+                        onRemoveTag={handleRemoveTag}
+                      />
+                    ))}
+                  </div>
+                ) : (
+                  <p className="text-xs text-bambu-gray">{t('fileManager.production.emptyPart')}</p>
+                )}
+              </section>
+            ))}
+          </div>
+        </ScrollFadeContainer>
       )}
 
       {showAdd && (

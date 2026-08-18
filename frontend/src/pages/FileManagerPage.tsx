@@ -65,6 +65,7 @@ import { BulkTagsPickerModal } from '../components/BulkTagsPickerModal';
 import { FileUploadModal } from '../components/FileUploadModal';
 import { FolderReadmePanel } from '../components/FolderReadmePanel';
 import { ProductionFolderView } from '../components/production/ProductionFolderView';
+import { ScrollFadeContainer } from '../components/ScrollFadeContainer';
 import { LibraryTagsModal } from '../components/LibraryTagsModal';
 import { PurgeOldFilesModal } from '../components/PurgeOldFilesModal';
 import { useToast } from '../contexts/ToastContext';
@@ -1956,7 +1957,7 @@ export function FileManagerPage() {
 
   return (
     <div
-      className="p-4 md:p-8 min-h-[calc(100vh-64px)] lg:h-[calc(100vh-64px)] flex flex-col relative"
+      className="p-4 md:p-8 h-full min-h-0 flex-1 overflow-hidden flex flex-col relative"
       {...dragHandlers}
     >
       {/* Drag & Drop Overlay — page-wide file upload (#1510) */}
@@ -1971,7 +1972,7 @@ export function FileManagerPage() {
       )}
 
       {/* Header */}
-      <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 mb-6">
+      <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 mb-6 shrink-0">
         <div>
           <h1 className="text-2xl font-bold text-white flex items-center gap-3">
             {viewEntered && (
@@ -2086,7 +2087,7 @@ export function FileManagerPage() {
 
       {/* Disk space warning */}
       {isDiskSpaceLow && stats && settings && (
-        <div className="flex items-center gap-3 mb-4 p-3 bg-amber-500/10 border border-amber-500/30 rounded-lg">
+        <div className="flex items-center gap-3 mb-4 p-3 bg-amber-500/10 border border-amber-500/30 rounded-lg shrink-0">
           <AlertTriangle className="w-5 h-5 text-amber-500 flex-shrink-0" />
           <div className="flex-1">
             <p className="text-sm text-amber-500 font-medium">{t('fileManager.lowDiskSpaceWarning')}</p>
@@ -2099,7 +2100,7 @@ export function FileManagerPage() {
 
       {/* Stats bar */}
       {stats && (
-        <div className="flex flex-wrap items-center gap-3 sm:gap-6 mb-6 p-3 bg-bambu-dark-secondary rounded-lg border border-bambu-dark-tertiary">
+        <div className="flex flex-wrap items-center gap-3 sm:gap-6 mb-6 p-3 bg-bambu-dark-secondary rounded-lg border border-bambu-dark-tertiary shrink-0">
           <div className="flex items-center gap-2 text-sm">
             <File className="w-4 h-4 text-bambu-green" />
             <span className="text-bambu-gray">{t('fileManager.files')}:</span>
@@ -2126,7 +2127,7 @@ export function FileManagerPage() {
 
       {/* Main content */}
       {!viewEntered ? (
-        <div className="flex-1 overflow-y-auto min-h-0 space-y-8">
+        <ScrollFadeContainer className="space-y-8">
           <div className="flex items-center justify-end gap-2">
             <select
               value={folderSortField}
@@ -2352,18 +2353,18 @@ export function FileManagerPage() {
               )}
             </>
           )}
-        </div>
+        </ScrollFadeContainer>
       ) : (
-      <div className="flex-1 flex flex-col lg:flex-row gap-4 lg:gap-6 min-h-0">
+      <div className="flex-1 flex flex-col lg:flex-row gap-4 lg:gap-6 min-h-0 overflow-hidden">
         {/* Files area + README rail (#2520 item 2). On wide screens the
             README docks as a collapsible right-hand column (rendered after
             the files column, below) so it no longer steals vertical space
             from the file list; on narrow screens it stacks above the list
-            via `order-first` and the page itself scrolls. */}
-        <div className="flex-1 flex flex-col lg:flex-row min-w-0 min-h-0 gap-4 lg:gap-6">
-        <div className="flex-1 flex flex-col min-w-0 min-h-0">
+            via `order-first`. The folder body (not the FM header) scrolls. */}
+        <div className="flex-1 flex flex-col lg:flex-row min-w-0 min-h-0 gap-4 lg:gap-6 overflow-hidden">
+        <div className="flex-1 flex flex-col min-w-0 min-h-0 overflow-hidden">
           {folderPath && folderPath.length > 0 && (
-            <nav className="flex flex-wrap items-center gap-1 text-sm mb-4" aria-label="Breadcrumb">
+            <nav className="flex flex-wrap items-center gap-1 text-sm mb-4 shrink-0" aria-label="Breadcrumb">
               <button
                 onClick={goToRoot}
                 className="text-bambu-gray hover:text-white"
@@ -2487,7 +2488,7 @@ export function FileManagerPage() {
           )}
           {/* Search, Filter, Sort toolbar - sticky on mobile for easier access */}
           {files && files.length > 0 && (
-            <div className="flex flex-wrap items-center gap-2 sm:gap-3 mb-4 p-2 sm:p-3 bg-bambu-dark-secondary rounded-lg border border-bambu-dark-tertiary sticky top-0 z-10 lg:static">
+            <div className="flex flex-wrap items-center gap-2 sm:gap-3 mb-4 p-2 sm:p-3 bg-bambu-dark-secondary rounded-lg border border-bambu-dark-tertiary shrink-0">
               {/* Search */}
               <div className="relative w-full sm:w-auto sm:flex-1 sm:max-w-xs">
                 <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-bambu-gray" />
@@ -2612,7 +2613,7 @@ export function FileManagerPage() {
 
           {/* Selection toolbar - sticky on mobile below search bar */}
           {filteredAndSortedFiles.length > 0 && (
-            <div className="flex flex-wrap items-center gap-2 mb-4 p-2 bg-bambu-dark-secondary rounded-lg border border-bambu-dark-tertiary sticky top-[52px] z-10 lg:static">
+            <div className="flex flex-wrap items-center gap-2 mb-4 p-2 bg-bambu-dark-secondary rounded-lg border border-bambu-dark-tertiary shrink-0">
               {/* Select all / Deselect all */}
               {selectedFiles.length === filteredAndSortedFiles.length && selectedFiles.length > 0 ? (
                 <Button
@@ -2745,7 +2746,7 @@ export function FileManagerPage() {
               </Button>
             </div>
           ) : (
-            <div className="flex-1 lg:overflow-y-auto">
+            <ScrollFadeContainer>
               <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 xl:grid-cols-5 2xl:grid-cols-6 gap-4">
                 {filteredAndSortedFiles.map((file) => (
                   <FileCard
@@ -2785,7 +2786,7 @@ export function FileManagerPage() {
                   />
                 ))}
               </div>
-            </div>
+            </ScrollFadeContainer>
           )}
           </>
           )}

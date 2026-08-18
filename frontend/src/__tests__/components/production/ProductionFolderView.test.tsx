@@ -335,4 +335,19 @@ describe('ProductionFolderView', () => {
     expect(screen.queryByRole('button', { name: 'Tags' })).not.toBeInTheDocument();
     expect(screen.queryByLabelText('Add tags to this file')).not.toBeInTheDocument();
   });
+
+  it('wraps part lists in a scroll container with a bottom overflow fade', async () => {
+    server.use(
+      http.get('/api/v1/production/folders/9', () => HttpResponse.json(folderWithSpecs)),
+    );
+
+    render(<ProductionFolderView folderId={9} printerModel="X1C" canUpload />);
+
+    await waitFor(() => {
+      expect(screen.getByText('TOP - 1.13.2 - X1C.gcode.3mf')).toBeInTheDocument();
+    });
+    expect(screen.getByTestId('scroll-fade-scroller')).toHaveClass('overflow-y-scroll');
+    expect(screen.getByTestId('scroll-fade-scroller')).toHaveClass('scroll-fade-pane');
+    expect(screen.getByTestId('scroll-more-fade')).toBeInTheDocument();
+  });
 });

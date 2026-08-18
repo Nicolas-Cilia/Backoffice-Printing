@@ -436,7 +436,7 @@ export function Layout() {
   }, [handleKeyDown]);
 
   return (
-    <div className="flex min-h-screen">
+    <div className="flex h-dvh overflow-hidden">
       {/* Compact Header */}
       {isSidebarCompact && (
         <header className="fixed top-0 left-0 right-0 z-40 h-14 bg-bambu-dark-secondary border-b border-bambu-dark-tertiary flex items-center px-4">
@@ -774,8 +774,8 @@ export function Layout() {
       </aside>
 
       {/* Main content */}
-      <main className={`flex-1 bg-bambu-dark overflow-auto transition-all duration-300 ${
-        isSidebarCompact ? 'mt-14' : sidebarExpanded ? 'ml-64' : 'ml-16'
+      <main className={`flex-1 min-h-0 flex flex-col bg-bambu-dark overflow-auto transition-all duration-300 ${
+        isSidebarCompact ? 'mt-14 h-[calc(100dvh-3.5rem)]' : sidebarExpanded ? 'ml-64' : 'ml-16'
       }`}>
         {/* Debug logging indicator */}
         {debugLoggingState?.enabled && (
