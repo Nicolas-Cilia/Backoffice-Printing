@@ -416,3 +416,167 @@ class TestProductionAPI:
         assert view.status_code == 200
         top = next(part for part in view.json()["parts"] if part["code"] == "TOP")
         assert top["locked_parameters"]["fuzzy_skin"] == "none"
+
+    async def test_a1_and_a1m_default_visible_parts_exclude_bot_and_but(self, async_client: AsyncClient):
+        boot = (await async_client.post("/api/v1/production/bootstrap")).json()
+        folders = {folder["production_printer_model"]: folder for folder in boot["folders"]}
+
+        a1 = (await async_client.get(f"/api/v1/production/folders/{folders['A1']['id']}")).json()
+        a1m = (await async_client.get(f"/api/v1/production/folders/{folders['A1M']['id']}")).json()
+        x1c = (await async_client.get(f"/api/v1/production/folders/{folders['X1C']['id']}")).json()
+        h2d = (await async_client.get(f"/api/v1/production/folders/{folders['H2D']['id']}")).json()
+
+        assert {part["code"] for part in a1["parts"]} == {"TOP", "KNB"}
+        assert {part["code"] for part in a1m["parts"]} == {"TOP", "KNB"}
+        assert {part["code"] for part in x1c["parts"]} == {"TOP", "BOT", "KNB", "BUT"}
+        assert {part["code"] for part in h2d["parts"]} == {"TOP", "BOT", "KNB", "BUT"}
+        assert all(part["instance_id"] for part in a1["parts"])
+        assert all(part["slots"] == [] for part in a1["parts"])
+
+    async def test_add_custom_part_is_per_printer(self, async_client: AsyncClient):
+        boot = (await async_client.post("/api/v1/production/bootstrap")).json()
+        folders = {folder["production_printer_model"]: folder for folder in boot["folders"]}
+        a1_id = folders["A1"]["id"]
+        x1c_id = folders["X1C"]["id"]
+
+        created = await async_client.post(
+            f"/api/v1/production/folders/{a1_id}/parts",
+            json={"code": "lid", "name": "Lid"},
+        )
+        assert created.status_code == 200, created.text
+        body = created.json()
+        assert body["code"] == "LID"
+        assert body["name"] == "Lid"
+        assert body["instance_id"]
+        assert body["slots"] == []
+
+        duplicate = await async_client.post(
+            f"/api/v1/production/folders/{a1_id}/parts",
+            json={"code": "LID", "name": "Lid"},
+        )
+        assert duplicate.status_code == 409
+
+        invalid = await async_client.post(
+            f"/api/v1/production/folders/{a1_id}/parts",
+            json={"code": "L1D", "name": "Bad"},
+        )
+        assert invalid.status_code == 400
+
+        a1 = (await async_client.get(f"/api/v1/production/folders/{a1_id}")).json()
+        x1c = (await async_client.get(f"/api/v1/production/folders/{x1c_id}")).json()
+        assert "LID" in {part["code"] for part in a1["parts"]}
+        assert "LID" not in {part["code"] for part in x1c["parts"]}
+
+    async def test_remove_empty_part_hides_row_and_can_be_readded(self, async_client: AsyncClient):
+        boot = (await async_client.post("/api/v1/production/bootstrap")).json()
+        a1 = next(folder for folder in boot["folders"] if folder["production_printer_model"] == "A1")
+        view = (await async_client.get(f"/api/v1/production/folders/{a1['id']}")).json()
+        knb = next(part for part in view["parts"] if part["code"] == "KNB")
+
+        removed = await async_client.delete(f"/api/v1/production/folders/{a1['id']}/parts/{knb['id']}")
+        assert removed.status_code == 200, removed.text
+        assert removed.json() == {"removed": True, "files_trashed": 0}
+
+        after = (await async_client.get(f"/api/v1/production/folders/{a1['id']}")).json()
+        assert {part["code"] for part in after["parts"]} == {"TOP"}
+
+        readded = await async_client.post(
+            f"/api/v1/production/folders/{a1['id']}/parts",
+            json={"code": "KNB", "name": "Knob"},
+        )
+        assert readded.status_code == 200, readded.text
+        restored = (await async_client.get(f"/api/v1/production/folders/{a1['id']}")).json()
+        assert {part["code"] for part in restored["parts"]} == {"TOP", "KNB"}
+
+    async def test_remove_part_with_files_trashes_slots(self, async_client: AsyncClient):
+        boot = (await async_client.post("/api/v1/production/bootstrap")).json()
+        a1 = next(folder for folder in boot["folders"] if folder["production_printer_model"] == "A1")
+        files, data = _upload("TOP - 1.0.0 - A1.3mf", folder_id=a1["id"])
+        created = await async_client.post("/api/v1/production/slots", files=files, data=data)
+        assert created.status_code == 200, created.text
+        file_id = created.json()["active_file"]["id"]
+        part_id = created.json()["part_id"]
+
+        removed = await async_client.delete(f"/api/v1/production/folders/{a1['id']}/parts/{part_id}")
+        assert removed.status_code == 200, removed.text
+        assert removed.json()["files_trashed"] == 1
+
+        view = (await async_client.get(f"/api/v1/production/folders/{a1['id']}")).json()
+        assert "TOP" not in {part["code"] for part in view["parts"]}
+        assert file_id in {item["id"] for item in (await async_client.get("/api/v1/library/trash")).json()["items"]}
+
+    async def test_second_quantity_shares_instance_contract(self, async_client: AsyncClient):
+        boot = (await async_client.post("/api/v1/production/bootstrap")).json()
+        x1c = next(folder for folder in boot["folders"] if folder["production_printer_model"] == "X1C")
+        first_files, first_data = _upload("TOP - 1.0.0 - X1C.3mf", folder_id=x1c["id"])
+        first = await async_client.post("/api/v1/production/slots", files=first_files, data=first_data)
+        assert first.status_code == 200, first.text
+        instance_id = first.json()["instance_id"]
+        original_height = first.json()["locked_parameters"]["layer_height"]
+
+        match_files, match_data = _upload("TOP x2 - 1.0.0 - X1C.3mf", folder_id=x1c["id"])
+        matched = await async_client.post("/api/v1/production/slots", files=match_files, data=match_data)
+        assert matched.status_code == 200, matched.text
+        assert matched.json()["instance_id"] == instance_id
+        assert matched.json()["quantity"] == 2
+        assert matched.json()["last_mismatch"] is False
+        assert matched.json()["locked_parameters"]["layer_height"] == original_height
+
+        mismatch_files, mismatch_data = _upload(
+            "TOP x4 - 1.0.0 - X1C.3mf",
+            _3mf(_config(layer_height="0.28")),
+            folder_id=x1c["id"],
+        )
+        blocked = await async_client.post("/api/v1/production/slots", files=mismatch_files, data=mismatch_data)
+        assert blocked.status_code == 400
+        assert "proceed" in blocked.json()["detail"]
+
+        preview_files, preview_data = _upload(
+            "TOP x4 - 1.0.0 - X1C.3mf",
+            _3mf(_config(layer_height="0.28")),
+            folder_id=x1c["id"],
+        )
+        preview = await async_client.post("/api/v1/production/slots/preview", files=preview_files, data=preview_data)
+        assert preview.status_code == 200, preview.text
+        assert preview.json()["has_mismatches"] is True
+
+        proceed_files, proceed_data = _upload(
+            "TOP x4 - 1.0.0 - X1C.3mf",
+            _3mf(_config(layer_height="0.28")),
+            folder_id=x1c["id"],
+            resolution="proceed",
+            reason="keep x1 contract",
+        )
+        proceeded = await async_client.post("/api/v1/production/slots", files=proceed_files, data=proceed_data)
+        assert proceeded.status_code == 200, proceeded.text
+        assert proceeded.json()["last_mismatch"] is True
+        assert proceeded.json()["locked_parameters"]["layer_height"] == original_height
+
+        view = (await async_client.get(f"/api/v1/production/folders/{x1c['id']}")).json()
+        top = next(part for part in view["parts"] if part["code"] == "TOP")
+        assert top["locked_parameters"]["layer_height"] == original_height
+        assert {slot["quantity"] for slot in top["slots"]} == {1, 2, 4}
+
+    async def test_second_quantity_accept_baseline_updates_shared_contract(self, async_client: AsyncClient):
+        boot = (await async_client.post("/api/v1/production/bootstrap")).json()
+        x1c = next(folder for folder in boot["folders"] if folder["production_printer_model"] == "X1C")
+        first_files, first_data = _upload("KNB - 1.0.0 - X1C.3mf", folder_id=x1c["id"])
+        first = await async_client.post("/api/v1/production/slots", files=first_files, data=first_data)
+        assert first.status_code == 200, first.text
+
+        incoming, form = _upload(
+            "KNB x2 - 1.0.0 - X1C.3mf",
+            _3mf(_config(layer_height="0.28")),
+            folder_id=x1c["id"],
+            resolution="accept_baseline",
+            reason="new shared spec",
+        )
+        accepted = await async_client.post("/api/v1/production/slots", files=incoming, data=form)
+        assert accepted.status_code == 200, accepted.text
+        assert accepted.json()["last_mismatch"] is False
+        assert accepted.json()["locked_parameters"]["layer_height"] == 0.28
+
+        view = (await async_client.get(f"/api/v1/production/folders/{x1c['id']}")).json()
+        knb = next(part for part in view["parts"] if part["code"] == "KNB")
+        assert knb["locked_parameters"]["layer_height"] == 0.28
+        assert {slot["quantity"] for slot in knb["slots"]} == {1, 2}

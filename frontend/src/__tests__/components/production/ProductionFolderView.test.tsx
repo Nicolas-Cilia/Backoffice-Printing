@@ -107,6 +107,57 @@ describe('ProductionFolderView', () => {
     expect(screen.getByText('BOT')).toBeInTheDocument();
     expect(screen.getAllByText(/1\.13\.2/).length).toBeGreaterThan(0);
     expect(screen.queryAllByText('No active file')).toHaveLength(0);
+    expect(screen.getByText('No files for this part yet.')).toBeInTheDocument();
+  });
+
+  it('does not show BOT or BUT for A1 default parts', async () => {
+    server.use(
+      http.get('/api/v1/production/folders/11', () =>
+        HttpResponse.json({
+          folder_id: 11,
+          printer_model: 'A1',
+          section_id: 1,
+          parts: [
+            { id: 1, code: 'TOP', name: 'Top Housing', instance_id: 20, locked_parameters: null, slots: [] },
+            { id: 3, code: 'KNB', name: 'Knob', instance_id: 21, locked_parameters: null, slots: [] },
+          ],
+        }),
+      ),
+    );
+
+    render(<ProductionFolderView folderId={11} printerModel="A1" canUpload />);
+
+    await waitFor(() => {
+      expect(screen.getByText('TOP')).toBeInTheDocument();
+    });
+    expect(screen.getByText('KNB')).toBeInTheDocument();
+    expect(screen.queryByText('BOT')).not.toBeInTheDocument();
+    expect(screen.queryByText('BUT')).not.toBeInTheDocument();
+  });
+
+  it('confirms before removing an empty part row', async () => {
+    const user = userEvent.setup();
+    let removedPartId: string | null = null;
+    server.use(
+      http.get('/api/v1/production/folders/9', () => HttpResponse.json(folderWithSpecs)),
+      http.delete('/api/v1/production/folders/9/parts/:id', ({ params }) => {
+        removedPartId = String(params.id);
+        return HttpResponse.json({ removed: true, files_trashed: 0 });
+      }),
+    );
+
+    render(<ProductionFolderView folderId={9} printerModel="X1C" canUpload />);
+
+    const removeButtons = await screen.findAllByRole('button', { name: 'Remove part' });
+    await user.click(removeButtons[removeButtons.length - 1]);
+    expect(screen.getByText(/Remove BOT \(Bottom Housing\) from X1C/)).toBeInTheDocument();
+    expect(removedPartId).toBeNull();
+
+    const confirmButtons = screen.getAllByRole('button', { name: 'Remove part' });
+    await user.click(confirmButtons[confirmButtons.length - 1]);
+    await waitFor(() => {
+      expect(removedPartId).toBe('2');
+    });
   });
 
   it('does not make the status label a button when the slot has no specs', async () => {

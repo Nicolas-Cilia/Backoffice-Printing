@@ -2,17 +2,26 @@ import { useEffect, useMemo, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { Loader2, Upload, X } from 'lucide-react';
 import { api } from '../../api/client';
-import type { ProductionPartView } from '../../api/client';
+import type { ProductionPartView, ProductionReplacePreview } from '../../api/client';
 import { Button } from '../Button';
 import { parseProductionFilename } from '../../utils/productionFilename';
+import { ProductionParameterDiffTable } from './ProductionParameterDiffTable';
 
 interface AddProductionFileModalProps {
   folderId: number;
   printerModel: string;
   parts: ProductionPartView[];
   initialFile?: File | null;
+  initialCode?: string;
   onClose: () => void;
   onCreated: () => void;
+}
+
+function partHasContract(part: ProductionPartView | undefined): boolean {
+  if (!part) return false;
+  if (part.slots.length > 0) return true;
+  const locked = part.locked_parameters;
+  return Boolean(locked && Object.keys(locked).length > 0);
 }
 
 export function AddProductionFileModal({
@@ -20,13 +29,14 @@ export function AddProductionFileModal({
   printerModel,
   parts,
   initialFile = null,
+  initialCode = '',
   onClose,
   onCreated,
 }: AddProductionFileModalProps) {
   const { t } = useTranslation();
   const fileInputRef = useRef<HTMLInputElement>(null);
   const [file, setFile] = useState<File | null>(initialFile);
-  const [code, setCode] = useState('');
+  const [code, setCode] = useState(initialCode);
   const [quantity, setQuantity] = useState('1');
   const [major, setMajor] = useState('1');
   const [revision, setRevision] = useState('0');
@@ -36,6 +46,9 @@ export function AddProductionFileModal({
   const [confirmed, setConfirmed] = useState(false);
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [preview, setPreview] = useState<ProductionReplacePreview | null>(null);
+  const [previewing, setPreviewing] = useState(false);
+  const [reason, setReason] = useState('');
 
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
@@ -67,6 +80,7 @@ export function AddProductionFileModal({
   );
   const qtyNumber = Number(quantity);
   const existingSlot = matchingPart?.slots.some((slot) => slot.quantity === qtyNumber) ?? false;
+  const hasContract = partHasContract(matchingPart);
 
   const identityComplete =
     code.trim().length > 0
@@ -77,25 +91,66 @@ export function AddProductionFileModal({
     && Number.isInteger(Number(minor))
     && printer.trim().length > 0;
 
+  useEffect(() => {
+    if (!file || !identityComplete || !hasContract || existingSlot) {
+      setPreview(null);
+      return;
+    }
+    let cancelled = false;
+    setPreviewing(true);
+    setError(null);
+    void api.previewCreateProductionSlot(file, {
+      folder_id: folderId,
+      code: code.trim().toUpperCase(),
+      quantity: qtyNumber,
+      major: Number(major),
+      revision: Number(revision),
+      minor: Number(minor),
+      printer: printer.trim(),
+    }).then((result) => {
+      if (!cancelled) setPreview(result);
+    }).catch((err: unknown) => {
+      if (cancelled) return;
+      const message = err instanceof Error ? err.message : String(err);
+      setPreview(null);
+      setError(t('fileManager.production.previewFailed', { error: message }));
+    }).finally(() => {
+      if (!cancelled) setPreviewing(false);
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [file, folderId, code, qtyNumber, major, revision, minor, printer, hasContract, existingSlot, identityComplete, t]);
+
   const applyFile = (next: File | null) => {
     setFile(next);
     setConfirmed(false);
     setError(null);
+    setPreview(null);
+    setReason('');
   };
 
-  const handleSubmit = async () => {
-    if (!file || !identityComplete || !confirmed || existingSlot) return;
+  const identityFields = () => ({
+    folder_id: folderId,
+    code: code.trim().toUpperCase(),
+    quantity: qtyNumber,
+    major: Number(major),
+    revision: Number(revision),
+    minor: Number(minor),
+    printer: printer.trim(),
+  });
+
+  const handleCreate = async (resolution?: 'proceed' | 'accept_baseline') => {
+    if (!file || !identityComplete || existingSlot) return;
+    if (!hasContract && !confirmed) return;
+    if (hasContract && preview?.has_mismatches && !resolution) return;
     setSubmitting(true);
     setError(null);
     try {
       await api.createProductionSlot(file, {
-        folder_id: folderId,
-        code: code.trim().toUpperCase(),
-        quantity: qtyNumber,
-        major: Number(major),
-        revision: Number(revision),
-        minor: Number(minor),
-        printer: printer.trim(),
+        ...identityFields(),
+        resolution: resolution ?? null,
+        reason: reason.trim() || null,
       });
       onCreated();
     } catch (err) {
@@ -105,6 +160,14 @@ export function AddProductionFileModal({
       setSubmitting(false);
     }
   };
+
+  const mismatchCount = preview?.parameter_diff.filter((row) => !row.match).length ?? 0;
+  const showDiffActions = Boolean(hasContract && preview?.has_mismatches);
+  const canCreateWithoutResolution = Boolean(
+    file && identityComplete && !existingSlot && !submitting && (
+      (!hasContract && confirmed) || (hasContract && preview && !preview.has_mismatches && !previewing)
+    ),
+  );
 
   return (
     <div className="fixed inset-0 bg-black/70 flex items-center justify-center z-50 p-4">
@@ -208,6 +271,11 @@ export function AddProductionFileModal({
               {t('fileManager.production.newQuantityHint', { code: matchingPart.code, quantity: qtyNumber || 1 })}
             </p>
           )}
+          {file && hasContract && matchingPart && (
+            <p className="text-sm text-bambu-gray">
+              {t('fileManager.production.sharedContractHint', { code: matchingPart.code })}
+            </p>
+          )}
           {file && code && !matchingPart && (
             <p className="text-sm text-bambu-gray">
               {t('fileManager.production.newPartHint', { code: code.trim().toUpperCase() })}
@@ -217,7 +285,37 @@ export function AddProductionFileModal({
             <p className="text-sm text-amber-500">{t('fileManager.production.slotExists')}</p>
           )}
 
-          {file && (
+          {previewing && (
+            <div className="flex items-center gap-2 text-sm text-bambu-gray">
+              <Loader2 className="w-4 h-4 animate-spin text-bambu-green" />
+              {t('fileManager.production.previewing')}
+            </div>
+          )}
+
+          {preview && hasContract && (
+            <>
+              {preview.has_mismatches && (
+                <p className="text-sm text-amber-500">
+                  {t('fileManager.production.mismatchCount', { count: mismatchCount })}
+                </p>
+              )}
+              <ProductionParameterDiffTable rows={preview.parameter_diff} />
+              {preview.has_mismatches && (
+                <label className="block text-sm">
+                  <span className="text-bambu-gray">{t('fileManager.production.reason')}</span>
+                  <textarea
+                    value={reason}
+                    onChange={(e) => setReason(e.target.value)}
+                    placeholder={t('fileManager.production.reasonPlaceholder')}
+                    rows={2}
+                    className="mt-1 w-full bg-bambu-dark border border-bambu-dark-tertiary rounded px-3 py-2 text-white placeholder-bambu-gray focus:outline-none focus:border-bambu-green"
+                  />
+                </label>
+              )}
+            </>
+          )}
+
+          {file && !hasContract && (
             <label className="flex items-start gap-2 text-sm text-white">
               <input
                 type="checkbox"
@@ -231,18 +329,40 @@ export function AddProductionFileModal({
 
           {error && <p className="text-sm text-red-500">{error}</p>}
 
-          <div className="flex justify-end gap-2 pt-2">
+          <div className="flex flex-wrap justify-end gap-2 pt-2">
             <Button type="button" variant="secondary" onClick={onClose} disabled={submitting}>
               {t('fileManager.production.cancel')}
             </Button>
-            <Button
-              type="button"
-              onClick={handleSubmit}
-              disabled={!file || !identityComplete || !confirmed || existingSlot || submitting}
-            >
-              {submitting ? <Loader2 className="w-4 h-4 animate-spin" /> : null}
-              {submitting ? t('fileManager.production.uploading') : t('fileManager.production.confirmCreate')}
-            </Button>
+            {showDiffActions ? (
+              <>
+                <Button
+                  type="button"
+                  variant="secondary"
+                  onClick={() => void handleCreate('proceed')}
+                  disabled={!preview || submitting || existingSlot}
+                >
+                  {submitting ? <Loader2 className="w-4 h-4 animate-spin" /> : null}
+                  {t('fileManager.production.proceedAnyway')}
+                </Button>
+                <Button
+                  type="button"
+                  onClick={() => void handleCreate('accept_baseline')}
+                  disabled={!preview || submitting || existingSlot}
+                >
+                  {submitting ? <Loader2 className="w-4 h-4 animate-spin" /> : null}
+                  {t('fileManager.production.acceptBaseline')}
+                </Button>
+              </>
+            ) : (
+              <Button
+                type="button"
+                onClick={() => void handleCreate()}
+                disabled={!canCreateWithoutResolution}
+              >
+                {submitting ? <Loader2 className="w-4 h-4 animate-spin" /> : null}
+                {submitting ? t('fileManager.production.uploading') : t('fileManager.production.confirmCreate')}
+              </Button>
+            )}
           </div>
         </div>
       </div>

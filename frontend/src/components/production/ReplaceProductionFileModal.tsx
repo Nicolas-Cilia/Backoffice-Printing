@@ -1,10 +1,10 @@
 import { useEffect, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
-import { CheckCircle, Loader2, Upload, X, XCircle } from 'lucide-react';
+import { Loader2, Upload, X } from 'lucide-react';
 import { api } from '../../api/client';
-import type { ProductionParameterDiff, ProductionReplacePreview } from '../../api/client';
+import type { ProductionReplacePreview } from '../../api/client';
 import { Button } from '../Button';
-import { formatSpecValue, specLabelKey } from '../../utils/productionSpecs';
+import { ProductionParameterDiffTable } from './ProductionParameterDiffTable';
 
 interface ReplaceProductionFileModalProps {
   slotId: number;
@@ -12,16 +12,6 @@ interface ReplaceProductionFileModalProps {
   printerModel: string;
   onClose: () => void;
   onReplaced: () => void;
-}
-
-function formatDiffValue(key: string, value: unknown, t: (k: string, o?: Record<string, unknown>) => string): string {
-  if (value === null || value === undefined) return '—';
-  return formatSpecValue(key, value, t);
-}
-
-function formatDiffKey(key: string, t: (k: string, o?: Record<string, unknown>) => string): string {
-  const labelKey = specLabelKey(key);
-  return labelKey ? t(labelKey) : key;
 }
 
 export function ReplaceProductionFileModal({
@@ -172,40 +162,7 @@ export function ReplaceProductionFileModal({
                 </p>
               )}
 
-              <div className="overflow-x-auto rounded-lg border border-bambu-dark-tertiary">
-                <table className="w-full text-sm">
-                  <thead className="bg-bambu-dark text-bambu-gray">
-                    <tr>
-                      <th className="text-left px-3 py-2 font-medium">{t('fileManager.production.parameter')}</th>
-                      <th className="text-left px-3 py-2 font-medium">{t('fileManager.production.lockedValue')}</th>
-                      <th className="text-left px-3 py-2 font-medium">{t('fileManager.production.incomingValue')}</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {preview.parameter_diff.map((row: ProductionParameterDiff) => (
-                      <tr
-                        key={row.key}
-                        className={row.match ? 'bg-green-500/10' : 'bg-red-500/10'}
-                      >
-                        <td className="px-3 py-2 text-white text-xs">{formatDiffKey(row.key, t)}</td>
-                        <td className="px-3 py-2 text-bambu-gray text-xs">{formatDiffValue(row.key, row.locked, t)}</td>
-                        <td className="px-3 py-2 text-xs">
-                          <span className="inline-flex items-center gap-1">
-                            {row.match ? (
-                              <CheckCircle className="w-3.5 h-3.5 text-green-500" />
-                            ) : (
-                              <XCircle className="w-3.5 h-3.5 text-red-500" />
-                            )}
-                            <span className={row.match ? 'text-green-400' : 'text-red-400'}>
-                              {formatDiffValue(row.key, row.incoming, t)}
-                            </span>
-                          </span>
-                        </td>
-                      </tr>
-                    ))}
-                  </tbody>
-                </table>
-              </div>
+              <ProductionParameterDiffTable rows={preview.parameter_diff} />
 
               <label className="block text-sm">
                 <span className="text-bambu-gray">{t('fileManager.production.reason')}</span>

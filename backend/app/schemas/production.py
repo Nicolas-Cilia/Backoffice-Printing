@@ -126,6 +126,20 @@ class ProductionReplacePreview(BaseModel):
     printer_matches_folder: bool
 
 
+class ProductionPartCreate(BaseModel):
+    """Add or un-hide a catalog part on one printer folder."""
+
+    code: str
+    name: str = ""
+
+
+class ProductionPartRemoveResponse(BaseModel):
+    """Result of hiding a part on one printer and trashing its files."""
+
+    removed: bool = True
+    files_trashed: int = 0
+
+
 class ProductionRevisionResponse(BaseModel):
     """One historical snapshot of a slot."""
 

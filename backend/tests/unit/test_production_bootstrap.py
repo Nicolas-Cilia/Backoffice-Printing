@@ -3,6 +3,7 @@
 import pytest
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm import selectinload
 
 from backend.app.models.library import LibraryFolder, LibraryFolderSection
 from backend.app.models.production import (
@@ -10,6 +11,8 @@ from backend.app.models.production import (
     PRODUCTION_PRINTER_MODELS,
     PRODUCTION_SECTION_NAME,
     ProductionPart,
+    ProductionPartInstance,
+    default_part_codes_for_printer,
 )
 from backend.app.services.production_bootstrap import bootstrap_production
 
@@ -114,3 +117,62 @@ async def test_bootstrap_leaves_already_tagged_folder_alone(db_session: AsyncSes
         )
     ).scalar_one_or_none()
     assert x1c_named is None
+
+
+def test_default_part_codes_for_printer():
+    assert default_part_codes_for_printer("A1") == ("TOP", "KNB")
+    assert default_part_codes_for_printer("A1M") == ("TOP", "KNB")
+    assert default_part_codes_for_printer("X1C") == ("TOP", "BOT", "KNB", "BUT")
+    assert default_part_codes_for_printer("H2S") == ("TOP", "BOT", "KNB", "BUT")
+
+
+@pytest.mark.asyncio
+async def test_bootstrap_seeds_visible_instances_per_printer(db_session: AsyncSession):
+    result = await bootstrap_production(db_session)
+    await db_session.commit()
+
+    instances = (
+        (
+            await db_session.execute(
+                select(ProductionPartInstance).options(selectinload(ProductionPartInstance.part))
+            )
+        )
+        .scalars()
+        .all()
+    )
+    by_printer: dict[str, set[str]] = {}
+    for instance in instances:
+        by_printer.setdefault(instance.printer_model, set()).add(instance.part.code)
+        assert instance.hidden is False
+        assert instance.folder_id == result.folder_ids[instance.printer_model]
+
+    assert by_printer["A1"] == {"TOP", "KNB"}
+    assert by_printer["A1M"] == {"TOP", "KNB"}
+    assert by_printer["X1C"] == {"TOP", "BOT", "KNB", "BUT"}
+    assert by_printer["H2D"] == {"TOP", "BOT", "KNB", "BUT"}
+    assert by_printer["H2S"] == {"TOP", "BOT", "KNB", "BUT"}
+
+
+@pytest.mark.asyncio
+async def test_bootstrap_does_not_unhide_removed_part(db_session: AsyncSession):
+    result = await bootstrap_production(db_session)
+    await db_session.commit()
+
+    a1_top = (
+        await db_session.execute(
+            select(ProductionPartInstance)
+            .join(ProductionPart)
+            .where(
+                ProductionPartInstance.printer_model == "A1",
+                ProductionPart.code == "KNB",
+            )
+        )
+    ).scalar_one()
+    a1_top.hidden = True
+    await db_session.commit()
+
+    await bootstrap_production(db_session)
+    await db_session.commit()
+    await db_session.refresh(a1_top)
+    assert a1_top.hidden is True
+    assert a1_top.folder_id == result.folder_ids["A1"]

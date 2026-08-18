@@ -99,4 +99,63 @@ describe('AddProductionFileModal', () => {
     await user.click(screen.getByRole('checkbox'));
     expect(create).not.toBeDisabled();
   });
+
+  it('previews the shared contract when adding a second quantity', async () => {
+    const user = userEvent.setup();
+    const partsWithContract: ProductionPartView[] = [
+      {
+        id: 1,
+        code: 'TOP',
+        name: 'Top',
+        instance_id: 10,
+        locked_parameters: { layer_height: 0.2 },
+        slots: [
+          {
+            id: 5,
+            quantity: 1,
+            major: 1,
+            revision: 0,
+            minor: 0,
+            version: '1.0.0',
+            active_file: {
+              id: 42,
+              filename: 'TOP - 1.0.0 - X1C.3mf',
+              thumbnail_path: null,
+              file_size: 10,
+              print_time_seconds: null,
+              sliced_for_model: 'X1C',
+            },
+            has_overrides: false,
+            last_mismatch: false,
+            parameter_overrides: null,
+          },
+        ],
+      },
+    ];
+    server.use(
+      http.post('/api/v1/production/slots/preview', () => HttpResponse.json(mockPreview)),
+    );
+
+    render(
+      <AddProductionFileModal
+        folderId={9}
+        printerModel="X1C"
+        parts={partsWithContract}
+        onClose={vi.fn()}
+        onCreated={vi.fn()}
+      />,
+    );
+
+    const input = document.querySelector('input[type="file"]') as HTMLInputElement;
+    const file = new File(['3mf'], 'TOP x2 - 1.14.0 - X1C.gcode.3mf', { type: 'application/octet-stream' });
+    await user.upload(input, file);
+
+    await waitFor(() => {
+      expect(screen.getByText('Layer height')).toBeInTheDocument();
+    });
+    expect(screen.getByText(/share one print-settings contract/)).toBeInTheDocument();
+    expect(screen.getByText('Proceed anyway')).toBeInTheDocument();
+    expect(screen.getByText('Accept as new baseline')).toBeInTheDocument();
+    expect(screen.queryByRole('checkbox')).not.toBeInTheDocument();
+  });
 });

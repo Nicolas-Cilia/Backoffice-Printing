@@ -13,6 +13,8 @@ from backend.app.models.production import (
     PRODUCTION_PRINTER_MODELS,
     PRODUCTION_SECTION_NAME,
     ProductionPart,
+    ProductionPartInstance,
+    default_part_codes_for_printer,
 )
 
 PRODUCTION_SECTION_NAME_KEY = PRODUCTION_SECTION_NAME.strip().lower()
@@ -54,12 +56,21 @@ async def bootstrap_production(db: AsyncSession) -> ProductionBootstrapResult:
 
     parts_created = 0
     parts_existing = 0
+    parts_by_code: dict[str, ProductionPart] = {}
     for code, name in DEFAULT_PARTS:
-        created = await _ensure_part(db, code, name)
+        created, part = await _ensure_part(db, code, name)
+        parts_by_code[part.code] = part
         if created:
             parts_created += 1
         else:
             parts_existing += 1
+
+    for model, folder_id in folder_ids.items():
+        for code in default_part_codes_for_printer(model):
+            part = parts_by_code.get(code)
+            if part is None:
+                continue
+            await _ensure_default_instance(db, part, folder_id, model)
 
     await db.flush()
     return ProductionBootstrapResult(
@@ -133,10 +144,40 @@ async def _ensure_printer_folder(db: AsyncSession, section_id: int, model: str) 
     return folder, True
 
 
-async def _ensure_part(db: AsyncSession, code: str, name: str) -> bool:
+async def _ensure_part(db: AsyncSession, code: str, name: str) -> tuple[bool, ProductionPart]:
     stored_code = code.strip().upper()
     existing = (await db.execute(select(ProductionPart).where(ProductionPart.code == stored_code))).scalar_one_or_none()
     if existing is not None:
-        return False
-    db.add(ProductionPart(code=stored_code, name=name))
-    return True
+        return False, existing
+    part = ProductionPart(code=stored_code, name=name)
+    db.add(part)
+    await db.flush()
+    return True, part
+
+
+async def _ensure_default_instance(
+    db: AsyncSession, part: ProductionPart, folder_id: int, printer_model: str
+) -> None:
+    """Create a visible empty instance if this printer has never had this part.
+
+    Does not un-hide a part the user removed from this printer.
+    """
+    existing = (
+        await db.execute(
+            select(ProductionPartInstance.id).where(
+                ProductionPartInstance.part_id == part.id,
+                ProductionPartInstance.printer_model == printer_model,
+            )
+        )
+    ).scalar_one_or_none()
+    if existing is not None:
+        return
+    db.add(
+        ProductionPartInstance(
+            part_id=part.id,
+            printer_model=printer_model,
+            folder_id=folder_id,
+            locked_parameters=None,
+            hidden=False,
+        )
+    )

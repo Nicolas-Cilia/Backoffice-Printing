@@ -9,6 +9,7 @@ import { ConfirmModal } from '../ConfirmModal';
 import { useAuth } from '../../contexts/AuthContext';
 import { useToast } from '../../contexts/ToastContext';
 import { AddProductionFileModal } from './AddProductionFileModal';
+import { AddProductionPartModal } from './AddProductionPartModal';
 import { ReplaceProductionFileModal } from './ReplaceProductionFileModal';
 import {
   compactSpecItems,
@@ -229,13 +230,17 @@ export function ProductionFolderView({
   const canPrint = hasPermission('queue:create');
   const canDelete = hasAnyPermission('library:delete_own', 'library:delete_all');
   const [showAdd, setShowAdd] = useState(false);
+  const [showAddPart, setShowAddPart] = useState(false);
   const [droppedFile, setDroppedFile] = useState<File | null>(null);
+  const [addInitialCode, setAddInitialCode] = useState('');
   const [replaceSlot, setReplaceSlot] = useState<ProductionSlotNested | null>(null);
   const [deleteTarget, setDeleteTarget] = useState<{
     slot: ProductionSlotNested;
     part: ProductionPartView;
   } | null>(null);
+  const [removePartTarget, setRemovePartTarget] = useState<ProductionPartView | null>(null);
   const [deleting, setDeleting] = useState(false);
+  const [removingPart, setRemovingPart] = useState(false);
   const [isDragging, setIsDragging] = useState(false);
 
   const { data, isLoading, isError, refetch } = useQuery({
@@ -272,8 +277,7 @@ export function ProductionFolderView({
     }
     const next = e.dataTransfer.files[0];
     if (!next) return;
-    setDroppedFile(next);
-    setShowAdd(true);
+    openAddFile(undefined, next);
   };
 
   const handleConfirmDelete = async () => {
@@ -290,6 +294,28 @@ export function ProductionFolderView({
     } finally {
       setDeleting(false);
     }
+  };
+
+  const handleConfirmRemovePart = async () => {
+    if (!removePartTarget) return;
+    setRemovingPart(true);
+    try {
+      await api.removeProductionPart(folderId, removePartTarget.id);
+      setRemovePartTarget(null);
+      showToast(t('fileManager.production.partRemoved'), 'success');
+      refresh();
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      showToast(t('fileManager.production.removePartFailed', { error: message }), 'error');
+    } finally {
+      setRemovingPart(false);
+    }
+  };
+
+  const openAddFile = (code?: string, file: File | null = null) => {
+    setAddInitialCode(code ?? '');
+    setDroppedFile(file);
+    setShowAdd(true);
   };
 
   if (isLoading) {
@@ -327,16 +353,22 @@ export function ProductionFolderView({
           <p className="text-sm text-bambu-gray">{t('fileManager.production.subtitle', { printer: printerModel })}</p>
         </div>
         {canUpload && (
-          <Button
-            variant="secondary"
-            onClick={() => {
-              setDroppedFile(null);
-              setShowAdd(true);
-            }}
-          >
-            <Plus className="w-4 h-4" />
-            {t('fileManager.production.addFile')}
-          </Button>
+          <div className="flex flex-wrap gap-2">
+            <Button
+              variant="secondary"
+              onClick={() => setShowAddPart(true)}
+            >
+              <Plus className="w-4 h-4" />
+              {t('fileManager.production.addPart')}
+            </Button>
+            <Button
+              variant="secondary"
+              onClick={() => openAddFile()}
+            >
+              <Plus className="w-4 h-4" />
+              {t('fileManager.production.addFile')}
+            </Button>
+          </div>
         )}
       </div>
 
@@ -348,15 +380,35 @@ export function ProductionFolderView({
         </div>
       )}
 
-      {hasAnySlots && (
+      {parts.length > 0 && (
         <div className="space-y-8">
           {parts.map((part: ProductionPartView) => (
             <section key={part.id}>
-              <div className="flex items-baseline gap-2 mb-3">
-                <h3 className="text-sm font-semibold text-white tracking-wide">{part.code}</h3>
-                <span className="text-xs text-bambu-gray">{part.name}</span>
+              <div className="flex items-center justify-between gap-3 mb-3">
+                <div className="flex items-baseline gap-2 min-w-0">
+                  <h3 className="text-sm font-semibold text-white tracking-wide">{part.code}</h3>
+                  <span className="text-xs text-bambu-gray truncate">{part.name}</span>
+                </div>
+                <div className="flex items-center gap-1 shrink-0">
+                  {canUpload && (
+                    <Button variant="secondary" onClick={() => openAddFile(part.code)}>
+                      <Plus className="w-4 h-4" />
+                      {t('fileManager.production.addFileToPart')}
+                    </Button>
+                  )}
+                  {canDelete && (
+                    <button
+                      type="button"
+                      onClick={() => setRemovePartTarget(part)}
+                      className="p-1.5 rounded-md text-bambu-gray hover:text-red-400 hover:bg-bambu-dark-tertiary"
+                      aria-label={t('fileManager.production.removePart')}
+                    >
+                      <Trash2 className="w-4 h-4" aria-hidden />
+                    </button>
+                  )}
+                </div>
               </div>
-              {part.slots.length > 0 && (
+              {part.slots.length > 0 ? (
                 <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 xl:grid-cols-5 2xl:grid-cols-6 gap-4">
                   {part.slots.map((slot) => (
                     <SlotCard
@@ -371,6 +423,8 @@ export function ProductionFolderView({
                     />
                   ))}
                 </div>
+              ) : (
+                <p className="text-xs text-bambu-gray">{t('fileManager.production.emptyPart')}</p>
               )}
             </section>
           ))}
@@ -383,14 +437,29 @@ export function ProductionFolderView({
           printerModel={printerModel}
           parts={parts}
           initialFile={droppedFile}
+          initialCode={addInitialCode}
           onClose={() => {
             setShowAdd(false);
             setDroppedFile(null);
+            setAddInitialCode('');
           }}
           onCreated={() => {
             setShowAdd(false);
             setDroppedFile(null);
+            setAddInitialCode('');
             showToast(t('fileManager.production.slotCreated'), 'success');
+            refresh();
+          }}
+        />
+      )}
+
+      {showAddPart && (
+        <AddProductionPartModal
+          folderId={folderId}
+          onClose={() => setShowAddPart(false)}
+          onCreated={() => {
+            setShowAddPart(false);
+            showToast(t('fileManager.production.partAdded'), 'success');
             refresh();
           }}
         />
@@ -427,6 +496,35 @@ export function ProductionFolderView({
           }}
           onCancel={() => {
             if (!deleting) setDeleteTarget(null);
+          }}
+        />
+      )}
+
+      {removePartTarget && (
+        <ConfirmModal
+          variant="danger"
+          title={t('fileManager.production.removePartConfirmTitle')}
+          message={
+            removePartTarget.slots.length > 0
+              ? `${t('fileManager.production.removePartConfirmWithFiles', {
+                  code: removePartTarget.code,
+                  name: removePartTarget.name,
+                  printer: printerModel,
+                  count: removePartTarget.slots.length,
+                })}\n\n${t('fileManager.production.deleteConfirmDetail')}`
+              : t('fileManager.production.removePartConfirmEmpty', {
+                  code: removePartTarget.code,
+                  name: removePartTarget.name,
+                  printer: printerModel,
+                })
+          }
+          confirmText={t('fileManager.production.removePart')}
+          isLoading={removingPart}
+          onConfirm={() => {
+            void handleConfirmRemovePart();
+          }}
+          onCancel={() => {
+            if (!removingPart) setRemovePartTarget(null);
           }}
         />
       )}

@@ -17,6 +17,23 @@ DEFAULT_PARTS = (
 PRODUCTION_PRINTER_MODELS = ("X1C", "A1M", "A1", "H2D", "H2S")
 PRODUCTION_SECTION_NAME = "Production"
 
+# A1 / A1 Mini do not print bottom housing or button.
+DEFAULT_PART_CODES_BY_PRINTER: dict[str, tuple[str, ...]] = {
+    "A1": ("TOP", "KNB"),
+    "A1M": ("TOP", "KNB"),
+    "X1C": ("TOP", "BOT", "KNB", "BUT"),
+    "H2D": ("TOP", "BOT", "KNB", "BUT"),
+    "H2S": ("TOP", "BOT", "KNB", "BUT"),
+}
+
+
+def default_part_codes_for_printer(printer_model: str) -> tuple[str, ...]:
+    """Visible catalog codes for a printer folder before the user customizes."""
+    return DEFAULT_PART_CODES_BY_PRINTER.get(
+        printer_model,
+        tuple(code for code, _ in DEFAULT_PARTS),
+    )
+
 
 class ProductionPart(Base):
     """Catalog part (e.g. TOP / Top Housing). ``code`` is stored uppercase."""
@@ -46,6 +63,7 @@ class ProductionPartInstance(Base):
     printer_model: Mapped[str] = mapped_column(String(32))
     folder_id: Mapped[int] = mapped_column(ForeignKey("library_folders.id", ondelete="CASCADE"))
     locked_parameters: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+    hidden: Mapped[bool] = mapped_column(Boolean, default=False)
     created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
     updated_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now(), onupdate=func.now())
 

@@ -5854,6 +5854,16 @@ export const api = {
 
   getProductionFolder: (folderId: number) =>
     request<ProductionFolderView>(`/production/folders/${folderId}`),
+  addProductionPart: (folderId: number, body: { code: string; name: string }) =>
+    request<ProductionPartView>(`/production/folders/${folderId}/parts`, {
+      method: 'POST',
+      body: JSON.stringify(body),
+    }),
+  removeProductionPart: (folderId: number, partId: number) =>
+    request<{ removed: boolean; files_trashed: number }>(
+      `/production/folders/${folderId}/parts/${partId}`,
+      { method: 'DELETE' },
+    ),
   createProductionSlot: async (
     file: File,
     fields: {
@@ -5864,6 +5874,8 @@ export const api = {
       revision?: number | null;
       minor?: number | null;
       printer?: string | null;
+      resolution?: 'proceed' | 'accept_baseline' | null;
+      reason?: string | null;
     } = {},
   ): Promise<ProductionSlotResponse> => {
     const formData = new FormData();
@@ -5875,7 +5887,32 @@ export const api = {
     if (fields.revision != null) formData.append('revision', String(fields.revision));
     if (fields.minor != null) formData.append('minor', String(fields.minor));
     if (fields.printer) formData.append('printer', fields.printer);
+    if (fields.resolution) formData.append('resolution', fields.resolution);
+    if (fields.reason) formData.append('reason', fields.reason);
     return postFormData<ProductionSlotResponse>('/production/slots', formData);
+  },
+  previewCreateProductionSlot: async (
+    file: File,
+    fields: {
+      folder_id?: number | null;
+      code?: string | null;
+      quantity?: number | null;
+      major?: number | null;
+      revision?: number | null;
+      minor?: number | null;
+      printer?: string | null;
+    } = {},
+  ): Promise<ProductionReplacePreview> => {
+    const formData = new FormData();
+    formData.append('file', file);
+    if (fields.folder_id != null) formData.append('folder_id', String(fields.folder_id));
+    if (fields.code) formData.append('code', fields.code);
+    if (fields.quantity != null) formData.append('quantity', String(fields.quantity));
+    if (fields.major != null) formData.append('major', String(fields.major));
+    if (fields.revision != null) formData.append('revision', String(fields.revision));
+    if (fields.minor != null) formData.append('minor', String(fields.minor));
+    if (fields.printer) formData.append('printer', fields.printer);
+    return postFormData<ProductionReplacePreview>('/production/slots/preview', formData);
   },
   previewReplaceProductionSlot: async (slotId: number, file: File): Promise<ProductionReplacePreview> => {
     const formData = new FormData();

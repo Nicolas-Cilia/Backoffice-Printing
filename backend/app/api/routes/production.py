@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import logging
 import os
+import re
 import uuid
 from datetime import datetime, timezone
 from typing import Any
@@ -44,6 +45,8 @@ from backend.app.schemas.production import (
     ProductionFolderSummary,
     ProductionFolderView,
     ProductionParameterDiff,
+    ProductionPartCreate,
+    ProductionPartRemoveResponse,
     ProductionPartView,
     ProductionReplacePreview,
     ProductionRevisionResponse,
@@ -71,6 +74,11 @@ _DEFAULT_CODE_ORDER = {code: i for i, (code, _) in enumerate(DEFAULT_PARTS)}
 _SLOT_EXISTS_DETAIL = "Use replace for existing production slots"
 _VALID_RESOLUTIONS = frozenset({"proceed", "accept_baseline"})
 _OWN_FILES_ONLY_DETAIL = "You can only delete your own files"
+_CONTRACT_RESOLUTION_DETAIL = (
+    "This part already has a print-settings contract. Pass resolution 'proceed' or 'accept_baseline'."
+)
+_PART_ALREADY_VISIBLE = "This part is already on this printer"
+_PART_CODE_RE = re.compile(r"^[A-Z]{1,32}$")
 
 
 def _format_version(major: int, revision: int, minor: int) -> str:
@@ -355,14 +363,50 @@ async def _save_library_file(
     return library_file
 
 
-async def _get_or_create_part(db: AsyncSession, code: str) -> ProductionPart:
+async def _get_or_create_part(db: AsyncSession, code: str, name: str | None = None) -> ProductionPart:
     part = (await db.execute(select(ProductionPart).where(ProductionPart.code == code))).scalar_one_or_none()
     if part is not None:
         return part
-    part = ProductionPart(code=code, name=_DEFAULT_PART_NAMES.get(code, code.title()))
+    part = ProductionPart(code=code, name=name or _DEFAULT_PART_NAMES.get(code, code.title()))
     db.add(part)
     await db.flush()
     return part
+
+
+async def _get_part_by_code(db: AsyncSession, code: str) -> ProductionPart | None:
+    return (await db.execute(select(ProductionPart).where(ProductionPart.code == code))).scalar_one_or_none()
+
+
+async def _find_part_instance(
+    db: AsyncSession,
+    *,
+    part_id: int,
+    printer_model: str,
+    load_slots: bool = False,
+) -> ProductionPartInstance | None:
+    stmt = select(ProductionPartInstance).where(
+        ProductionPartInstance.part_id == part_id,
+        ProductionPartInstance.printer_model == printer_model,
+    )
+    if load_slots:
+        stmt = stmt.options(
+            selectinload(ProductionPartInstance.part),
+            selectinload(ProductionPartInstance.slots).selectinload(ProductionSlot.active_file),
+            selectinload(ProductionPartInstance.slots).selectinload(ProductionSlot.revisions),
+        )
+    return (await db.execute(stmt)).scalar_one_or_none()
+
+
+def _part_view(instance: ProductionPartInstance) -> ProductionPartView:
+    slots = _unique_slots(instance.slots)
+    return ProductionPartView(
+        id=instance.part.id,
+        code=instance.part.code,
+        name=instance.part.name,
+        instance_id=instance.id,
+        locked_parameters=instance.locked_parameters,
+        slots=[_slot_nested(slot) for slot in slots],
+    )
 
 
 async def _load_slot(db: AsyncSession, slot_id: int) -> ProductionSlot:
@@ -432,6 +476,83 @@ async def _trash_library_files(db: AsyncSession, files: list[LibraryFile]) -> No
             library_file.deleted_at = now
 
 
+def _instance_has_contract(instance: ProductionPartInstance | None) -> bool:
+    return bool(instance is not None and instance.locked_parameters)
+
+
+def _apply_shared_contract(
+    instance: ProductionPartInstance,
+    incoming: dict[str, Any],
+    resolution: str | None,
+) -> tuple[bool, bool]:
+    """Compare incoming settings to the shared part-instance contract.
+
+    Returns ``(mismatch, accepted_new_baseline)``. The first file sets the
+    baseline. Later quantity slots (x2, x4, …) must match or pass resolution.
+    """
+    if not instance.locked_parameters:
+        instance.locked_parameters = incoming
+        return False, True
+    diff = diff_parameters(instance.locked_parameters, incoming)
+    if not _has_mismatches(diff):
+        return False, False
+    if resolution not in _VALID_RESOLUTIONS:
+        raise HTTPException(status_code=400, detail=_CONTRACT_RESOLUTION_DETAIL)
+    if resolution == "accept_baseline":
+        instance.locked_parameters = incoming
+        return False, True
+    return True, False
+
+
+def _settings_preview(
+    *,
+    instance: ProductionPartInstance | None,
+    folder: LibraryFolder,
+    filename: str,
+    content: bytes,
+) -> ProductionReplacePreview:
+    parsed = parse_production_filename(filename)
+    folder_printer = folder.production_printer_model or ""
+    printer_matches = parsed is not None and parsed.printer == folder_printer
+    incoming_settings = extract_production_settings(content)
+    if _instance_has_contract(instance):
+        diff = diff_parameters(instance.locked_parameters or {}, incoming_settings)
+    else:
+        diff = []
+
+    current_version = ""
+    suggested_next = "1.0.0"
+    version_is_newer = False
+    slots = _unique_slots(instance.slots) if instance is not None else []
+    if slots:
+        newest = max(slots, key=lambda s: (s.major, s.revision, s.minor, s.id or 0))
+        current_version = _format_version(newest.major, newest.revision, newest.minor)
+        suggested_next = _format_version(*suggest_next_revision(newest.major, newest.revision, newest.minor))
+        version_is_newer = bool(parsed) and is_newer(parsed, (newest.major, newest.revision, newest.minor))
+    incoming_version = _format_version(parsed.major, parsed.revision, parsed.minor) if parsed else None
+
+    return ProductionReplacePreview(
+        parsed_filename=_parsed_out(parsed) if parsed else None,
+        current_version=current_version,
+        incoming_version=incoming_version,
+        version_is_newer=version_is_newer,
+        suggested_next_version=suggested_next,
+        parameter_diff=[ProductionParameterDiff(**row) for row in diff],
+        has_mismatches=_has_mismatches(diff),
+        printer_matches_folder=printer_matches,
+    )
+
+
+def _normalize_part_identity(code: str, name: str) -> tuple[str, str]:
+    stored = (code or "").strip().upper()
+    if not _PART_CODE_RE.fullmatch(stored):
+        raise HTTPException(status_code=400, detail="Part code must be 1–32 letters (A–Z)")
+    cleaned_name = (name or "").strip() or _DEFAULT_PART_NAMES.get(stored, stored.title())
+    if len(cleaned_name) > 255:
+        raise HTTPException(status_code=400, detail="Part name is too long")
+    return stored, cleaned_name
+
+
 # ============ Endpoints ============
 
 
@@ -479,19 +600,20 @@ async def get_production_folder(
         )
     ),
 ):
-    """Return catalog parts with this printer folder's instances and slots."""
+    """Return the parts visible on this printer folder (not the full catalog)."""
     await bootstrap_production(db)
     folder = await _load_production_folder(db, folder_id)
-
-    parts = (await db.execute(select(ProductionPart))).scalars().all()
-    parts = sorted(parts, key=lambda p: (_DEFAULT_CODE_ORDER.get(p.code, 1000), p.code))
 
     instances = (
         (
             await db.execute(
                 select(ProductionPartInstance)
-                .where(ProductionPartInstance.folder_id == folder.id)
+                .where(
+                    ProductionPartInstance.folder_id == folder.id,
+                    ProductionPartInstance.hidden.is_(False),
+                )
                 .options(
+                    selectinload(ProductionPartInstance.part),
                     selectinload(ProductionPartInstance.slots).selectinload(ProductionSlot.active_file),
                     selectinload(ProductionPartInstance.slots).selectinload(ProductionSlot.revisions),
                 )
@@ -500,35 +622,20 @@ async def get_production_folder(
         .scalars()
         .all()
     )
-    instance_by_part: dict[int, ProductionPartInstance] = {}
-    slots_by_part: dict[int, list[ProductionSlot]] = {}
+    instances = sorted(
+        instances,
+        key=lambda inst: (_DEFAULT_CODE_ORDER.get(inst.part.code, 1000), inst.part.code),
+    )
+
     refreshed = False
+    part_views: list[ProductionPartView] = []
     for inst in instances:
-        instance_by_part.setdefault(inst.part_id, inst)
-        slots_by_part.setdefault(inst.part_id, []).extend(inst.slots)
-        if _refresh_locked_fuzzy_from_active_file(inst, _unique_slots(inst.slots)):
+        slots = _unique_slots(inst.slots)
+        if _refresh_locked_fuzzy_from_active_file(inst, slots):
             refreshed = True
+        part_views.append(_part_view(inst))
     if refreshed:
         await db.commit()
-
-    seen_codes: set[str] = set()
-    part_views: list[ProductionPartView] = []
-    for part in parts:
-        if part.code in seen_codes:
-            continue
-        seen_codes.add(part.code)
-        instance = instance_by_part.get(part.id)
-        slots = _unique_slots(slots_by_part.get(part.id, []))
-        part_views.append(
-            ProductionPartView(
-                id=part.id,
-                code=part.code,
-                name=part.name,
-                instance_id=instance.id if instance else None,
-                locked_parameters=instance.locked_parameters if instance else None,
-                slots=[_slot_nested(slot) for slot in slots],
-            )
-        )
 
     return ProductionFolderView(
         folder_id=folder.id,
@@ -548,6 +655,8 @@ async def create_slot(
     revision: int | None = Form(None),
     minor: int | None = Form(None),
     printer: str | None = Form(None),
+    resolution: str | None = Form(None),
+    reason: str | None = Form(None),
     db: AsyncSession = Depends(get_db),
     current_user: User | None = Depends(require_permission_if_auth_enabled(Permission.LIBRARY_UPLOAD)),
 ):
@@ -566,14 +675,11 @@ async def create_slot(
     folder = await _resolve_printer_folder(db, folder_id=folder_id, printer=merged_printer, parsed=parsed)
 
     part = await _get_or_create_part(db, merged_code)
-    instance = (
-        await db.execute(
-            select(ProductionPartInstance).where(
-                ProductionPartInstance.part_id == part.id,
-                ProductionPartInstance.printer_model == folder.production_printer_model,
-            )
-        )
-    ).scalar_one_or_none()
+    instance = await _find_part_instance(
+        db,
+        part_id=part.id,
+        printer_model=folder.production_printer_model or merged_printer,
+    )
 
     if instance is not None:
         existing_slot = (
@@ -594,9 +700,16 @@ async def create_slot(
             printer_model=folder.production_printer_model or merged_printer,
             folder_id=folder.id,
             locked_parameters=incoming_settings,
+            hidden=False,
         )
         db.add(instance)
         await db.flush()
+        mismatch = False
+        accepted_new_baseline = True
+    else:
+        instance.hidden = False
+        instance.folder_id = folder.id
+        mismatch, accepted_new_baseline = _apply_shared_contract(instance, incoming_settings, resolution)
 
     library_file = await _save_library_file(
         db,
@@ -624,14 +737,157 @@ async def create_slot(
         revision=merged_revision,
         minor=merged_minor,
         parameters=incoming_settings,
-        mismatch=False,
-        accepted_new_baseline=True,
+        mismatch=mismatch,
+        accepted_new_baseline=accepted_new_baseline,
+        reason=reason,
         created_by_id=current_user.id if current_user else None,
         created_at=datetime.now(timezone.utc),
     )
     db.add(revision_row)
     await db.flush()
     return _slot_response(slot, instance, part, latest=revision_row, active_file=library_file)
+
+
+@router.post("/slots/preview", response_model=ProductionReplacePreview)
+async def preview_create_slot(
+    file: UploadFile = File(...),
+    folder_id: int | None = Form(None),
+    code: str | None = Form(None),
+    quantity: int | None = Form(None),
+    major: int | None = Form(None),
+    revision: int | None = Form(None),
+    minor: int | None = Form(None),
+    printer: str | None = Form(None),
+    db: AsyncSession = Depends(get_db),
+    _: tuple[User | None, bool] = Depends(
+        require_ownership_permission(
+            Permission.LIBRARY_READ_ALL,
+            Permission.LIBRARY_READ_OWN,
+        )
+    ),
+):
+    """Compare an incoming first-or-next quantity file against the shared part contract."""
+    await bootstrap_production(db)
+    filename, content = await _read_upload(file)
+    merged_code, _merged_qty, _major, _revision, _minor, merged_printer, parsed = _merge_identity(
+        filename,
+        code=code,
+        quantity=quantity,
+        major=major,
+        revision=revision,
+        minor=minor,
+        printer=printer,
+    )
+    folder = await _resolve_printer_folder(db, folder_id=folder_id, printer=merged_printer, parsed=parsed)
+    part = await _get_part_by_code(db, merged_code)
+    instance = None
+    if part is not None:
+        instance = await _find_part_instance(
+            db,
+            part_id=part.id,
+            printer_model=folder.production_printer_model or merged_printer,
+            load_slots=True,
+        )
+    return _settings_preview(instance=instance, folder=folder, filename=filename, content=content)
+
+
+@router.post("/folders/{folder_id}/parts", response_model=ProductionPartView)
+async def add_folder_part(
+    folder_id: int,
+    body: ProductionPartCreate,
+    db: AsyncSession = Depends(get_db),
+    _: User | None = Depends(require_permission_if_auth_enabled(Permission.LIBRARY_UPLOAD)),
+):
+    """Add or un-hide a catalog part on this printer only."""
+    await bootstrap_production(db)
+    folder = await _load_production_folder(db, folder_id)
+    code, name = _normalize_part_identity(body.code, body.name)
+    part = await _get_or_create_part(db, code, name)
+    instance = await _find_part_instance(
+        db,
+        part_id=part.id,
+        printer_model=folder.production_printer_model or "",
+        load_slots=True,
+    )
+    if instance is not None and not instance.hidden:
+        raise HTTPException(status_code=409, detail=_PART_ALREADY_VISIBLE)
+    if instance is None:
+        instance = ProductionPartInstance(
+            part_id=part.id,
+            printer_model=folder.production_printer_model or "",
+            folder_id=folder.id,
+            locked_parameters=None,
+            hidden=False,
+        )
+        db.add(instance)
+        await db.flush()
+        return ProductionPartView(
+            id=part.id,
+            code=part.code,
+            name=part.name,
+            instance_id=instance.id,
+            locked_parameters=None,
+            slots=[],
+        )
+    instance.hidden = False
+    instance.folder_id = folder.id
+    await db.flush()
+    return _part_view(instance)
+
+
+@router.delete("/folders/{folder_id}/parts/{part_id}", response_model=ProductionPartRemoveResponse)
+async def remove_folder_part(
+    folder_id: int,
+    part_id: int,
+    db: AsyncSession = Depends(get_db),
+    auth_result: tuple[User | None, bool] = Depends(
+        require_ownership_permission(
+            Permission.LIBRARY_DELETE_ALL,
+            Permission.LIBRARY_DELETE_OWN,
+        )
+    ),
+):
+    """Hide a part on this printer. Slot files go to trash; the instance/contract is kept."""
+    user, can_modify_all = auth_result
+    folder = await _load_production_folder(db, folder_id)
+    instance = (
+        await db.execute(
+            select(ProductionPartInstance)
+            .where(
+                ProductionPartInstance.folder_id == folder.id,
+                ProductionPartInstance.part_id == part_id,
+                ProductionPartInstance.hidden.is_(False),
+            )
+            .options(
+                selectinload(ProductionPartInstance.slots).selectinload(ProductionSlot.revisions),
+                selectinload(ProductionPartInstance.slots).selectinload(ProductionSlot.active_file),
+            )
+        )
+    ).scalar_one_or_none()
+    if instance is None:
+        raise HTTPException(status_code=404, detail="Part is not on this printer")
+
+    slots = _unique_slots(instance.slots)
+    file_ids: set[int] = set()
+    for slot in slots:
+        file_ids |= _slot_library_file_ids(slot)
+    files: list[LibraryFile] = []
+    if file_ids:
+        files = list((await db.execute(select(LibraryFile).where(LibraryFile.id.in_(file_ids)))).scalars().all())
+    if slots:
+        if files:
+            _assert_can_delete_slot_files(user=user, can_modify_all=can_modify_all, files=files, slot=slots[0])
+        else:
+            for slot in slots:
+                _assert_can_delete_slot_files(user=user, can_modify_all=can_modify_all, files=[], slot=slot)
+
+    for slot in slots:
+        await db.delete(slot)
+    instance.hidden = True
+    await db.flush()
+    await _trash_library_files(db, files)
+    await db.flush()
+    return ProductionPartRemoveResponse(removed=True, files_trashed=len(files))
 
 
 @router.post("/slots/{slot_id}/preview-replace", response_model=ProductionReplacePreview)

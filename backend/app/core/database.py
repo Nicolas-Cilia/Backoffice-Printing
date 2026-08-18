@@ -3850,6 +3850,16 @@ async def run_migrations(conn):
         "ALTER TABLE library_folders ADD COLUMN production_printer_model VARCHAR(32)",
     )
 
+    # Migration: hide a production part on one printer without deleting the catalog row.
+    if is_sqlite():
+        await _safe_execute(
+            conn, "ALTER TABLE production_part_instances ADD COLUMN hidden BOOLEAN DEFAULT 0"
+        )
+    else:
+        await _safe_execute(
+            conn, "ALTER TABLE production_part_instances ADD COLUMN hidden BOOLEAN DEFAULT false"
+        )
+
 
 _USER_PRINT_TEMPLATE_RENAMES: tuple[tuple[str, str, str], ...] = (
     ("user_print_start", "User Print Started", "User Print Started Email"),
