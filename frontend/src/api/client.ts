@@ -6228,6 +6228,24 @@ export const api = {
     request<LibraryFolder[]>(`/library/folders/by-project/${projectId}`),
   getLibraryFoldersByArchive: (archiveId: number) =>
     request<LibraryFolder[]>(`/library/folders/by-archive/${archiveId}`),
+  getLibraryFolderSections: () => request<LibraryFolderSection[]>('/library/sections'),
+  createLibraryFolderSection: (name: string) =>
+    request<LibraryFolderSection>('/library/sections', {
+      method: 'POST',
+      body: JSON.stringify({ name }),
+    }),
+  renameLibraryFolderSection: (id: number, name: string) =>
+    request<LibraryFolderSection>(`/library/sections/${id}`, {
+      method: 'PATCH',
+      body: JSON.stringify({ name }),
+    }),
+  deleteLibraryFolderSection: (id: number) =>
+    request<void>(`/library/sections/${id}`, { method: 'DELETE' }),
+  assignLibraryFolderSection: (folderId: number, sectionId: number | null) =>
+    request<LibraryFolder>(`/library/folders/${folderId}/section`, {
+      method: 'PUT',
+      body: JSON.stringify({ section_id: sectionId }),
+    }),
 
   getLibraryFiles: (
     folderId?: number | null,
@@ -6871,11 +6889,21 @@ export interface LibraryFolderTree {
   is_external: boolean;
   external_path: string | null;
   external_readonly: boolean;
+  section_id: number | null;
   file_count: number;
   // max(folder.updated_at, max(immediate-child file.updated_at)). Used by
   // the File Manager folder tree's "sort by recent activity" mode (#1770).
   latest_activity_at: string | null;
   children: LibraryFolderTree[];
+}
+
+export interface LibraryFolderSection {
+  id: number;
+  name: string;
+  sort_order: number;
+  folder_count: number;
+  created_at: string;
+  updated_at: string;
 }
 
 export interface LibraryFolder {
@@ -6890,6 +6918,7 @@ export interface LibraryFolder {
   external_path: string | null;
   external_readonly: boolean;
   external_show_hidden: boolean;
+  section_id: number | null;
   file_count: number;
   latest_activity_at: string | null;
   created_at: string;

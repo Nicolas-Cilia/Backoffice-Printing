@@ -3949,6 +3949,19 @@ async def run_migrations(conn):
             conn, "ALTER TABLE notification_providers ADD COLUMN on_plate_clear_required BOOLEAN DEFAULT false"
         )
 
+    # Migration: Add section_id column to library_folders (folder-sections
+    # feature). Lets a folder optionally belong to a named group on the
+    # folder-picker landing grid. Nullable, no default — identical DDL on
+    # SQLite and Postgres (mirrors the `library_folders.project_id` /
+    # `archive_id` migrations above). The referenced `library_folder_sections`
+    # table is a brand-new table, so `create_all()` (which always runs before
+    # `run_migrations`) has already created it by the time this ALTER runs.
+    await _safe_execute(
+        conn,
+        "ALTER TABLE library_folders ADD COLUMN section_id INTEGER"
+        " REFERENCES library_folder_sections(id) ON DELETE SET NULL",
+    )
+
 
 _USER_PRINT_TEMPLATE_RENAMES: tuple[tuple[str, str, str], ...] = (
     ("user_print_start", "User Print Started", "User Print Started Email"),

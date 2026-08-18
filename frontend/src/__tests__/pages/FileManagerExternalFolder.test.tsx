@@ -127,6 +127,9 @@ describe('FileManagerPage - External Folders', () => {
       http.get('/api/v1/archives/', () => {
         return HttpResponse.json([]);
       }),
+      http.get('/api/v1/library/sections', () => {
+        return HttpResponse.json([]);
+      }),
       http.delete('/api/v1/library/folders/:id', () => {
         return HttpResponse.json({ success: true });
       }),
@@ -148,7 +151,7 @@ describe('FileManagerPage - External Folders', () => {
       });
     });
 
-    it('shows external folder in sidebar', async () => {
+    it('shows external folder cards', async () => {
       render(<FileManagerPage />);
 
       await waitFor(() => {
@@ -220,7 +223,8 @@ describe('FileManagerPage - External Folders', () => {
       await user.click(screen.getByText('Link External'));
 
       await waitFor(() => {
-        const readonlyCheckbox = screen.getByText('Read Only').previousElementSibling as HTMLInputElement;
+        expect(screen.getByText('Link External Folder')).toBeInTheDocument();
+        const readonlyCheckbox = screen.getByRole('checkbox', { name: /read only/i });
         expect(readonlyCheckbox).toBeChecked();
       });
     });

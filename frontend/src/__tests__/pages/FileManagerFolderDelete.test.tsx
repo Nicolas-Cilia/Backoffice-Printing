@@ -25,6 +25,7 @@ const mockFolders = [
     project_name: null,
     archive_name: null,
     is_external: false,
+    section_id: null,
     children: [],
   },
   {
@@ -37,6 +38,7 @@ const mockFolders = [
     project_name: null,
     archive_name: null,
     is_external: false,
+    section_id: null,
     children: [],
   },
   {
@@ -49,6 +51,7 @@ const mockFolders = [
     project_name: 'My Project',
     archive_name: null,
     is_external: false,
+    section_id: null,
     children: [],
   },
 ];
@@ -98,6 +101,7 @@ describe('FileManager folder deletion gating (#1781)', () => {
       ),
       http.get('/api/v1/projects/', () => HttpResponse.json([{ id: 1, name: 'My Project', color: '#00ae42' }])),
       http.get('/api/v1/archives/', () => HttpResponse.json([])),
+      http.get('/api/v1/library/sections', () => HttpResponse.json([])),
     );
   });
 

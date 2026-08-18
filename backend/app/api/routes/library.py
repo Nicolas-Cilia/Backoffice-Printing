@@ -31,7 +31,7 @@ from backend.app.core.database import async_session, get_db
 from backend.app.core.permissions import Permission
 from backend.app.core.tasks import spawn_background_task
 from backend.app.models.archive import PrintArchive
-from backend.app.models.library import LibraryFile, LibraryFileTag, LibraryFolder
+from backend.app.models.library import LibraryFile, LibraryFileTag, LibraryFolder, LibraryFolderSection
 from backend.app.models.print_queue import PrintQueueItem
 from backend.app.models.project import Project
 from backend.app.models.user import User
@@ -55,6 +55,7 @@ from backend.app.schemas.library import (
     FolderCreate,
     FolderReadmeResponse,
     FolderResponse,
+    FolderSectionAssignRequest,
     FolderTreeItem,
     FolderUpdate,
     TagSummary,
@@ -799,6 +800,7 @@ async def list_folders(
             is_external=folder.is_external,
             external_path=folder.external_path,
             external_readonly=folder.external_readonly,
+            section_id=folder.section_id,
             file_count=file_counts.get(folder.id, 0),
             latest_activity_at=own_activity,
             children=[],
@@ -889,6 +891,7 @@ async def get_folders_by_project(
                 external_path=folder.external_path,
                 external_readonly=folder.external_readonly,
                 external_show_hidden=folder.external_show_hidden,
+                section_id=folder.section_id,
                 file_count=file_count,
                 latest_activity_at=latest_activity_at,
                 created_at=folder.created_at,
@@ -950,6 +953,7 @@ async def get_folders_by_archive(
                 external_path=folder.external_path,
                 external_readonly=folder.external_readonly,
                 external_show_hidden=folder.external_show_hidden,
+                section_id=folder.section_id,
                 file_count=file_count,
                 latest_activity_at=latest_activity_at,
                 created_at=folder.created_at,
@@ -1014,6 +1018,7 @@ async def create_folder(
         external_path=folder.external_path,
         external_readonly=folder.external_readonly,
         external_show_hidden=folder.external_show_hidden,
+        section_id=folder.section_id,
         file_count=0,
         # New folder has no files yet — fall back to the folder's own
         # updated_at so this matches the list-route semantics (#1770).
@@ -1074,6 +1079,7 @@ async def get_folder(
         external_path=folder.external_path,
         external_readonly=folder.external_readonly,
         external_show_hidden=folder.external_show_hidden,
+        section_id=folder.section_id,
         file_count=file_count,
         latest_activity_at=latest_activity_at,
         created_at=folder.created_at,
@@ -1247,6 +1253,77 @@ async def update_folder(
         external_path=folder.external_path,
         external_readonly=folder.external_readonly,
         external_show_hidden=folder.external_show_hidden,
+        section_id=folder.section_id,
+        file_count=file_count,
+        latest_activity_at=latest_activity_at,
+        created_at=folder.created_at,
+        updated_at=folder.updated_at,
+    )
+
+
+@router.put("/folders/{folder_id}/section", response_model=FolderResponse)
+async def assign_folder_section(
+    folder_id: int,
+    data: FolderSectionAssignRequest,
+    db: AsyncSession = Depends(get_db),
+    _: User | None = Depends(require_permission_if_auth_enabled(Permission.LIBRARY_UPDATE_ALL)),
+):
+    """Assign a folder to a section, or clear membership with ``section_id: null``.
+
+    Folders have no ownership tracking, so this matches rename/link and requires
+    ``library:update_all``. Unknown folder or section ids return 404.
+    """
+    result = await db.execute(select(LibraryFolder).where(LibraryFolder.id == folder_id))
+    folder = result.scalar_one_or_none()
+    if not folder:
+        raise HTTPException(status_code=404, detail="Folder not found")
+
+    if data.section_id is not None:
+        section = (
+            await db.execute(select(LibraryFolderSection).where(LibraryFolderSection.id == data.section_id))
+        ).scalar_one_or_none()
+        if section is None:
+            raise HTTPException(status_code=404, detail="Section not found")
+
+    folder.section_id = data.section_id
+    await db.commit()
+    await db.refresh(folder)
+
+    agg_result = await db.execute(
+        select(
+            func.count(LibraryFile.id),
+            func.max(LibraryFile.updated_at),
+        ).where(
+            LibraryFile.folder_id == folder_id,
+            LibraryFile.deleted_at.is_(None),
+        )
+    )
+    file_count, latest_file = agg_result.one()
+    file_count = file_count or 0
+    latest_activity_at = max(folder.updated_at, latest_file) if latest_file is not None else folder.updated_at
+
+    project_name = None
+    archive_name = None
+    if folder.project_id:
+        project_result = await db.execute(select(Project.name).where(Project.id == folder.project_id))
+        project_name = project_result.scalar()
+    if folder.archive_id:
+        archive_result = await db.execute(select(PrintArchive.print_name).where(PrintArchive.id == folder.archive_id))
+        archive_name = archive_result.scalar()
+
+    return FolderResponse(
+        id=folder.id,
+        name=folder.name,
+        parent_id=folder.parent_id,
+        project_id=folder.project_id,
+        archive_id=folder.archive_id,
+        project_name=project_name,
+        archive_name=archive_name,
+        is_external=folder.is_external,
+        external_path=folder.external_path,
+        external_readonly=folder.external_readonly,
+        external_show_hidden=folder.external_show_hidden,
+        section_id=folder.section_id,
         file_count=file_count,
         latest_activity_at=latest_activity_at,
         created_at=folder.created_at,

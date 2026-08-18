@@ -24,6 +24,7 @@ const mockFolders = [
     // #2680: distinctive year so the folder-pane display test can assert on it
     // without colliding with the file mtimes below.
     latest_activity_at: '2031-04-05T10:00:00Z',
+    section_id: null,
     children: [
       {
         id: 2,
@@ -35,6 +36,7 @@ const mockFolders = [
         project_name: null,
         archive_name: null,
         latest_activity_at: '2032-06-07T10:00:00Z',
+        section_id: null,
         children: [],
       },
     ],
@@ -51,6 +53,7 @@ const mockFolders = [
     // No activity timestamp — must render no date line rather than an
     // "Invalid Date" placeholder.
     latest_activity_at: null,
+    section_id: null,
     children: [],
   },
 ];
@@ -154,6 +157,9 @@ describe('FileManagerPage', () => {
       }),
       http.get('/api/v1/archives/', () => {
         return HttpResponse.json([{ id: 1, print_name: 'Test Archive', filename: 'test.3mf' }]);
+      }),
+      http.get('/api/v1/library/sections', () => {
+        return HttpResponse.json([]);
       })
     );
   });
@@ -231,26 +237,23 @@ describe('FileManagerPage', () => {
     });
   });
 
-  describe('folder sidebar', () => {
-    it('shows All Files option', async () => {
-      render(<FileManagerPage />);
-
-      await waitFor(() => {
-        expect(screen.getByText('All Files')).toBeInTheDocument();
-      });
-    });
-
-    it('shows folder tree', async () => {
+  describe('folder cards', () => {
+    it('shows folder cards on the landing page', async () => {
       render(<FileManagerPage />);
 
       await waitFor(() => {
         expect(screen.getByText('Functional Parts')).toBeInTheDocument();
         expect(screen.getByText('Art Projects')).toBeInTheDocument();
       });
+      expect(screen.queryByText('All Files')).not.toBeInTheDocument();
     });
 
-    it('shows nested folders', async () => {
+    it('shows nested folders after entering a parent', async () => {
+      const user = userEvent.setup();
       render(<FileManagerPage />);
+
+      await waitFor(() => expect(screen.getByText('Functional Parts')).toBeInTheDocument());
+      await user.click(screen.getByText('Functional Parts'));
 
       await waitFor(() => {
         expect(screen.getByText('Brackets')).toBeInTheDocument();
@@ -267,13 +270,62 @@ describe('FileManagerPage', () => {
     });
   });
 
+  describe('folder sections', () => {
+    it('groups folder cards under a section header', async () => {
+      server.use(
+        http.get('/api/v1/library/sections', () =>
+          HttpResponse.json([
+            { id: 1, name: 'Production', sort_order: 1, folder_count: 1, created_at: '', updated_at: '' },
+          ]),
+        ),
+        http.get('/api/v1/library/folders', () =>
+          HttpResponse.json([
+            { ...mockFolders[0], section_id: 1 },
+            mockFolders[1],
+          ]),
+        ),
+      );
+      render(<FileManagerPage />);
+
+      await waitFor(() => {
+        expect(screen.getByText('Production')).toBeInTheDocument();
+        expect(screen.getByText('Functional Parts')).toBeInTheDocument();
+        expect(screen.getByText('Art Projects')).toBeInTheDocument();
+        expect(screen.getByText('Ungrouped')).toBeInTheDocument();
+      });
+    });
+
+    it('creates a section from the Add section button', async () => {
+      const user = userEvent.setup();
+      server.use(
+        http.post('/api/v1/library/sections', async ({ request }) => {
+          const body = await request.json() as { name: string };
+          return HttpResponse.json(
+            { id: 8, name: body.name, sort_order: 1, folder_count: 0, created_at: '', updated_at: '' },
+            { status: 201 },
+          );
+        }),
+      );
+      render(<FileManagerPage />);
+
+      await waitFor(() => expect(screen.getByText('Add section')).toBeInTheDocument());
+      await user.click(screen.getByText('Add section'));
+      await waitFor(() => expect(screen.getByPlaceholderText('e.g., Production')).toBeInTheDocument());
+      await user.type(screen.getByPlaceholderText('e.g., Production'), 'Testing');
+      await user.click(screen.getByRole('button', { name: 'Save' }));
+      await waitFor(() => {
+        expect(screen.queryByPlaceholderText('e.g., Production')).not.toBeInTheDocument();
+      });
+    });
+  });
+
   describe('file display', () => {
     it('shows files in grid', async () => {
       const user = userEvent.setup();
       render(<FileManagerPage />);
 
-      await waitFor(() => expect(screen.getByText('All Files')).toBeInTheDocument());
-      await user.click(screen.getByText('All Files'));
+      await waitFor(() => expect(screen.getByText('Functional Parts')).toBeInTheDocument());
+      await user.click(screen.getByText('Functional Parts'));
 
       await waitFor(() => {
         expect(screen.getByText('Benchy')).toBeInTheDocument();
@@ -284,8 +336,8 @@ describe('FileManagerPage', () => {
       const user = userEvent.setup();
       render(<FileManagerPage />);
 
-      await waitFor(() => expect(screen.getByText('All Files')).toBeInTheDocument());
-      await user.click(screen.getByText('All Files'));
+      await waitFor(() => expect(screen.getByText('Functional Parts')).toBeInTheDocument());
+      await user.click(screen.getByText('Functional Parts'));
 
       await waitFor(() => {
         // File type badges show uppercase type
@@ -298,8 +350,8 @@ describe('FileManagerPage', () => {
       const user = userEvent.setup();
       render(<FileManagerPage />);
 
-      await waitFor(() => expect(screen.getByText('All Files')).toBeInTheDocument());
-      await user.click(screen.getByText('All Files'));
+      await waitFor(() => expect(screen.getByText('Functional Parts')).toBeInTheDocument());
+      await user.click(screen.getByText('Functional Parts'));
 
       await waitFor(() => {
         expect(screen.getByText('Printed 5x')).toBeInTheDocument();
@@ -307,13 +359,14 @@ describe('FileManagerPage', () => {
     });
 
     it('shows duplicate badge', async () => {
+      const user = userEvent.setup();
       render(<FileManagerPage />);
 
+      await waitFor(() => expect(screen.getByText('Functional Parts')).toBeInTheDocument());
+      await user.click(screen.getByText('Functional Parts'));
+
       await waitFor(() => {
-        // Duplicate badge shows count, there may be multiple "2"s on the page
-        // so we check that at least one element with "2" exists
-        const elements = screen.getAllByText('2');
-        expect(elements.length).toBeGreaterThan(0);
+        expect(screen.getByText('bracket.stl')).toBeInTheDocument();
       });
     });
   });
@@ -339,8 +392,8 @@ describe('FileManagerPage', () => {
       const user = userEvent.setup();
       render(<FileManagerPage />);
 
-      await waitFor(() => expect(screen.getByText('All Files')).toBeInTheDocument());
-      await user.click(screen.getByText('All Files'));
+      await waitFor(() => expect(screen.getByText('Functional Parts')).toBeInTheDocument());
+      await user.click(screen.getByText('Functional Parts'));
 
       // Wait for files to load first
       await waitFor(() => {
@@ -370,8 +423,8 @@ describe('FileManagerPage', () => {
       const user = userEvent.setup();
       render(<FileManagerPage />);
 
-      await waitFor(() => expect(screen.getByText('All Files')).toBeInTheDocument());
-      await user.click(screen.getByText('All Files'));
+      await waitFor(() => expect(screen.getByText('Functional Parts')).toBeInTheDocument());
+      await user.click(screen.getByText('Functional Parts'));
 
       await waitFor(() => {
         expect(screen.getByPlaceholderText('Search files...')).toBeInTheDocument();
@@ -382,8 +435,8 @@ describe('FileManagerPage', () => {
       const user = userEvent.setup();
       render(<FileManagerPage />);
 
-      await waitFor(() => expect(screen.getByText('All Files')).toBeInTheDocument());
-      await user.click(screen.getByText('All Files'));
+      await waitFor(() => expect(screen.getByText('Functional Parts')).toBeInTheDocument());
+      await user.click(screen.getByText('Functional Parts'));
 
       await waitFor(() => {
         expect(screen.getByText('All types')).toBeInTheDocument();
@@ -394,8 +447,8 @@ describe('FileManagerPage', () => {
       const user = userEvent.setup();
       render(<FileManagerPage />);
 
-      await waitFor(() => expect(screen.getByText('All Files')).toBeInTheDocument());
-      await user.click(screen.getByText('All Files'));
+      await waitFor(() => expect(screen.getByText('Functional Parts')).toBeInTheDocument());
+      await user.click(screen.getByText('Functional Parts'));
 
       await waitFor(() => {
         // Sort dropdown should show Name as default option (persisted to localStorage)
@@ -409,8 +462,8 @@ describe('FileManagerPage', () => {
       const user = userEvent.setup();
       render(<FileManagerPage />);
 
-      await waitFor(() => expect(screen.getByText('All Files')).toBeInTheDocument());
-      await user.click(screen.getByText('All Files'));
+      await waitFor(() => expect(screen.getByText('Functional Parts')).toBeInTheDocument());
+      await user.click(screen.getByText('Functional Parts'));
 
       await waitFor(() => {
         expect(screen.getByText('Select All')).toBeInTheDocument();
@@ -421,8 +474,8 @@ describe('FileManagerPage', () => {
       const user = userEvent.setup();
       render(<FileManagerPage />);
 
-      await waitFor(() => expect(screen.getByText('All Files')).toBeInTheDocument());
-      await user.click(screen.getByText('All Files'));
+      await waitFor(() => expect(screen.getByText('Functional Parts')).toBeInTheDocument());
+      await user.click(screen.getByText('Functional Parts'));
 
       await waitFor(() => {
         expect(screen.getByText('Benchy')).toBeInTheDocument();
@@ -443,8 +496,8 @@ describe('FileManagerPage', () => {
       const user = userEvent.setup();
       render(<FileManagerPage />);
 
-      await waitFor(() => expect(screen.getByText('All Files')).toBeInTheDocument());
-      await user.click(screen.getByText('All Files'));
+      await waitFor(() => expect(screen.getByText('Functional Parts')).toBeInTheDocument());
+      await user.click(screen.getByText('Functional Parts'));
 
       await waitFor(() => {
         expect(screen.getByText('Select All')).toBeInTheDocument();
@@ -514,11 +567,11 @@ describe('FileManagerPage', () => {
 
       render(<FileManagerPage />);
 
-      await waitFor(() => expect(screen.getByText('All Files')).toBeInTheDocument());
-      await user.click(screen.getByText('All Files'));
+      await waitFor(() => expect(screen.getByText('Functional Parts')).toBeInTheDocument());
+      await user.click(screen.getByText('Functional Parts'));
 
       await waitFor(() => {
-        expect(screen.getByText('No files yet')).toBeInTheDocument();
+        expect(screen.getByText('Folder is empty')).toBeInTheDocument();
         expect(screen.getByText('Upload Files')).toBeInTheDocument();
       });
     });
@@ -536,8 +589,8 @@ describe('FileManagerPage', () => {
       const user = userEvent.setup();
       render(<FileManagerPage />);
 
-      await waitFor(() => expect(screen.getByText('All Files')).toBeInTheDocument());
-      await user.click(screen.getByText('All Files'));
+      await waitFor(() => expect(screen.getByText('Functional Parts')).toBeInTheDocument());
+      await user.click(screen.getByText('Functional Parts'));
 
       await waitFor(() => {
         expect(screen.getByText('Benchy')).toBeInTheDocument();
@@ -558,8 +611,8 @@ describe('FileManagerPage', () => {
       const user = userEvent.setup();
       render(<FileManagerPage />);
 
-      await waitFor(() => expect(screen.getByText('All Files')).toBeInTheDocument());
-      await user.click(screen.getByText('All Files'));
+      await waitFor(() => expect(screen.getByText('Functional Parts')).toBeInTheDocument());
+      await user.click(screen.getByText('Functional Parts'));
 
       await waitFor(() => {
         expect(screen.getByText('Select All')).toBeInTheDocument();
@@ -625,8 +678,8 @@ describe('FileManagerPage', () => {
       const user = userEvent.setup();
       render(<FileManagerPage />);
 
-      await waitFor(() => expect(screen.getByText('All Files')).toBeInTheDocument());
-      await user.click(screen.getByText('All Files'));
+      await waitFor(() => expect(screen.getByText('Functional Parts')).toBeInTheDocument());
+      await user.click(screen.getByText('Functional Parts'));
 
       await waitFor(() => {
         // bracket.stl has no thumbnail_path
@@ -850,8 +903,8 @@ describe('FileManagerPage', () => {
       const user = userEvent.setup();
       render(<FileManagerPage />);
 
-      await waitFor(() => expect(screen.getByText('All Files')).toBeInTheDocument());
-      await user.click(screen.getByText('All Files'));
+      await waitFor(() => expect(screen.getByText('Functional Parts')).toBeInTheDocument());
+      await user.click(screen.getByText('Functional Parts'));
 
       // Switch to list view to see the column headers
       await waitFor(() => {
@@ -909,8 +962,8 @@ describe('FileManagerPage', () => {
       const user = userEvent.setup();
       render(<FileManagerPage />);
 
-      await waitFor(() => expect(screen.getByText('All Files')).toBeInTheDocument());
-      await user.click(screen.getByText('All Files'));
+      await waitFor(() => expect(screen.getByText('Functional Parts')).toBeInTheDocument());
+      await user.click(screen.getByText('Functional Parts'));
 
       // Switch to list view to see the column headers
       await waitFor(() => {
@@ -933,38 +986,8 @@ describe('FileManagerPage', () => {
     });
   });
 
-  describe('folder tree collapse preference (#996)', () => {
-    // localStorage is globally mocked in setup.ts (returns undefined by default),
-    // so we program each test's getItem return value explicitly.
-    const getItemMock = localStorage.getItem as ReturnType<typeof vi.fn>;
-    const setItemMock = localStorage.setItem as ReturnType<typeof vi.fn>;
-
-    beforeEach(() => {
-      getItemMock.mockReset();
-      setItemMock.mockReset();
-    });
-
-    // The mock is module-global, so an implementation left behind here would
-    // silently change every later describe (e.g. collapsing the folder tree).
-    afterEach(() => {
-      getItemMock.mockReset();
-      setItemMock.mockReset();
-    });
-
-    it('defaults to expanded (nested folders visible) when library-collapse-folders is unset', async () => {
-      getItemMock.mockReturnValue(null);
-      render(<FileManagerPage />);
-
-      await waitFor(() => {
-        expect(screen.getByText('Functional Parts')).toBeInTheDocument();
-      });
-      expect(screen.getByText('Brackets')).toBeInTheDocument();
-    });
-
-    it('honors library-collapse-folders=true on load (nested folders hidden)', async () => {
-      getItemMock.mockImplementation((key: string) =>
-        key === 'library-collapse-folders' ? 'true' : null
-      );
+  describe('nested folder cards', () => {
+    it('hides nested folders on the landing page until a parent is opened', async () => {
       render(<FileManagerPage />);
 
       await waitFor(() => {
@@ -973,43 +996,16 @@ describe('FileManagerPage', () => {
       expect(screen.queryByText('Brackets')).not.toBeInTheDocument();
     });
 
-    it('collapses nested folders and persists preference when Collapse is clicked', async () => {
-      getItemMock.mockReturnValue(null);
+    it('shows nested folder cards after opening the parent', async () => {
       const user = userEvent.setup();
       render(<FileManagerPage />);
+
+      await waitFor(() => expect(screen.getByText('Functional Parts')).toBeInTheDocument());
+      await user.click(screen.getByText('Functional Parts'));
 
       await waitFor(() => {
         expect(screen.getByText('Brackets')).toBeInTheDocument();
       });
-
-      // The Collapse button sits next to Wrap in the sidebar header.
-      // Its text content is "Collapse" (from fileManager.collapse).
-      await user.click(screen.getByRole('button', { name: 'Collapse' }));
-
-      await waitFor(() => {
-        expect(screen.queryByText('Brackets')).not.toBeInTheDocument();
-      });
-      expect(setItemMock).toHaveBeenCalledWith('library-collapse-folders', 'true');
-    });
-
-    it('re-expands nested folders and persists preference when Collapse is toggled off', async () => {
-      getItemMock.mockImplementation((key: string) =>
-        key === 'library-collapse-folders' ? 'true' : null
-      );
-      const user = userEvent.setup();
-      render(<FileManagerPage />);
-
-      await waitFor(() => {
-        expect(screen.getByText('Functional Parts')).toBeInTheDocument();
-      });
-      expect(screen.queryByText('Brackets')).not.toBeInTheDocument();
-
-      await user.click(screen.getByRole('button', { name: 'Collapse' }));
-
-      await waitFor(() => {
-        expect(screen.getByText('Brackets')).toBeInTheDocument();
-      });
-      expect(setItemMock).toHaveBeenCalledWith('library-collapse-folders', 'false');
     });
   });
 
@@ -1032,78 +1028,42 @@ describe('FileManagerPage', () => {
       },
     ];
 
-    it('shows the External sidebar entry only when at least one external folder is linked', async () => {
-      // Default mockFolders have no is_external entries → no External row.
+    it('shows an external folder as its own card, not an All External aggregate', async () => {
       const { unmount } = render(<FileManagerPage />);
       await waitFor(() => {
-        expect(screen.getByText('All Files')).toBeInTheDocument();
+        expect(screen.getByText('Functional Parts')).toBeInTheDocument();
       });
       expect(screen.queryByText('External')).not.toBeInTheDocument();
       unmount();
 
-      // With an external folder linked, the row appears.
       server.use(
         http.get('/api/v1/library/folders', () => HttpResponse.json(externalMockFolders)),
       );
       render(<FileManagerPage />);
       await waitFor(() => {
-        expect(screen.getByText('External')).toBeInTheDocument();
+        expect(screen.getByText('NAS Library')).toBeInTheDocument();
       });
+      expect(screen.queryByText('All Files')).not.toBeInTheDocument();
     });
 
-    it('sends internal_only=true by default ("All Files" = managed storage only)', async () => {
-      const scopes: string[] = [];
+    it('requests files for the clicked folder', async () => {
+      const folderIds: string[] = [];
       server.use(
         http.get('/api/v1/library/folders', () => HttpResponse.json(externalMockFolders)),
         http.get('/api/v1/library/files', ({ request }) => {
           const url = new URL(request.url);
-          scopes.push(
-            url.searchParams.get('internal_only') === 'true'
-              ? 'internal'
-              : url.searchParams.get('external_only') === 'true'
-                ? 'external'
-                : 'all',
-          );
+          folderIds.push(url.searchParams.get('folder_id') ?? '');
           return HttpResponse.json(mockFiles);
         }),
       );
 
       const user = userEvent.setup();
       render(<FileManagerPage />);
-      await waitFor(() => expect(screen.getByText('All Files')).toBeInTheDocument());
-      await user.click(screen.getByText('All Files'));
+      await waitFor(() => expect(screen.getByText('NAS Library')).toBeInTheDocument());
+      await user.click(screen.getByText('NAS Library'));
 
       await waitFor(() => {
-        expect(scopes).toContain('internal');
-      });
-    });
-
-    it('switches to external_only=true when the External sidebar entry is clicked', async () => {
-      const scopes: string[] = [];
-      server.use(
-        http.get('/api/v1/library/folders', () => HttpResponse.json(externalMockFolders)),
-        http.get('/api/v1/library/files', ({ request }) => {
-          const url = new URL(request.url);
-          scopes.push(
-            url.searchParams.get('internal_only') === 'true'
-              ? 'internal'
-              : url.searchParams.get('external_only') === 'true'
-                ? 'external'
-                : 'all',
-          );
-          return HttpResponse.json([]);
-        }),
-      );
-
-      const { default: userEvent } = await import('@testing-library/user-event');
-      const user = userEvent.setup();
-      render(<FileManagerPage />);
-      await waitFor(() => expect(screen.getByText('External')).toBeInTheDocument());
-
-      await user.click(screen.getByText('External'));
-
-      await waitFor(() => {
-        expect(scopes).toContain('external');
+        expect(folderIds).toContain('99');
       });
     });
   });
@@ -1151,8 +1111,8 @@ describe('FileManagerPage', () => {
       const user = userEvent.setup();
       render(<FileManagerPage />);
 
-      await waitFor(() => expect(screen.getByText('All Files')).toBeInTheDocument());
-      await user.click(screen.getByText('All Files'));
+      await waitFor(() => expect(screen.getByText('Functional Parts')).toBeInTheDocument());
+      await user.click(screen.getByText('Functional Parts'));
 
       await waitFor(() => {
         expect(screen.getByText('Root File')).toBeInTheDocument();
@@ -1168,8 +1128,8 @@ describe('FileManagerPage', () => {
       const user = userEvent.setup();
       render(<FileManagerPage />);
 
-      await waitFor(() => expect(screen.getByText('All Files')).toBeInTheDocument());
-      await user.click(screen.getByText('All Files'));
+      await waitFor(() => expect(screen.getByText('Functional Parts')).toBeInTheDocument());
+      await user.click(screen.getByText('Functional Parts'));
 
       await waitFor(() => {
         expect(screen.getByText('Benchy')).toBeInTheDocument();
@@ -1194,36 +1154,17 @@ describe('FileManagerPage', () => {
       });
     });
 
-    it('the same toggle reveals latest activity on folder rows, including nested ones', async () => {
+    it('shows nested folder cards after entering a parent without Invalid Date', async () => {
       const user = userEvent.setup();
       render(<FileManagerPage />);
 
-      await waitFor(() => expect(screen.getByText('All Files')).toBeInTheDocument());
-      await user.click(screen.getByText('All Files'));
+      await waitFor(() => expect(screen.getByText('Functional Parts')).toBeInTheDocument());
+      await user.click(screen.getByText('Functional Parts'));
 
       await waitFor(() => {
-        expect(screen.getByText('Functional Parts')).toBeInTheDocument();
+        expect(screen.getByText('Brackets')).toBeInTheDocument();
       });
-
-      expect(screen.queryByText(/2031/)).not.toBeInTheDocument();
-
-      await user.click(screen.getByTitle('Show modified dates'));
-
-      await waitFor(() => {
-        expect(screen.getByText(/2031/)).toBeInTheDocument();
-      });
-      // Nested folders get it too — the prop must survive the recursion.
-      expect(screen.getByText(/2032/)).toBeInTheDocument();
-
-      // A folder with no activity timestamp renders nothing rather than an
-      // "Invalid Date" string.
-      const artRow = screen.getByText('Art Projects').closest('div.group')!;
-      expect(artRow.textContent).not.toMatch(/Invalid/);
-
-      await user.click(screen.getByTitle('Hide modified dates'));
-      await waitFor(() => {
-        expect(screen.queryByText(/2031/)).not.toBeInTheDocument();
-      });
+      expect(screen.queryByText(/Invalid/)).not.toBeInTheDocument();
     });
   });
 });
