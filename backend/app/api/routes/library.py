@@ -70,6 +70,7 @@ from backend.app.services.design_settings import (
     overrides_from_config,
 )
 from backend.app.services.plate_thumbnail import inject_plate_thumbnails_if_missing
+from backend.app.services.production_bootstrap import bootstrap_production
 from backend.app.services.stl_thumbnail import MIN_USABLE_STL_BYTES, generate_stl_thumbnail
 from backend.app.utils.filename import InvalidFilenameError, validate_print_filename
 from backend.app.utils.threemf_tools import (
@@ -724,6 +725,32 @@ async def _backfill_external_stl_thumbnails(folder_ids: list[int]) -> None:
                 await db.commit()
 
 
+PRODUCTION_FOLDER_BLOCK_DETAIL = (
+    "This folder is managed by Production. Use the production add/replace endpoints instead of a generic upload."
+)
+
+
+async def _production_folder_block(db: AsyncSession, folder: LibraryFolder | None) -> None:
+    """Raise 409 when *folder* or an ancestor is a production printer folder.
+
+    Production slots are added and replaced through ``/production/*`` so a
+    generic library upload/move cannot land files in those trees.
+    """
+    current = folder
+    seen: set[int] = set()
+    while current is not None:
+        if current.id in seen:
+            break
+        seen.add(current.id)
+        if current.production_printer_model:
+            raise HTTPException(status_code=409, detail=PRODUCTION_FOLDER_BLOCK_DETAIL)
+        if current.parent_id is None:
+            break
+        current = (
+            await db.execute(select(LibraryFolder).where(LibraryFolder.id == current.parent_id))
+        ).scalar_one_or_none()
+
+
 # ============ Folder Endpoints ============
 
 
@@ -742,6 +769,10 @@ async def list_folders(
     """Get all folders as a tree structure."""
     # Prevent browser caching of folder list
     response.headers["Cache-Control"] = "no-cache, no-store, must-revalidate"
+
+    # Idempotent: creates the Production section + printer folders on first
+    # File Manager load so the landing grid shows them without a dedicated UI call.
+    await bootstrap_production(db)
 
     # Get all folders with the archive join
     result = await db.execute(
@@ -797,6 +828,7 @@ async def list_folders(
             external_path=folder.external_path,
             external_readonly=folder.external_readonly,
             section_id=folder.section_id,
+            production_printer_model=folder.production_printer_model,
             file_count=file_counts.get(folder.id, 0),
             latest_activity_at=own_activity,
             children=[],
@@ -886,6 +918,7 @@ async def get_folders_by_archive(
                 external_readonly=folder.external_readonly,
                 external_show_hidden=folder.external_show_hidden,
                 section_id=folder.section_id,
+                production_printer_model=folder.production_printer_model,
                 file_count=file_count,
                 latest_activity_at=latest_activity_at,
                 created_at=folder.created_at,
@@ -939,6 +972,7 @@ async def create_folder(
         external_readonly=folder.external_readonly,
         external_show_hidden=folder.external_show_hidden,
         section_id=folder.section_id,
+        production_printer_model=folder.production_printer_model,
         file_count=0,
         # New folder has no files yet — fall back to the folder's own
         # updated_at so this matches the list-route semantics (#1770).
@@ -997,6 +1031,7 @@ async def get_folder(
         external_readonly=folder.external_readonly,
         external_show_hidden=folder.external_show_hidden,
         section_id=folder.section_id,
+        production_printer_model=folder.production_printer_model,
         file_count=file_count,
         latest_activity_at=latest_activity_at,
         created_at=folder.created_at,
@@ -1154,6 +1189,7 @@ async def update_folder(
         external_readonly=folder.external_readonly,
         external_show_hidden=folder.external_show_hidden,
         section_id=folder.section_id,
+        production_printer_model=folder.production_printer_model,
         file_count=file_count,
         latest_activity_at=latest_activity_at,
         created_at=folder.created_at,
@@ -1218,6 +1254,7 @@ async def assign_folder_section(
         external_readonly=folder.external_readonly,
         external_show_hidden=folder.external_show_hidden,
         section_id=folder.section_id,
+        production_printer_model=folder.production_printer_model,
         file_count=file_count,
         latest_activity_at=latest_activity_at,
         created_at=folder.created_at,
@@ -2063,6 +2100,7 @@ async def upload_file(
             target_folder = folder_result.scalar_one_or_none()
             if not target_folder:
                 raise HTTPException(status_code=404, detail="Folder not found")
+        await _production_folder_block(db, target_folder)
 
         # Writable external folders write through to the mount so the file is
         # visible outside Bambuddy (#1112); everything else lands under the
@@ -2243,6 +2281,7 @@ async def extract_zip_file(
                     "Extract the ZIP on the external mount and run 'Scan External Folder' instead."
                 ),
             )
+        await _production_folder_block(db, target_folder)
 
     # Save ZIP to temp file
     try:
@@ -4567,8 +4606,10 @@ async def update_file(
         else:
             # Verify folder exists
             folder_result = await db.execute(select(LibraryFolder).where(LibraryFolder.id == data.folder_id))
-            if not folder_result.scalar_one_or_none():
+            target_folder = folder_result.scalar_one_or_none()
+            if not target_folder:
                 raise HTTPException(status_code=404, detail="Folder not found")
+            await _production_folder_block(db, target_folder)
             file.folder_id = data.folder_id
 
     if data.notes is not None:
@@ -4833,6 +4874,7 @@ async def move_files(
         target_folder = folder_result.scalar_one_or_none()
         if not target_folder:
             raise HTTPException(status_code=404, detail="Folder not found")
+        await _production_folder_block(db, target_folder)
         if target_folder.is_external and target_folder.external_readonly:
             raise HTTPException(status_code=403, detail="Cannot move files to a read-only external folder")
 
