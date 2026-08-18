@@ -1,9 +1,10 @@
-import { useState, useRef, useCallback, useMemo, useEffect } from 'react';
+import { useState, useCallback, useMemo, useEffect } from 'react';
 import { Link, useNavigate, useSearchParams } from 'react-router-dom';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { useTranslation } from 'react-i18next';
 import {
   FolderOpen,
+  Layers,
   Loader2,
   Plus,
   Upload,
@@ -11,6 +12,7 @@ import {
   Download,
   MoreVertical,
   ChevronRight,
+  ChevronLeft,
   FolderPlus,
   FileBox,
   Clock,
@@ -30,7 +32,6 @@ import {
   X,
   Link2,
   Unlink,
-  Archive as ArchiveIcon,
   Cog,
   Play,
   Printer,
@@ -46,6 +47,7 @@ import {
 import { api } from '../api/client';
 import type {
   LibraryFolderTree,
+  LibraryFolderSection,
   LibraryFileListItem,
   LibraryFolderCreate,
   LibraryFolderUpdate,
@@ -471,31 +473,40 @@ function LinkFolderModal({ folder, onClose, onLink, isLoading, t }: LinkFolderMo
   );
 }
 
-// Folder Tree Item
-interface FolderTreeItemProps {
+// Folder card (replaces the old sidebar tree). Clicking the card enters the
+// folder; the kebab keeps rename / link / delete / move-to-section / scan.
+interface FolderCardProps {
   folder: LibraryFolderTree;
-  selectedFolderId: number | null;
-  onSelect: (id: number | null) => void;
+  onSelect: (id: number) => void;
   onDelete: (id: number) => void;
   onLink: (folder: LibraryFolderTree) => void;
   onRename: (folder: LibraryFolderTree) => void;
-  depth?: number;
-  wrapNames?: boolean;
-  defaultExpanded?: boolean;
-  showModified?: boolean;
+  onScan?: (id: number) => void;
+  sections?: LibraryFolderSection[];
+  onMoveToSection?: (folderId: number, sectionId: number | null) => void;
+  showSectionMove?: boolean;
   hasPermission: (permission: Permission) => boolean;
   t: TFunction;
 }
 
-function FolderTreeItem({ folder, selectedFolderId, onSelect, onDelete, onLink, onRename, depth = 0, wrapNames = false, defaultExpanded = true, showModified = false, hasPermission, t }: FolderTreeItemProps) {
-  const [expanded, setExpanded] = useState(defaultExpanded);
+function FolderCard({
+  folder,
+  onSelect,
+  onDelete,
+  onLink,
+  onRename,
+  onScan,
+  sections = [],
+  onMoveToSection,
+  showSectionMove = false,
+  hasPermission,
+  t,
+}: FolderCardProps) {
   const [showActions, setShowActions] = useState(false);
+  const [showMoveMenu, setShowMoveMenu] = useState(false);
   const hasChildren = folder.children.length > 0;
   const isLinked = !!folder.archive_id;
   const isExternal = folder.is_external;
-  // #1781: users with only library:delete_own may delete empty, unlinked,
-  // non-external folders. The backend enforces the same rule and additionally
-  // counts trashed files (invisible here), so a 403 can still come back.
   const canDeleteFolder =
     hasPermission('library:delete_all') ||
     (hasPermission('library:delete_own') && folder.file_count === 0 && !hasChildren && !isExternal && !isLinked);
@@ -504,154 +515,244 @@ function FolderTreeItem({ folder, selectedFolderId, onSelect, onDelete, onLink, 
     : hasPermission('library:delete_own') && !isExternal && !isLinked
       ? t('fileManager.onlyEmptyFoldersDeletable')
       : t('fileManager.noPermissionDeleteFolder');
+  const canUpdate = hasPermission('library:update_all');
 
   return (
-    <div>
-      <div
-        className={`group flex items-center gap-1 px-2 py-1.5 rounded cursor-pointer transition-colors ${
-          selectedFolderId === folder.id
-            ? 'bg-bambu-green/20 text-bambu-green'
-            : 'hover:bg-bambu-dark text-white'
-        }`}
-        style={{ paddingLeft: `${8 + depth * 12}px` }}
-        onClick={() => onSelect(folder.id)}
-      >
-        {hasChildren ? (
-          <button
-            onClick={(e) => {
-              e.stopPropagation();
-              setExpanded(!expanded);
-            }}
-            className="p-0.5 hover:bg-bambu-dark-tertiary rounded"
-          >
-            <ChevronRight className={`w-3.5 h-3.5 transition-transform ${expanded ? 'rotate-90' : ''}`} />
-          </button>
-        ) : (
-          <div className="w-4.5" />
-        )}
-        {isExternal ? (
-          <FolderSymlink className="w-4 h-4 text-purple-600 dark:text-purple-400 flex-shrink-0" />
-        ) : (
-          <FolderOpen className="w-4 h-4 text-bambu-green flex-shrink-0" />
-        )}
-        <div className="flex-1 min-w-0">
-          <span className={`block text-sm ${wrapNames ? 'break-all' : 'truncate'}`} title={folder.name}>{folder.name}</span>
-          {/* #2680 follow-up: the same toolbar toggle that shows dates on file
-              cards also shows them here. This is `latest_activity_at` — the
-              newest timestamp among the folder itself, its files and its
-              subfolders (the value "sort by recent activity" orders on) — not
-              the folder's own on-disk mtime, hence the distinct label. */}
-          {showModified && folder.latest_activity_at && (
-            <span className="mt-0.5 flex items-center gap-1 text-xs text-bambu-gray" title={t('fileManager.lastActivity')}>
-              <CalendarClock className="w-3 h-3 flex-shrink-0" />
-              <span className="truncate">{formatDate(folder.latest_activity_at)}</span>
-            </span>
-          )}
-        </div>
-        {/* Link indicator - clickable to change link */}
-        {isLinked && (
-          <button
-            onClick={(e) => { e.stopPropagation(); onLink(folder); }}
-            className="flex-shrink-0 flex items-center gap-1 text-xs px-1.5 py-0.5 rounded bg-blue-100 dark:bg-blue-500/20 text-blue-700 dark:text-blue-400 hover:bg-blue-200 dark:hover:bg-blue-500/30 transition-colors"
-            title={`Archive: ${folder.archive_name} (click to change)`}
-          >
-            <Link2 className="w-3 h-3" />
-            <ArchiveIcon className="w-3 h-3" />
-          </button>
-        )}
-        {/* Read-only indicator for external folders */}
-        {isExternal && folder.external_readonly && (
-          <span title={t('fileManager.readOnly')}>
-            <Lock className="w-3 h-3 text-amber-600 dark:text-amber-400 flex-shrink-0" />
-          </span>
-        )}
-        {folder.file_count > 0 && (
-          <span className="flex-shrink-0 text-xs text-bambu-gray">{folder.file_count}</span>
-        )}
-        {/* Quick link button - always visible for unlinked folders */}
-        {!isLinked && !isExternal && (
-          <button
-            onClick={(e) => { e.stopPropagation(); onLink(folder); }}
-            className="flex-shrink-0 p-1 rounded hover:bg-bambu-dark-tertiary"
-            title={t('fileManager.linkFolder')}
-          >
-            <Link2 className="w-3.5 h-3.5 text-bambu-gray hover:text-bambu-green" />
-          </button>
-        )}
-        <div className={`flex-shrink-0 flex items-center gap-0.5 transition-opacity ${wrapNames ? '' : 'opacity-0 group-hover:opacity-100'}`} onClick={(e) => e.stopPropagation()}>
-          <div className="relative">
-            <button
-              onClick={() => setShowActions(!showActions)}
-              className="p-1 rounded hover:bg-bambu-dark-tertiary"
-            >
-              <MoreVertical className="w-3.5 h-3.5 text-bambu-gray" />
-            </button>
-            {showActions && (
-              <>
-                <div className="fixed inset-0 z-10" onClick={() => setShowActions(false)} />
-                <div className="absolute right-0 top-full mt-1 z-20 bg-bambu-dark-secondary border border-bambu-dark-tertiary rounded-lg shadow-xl py-1 min-w-[120px]">
+    <div
+      className="group relative flex flex-col items-center gap-2 p-4 rounded-xl bg-bambu-dark-secondary border border-bambu-dark-tertiary hover:border-bambu-green/50 hover:bg-bambu-dark transition-colors cursor-pointer text-center"
+      onClick={() => onSelect(folder.id)}
+    >
+      <div className="absolute top-2 right-2" onClick={(e) => e.stopPropagation()}>
+        <button
+          onClick={() => { setShowActions(!showActions); setShowMoveMenu(false); }}
+          className="p-1 rounded hover:bg-bambu-dark-tertiary opacity-100 sm:opacity-0 sm:group-hover:opacity-100 transition-opacity"
+          title={t('common.actions')}
+          aria-label={t('common.actions')}
+        >
+          <MoreVertical className="w-4 h-4 text-bambu-gray" />
+        </button>
+        {showActions && (
+          <>
+            <div className="fixed inset-0 z-10" onClick={() => { setShowActions(false); setShowMoveMenu(false); }} />
+            <div className="absolute right-0 top-full mt-1 z-20 bg-bambu-dark-secondary border border-bambu-dark-tertiary rounded-lg shadow-xl py-1 min-w-[160px] text-left">
+              <button
+                className={`w-full px-3 py-1.5 text-left text-sm flex items-center gap-2 ${
+                  canUpdate ? 'text-white hover:bg-bambu-dark' : 'text-bambu-gray cursor-not-allowed'
+                }`}
+                onClick={() => { if (canUpdate) { onRename(folder); setShowActions(false); } }}
+                disabled={!canUpdate}
+              >
+                <Pencil className="w-3.5 h-3.5" />
+                {t('common.rename')}
+              </button>
+              {!isExternal && (
                 <button
                   className={`w-full px-3 py-1.5 text-left text-sm flex items-center gap-2 ${
-                    hasPermission('library:update_all') ? 'text-white hover:bg-bambu-dark' : 'text-bambu-gray cursor-not-allowed'
+                    canUpdate ? 'text-white hover:bg-bambu-dark' : 'text-bambu-gray cursor-not-allowed'
                   }`}
-                  onClick={() => { if (hasPermission('library:update_all')) { onRename(folder); setShowActions(false); } }}
-                  disabled={!hasPermission('library:update_all')}
-                  title={!hasPermission('library:update_all') ? t('fileManager.noPermissionRenameFolder') : undefined}
-                >
-                  <Pencil className="w-3.5 h-3.5" />
-                  {t('common.rename')}
-                </button>
-                <button
-                  className={`w-full px-3 py-1.5 text-left text-sm flex items-center gap-2 ${
-                    hasPermission('library:update_all') ? 'text-white hover:bg-bambu-dark' : 'text-bambu-gray cursor-not-allowed'
-                  }`}
-                  onClick={() => { if (hasPermission('library:update_all')) { onLink(folder); setShowActions(false); } }}
-                  disabled={!hasPermission('library:update_all')}
-                  title={!hasPermission('library:update_all') ? t('fileManager.noPermissionLinkFolder') : undefined}
+                  onClick={() => { if (canUpdate) { onLink(folder); setShowActions(false); } }}
+                  disabled={!canUpdate}
                 >
                   <Link2 className="w-3.5 h-3.5" />
                   {isLinked ? t('fileManager.changeLink') : t('fileManager.linkTo')}
                 </button>
+              )}
+              {isExternal && onScan && (
                 <button
-                  className={`w-full px-3 py-1.5 text-left text-sm flex items-center gap-2 ${
-                    canDeleteFolder ? 'text-red-700 dark:text-red-400 hover:bg-bambu-dark' : 'text-bambu-gray cursor-not-allowed'
-                  }`}
-                  onClick={() => { if (canDeleteFolder) { onDelete(folder.id); setShowActions(false); } }}
-                  disabled={!canDeleteFolder}
-                  title={deleteDisabledTooltip}
+                  className="w-full px-3 py-1.5 text-left text-sm flex items-center gap-2 text-white hover:bg-bambu-dark"
+                  onClick={() => { onScan(folder.id); setShowActions(false); }}
                 >
-                  <Trash2 className="w-3.5 h-3.5" />
-                  {t('common.delete')}
+                  <RefreshCw className="w-3.5 h-3.5" />
+                  {t('fileManager.scanFolder')}
                 </button>
-              </div>
-              </>
-            )}
-          </div>
-        </div>
+              )}
+              {showSectionMove && onMoveToSection && canUpdate && (
+                <div className="relative">
+                  <button
+                    className="w-full px-3 py-1.5 text-left text-sm flex items-center gap-2 text-white hover:bg-bambu-dark"
+                    onClick={() => setShowMoveMenu(!showMoveMenu)}
+                  >
+                    <MoveRight className="w-3.5 h-3.5" />
+                    {t('fileManager.moveToSection')}
+                  </button>
+                  {showMoveMenu && (
+                    <div className="absolute left-full top-0 ml-1 z-30 bg-bambu-dark-secondary border border-bambu-dark-tertiary rounded-lg shadow-xl py-1 min-w-[140px] max-h-48 overflow-y-auto">
+                      <button
+                        className={`w-full px-3 py-1.5 text-left text-sm hover:bg-bambu-dark ${
+                          folder.section_id == null ? 'text-bambu-green' : 'text-white'
+                        }`}
+                        onClick={() => { onMoveToSection(folder.id, null); setShowActions(false); setShowMoveMenu(false); }}
+                      >
+                        {t('fileManager.noSection')}
+                      </button>
+                      {sections.map((section) => (
+                        <button
+                          key={section.id}
+                          className={`w-full px-3 py-1.5 text-left text-sm hover:bg-bambu-dark ${
+                            folder.section_id === section.id ? 'text-bambu-green' : 'text-white'
+                          }`}
+                          onClick={() => { onMoveToSection(folder.id, section.id); setShowActions(false); setShowMoveMenu(false); }}
+                        >
+                          {section.name}
+                        </button>
+                      ))}
+                    </div>
+                  )}
+                </div>
+              )}
+              <button
+                className={`w-full px-3 py-1.5 text-left text-sm flex items-center gap-2 ${
+                  canDeleteFolder ? 'text-red-700 dark:text-red-400 hover:bg-bambu-dark' : 'text-bambu-gray cursor-not-allowed'
+                }`}
+                onClick={() => { if (canDeleteFolder) { onDelete(folder.id); setShowActions(false); } }}
+                disabled={!canDeleteFolder}
+                title={deleteDisabledTooltip}
+              >
+                <Trash2 className="w-3.5 h-3.5" />
+                {t('common.delete')}
+              </button>
+            </div>
+          </>
+        )}
       </div>
-      {hasChildren && expanded && (
-        <div>
-          {folder.children.map((child) => (
-            <FolderTreeItem
-              key={child.id}
-              folder={child}
-              selectedFolderId={selectedFolderId}
-              onSelect={onSelect}
-              onDelete={onDelete}
-              onLink={onLink}
-              onRename={onRename}
-              depth={depth + 1}
-              wrapNames={wrapNames}
-              defaultExpanded={defaultExpanded}
-              showModified={showModified}
-              hasPermission={hasPermission}
-              t={t}
-            />
-          ))}
-        </div>
+      <div className="w-12 h-12 rounded-lg bg-bambu-dark flex items-center justify-center">
+        {isExternal ? (
+          <FolderSymlink className="w-6 h-6 text-purple-600 dark:text-purple-400" />
+        ) : (
+          <FolderOpen className="w-6 h-6 text-blue-600 dark:text-blue-400" />
+        )}
+      </div>
+      <span className="text-sm text-white font-medium truncate w-full" title={folder.name}>{folder.name}</span>
+      <span className="text-xs text-bambu-gray">
+        {folder.file_count} {t('fileManager.files').toLowerCase()}
+        {hasChildren ? ` · ${folder.children.length}` : ''}
+      </span>
+      {isExternal && folder.external_readonly && (
+        <span
+          title={t('fileManager.readOnly')}
+          className="text-[10px] px-1.5 py-0.5 rounded bg-amber-100 dark:bg-amber-500/20 text-amber-700 dark:text-amber-400 flex items-center gap-1"
+        >
+          <Lock className="w-3 h-3" />
+          {t('fileManager.readOnly')}
+        </span>
       )}
     </div>
   );
+}
+
+function FolderCardGrid({
+  folders,
+  onSelect,
+  onDelete,
+  onLink,
+  onRename,
+  onScan,
+  sections,
+  onMoveToSection,
+  showSectionMove,
+  hasPermission,
+  t,
+}: {
+  folders: LibraryFolderTree[];
+  onSelect: (id: number) => void;
+  onDelete: (id: number) => void;
+  onLink: (folder: LibraryFolderTree) => void;
+  onRename: (folder: LibraryFolderTree) => void;
+  onScan?: (id: number) => void;
+  sections?: LibraryFolderSection[];
+  onMoveToSection?: (folderId: number, sectionId: number | null) => void;
+  showSectionMove?: boolean;
+  hasPermission: (permission: Permission) => boolean;
+  t: TFunction;
+}) {
+  if (folders.length === 0) return null;
+  return (
+    <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 xl:grid-cols-5 gap-3">
+      {folders.map((folder) => (
+        <FolderCard
+          key={folder.id}
+          folder={folder}
+          onSelect={onSelect}
+          onDelete={onDelete}
+          onLink={onLink}
+          onRename={onRename}
+          onScan={onScan}
+          sections={sections}
+          onMoveToSection={onMoveToSection}
+          showSectionMove={showSectionMove}
+          hasPermission={hasPermission}
+          t={t}
+        />
+      ))}
+    </div>
+  );
+}
+
+function NewSectionModal({
+  title,
+  initialName = '',
+  onClose,
+  onSave,
+  isLoading,
+  t,
+}: {
+  title: string;
+  initialName?: string;
+  onClose: () => void;
+  onSave: (name: string) => void;
+  isLoading: boolean;
+  t: TFunction;
+}) {
+  const [name, setName] = useState(initialName);
+  return (
+    <div className="fixed inset-0 bg-black/70 flex items-center justify-center z-50 p-4">
+      <div className="bg-bambu-dark-secondary rounded-lg w-full max-w-sm border border-bambu-dark-tertiary">
+        <div className="p-4 border-b border-bambu-dark-tertiary">
+          <h2 className="text-lg font-semibold text-white">{title}</h2>
+        </div>
+        <form
+          onSubmit={(e) => {
+            e.preventDefault();
+            if (name.trim()) onSave(name.trim());
+          }}
+          className="p-4 space-y-4"
+        >
+          <div>
+            <label className="block text-sm font-medium text-white mb-1">
+              {t('fileManager.sectionName')}
+            </label>
+            <input
+              type="text"
+              value={name}
+              onChange={(e) => setName(e.target.value)}
+              className="w-full bg-bambu-dark border border-bambu-dark-tertiary rounded px-3 py-2 text-white placeholder-bambu-gray focus:outline-none focus:border-bambu-green"
+              placeholder={t('fileManager.sectionNamePlaceholder')}
+              autoFocus
+              required
+            />
+          </div>
+          <div className="flex justify-end gap-2 pt-2">
+            <Button type="button" variant="secondary" onClick={onClose}>
+              {t('common.cancel')}
+            </Button>
+            <Button type="submit" disabled={!name.trim() || isLoading}>
+              {isLoading ? <Loader2 className="w-4 h-4 animate-spin" /> : t('common.save')}
+            </Button>
+          </div>
+        </form>
+      </div>
+    </div>
+  );
+}
+
+function findFolderPath(items: LibraryFolderTree[], id: number, trail: LibraryFolderTree[] = []): LibraryFolderTree[] | null {
+  for (const item of items) {
+    const next = [...trail, item];
+    if (item.id === id) return next;
+    const found = findFolderPath(item.children, id, next);
+    if (found) return found;
+  }
+  return null;
 }
 
 // Helper to check if a file is sliced (printable)
@@ -928,13 +1029,14 @@ export function FileManagerPage() {
 
   // State
   const [selectedFolderId, setSelectedFolderId] = useState<number | null>(initialFolderId);
-  // Which top-level pseudo-view the sidebar shows when no specific folder is
-  // selected: "internal" = files in Bambuddy's managed storage, "external" =
-  // combined view across every linked external folder (#1621). Per-folder
-  // selection bypasses this (selectedFolderId !== null disables the filter).
-  const [topLevelView, setTopLevelView] = useState<'internal' | 'external'>('internal');
+  // The page opens on the folder-card landing grid. Deep links that already
+  // specify a folder skip the picker and go straight to that folder.
+  const [viewEntered, setViewEntered] = useState(!!initialFolderId);
   const [selectedFiles, setSelectedFiles] = useState<number[]>([]);
   const [showNewFolderModal, setShowNewFolderModal] = useState(false);
+  const [showSectionModal, setShowSectionModal] = useState<'create' | { id: number; name: string } | null>(null);
+  const [sectionMenuId, setSectionMenuId] = useState<number | null>(null);
+  const [deleteSectionId, setDeleteSectionId] = useState<number | null>(null);
   const [showExternalFolderModal, setShowExternalFolderModal] = useState(false);
   const [showMoveModal, setShowMoveModal] = useState(false);
   const [showUploadModal, setShowUploadModal] = useState(false);
@@ -958,15 +1060,9 @@ export function FileManagerPage() {
   const [viewMode, setViewMode] = useState<'grid' | 'list'>(() => {
     return (localStorage.getItem('library-view-mode') as 'grid' | 'list') || 'grid';
   });
-  const [wrapFolderNames, setWrapFolderNames] = useState(() => {
-    return localStorage.getItem('library-wrap-folders') === 'true';
-  });
-  const [collapseFoldersByDefault, setCollapseFoldersByDefault] = useState(() => {
-    return localStorage.getItem('library-collapse-folders') === 'true';
-  });
-  // Folder tree sort (#1770). 'name' = alphabetical (the prior behaviour);
-  // 'activity' = most recent file activity inside the folder first. Persisted
-  // independently from the file-side sort so each can be tuned to taste.
+  // Folder card sort (#1770). 'name' = alphabetical; 'activity' = most recent
+  // file activity inside the folder first. Persisted independently from the
+  // file-side sort so each can be tuned to taste.
   const [folderSortField, setFolderSortField] = useState<'name' | 'activity'>(() => {
     const saved = localStorage.getItem('library-folder-sort-field');
     return saved === 'activity' ? 'activity' : 'name';
@@ -975,52 +1071,6 @@ export function FileManagerPage() {
     const saved = localStorage.getItem('library-folder-sort-direction');
     return saved === 'desc' ? 'desc' : 'asc';
   });
-
-  // Resizable sidebar state
-  const [sidebarWidth, setSidebarWidth] = useState(() => {
-    const saved = localStorage.getItem('library-sidebar-width');
-    return saved ? parseInt(saved, 10) : 256; // Default w-64 = 256px
-  });
-  const [isResizing, setIsResizing] = useState(false);
-  const sidebarRef = useRef<HTMLDivElement>(null);
-
-  // Handle sidebar resize
-  useEffect(() => {
-    if (!isResizing) return;
-
-    // Prevent text selection during resize
-    document.body.style.userSelect = 'none';
-    document.body.style.cursor = 'col-resize';
-
-    const handleMouseMove = (e: MouseEvent) => {
-      if (!sidebarRef.current) return;
-      const containerRect = sidebarRef.current.parentElement?.getBoundingClientRect();
-      if (!containerRect) return;
-      // Calculate new width based on mouse position relative to container
-      const newWidth = e.clientX - containerRect.left;
-      // Clamp between 200px and 500px
-      const clampedWidth = Math.min(500, Math.max(200, newWidth));
-      setSidebarWidth(clampedWidth);
-    };
-
-    const handleMouseUp = () => {
-      setIsResizing(false);
-      document.body.style.userSelect = '';
-      document.body.style.cursor = '';
-      // Save to localStorage
-      localStorage.setItem('library-sidebar-width', String(sidebarWidth));
-    };
-
-    document.addEventListener('mousemove', handleMouseMove);
-    document.addEventListener('mouseup', handleMouseUp);
-
-    return () => {
-      document.removeEventListener('mousemove', handleMouseMove);
-      document.removeEventListener('mouseup', handleMouseUp);
-      document.body.style.userSelect = '';
-      document.body.style.cursor = '';
-    };
-  }, [isResizing, sidebarWidth]);
 
   // Filter and sort state (persist sort preferences to localStorage)
   const [searchQuery, setSearchQuery] = useState('');
@@ -1048,6 +1098,7 @@ export function FileManagerPage() {
     if (folderParam) {
       const newFolderId = parseInt(folderParam, 10);
       setSelectedFolderId(newFolderId);
+      setViewEntered(true);
     }
   }, [searchParams]);
 
@@ -1059,6 +1110,10 @@ export function FileManagerPage() {
   const { data: folders, isLoading: foldersLoading } = useQuery({
     queryKey: ['library-folders'],
     queryFn: () => api.getLibraryFolders(),
+  });
+  const { data: folderSections = [] } = useQuery({
+    queryKey: ['library-sections'],
+    queryFn: () => api.getLibraryFolderSections(),
   });
 
   // Recursive folder tree sort (#1770). Applies the same comparator to the
@@ -1097,6 +1152,33 @@ export function FileManagerPage() {
     return sortLevel(folders);
   }, [folders, folderSortField, folderSortDirection]);
 
+  const ungroupedRootFolders = useMemo(
+    () => (sortedFolders ?? []).filter((f) => f.section_id == null),
+    [sortedFolders],
+  );
+  const foldersBySection = useMemo(() => {
+    const map: Record<number, LibraryFolderTree[]> = {};
+    for (const folder of sortedFolders ?? []) {
+      if (folder.section_id == null) continue;
+      (map[folder.section_id] ||= []).push(folder);
+    }
+    return map;
+  }, [sortedFolders]);
+  const folderPath = useMemo(
+    () => (selectedFolderId && folders ? findFolderPath(folders, selectedFolderId) : null),
+    [folders, selectedFolderId],
+  );
+  const childFolders = folderPath?.[folderPath.length - 1]?.children ?? [];
+
+  const enterFolder = (id: number) => {
+    setSelectedFolderId(id);
+    setViewEntered(true);
+  };
+  const goToRoot = () => {
+    setSelectedFolderId(null);
+    setViewEntered(false);
+  };
+
   // Trash count for the header badge (#1008). Empty/error are silently treated
   // as zero so a broken trash endpoint doesn't break the File Manager.
   const { data: trashCount } = useQuery({
@@ -1120,7 +1202,7 @@ export function FileManagerPage() {
   // root and the internal/external pseudo-nodes already return the union.
   const searchExpandsSubfolders = selectedFolderId !== null && searchQuery.trim().length > 0;
   // The tag filter overrides folder scoping server-side (#1268 design call),
-  // so the FE query key includes it as a peer of folder/topLevelView. Sorted
+  // so the FE query key includes it as a peer of folder. Sorted
   // so the cache hits regardless of the order tags were toggled.
   const tagFilterKey = useMemo(() => [...selectedTagIds].sort((a, b) => a - b), [selectedTagIds]);
   // Tag catalog — needed to resolve names for the active-filter chip bar.
@@ -1154,20 +1236,16 @@ export function FileManagerPage() {
   }, []);
 
   const { data: files, isLoading: filesLoading } = useQuery({
-    queryKey: ['library-files', selectedFolderId, topLevelView, searchExpandsSubfolders, tagFilterKey],
-    // When a specific folder is selected we list its contents directly; when
-    // no folder is selected the topLevelView pseudo-node decides whether the
-    // server scopes the result to internal-managed-storage files or to the
-    // union of every external folder (#1621). include_root stays false so the
-    // listing still descends into subfolders (regression guard from #1499).
+    queryKey: ['library-files', selectedFolderId, searchExpandsSubfolders, tagFilterKey],
     queryFn: () =>
       api.getLibraryFiles(
         selectedFolderId,
         false,
-        selectedFolderId === null ? topLevelView : undefined,
+        undefined,
         searchExpandsSubfolders,
         tagFilterKey,
       ),
+    enabled: viewEntered && selectedFolderId !== null,
   });
 
   const { data: stats } = useQuery({
@@ -1373,6 +1451,45 @@ export function FileManagerPage() {
     onError: (error: Error) => showToast(error.message, 'error'),
   });
 
+  const createSectionMutation = useMutation({
+    mutationFn: (name: string) => api.createLibraryFolderSection(name),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['library-sections'] });
+      setShowSectionModal(null);
+      showToast(t('fileManager.sectionCreated'), 'success');
+    },
+    onError: (error: Error) => showToast(error.message, 'error'),
+  });
+  const renameSectionMutation = useMutation({
+    mutationFn: ({ id, name }: { id: number; name: string }) => api.renameLibraryFolderSection(id, name),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['library-sections'] });
+      setShowSectionModal(null);
+      showToast(t('fileManager.sectionRenamed'), 'success');
+    },
+    onError: (error: Error) => showToast(error.message, 'error'),
+  });
+  const deleteSectionMutation = useMutation({
+    mutationFn: (id: number) => api.deleteLibraryFolderSection(id),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['library-sections'] });
+      queryClient.invalidateQueries({ queryKey: ['library-folders'] });
+      setDeleteSectionId(null);
+      showToast(t('fileManager.sectionDeleted'), 'success');
+    },
+    onError: (error: Error) => showToast(error.message, 'error'),
+  });
+  const assignSectionMutation = useMutation({
+    mutationFn: ({ folderId, sectionId }: { folderId: number; sectionId: number | null }) =>
+      api.assignLibraryFolderSection(folderId, sectionId),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['library-sections'] });
+      queryClient.invalidateQueries({ queryKey: ['library-folders'] });
+      showToast(t('fileManager.folderMovedToSection'), 'success');
+    },
+    onError: (error: Error) => showToast(error.message, 'error'),
+  });
+
   const renameFileMutation = useMutation({
     mutationFn: ({ id, filename }: { id: number; filename: string }) =>
       api.updateLibraryFile(id, { filename }),
@@ -1559,6 +1676,16 @@ export function FileManagerPage() {
       <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 mb-6">
         <div>
           <h1 className="text-2xl font-bold text-white flex items-center gap-3">
+            {viewEntered && (
+              <button
+                onClick={goToRoot}
+                className="text-bambu-gray hover:text-white hover:bg-bambu-dark p-1 rounded transition-colors"
+                title={t('fileManager.backToFolders')}
+                aria-label={t('fileManager.backToFolders')}
+              >
+                <ChevronLeft className="w-5 h-5" />
+              </button>
+            )}
             <FolderOpen className="w-7 h-7 text-bambu-green" />
             {t('fileManager.title')}
           </h1>
@@ -1619,6 +1746,17 @@ export function FileManagerPage() {
             <FolderPlus className="w-4 h-4 mr-2" />
             {t('fileManager.newFolder')}
           </Button>
+          {!viewEntered && (
+            <Button
+              variant="secondary"
+              onClick={() => setShowSectionModal('create')}
+              disabled={!hasPermission('library:update_all')}
+              title={t('fileManager.addSection')}
+            >
+              <Plus className="w-4 h-4 mr-2" />
+              {t('fileManager.addSection')}
+            </Button>
+          )}
           <Button
             variant="secondary"
             onClick={() => setShowTagsModal(true)}
@@ -1704,200 +1842,132 @@ export function FileManagerPage() {
       )}
 
       {/* Main content */}
-      <div className="flex-1 flex flex-col lg:flex-row gap-4 lg:gap-6 min-h-0">
-        {/* Mobile folder selector */}
-        <div className="lg:hidden">
-          <select
-            value={selectedFolderId !== null ? String(selectedFolderId) : `__top:${topLevelView}`}
-            onChange={(e) => {
-              const v = e.target.value;
-              if (v.startsWith('__top:')) {
-                setSelectedFolderId(null);
-                setTopLevelView(v.slice('__top:'.length) as 'internal' | 'external');
-              } else {
-                setSelectedFolderId(parseInt(v, 10));
-              }
-            }}
-            className="w-full bg-bambu-dark-secondary border border-bambu-dark-tertiary rounded-lg px-3 py-2.5 text-white focus:outline-none focus:border-bambu-green"
-          >
-            <option value="__top:internal">📁 {t('fileManager.allFiles')}</option>
-            {folders?.some((f) => f.is_external) && (
-              <option value="__top:external">🔗 {t('fileManager.allExternal')}</option>
-            )}
-            {sortedFolders && (() => {
-              // Flatten folder tree for mobile selector
-              const flattenFolders = (items: LibraryFolderTree[], depth = 0): { id: number; name: string; fileCount: number; depth: number }[] => {
-                const result: { id: number; name: string; fileCount: number; depth: number }[] = [];
-                for (const item of items) {
-                  result.push({ id: item.id, name: item.name, fileCount: item.file_count, depth });
-                  if (item.children.length > 0) {
-                    result.push(...flattenFolders(item.children, depth + 1));
-                  }
-                }
-                return result;
-              };
-              return flattenFolders(sortedFolders).map((folder) => (
-                <option key={folder.id} value={folder.id}>
-                  {'│ '.repeat(folder.depth)}📂 {folder.name} {folder.fileCount > 0 ? `(${folder.fileCount})` : ''}
-                </option>
-              ));
-            })()}
-          </select>
-        </div>
-
-        {/* Folder sidebar - resizable, hidden on mobile */}
-        <div
-          ref={sidebarRef}
-          className="hidden lg:flex flex-shrink-0 bg-bambu-dark-secondary rounded-lg border border-bambu-dark-tertiary overflow-hidden flex-col relative"
-          style={{ width: `${sidebarWidth}px` }}
-        >
-          {/* Resize handle - drag to resize, double-click to reset */}
-          <div
-            className={`absolute right-0 top-0 bottom-0 w-1.5 cursor-col-resize z-10 group/resize flex items-center justify-center transition-colors ${
-              isResizing ? 'bg-bambu-green' : 'hover:bg-bambu-green/50'
-            }`}
-            onMouseDown={(e) => {
-              e.preventDefault();
-              setIsResizing(true);
-            }}
-            onDoubleClick={() => {
-              setSidebarWidth(256); // Reset to default w-64
-              localStorage.setItem('library-sidebar-width', '256');
-            }}
-            title={t('fileManager.dragToResizeTooltip')}
-          >
-            {/* Grip dots */}
-            <div className={`flex flex-col gap-1 opacity-0 group-hover/resize:opacity-100 transition-opacity ${isResizing ? 'opacity-100' : ''}`}>
-              <div className="w-0.5 h-0.5 rounded-full bg-white/70" />
-              <div className="w-0.5 h-0.5 rounded-full bg-white/70" />
-              <div className="w-0.5 h-0.5 rounded-full bg-white/70" />
-            </div>
-          </div>
-          <div className="p-3 border-b border-bambu-dark-tertiary flex items-center justify-between">
-            <h2 className="text-sm font-medium text-white">{t('fileManager.folders')}</h2>
-            <div className="flex items-center gap-1">
-              {/* Folder tree sort (#1770). Dropdown drives the comparator;
-                  direction button flips asc/desc. Both persist to localStorage
-                  on change so the choice survives reloads. */}
-              <select
-                value={folderSortField}
-                onChange={(e) => {
-                  const v = e.target.value === 'activity' ? 'activity' : 'name';
-                  setFolderSortField(v);
-                  localStorage.setItem('library-folder-sort-field', v);
-                }}
-                className="text-xs px-1 py-0.5 rounded bg-bambu-dark border border-bambu-dark-tertiary text-bambu-gray focus:outline-none focus:border-bambu-green"
-                title={t('fileManager.folderSort')}
-                aria-label={t('fileManager.folderSort')}
-              >
-                <option value="name">{t('fileManager.folderSortByName')}</option>
-                <option value="activity">{t('fileManager.folderSortByActivity')}</option>
-              </select>
-              <button
-                onClick={() => {
-                  const newValue = folderSortDirection === 'asc' ? 'desc' : 'asc';
-                  setFolderSortDirection(newValue);
-                  localStorage.setItem('library-folder-sort-direction', newValue);
-                }}
-                className="text-bambu-gray hover:text-white hover:bg-bambu-dark p-1 rounded transition-colors"
-                title={folderSortDirection === 'asc' ? t('fileManager.ascending') : t('fileManager.descending')}
-                aria-label={folderSortDirection === 'asc' ? t('fileManager.ascending') : t('fileManager.descending')}
-              >
-                {folderSortDirection === 'asc' ? <SortAsc className="w-3.5 h-3.5" /> : <SortDesc className="w-3.5 h-3.5" />}
-              </button>
-              <button
-                onClick={() => {
-                  const newValue = !collapseFoldersByDefault;
-                  setCollapseFoldersByDefault(newValue);
-                  localStorage.setItem('library-collapse-folders', String(newValue));
-                }}
-                className={`text-xs px-1.5 py-0.5 rounded transition-colors ${
-                  collapseFoldersByDefault
-                    ? 'bg-bambu-green/20 text-bambu-green'
-                    : 'text-bambu-gray hover:text-white hover:bg-bambu-dark'
-                }`}
-                title={collapseFoldersByDefault ? t('fileManager.expandFoldersByDefault') : t('fileManager.collapseFoldersByDefault')}
-              >
-                {t('fileManager.collapse')}
-              </button>
-              <button
-                onClick={() => {
-                  const newValue = !wrapFolderNames;
-                  setWrapFolderNames(newValue);
-                  localStorage.setItem('library-wrap-folders', String(newValue));
-                }}
-                className={`text-xs px-1.5 py-0.5 rounded transition-colors ${
-                  wrapFolderNames
-                    ? 'bg-bambu-green/20 text-bambu-green'
-                    : 'text-bambu-gray hover:text-white hover:bg-bambu-dark'
-                }`}
-                title={wrapFolderNames ? t('fileManager.disableTextWrapping') : t('fileManager.enableTextWrapping')}
-              >
-                {t('fileManager.wrap')}
-              </button>
-            </div>
-          </div>
-          <div className="flex-1 overflow-y-auto p-2">
-            {/* All Files = the user's own uploaded / managed-storage files
-                only. External folders are surfaced separately below to keep
-                a linked NAS from drowning the user's own uploads (#1621). */}
-            <div
-              className={`flex items-center gap-2 px-2 py-1.5 rounded cursor-pointer transition-colors ${
-                selectedFolderId === null && topLevelView === 'internal'
-                  ? 'bg-bambu-green/20 text-bambu-green'
-                  : 'hover:bg-bambu-dark text-white'
-              }`}
-              onClick={() => {
-                setSelectedFolderId(null);
-                setTopLevelView('internal');
+      {!viewEntered ? (
+        <div className="flex-1 overflow-y-auto min-h-0 space-y-8">
+          <div className="flex items-center justify-end gap-2">
+            <select
+              value={folderSortField}
+              onChange={(e) => {
+                const v = e.target.value === 'activity' ? 'activity' : 'name';
+                setFolderSortField(v);
+                localStorage.setItem('library-folder-sort-field', v);
               }}
+              className="text-xs px-2 py-1 rounded bg-bambu-dark-secondary border border-bambu-dark-tertiary text-bambu-gray focus:outline-none focus:border-bambu-green"
+              title={t('fileManager.folderSort')}
+              aria-label={t('fileManager.folderSort')}
             >
-              <FileBox className="w-4 h-4" />
-              <span className="text-sm">{t('fileManager.allFiles')}</span>
-            </div>
-
-            {/* External (combined) — only shown when at least one external
-                folder is linked. Single folder users don't need a combined
-                view; clicking the individual folder is just as fast. */}
-            {folders?.some((f) => f.is_external) && (
-              <div
-                className={`flex items-center gap-2 px-2 py-1.5 rounded cursor-pointer transition-colors ${
-                  selectedFolderId === null && topLevelView === 'external'
-                    ? 'bg-bambu-green/20 text-bambu-green'
-                    : 'hover:bg-bambu-dark text-white'
-                }`}
-                onClick={() => {
-                  setSelectedFolderId(null);
-                  setTopLevelView('external');
-                }}
-              >
-                <FolderSymlink className="w-4 h-4 text-purple-600 dark:text-purple-400" />
-                <span className="text-sm">{t('fileManager.allExternal')}</span>
-              </div>
-            )}
-
-            {/* Folder tree — re-key on the collapse toggle so flipping it
-                remounts every FolderTreeItem, which re-reads defaultExpanded
-                and makes the preference take effect immediately. */}
-            {sortedFolders?.map((folder) => (
-              <FolderTreeItem
-                key={`${folder.id}-${collapseFoldersByDefault ? 'c' : 'e'}`}
-                folder={folder}
-                selectedFolderId={selectedFolderId}
-                onSelect={setSelectedFolderId}
-                onDelete={(id) => setDeleteConfirm({ type: 'folder', id })}
-                onLink={setLinkFolder}
-                onRename={(f) => setRenameItem({ type: 'folder', id: f.id, name: f.name })}
-                wrapNames={wrapFolderNames}
-                defaultExpanded={!collapseFoldersByDefault}
-                showModified={showModified}
-                hasPermission={hasPermission}
-                t={t}
-              />
-            ))}
+              <option value="name">{t('fileManager.folderSortByName')}</option>
+              <option value="activity">{t('fileManager.folderSortByActivity')}</option>
+            </select>
+            <button
+              onClick={() => {
+                const newValue = folderSortDirection === 'asc' ? 'desc' : 'asc';
+                setFolderSortDirection(newValue);
+                localStorage.setItem('library-folder-sort-direction', newValue);
+              }}
+              className="text-bambu-gray hover:text-white hover:bg-bambu-dark-secondary p-1 rounded transition-colors"
+              title={folderSortDirection === 'asc' ? t('fileManager.ascending') : t('fileManager.descending')}
+              aria-label={folderSortDirection === 'asc' ? t('fileManager.ascending') : t('fileManager.descending')}
+            >
+              {folderSortDirection === 'asc' ? <SortAsc className="w-3.5 h-3.5" /> : <SortDesc className="w-3.5 h-3.5" />}
+            </button>
           </div>
+          {foldersLoading ? (
+            <div className="flex items-center justify-center py-16">
+              <Loader2 className="w-6 h-6 animate-spin text-bambu-green" />
+            </div>
+          ) : (
+            <>
+              {(ungroupedRootFolders.length > 0 || folderSections.length === 0) && (
+                <div>
+                  {folderSections.length > 0 && (
+                    <h2 className="text-sm font-medium text-bambu-gray mb-3">{t('fileManager.ungrouped')}</h2>
+                  )}
+                  {ungroupedRootFolders.length === 0 ? (
+                    <p className="text-sm text-bambu-gray">{t('fileManager.chooseFolderDescription')}</p>
+                  ) : (
+                    <FolderCardGrid
+                      folders={ungroupedRootFolders}
+                      onSelect={enterFolder}
+                      onDelete={(id) => setDeleteConfirm({ type: 'folder', id })}
+                      onLink={setLinkFolder}
+                      onRename={(f) => setRenameItem({ type: 'folder', id: f.id, name: f.name })}
+                      onScan={(id) => scanExternalFolderMutation.mutate(id)}
+                      sections={folderSections}
+                      onMoveToSection={(folderId, sectionId) => assignSectionMutation.mutate({ folderId, sectionId })}
+                      showSectionMove
+                      hasPermission={hasPermission}
+                      t={t}
+                    />
+                  )}
+                </div>
+              )}
+              {folderSections.map((section) => (
+                <div key={section.id}>
+                  <div className="flex items-center gap-2 mb-3">
+                    <Layers className="w-4 h-4 text-bambu-green" />
+                    <h2 className="text-sm font-medium text-white">{section.name}</h2>
+                    <div className="relative ml-auto">
+                      <button
+                        onClick={() => setSectionMenuId(sectionMenuId === section.id ? null : section.id)}
+                        className="p-1 rounded hover:bg-bambu-dark-secondary text-bambu-gray hover:text-white"
+                        title={t('common.actions')}
+                        aria-label={t('common.actions')}
+                      >
+                        <MoreVertical className="w-4 h-4" />
+                      </button>
+                      {sectionMenuId === section.id && (
+                        <>
+                          <div className="fixed inset-0 z-10" onClick={() => setSectionMenuId(null)} />
+                          <div className="absolute right-0 top-full mt-1 z-20 bg-bambu-dark-secondary border border-bambu-dark-tertiary rounded-lg shadow-xl py-1 min-w-[140px]">
+                            <button
+                              className="w-full px-3 py-1.5 text-left text-sm text-white hover:bg-bambu-dark flex items-center gap-2"
+                              onClick={() => {
+                                setShowSectionModal({ id: section.id, name: section.name });
+                                setSectionMenuId(null);
+                              }}
+                            >
+                              <Pencil className="w-3.5 h-3.5" />
+                              {t('fileManager.renameSection')}
+                            </button>
+                            <button
+                              className="w-full px-3 py-1.5 text-left text-sm text-red-700 dark:text-red-400 hover:bg-bambu-dark flex items-center gap-2"
+                              onClick={() => {
+                                setDeleteSectionId(section.id);
+                                setSectionMenuId(null);
+                              }}
+                            >
+                              <Trash2 className="w-3.5 h-3.5" />
+                              {t('fileManager.deleteSection')}
+                            </button>
+                          </div>
+                        </>
+                      )}
+                    </div>
+                  </div>
+                  <FolderCardGrid
+                    folders={foldersBySection[section.id] ?? []}
+                    onSelect={enterFolder}
+                    onDelete={(id) => setDeleteConfirm({ type: 'folder', id })}
+                    onLink={setLinkFolder}
+                    onRename={(f) => setRenameItem({ type: 'folder', id: f.id, name: f.name })}
+                    onScan={(id) => scanExternalFolderMutation.mutate(id)}
+                    sections={folderSections}
+                    onMoveToSection={(folderId, sectionId) => assignSectionMutation.mutate({ folderId, sectionId })}
+                    showSectionMove
+                    hasPermission={hasPermission}
+                    t={t}
+                  />
+                  {(foldersBySection[section.id] ?? []).length === 0 && (
+                    <p className="text-xs text-bambu-gray">{t('fileManager.emptySection')}</p>
+                  )}
+                </div>
+              ))}
+            </>
+          )}
         </div>
-
+      ) : (
+      <div className="flex-1 flex flex-col lg:flex-row gap-4 lg:gap-6 min-h-0">
         {/* Files area + README rail (#2520 item 2). On wide screens the
             README docks as a collapsible right-hand column (rendered after
             the files column, below) so it no longer steals vertical space
@@ -1905,6 +1975,45 @@ export function FileManagerPage() {
             via `order-first` and the page itself scrolls. */}
         <div className="flex-1 flex flex-col lg:flex-row min-w-0 min-h-0 gap-4 lg:gap-6">
         <div className="flex-1 flex flex-col min-w-0 min-h-0">
+          {folderPath && folderPath.length > 0 && (
+            <nav className="flex flex-wrap items-center gap-1 text-sm mb-4" aria-label="Breadcrumb">
+              <button
+                onClick={goToRoot}
+                className="text-bambu-gray hover:text-white"
+              >
+                {t('fileManager.folders')}
+              </button>
+              {folderPath.map((crumb, idx) => (
+                <span key={crumb.id} className="flex items-center gap-1">
+                  <ChevronRight className="w-3.5 h-3.5 text-bambu-gray" />
+                  {idx === folderPath.length - 1 ? (
+                    <span className="text-white font-medium">{crumb.name}</span>
+                  ) : (
+                    <button
+                      onClick={() => enterFolder(crumb.id)}
+                      className="text-bambu-gray hover:text-white"
+                    >
+                      {crumb.name}
+                    </button>
+                  )}
+                </span>
+              ))}
+            </nav>
+          )}
+          {childFolders.length > 0 && (
+            <div className="mb-6">
+              <FolderCardGrid
+                folders={childFolders}
+                onSelect={enterFolder}
+                onDelete={(id) => setDeleteConfirm({ type: 'folder', id })}
+                onLink={setLinkFolder}
+                onRename={(f) => setRenameItem({ type: 'folder', id: f.id, name: f.name })}
+                onScan={(id) => scanExternalFolderMutation.mutate(id)}
+                hasPermission={hasPermission}
+                t={t}
+              />
+            </div>
+          )}
           {/* Tag filter rail (#1268). Lists every catalog tag as a togglable
               chip — active chips are filled green and show an X, inactive
               chips are outlined and toggle ON when clicked. Clicking an active
@@ -2212,18 +2321,10 @@ export function FileManagerPage() {
                 <FileBox className="w-12 h-12 text-bambu-gray/50" />
               </div>
               <h3 className="text-lg font-medium text-white mb-2">
-                {selectedFolderId !== null
-                  ? t('fileManager.folderIsEmpty')
-                  : topLevelView === 'external'
-                    ? t('fileManager.externalIsEmpty')
-                    : t('fileManager.noFilesYet')}
+                {t('fileManager.folderIsEmpty')}
               </h3>
               <p className="text-bambu-gray text-center max-w-md mb-6">
-                {selectedFolderId !== null
-                  ? t('fileManager.folderEmptyDescription')
-                  : topLevelView === 'external'
-                    ? t('fileManager.externalEmptyDescription')
-                    : t('fileManager.noFilesDescription')}
+                {t('fileManager.folderEmptyDescription')}
               </p>
               <Button
                 onClick={() => setShowUploadModal(true)}
@@ -2550,6 +2651,7 @@ export function FileManagerPage() {
           {selectedFolderId !== null && <FolderReadmePanel folderId={selectedFolderId} />}
         </div>
       </div>
+      )}
 
       {/* Modals */}
       {showNewFolderModal && (
@@ -2559,6 +2661,32 @@ export function FileManagerPage() {
           onSave={(data) => createFolderMutation.mutate(data)}
           isLoading={createFolderMutation.isPending}
           t={t}
+        />
+      )}
+
+      {showSectionModal && (
+        <NewSectionModal
+          title={showSectionModal === 'create' ? t('fileManager.newSection') : t('fileManager.renameSection')}
+          initialName={showSectionModal === 'create' ? '' : showSectionModal.name}
+          onClose={() => setShowSectionModal(null)}
+          onSave={(name) => {
+            if (showSectionModal === 'create') createSectionMutation.mutate(name);
+            else renameSectionMutation.mutate({ id: showSectionModal.id, name });
+          }}
+          isLoading={createSectionMutation.isPending || renameSectionMutation.isPending}
+          t={t}
+        />
+      )}
+
+      {deleteSectionId !== null && (
+        <ConfirmModal
+          title={t('fileManager.deleteSection')}
+          message={t('fileManager.deleteSectionConfirm')}
+          confirmText={t('common.delete')}
+          variant="danger"
+          onConfirm={() => deleteSectionMutation.mutate(deleteSectionId)}
+          onCancel={() => setDeleteSectionId(null)}
+          isLoading={deleteSectionMutation.isPending}
         />
       )}
 

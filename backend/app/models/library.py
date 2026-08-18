@@ -26,6 +26,13 @@ class LibraryFolder(Base):
     # Link to archive
     archive_id: Mapped[int | None] = mapped_column(ForeignKey("print_archives.id", ondelete="SET NULL"), nullable=True)
 
+    # Folder-picker section membership (folder-sections feature). Purely a
+    # display grouping for the root-level landing grid — nullable so a folder
+    # can be "ungrouped". See LibraryFolderSection below.
+    section_id: Mapped[int | None] = mapped_column(
+        ForeignKey("library_folder_sections.id", ondelete="SET NULL"), nullable=True
+    )
+
     # Timestamps
     created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
     updated_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now(), onupdate=func.now())
@@ -56,6 +63,7 @@ class LibraryFolder(Base):
         cascade="all, delete-orphan",
     )
     archive: Mapped["PrintArchive | None"] = relationship()
+    section: Mapped["LibraryFolderSection | None"] = relationship(back_populates="folders")
 
 
 class LibraryFile(Base):
@@ -161,6 +169,31 @@ class LibraryTag(Base):
         secondary="library_file_tags",
         back_populates="tags",
     )
+
+
+class LibraryFolderSection(Base):
+    """Named group of root-level library folders for the folder-picker
+    landing grid (folder-sections feature).
+
+    Purely organizational — sections group how root folder cards are
+    displayed; they carry no permissions or content of their own. Catalog is
+    global (one set per install), mirroring ``LibraryTag`` above. ``name_key``
+    is ``LOWER(TRIM(name))`` so "Production" / "production" collide on the
+    UNIQUE index and the route returns 409 instead of creating a duplicate.
+    ``sort_order`` controls display order on the landing grid; new sections
+    are appended after the current max (see ``library_sections.create_section``).
+    """
+
+    __tablename__ = "library_folder_sections"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    name: Mapped[str] = mapped_column(String(255), nullable=False)
+    name_key: Mapped[str] = mapped_column(String(255), nullable=False, unique=True, index=True)
+    sort_order: Mapped[int] = mapped_column(Integer, default=0)
+    created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
+    updated_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now(), onupdate=func.now())
+
+    folders: Mapped[list["LibraryFolder"]] = relationship(back_populates="section")
 
 
 class LibraryFileTag(Base):
