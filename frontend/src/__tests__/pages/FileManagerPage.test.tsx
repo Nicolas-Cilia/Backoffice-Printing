@@ -196,6 +196,31 @@ describe('FileManagerPage', () => {
         expect(screen.getByText('Upload')).toBeInTheDocument();
       });
     });
+
+    it('styles the Trash toolbar control like other header buttons', async () => {
+      render(<FileManagerPage />);
+
+      const trash = await screen.findByRole('button', { name: 'Trash' });
+      expect(trash.className).toContain('bg-bambu-dark-tertiary');
+      expect(trash.className).toContain('hover:text-[color:var(--text-primary)]');
+      expect(trash.className).not.toContain('hover:text-white');
+    });
+
+    it('renders the trash count in primary text on a solid accent chip', async () => {
+      server.use(
+        http.get('/api/v1/library/trash', () =>
+          HttpResponse.json({ items: [], total: 7, retention_days: 30 }),
+        ),
+      );
+      render(<FileManagerPage />);
+
+      const trash = await screen.findByRole('button', { name: /trash 7/i });
+      const count = within(trash).getByText('7');
+      expect(count.className).toContain('bg-bambu-green');
+      expect(count.className).toContain('text-[color:var(--text-primary)]');
+      expect(count.className).not.toContain('text-bambu-green');
+      expect(count.className).not.toContain('bg-bambu-green/20');
+    });
   });
 
   describe('stats display', () => {

@@ -1,5 +1,5 @@
 import { useState, useCallback, useMemo, useEffect } from 'react';
-import { Link, useNavigate, useSearchParams } from 'react-router-dom';
+import { useNavigate, useSearchParams } from 'react-router-dom';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { useTranslation } from 'react-i18next';
 import {
@@ -2057,19 +2057,19 @@ export function FileManagerPage() {
             </Button>
           )}
           {(hasAnyPermission('library:delete_own', 'library:delete_all')) && (
-            <Link
-              to="/files/trash"
-              className="inline-flex items-center px-3 py-1.5 text-sm rounded bg-bambu-dark-secondary text-bambu-gray hover:text-white hover:bg-bambu-dark transition-colors"
+            <Button
+              variant="secondary"
+              onClick={() => navigate('/files/trash')}
               title={t('libraryTrash.headerTooltip')}
             >
               <Trash2 className="w-4 h-4 mr-2" />
               {t('libraryTrash.headerButton')}
               {typeof trashCount === 'number' && trashCount > 0 && (
-                <span className="ml-1.5 px-1.5 py-0.5 text-xs rounded-full bg-bambu-green/20 text-bambu-green">
+                <span className="ml-1.5 px-1.5 py-0.5 text-xs font-semibold tabular-nums rounded-full bg-bambu-green text-[color:var(--text-primary)]">
                   {trashCount}
                 </span>
               )}
-            </Link>
+            </Button>
           )}
           {!isProductionFolder && (
           <Button

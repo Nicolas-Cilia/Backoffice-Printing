@@ -154,7 +154,7 @@ export function PurgeOldFilesModal({ onClose }: PurgeOldFilesModalProps) {
             )}
           </div>
 
-          <div className="flex gap-2 items-start text-xs text-amber-400 bg-amber-900/20 rounded px-3 py-2">
+          <div className="flex gap-2 items-start text-xs text-amber-800 dark:text-amber-200 bg-amber-100 dark:bg-amber-900/20 rounded px-3 py-2">
             <AlertTriangle className="w-4 h-4 mt-0.5 shrink-0" />
             <span>{t('libraryPurge.warning')}</span>
           </div>
