@@ -162,6 +162,7 @@ function setupHandlers(spools: unknown[] = [MOCK_SPOOL]) {
 
 describe('InventoryPage — copy button', () => {
   beforeEach(() => {
+    window.history.pushState({}, '', '/inventory?tab=spools');
     setupHandlers();
   });
 

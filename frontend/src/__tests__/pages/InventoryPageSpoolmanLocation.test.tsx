@@ -114,6 +114,7 @@ const mockSpoolmanSpool = {
 describe('InventoryPage - LOCATION column (Spoolman mode)', () => {
   beforeEach(() => {
     localStorage.clear();
+    window.history.pushState({}, '', '/inventory?tab=spools');
     server.use(
       http.get('/api/v1/settings/', () => HttpResponse.json(mockSettings)),
       http.get('/api/v1/inventory/assignments', () => HttpResponse.json([])),

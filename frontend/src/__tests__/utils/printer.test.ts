@@ -135,6 +135,8 @@ describe('isGcodeCompatible', () => {
     expect(isGcodeCompatible('x1c', 'X1C')).toBe(true);
     expect(isGcodeCompatible('A1 Mini', 'A1-MINI')).toBe(true);
     expect(isGcodeCompatible('H2D Pro', 'H2DPRO')).toBe(true);
+    expect(isGcodeCompatible('A1 Mini', 'A1M')).toBe(true);
+    expect(isGcodeCompatible('A1M', 'A1 Mini')).toBe(true);
   });
 });
 

@@ -177,6 +177,7 @@ describe('InventoryPage - Low Stock Threshold', () => {
   beforeEach(() => {
     // Clear localStorage to ensure we're not relying on it
     localStorage.clear();
+    window.history.pushState({}, '', '/inventory?tab=spools');
 
     server.use(
       http.get('/api/v1/settings/', () => {

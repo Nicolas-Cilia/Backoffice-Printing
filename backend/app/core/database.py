@@ -260,6 +260,7 @@ async def init_db():
         external_link,
         filament,
         filament_sku_settings,
+        filament_tracking,
         github_backup,
         group,
         kprofile_note,
@@ -279,6 +280,7 @@ async def init_db():
         print_queue,
         printer,
         printer_sensor_history,
+        profile_part,
         settings,
         shopping_list,
         slicer_pipeline,
@@ -1018,6 +1020,127 @@ async def _migrate_widen_spoolman_slot_ams_id_range(conn) -> None:
             exc_info=True,
         )
         raise
+
+
+async def _normalize_filament_bucket_identity(conn):
+    """Backfill empty identity and widen uq_filament_color_bucket to the full SKU.
+
+    Tracking products are a buyable SKU: color_name + material + brand + subtype
+    + extra_colors + effect_type. Empty values are stored as '' so SQLite/PG
+    unique indexes treat blank brand the same as missing brand.
+
+    SQLite cannot ALTER a table-level UNIQUE. If the live unique key is still
+    (color_name, material) we rebuild the table. Child FKs are integer ids;
+    PRAGMA foreign_keys is off so the rebuild keeps usage/assignment rows.
+    If rebuild is skipped (index already includes brand, or no table yet),
+    columns are still persisted — new DBs from create_all already have the
+    full UniqueConstraint from the model.
+    """
+    from sqlalchemy import text
+
+    try:
+        await conn.execute(
+            text(
+                "UPDATE filament_color_buckets SET "
+                "brand = COALESCE(brand, ''), "
+                "subtype = COALESCE(subtype, ''), "
+                "extra_colors = COALESCE(extra_colors, ''), "
+                "effect_type = COALESCE(effect_type, '')"
+            )
+        )
+    except (OperationalError, ProgrammingError):
+        return  # table missing on a brand-new install before create_all
+
+    if is_sqlite():
+        try:
+            idx_rows = await conn.execute(text("PRAGMA index_list(filament_color_buckets)"))
+        except (OperationalError, ProgrammingError):
+            return
+        needs_rebuild = False
+        for idx in idx_rows.fetchall():
+            # seq, name, unique, origin, partial
+            if not idx[2]:
+                continue
+            info = await conn.execute(text(f"PRAGMA index_info({idx[1]})"))
+            cols = {row[2] for row in info.fetchall() if row[2]}
+            if "color_name" in cols and "material" in cols and "brand" not in cols:
+                needs_rebuild = True
+                break
+        if not needs_rebuild:
+            await _safe_execute(
+                conn,
+                "CREATE UNIQUE INDEX IF NOT EXISTS uq_filament_color_bucket "
+                "ON filament_color_buckets ("
+                "color_name, material, "
+                "IFNULL(brand, ''), IFNULL(subtype, ''), "
+                "IFNULL(extra_colors, ''), IFNULL(effect_type, ''))",
+            )
+            return
+        async with conn.begin_nested():
+            await conn.execute(text("DROP TABLE IF EXISTS filament_color_buckets_new"))
+            await conn.execute(
+                text(
+                    """CREATE TABLE filament_color_buckets_new (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    color_name VARCHAR(100) NOT NULL,
+                    material VARCHAR(50) NOT NULL,
+                    brand VARCHAR(100),
+                    subtype VARCHAR(50),
+                    extra_colors VARCHAR(255),
+                    effect_type VARCHAR(20),
+                    color_hex VARCHAR(9),
+                    on_hand_grams FLOAT NOT NULL DEFAULT 0,
+                    spool_weight_grams FLOAT NOT NULL DEFAULT 1000,
+                    cost_per_kg FLOAT,
+                    lead_time_days INTEGER DEFAULT 7,
+                    stock_initialized BOOLEAN DEFAULT 0,
+                    tracking_started_at DATETIME,
+                    created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+                    updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+                    CONSTRAINT uq_filament_color_bucket UNIQUE (
+                        color_name, material, brand, subtype, extra_colors, effect_type
+                    )
+                )"""
+                )
+            )
+            await conn.execute(
+                text(
+                    """INSERT INTO filament_color_buckets_new (
+                        id, color_name, material, brand, subtype, extra_colors, effect_type,
+                        color_hex, on_hand_grams, spool_weight_grams, cost_per_kg,
+                        lead_time_days, stock_initialized, tracking_started_at,
+                        created_at, updated_at
+                    )
+                    SELECT id, color_name, material,
+                           COALESCE(brand, ''), COALESCE(subtype, ''),
+                           COALESCE(extra_colors, ''), COALESCE(effect_type, ''),
+                           color_hex, on_hand_grams, spool_weight_grams, cost_per_kg,
+                           lead_time_days, stock_initialized, tracking_started_at,
+                           created_at, updated_at
+                    FROM filament_color_buckets"""
+                )
+            )
+            await conn.execute(text("DROP TABLE filament_color_buckets"))
+            await conn.execute(text("ALTER TABLE filament_color_buckets_new RENAME TO filament_color_buckets"))
+        return
+
+    uq_check = await conn.execute(
+        text(
+            "SELECT 1 FROM pg_constraint c "
+            "JOIN pg_attribute a ON a.attrelid = c.conrelid AND a.attnum = ANY(c.conkey) "
+            "WHERE c.conname = 'uq_filament_color_bucket' AND a.attname = 'brand' LIMIT 1"
+        )
+    )
+    if uq_check.scalar_one_or_none() is None:
+        await _safe_execute(
+            conn,
+            "ALTER TABLE filament_color_buckets DROP CONSTRAINT IF EXISTS uq_filament_color_bucket",
+        )
+        await _safe_execute(
+            conn,
+            "ALTER TABLE filament_color_buckets ADD CONSTRAINT uq_filament_color_bucket "
+            "UNIQUE (color_name, material, brand, subtype, extra_colors, effect_type)",
+        )
 
 
 async def run_migrations(conn):
@@ -2079,6 +2202,15 @@ async def run_migrations(conn):
 
     # Migration: Add cost tracking fields to spool table
     await _safe_execute(conn, "ALTER TABLE spool ADD COLUMN cost_per_kg REAL")
+    await _safe_execute(conn, "ALTER TABLE filament_color_buckets ADD COLUMN cost_per_kg REAL")
+    await _safe_execute(conn, "ALTER TABLE filament_color_buckets ADD COLUMN lead_time_days INTEGER DEFAULT 7")
+    # Spool-style identity on tracking products: brand, subtype, extra colors, effect.
+    # Unique SKU is color_name + material + these fields (empty stored as '').
+    await _safe_execute(conn, "ALTER TABLE filament_color_buckets ADD COLUMN brand VARCHAR(100)")
+    await _safe_execute(conn, "ALTER TABLE filament_color_buckets ADD COLUMN subtype VARCHAR(50)")
+    await _safe_execute(conn, "ALTER TABLE filament_color_buckets ADD COLUMN extra_colors VARCHAR(255)")
+    await _safe_execute(conn, "ALTER TABLE filament_color_buckets ADD COLUMN effect_type VARCHAR(20)")
+    await _normalize_filament_bucket_identity(conn)
 
     # Migration: Per-spool category + low-stock threshold override (#729). Both
     # nullable — NULL category leaves the spool uncategorised, NULL threshold
@@ -3838,6 +3970,168 @@ async def run_migrations(conn):
         conn,
         "ALTER TABLE library_folders ADD COLUMN section_id INTEGER"
         " REFERENCES library_folder_sections(id) ON DELETE SET NULL",
+    )
+
+    # Migration: Add production_printer_model to library_folders (production
+    # file-slots). Tags a root folder as the library home for a printer model
+    # (X1C, A1M, A1, H2D, H2S). Nullable, no default — identical DDL on
+    # SQLite and Postgres (mirrors the `section_id` migration above).
+    await _safe_execute(
+        conn,
+        "ALTER TABLE library_folders ADD COLUMN production_printer_model VARCHAR(32)",
+    )
+
+    # Migration: hide a production part on one printer without deleting the catalog row.
+    if is_sqlite():
+        await _safe_execute(conn, "ALTER TABLE production_part_instances ADD COLUMN hidden BOOLEAN DEFAULT 0")
+    else:
+        await _safe_execute(conn, "ALTER TABLE production_part_instances ADD COLUMN hidden BOOLEAN DEFAULT false")
+
+    # Migration: section kind on library_folder_sections (normal vs production /
+    # parameter-tracking). Default remains normal so existing user-created
+    # sections keep generic-upload behavior. Backfill the bootstrapped
+    # Production section and any section that already has printer folders.
+    await _safe_execute(
+        conn,
+        "ALTER TABLE library_folder_sections ADD COLUMN kind VARCHAR(32) DEFAULT 'normal'",
+    )
+    from sqlalchemy import text as _sql_text
+
+    async with conn.begin_nested():
+        await conn.execute(
+            _sql_text("UPDATE library_folder_sections SET kind = 'normal' WHERE kind IS NULL OR kind = ''")
+        )
+        await conn.execute(
+            _sql_text(
+                "UPDATE library_folder_sections SET kind = 'production' "
+                "WHERE name_key = 'production' OR id IN ("
+                "  SELECT DISTINCT section_id FROM library_folders "
+                "  WHERE production_printer_model IS NOT NULL AND section_id IS NOT NULL"
+                ")"
+            )
+        )
+
+    # Migration: folder-level parameter tracking (replace-only uploads /
+    # ProductionFolderView) independent of production_printer_model. Backfill
+    # existing Production printer folders so they keep slot UI and 409 guards.
+    if is_sqlite():
+        await _safe_execute(conn, "ALTER TABLE library_folders ADD COLUMN parameter_tracking BOOLEAN DEFAULT 0")
+    else:
+        await _safe_execute(conn, "ALTER TABLE library_folders ADD COLUMN parameter_tracking BOOLEAN DEFAULT false")
+    async with conn.begin_nested():
+        await conn.execute(
+            _sql_text(
+                "UPDATE library_folders SET parameter_tracking = "
+                + ("1" if is_sqlite() else "true")
+                + " WHERE production_printer_model IS NOT NULL AND production_printer_model != ''"
+                " OR section_id IN (SELECT id FROM library_folder_sections WHERE kind = 'production')"
+            )
+        )
+        await conn.execute(
+            _sql_text(
+                "UPDATE library_folders SET parameter_tracking = "
+                + ("0" if is_sqlite() else "false")
+                + " WHERE parameter_tracking IS NULL"
+            )
+        )
+
+    # Migration: part-section parameter tracking. Existing sections keep the
+    # shared print-settings contract (default true). Create may opt out.
+    if is_sqlite():
+        await _safe_execute(conn, "ALTER TABLE profile_part_sections ADD COLUMN parameter_tracking BOOLEAN DEFAULT 1")
+    else:
+        await _safe_execute(
+            conn,
+            "ALTER TABLE profile_part_sections ADD COLUMN parameter_tracking BOOLEAN DEFAULT true",
+        )
+    async with conn.begin_nested():
+        await conn.execute(
+            _sql_text(
+                "UPDATE profile_part_sections SET parameter_tracking = "
+                + ("1" if is_sqlite() else "true")
+                + " WHERE parameter_tracking IS NULL"
+            )
+        )
+
+    await _migrate_production_instance_folder_uniqueness(conn)
+
+
+async def _migrate_production_instance_folder_uniqueness(conn) -> None:
+    """Widen part-instance uniqueness from (part, printer) to (part, printer, folder).
+
+    A second parameter-tracking section can then have its own A1/X1C folder
+    without colliding with the bootstrapped Production instances.
+    """
+    from sqlalchemy import text
+
+    if is_sqlite():
+        exists = (
+            await conn.execute(
+                text("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'production_part_instances'")
+            )
+        ).scalar_one_or_none()
+        if exists is None:
+            return
+        await _safe_execute(conn, "DROP INDEX IF EXISTS uq_production_part_instance_part_printer")
+        needs_rebuild = False
+        index_rows = (await conn.execute(text("PRAGMA index_list('production_part_instances')"))).all()
+        for row in index_rows:
+            unique = row[2]
+            name = row[1]
+            if not unique:
+                continue
+            cols = [info[2] for info in (await conn.execute(text(f'PRAGMA index_info("{name}")'))).all()]
+            if cols == ["part_id", "printer_model"]:
+                needs_rebuild = True
+                break
+        if needs_rebuild:
+            async with conn.begin_nested():
+                await conn.execute(
+                    text(
+                        """
+                        CREATE TABLE production_part_instances__new (
+                            id INTEGER PRIMARY KEY,
+                            part_id INTEGER NOT NULL,
+                            printer_model VARCHAR(32) NOT NULL,
+                            folder_id INTEGER NOT NULL,
+                            locked_parameters JSON,
+                            hidden BOOLEAN DEFAULT 0,
+                            created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+                            updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+                            CONSTRAINT uq_production_part_instance_part_printer_folder
+                                UNIQUE (part_id, printer_model, folder_id)
+                        )
+                        """
+                    )
+                )
+                await conn.execute(
+                    text(
+                        "INSERT INTO production_part_instances__new "
+                        "(id, part_id, printer_model, folder_id, locked_parameters, hidden, created_at, updated_at) "
+                        "SELECT id, part_id, printer_model, folder_id, locked_parameters, hidden, created_at, updated_at "
+                        "FROM production_part_instances"
+                    )
+                )
+                await conn.execute(text("DROP TABLE production_part_instances"))
+                await conn.execute(
+                    text("ALTER TABLE production_part_instances__new RENAME TO production_part_instances")
+                )
+        await _safe_execute(
+            conn,
+            "CREATE UNIQUE INDEX IF NOT EXISTS uq_production_part_instance_part_printer_folder "
+            "ON production_part_instances (part_id, printer_model, folder_id)",
+        )
+        return
+
+    await _safe_execute(
+        conn,
+        "ALTER TABLE production_part_instances DROP CONSTRAINT IF EXISTS uq_production_part_instance_part_printer",
+    )
+    await _safe_execute(
+        conn,
+        "ALTER TABLE production_part_instances "
+        "ADD CONSTRAINT uq_production_part_instance_part_printer_folder "
+        "UNIQUE (part_id, printer_model, folder_id)",
     )
 
 

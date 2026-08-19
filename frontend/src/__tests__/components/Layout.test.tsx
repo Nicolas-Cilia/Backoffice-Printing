@@ -106,6 +106,7 @@ describe('Layout', () => {
         // Settings link should exist (route /settings)
         const settingsLink = document.querySelector('a[href="/settings"]');
         expect(settingsLink).toBeInTheDocument();
+        expect(settingsLink?.className).toContain('hover:text-white');
       });
     });
 

@@ -28,6 +28,7 @@ from backend.app.api.routes import (
     cloud,
     discovery,
     external_links,
+    filament_tracking,
     filaments,
     firmware,
     github_backup,
@@ -55,6 +56,8 @@ from backend.app.api.routes import (
     print_queue,
     printer_sensor_history,
     printers,
+    production,
+    profile_parts,
     settings as settings_routes,
     slice_jobs,
     slicer_pipelines,
@@ -5418,6 +5421,52 @@ async def on_print_complete(printer_id: int, data: dict):
                 )
                 await db.commit()
                 logger.info("[PRINT_LOG] Log entry written for archive %s", archive_id)
+
+                try:
+                    from backend.app.services.filament_tracking import record_print_usage
+                    from backend.app.utils.threemf_tools import extract_filament_usage_from_3mf
+
+                    tracking_slots: list[dict] = []
+                    tracking_status = _run_status
+                    tracking_progress = data.get("progress")
+                    if _est_full_path is not None and _est_full_path.exists():
+                        tracking_slots = extract_filament_usage_from_3mf(_est_full_path, archive.plate_id)
+                    if not tracking_slots and _run_grams:
+                        types = [
+                            part.strip() for part in (archive.filament_type or "UNKNOWN").split(",") if part.strip()
+                        ]
+                        colors = [part.strip() for part in (archive.filament_color or "").split(",") if part.strip()]
+                        count = max(len(types), len(colors), 1)
+                        each = round(float(_run_grams) / count, 1)
+                        tracking_slots = [
+                            {
+                                "type": types[i] if i < len(types) else types[-1],
+                                "color": colors[i] if i < len(colors) else (colors[-1] if colors else None),
+                                "used_g": each,
+                            }
+                            for i in range(count)
+                        ]
+                        tracking_status = "completed"
+                        tracking_progress = 100
+                    if tracking_slots:
+                        await record_print_usage(
+                            db,
+                            slots=tracking_slots,
+                            status=tracking_status,
+                            progress=tracking_progress,
+                            archive_id=archive.id,
+                            printer_id=printer_id,
+                            print_name=archive.print_name,
+                            occurred_at=archive.completed_at,
+                            ams_mapping=stored_ams_mapping,
+                        )
+                        await db.commit()
+                except Exception as track_err:
+                    logger.warning(
+                        "[FILAMENT_TRACKING] Failed to record usage for archive %s: %s",
+                        archive_id,
+                        track_err,
+                    )
     except Exception as e:
         logger.warning("[PRINT_LOG] Failed to write log entry for archive %s: %s", archive_id, e)
 
@@ -7629,21 +7678,27 @@ async def auth_middleware(request, call_next):
     # probe — GHSA-6mf4-q26m-47pv: the previous fail-open path here let
     # an attacker who could force a DB exception (e.g. file-descriptor
     # exhaustion via login flood) bypass auth on every protected endpoint.
+    #
+    # ``call_next`` MUST stay outside this try. When auth is disabled the
+    # probe succeeds and the route runs; wrapping dispatch here turned
+    # every handler exception (SQLite lock, 404 HTTPException that
+    # BaseHTTPMiddleware re-raises, …) into a fake "Authentication
+    # service temporarily unavailable" 503.
     try:
         async with async_session() as db:
             from backend.app.core.auth import is_auth_enabled
 
             auth_enabled = await is_auth_enabled(db)
-
-        if not auth_enabled:
-            # Auth disabled, allow all requests
-            return await call_next(request)
     except Exception:
         logging.getLogger(__name__).exception("auth_middleware: failing closed on auth-probe error from %s", path)
         return JSONResponse(
             status_code=503,
             content={"detail": "Authentication service temporarily unavailable"},
         )
+
+    if not auth_enabled:
+        # Auth disabled, allow all requests
+        return await call_next(request)
 
     # Auth is enabled - require valid token
     auth_header = request.headers.get("Authorization")
@@ -7782,6 +7837,7 @@ app.include_router(groups.router, prefix=app_settings.api_prefix)
 app.include_router(printers.router, prefix=app_settings.api_prefix)
 app.include_router(archives.router, prefix=app_settings.api_prefix)
 app.include_router(filaments.router, prefix=app_settings.api_prefix)
+app.include_router(filament_tracking.router, prefix=app_settings.api_prefix)
 app.include_router(inventory.router, prefix=app_settings.api_prefix)
 app.include_router(labels.router, prefix=app_settings.api_prefix)
 app.include_router(settings_routes.router, prefix=app_settings.api_prefix)
@@ -7807,6 +7863,8 @@ app.include_router(library.router, prefix=app_settings.api_prefix)
 app.include_router(library_sections.router, prefix=app_settings.api_prefix)
 app.include_router(library_tags.router, prefix=app_settings.api_prefix)
 app.include_router(library_trash.router, prefix=app_settings.api_prefix)
+app.include_router(production.router, prefix=app_settings.api_prefix)
+app.include_router(profile_parts.router, prefix=app_settings.api_prefix)
 app.include_router(slice_jobs.router, prefix=app_settings.api_prefix)
 app.include_router(slicer_pipelines.router, prefix=app_settings.api_prefix)
 app.include_router(pipeline_runs.pipeline_run_create_router, prefix=app_settings.api_prefix)

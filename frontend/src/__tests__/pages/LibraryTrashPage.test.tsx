@@ -46,6 +46,7 @@ describe('LibraryTrashPage', () => {
     render(<LibraryTrashPage />);
 
     expect(await screen.findByText(/trash is empty/i)).toBeInTheDocument();
+    expect(screen.getByRole('heading', { level: 1, name: /trash/i })).toHaveClass('text-white');
   });
 
   it('renders trashed files and the retention control for admins', async () => {
