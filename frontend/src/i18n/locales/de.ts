@@ -1320,7 +1320,6 @@ export default {
       flowCalibration: 'Fluss-Kalibrierung',
       vibrationCalibration: 'Vibrations-Kalibrierung',
       layerInspection: 'Erste-Schicht-Prüfung',
-      timelapse: 'Zeitraffer',
       useAms: 'AMS verwenden',
       nozzleOffsetCali: 'Düsenversatz-Kalibrierung',
       applyChanges: 'Änderungen übernehmen',
@@ -2097,8 +2096,6 @@ export default {
     defaultVibrationCaliDesc: 'Ringing-Artefakte reduzieren',
     defaultLayerInspect: 'Erste-Schicht-Inspektion',
     defaultLayerInspectDesc: 'KI-Inspektion der ersten Schicht',
-    defaultTimelapse: 'Zeitraffer',
-    defaultTimelapseDesc: 'Zeitraffervideo aufnehmen',
     defaultNozzleOffsetCali: 'Düsenversatz-Kalibrierung',
     defaultNozzleOffsetCaliDesc: 'Düsenversatz zwischen Extrudern kalibrieren',
     tempFanPresetsTitle: 'Temperatur- und Lüfter-Vorgaben',
@@ -4381,19 +4378,6 @@ export default {
     spoolmanCatalogLoadFailed: 'Spoolman-Filamentkatalog konnte nicht geladen werden',
   },
 
-  // Timelapse
-  timelapse: {
-    title: 'Zeitraffer',
-    create: 'Zeitraffer erstellen',
-    download: 'Herunterladen',
-    delete: 'Löschen',
-    preview: 'Vorschau',
-    frameRate: 'Bildrate',
-    quality: 'Qualität',
-    processing: 'Wird verarbeitet...',
-    noTimelapses: 'Keine Zeitraffer verfügbar',
-  },
-
   // AMS
   ams: {
     title: 'AMS',
@@ -5835,12 +5819,6 @@ export default {
     resetZoom: 'Zoom zurücksetzen',
     zoomIn: 'Vergrößern',
     dragToResize: 'Ziehen zum Größe ändern',
-  },
-
-  // Timelapse Viewer
-  timelapseViewer: {
-    skipBack5s: '5s zurückspringen',
-    skipForward5s: '5s vorspringen',
   },
 
   // Notification Providers

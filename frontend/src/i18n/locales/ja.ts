@@ -1319,7 +1319,6 @@ export default {
       flowCalibration: 'フローキャリブレーション',
       vibrationCalibration: '振動キャリブレーション',
       layerInspection: '第一層検査',
-      timelapse: 'タイムラプス',
       useAms: 'AMS使用',
       nozzleOffsetCali: 'ノズルオフセットキャリブレーション',
       applyChanges: '変更を適用',
@@ -2096,8 +2095,6 @@ export default {
     defaultVibrationCaliDesc: 'リンギングアーティファクトを低減',
     defaultLayerInspect: '第1層検査',
     defaultLayerInspectDesc: 'AIによる第1層の検査',
-    defaultTimelapse: 'タイムラプス',
-    defaultTimelapseDesc: 'タイムラプス動画を記録',
     defaultNozzleOffsetCali: 'ノズルオフセットキャリブレーション',
     defaultNozzleOffsetCaliDesc: 'エクストルーダー間のノズルオフセットを校正',
     tempFanPresetsTitle: '温度・ファンプリセット',
@@ -4381,19 +4378,6 @@ export default {
     spoolmanCatalogLoadFailed: 'Spoolmanのフィラメントカタログを読み込めませんでした',
   },
 
-  // Timelapse
-  timelapse: {
-    title: 'タイムラプス',
-    create: 'タイムラプスを作成',
-    download: 'ダウンロード',
-    delete: '削除',
-    preview: 'プレビュー',
-    frameRate: 'フレームレート',
-    quality: '品質',
-    processing: 'バックアップファイルを処理中...',
-    noTimelapses: '利用可能なタイムラプスがありません',
-  },
-
   // AMS
   ams: {
     title: 'AMS',
@@ -5836,12 +5820,6 @@ export default {
     resetZoom: 'ズームをリセット',
     zoomIn: 'ズームイン',
     dragToResize: 'ドラッグしてサイズ変更',
-  },
-
-  // Timelapse Viewer
-  timelapseViewer: {
-    skipBack5s: '5秒戻る',
-    skipForward5s: '5秒進む',
   },
 
   // Notification Providers

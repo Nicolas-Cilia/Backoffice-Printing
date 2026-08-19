@@ -1248,7 +1248,6 @@ export default {
       flowCalibration: '유량 캘리브레이션',
       vibrationCalibration: '진동 캘리브레이션',
       layerInspection: '첫 번째 층 검사',
-      timelapse: '타임랩스',
       useAms: 'AMS 사용',
       nozzleOffsetCali: '노즐 오프셋 보정',
       applyChanges: '변경사항 적용',
@@ -1978,8 +1977,6 @@ export default {
     defaultVibrationCaliDesc: '링잉 아티팩트 감소',
     defaultLayerInspect: '첫 번째 층 검사',
     defaultLayerInspectDesc: '첫 번째 층 AI 검사',
-    defaultTimelapse: '타임랩스',
-    defaultTimelapseDesc: '타임랩스 영상 녹화',
     defaultNozzleOffsetCali: '노즐 오프셋 보정',
     defaultNozzleOffsetCaliDesc: '익스트루더 간 노즐 오프셋 보정',
     tempFanPresetsTitle: '온도 및 팬 프리셋',
@@ -4166,17 +4163,6 @@ export default {
     allConsumedCountersReset: '{{count}}개 스풀의 카운터가 초기화되었습니다',
     resetConsumedCounterFailed: '카운터 초기화 실패'
   },
-  timelapse: {
-    title: '타임랩스',
-    create: '타임랩스 만들기',
-    download: '다운로드',
-    delete: '삭제',
-    preview: '미리보기',
-    frameRate: '프레임 속도',
-    quality: '품질',
-    processing: '처리 중...',
-    noTimelapses: '사용 가능한 타임랩스 없음'
-  },
   ams: {
     title: 'AMS',
     slot: '슬롯',
@@ -5508,10 +5494,6 @@ export default {
     resetZoom: '배율 초기화',
     zoomIn: '확대',
     dragToResize: '드래그하여 크기 조정'
-  },
-  timelapseViewer: {
-    skipBack5s: '5초 뒤로',
-    skipForward5s: '5초 앞으로'
   },
   notificationProviders: {
     descriptions: {

@@ -1258,7 +1258,6 @@ export default {
       flowCalibration: "Калибровка потока",
       vibrationCalibration: "Калибровка вибраций",
       layerInspection: "Проверка первого слоя",
-      timelapse: "Таймлапс",
       useAms: "Использовать AMS",
       nozzleOffsetCali: "Калибровка смещения сопел",
       applyChanges: "Применить изменения",
@@ -1978,8 +1977,6 @@ export default {
     defaultVibrationCaliDesc: "Уменьшить артефакты звона",
     defaultLayerInspect: "Проверка первого слоя",
     defaultLayerInspectDesc: "Проверка первого слоя системой компьютерного зрения",
-    defaultTimelapse: "Таймлапс",
-    defaultTimelapseDesc: "Записывать таймлапс",
     defaultNozzleOffsetCali: "Калибровка смещения сопел",
     defaultNozzleOffsetCaliDesc: "Калибровать взаимное смещение сопел экструдеров",
     tempFanPresetsTitle: "Пресеты температуры и вентиляторов",
@@ -4155,17 +4152,6 @@ export default {
     spoolWeightManagedBySpoolman: "Масса пустой катушки задаётся в Spoolman для каждого типа филамента",
     spoolmanCatalogLoadFailed: "Не удалось загрузить каталог филаментов Spoolman",
   },
-  timelapse: {
-    title: "Таймлапс",
-    create: "Создать таймлапс",
-    download: "Скачать",
-    delete: "Удалить",
-    preview: "Предпросмотр",
-    frameRate: "Частота кадров",
-    quality: "Качество",
-    processing: "Обработка...",
-    noTimelapses: "Таймлапсы отсутствуют",
-  },
   ams: {
     title: "AMS",
     slot: "Слот",
@@ -5495,10 +5481,6 @@ export default {
     resetZoom: "Сбросить масштаб",
     zoomIn: "Увеличить",
     dragToResize: "Перетащите, чтобы изменить размер",
-  },
-  timelapseViewer: {
-    skipBack5s: "Назад на 5 с",
-    skipForward5s: "Вперёд на 5 с",
   },
   notificationProviders: {
     descriptions: {

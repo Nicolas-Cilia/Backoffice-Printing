@@ -1335,7 +1335,6 @@ export default {
       flowCalibration: 'Flow calibration',
       vibrationCalibration: 'Vibration calibration',
       layerInspection: 'First layer inspection',
-      timelapse: 'Timelapse',
       useAms: 'Use AMS',
       nozzleOffsetCali: 'Nozzle offset calibration',
       applyChanges: 'Apply Changes',
@@ -2116,8 +2115,6 @@ export default {
     defaultVibrationCaliDesc: 'Reduce ringing artifacts',
     defaultLayerInspect: 'First Layer Inspection',
     defaultLayerInspectDesc: 'AI inspection of first layer',
-    defaultTimelapse: 'Timelapse',
-    defaultTimelapseDesc: 'Record timelapse video',
     defaultNozzleOffsetCali: 'Nozzle Offset Calibration',
     defaultNozzleOffsetCaliDesc: 'Calibrate nozzle offsets between extruders',
     tempFanPresetsTitle: 'Temperature & Fan Presets',
@@ -2468,7 +2465,7 @@ export default {
     autoArchivePrints: 'Auto-archive prints',
     autoArchiveDescription: 'Automatically save 3MF files when prints complete',
     saveThumbnailsDescription: 'Extract and save preview images from 3MF files',
-    captureFinishPhotoDescription: 'Take a photo from printer camera when print completes. Bambuddy records a brief timelapse during the print so the photo can be sourced from the moment before the bed drops; the timelapse file is kept if you enabled timelapse for this print, otherwise it is deleted automatically after the photo is captured.',
+    captureFinishPhotoDescription: 'Take a photo from printer camera when print completes. Bambuddy banks a frame from the live camera feed just before the bed drops, so the photo reflects the finished print rather than an empty plate.',
     finishPhotoRestorePlate: 'Restore plate for finish photo',
     finishPhotoRestorePlateDescription: 'The printer drops the build plate about 100 mm when a print ends, leaving the finished print below the camera\'s framing. Bambuddy raises it back to just above the last printed layer, takes the photo, then lowers it again. Skipped when the print height is unknown or another job is queued.',
     ffmpegNotInstalled: 'ffmpeg not installed',
@@ -2487,7 +2484,7 @@ export default {
     cameraTypeUsb: 'USB Camera (V4L2)',
     cameraSnapshotUrl: 'Snapshot URL (optional)',
     cameraSnapshotUrlPlaceholder: 'http://192.168.1.61:1984/api/frame.jpeg?src=printer',
-    cameraSnapshotUrlHelp: 'Single-frame URL used for notification thumbnails, finish photos, layer-timelapse frames, and plate detection. Timelapse and plate detection each require their own per-printer toggle — this URL is just the image source they pull from when active. Leave blank to capture from the live stream above. Useful for go2rtc (/api/frame.jpeg) and IP cameras with a dedicated snapshot endpoint.',
+    cameraSnapshotUrlHelp: 'Single-frame URL used for notification thumbnails, finish photos, and plate detection. Plate detection requires its own per-printer toggle — this URL is just the image source it pulls from when active. Leave blank to capture from the live stream above. Useful for go2rtc (/api/frame.jpeg) and IP cameras with a dedicated snapshot endpoint.',
     cameraRotation: 'Rotation',
     test: 'Test',
     connected: 'Connected',
@@ -4424,19 +4421,6 @@ export default {
     spoolmanCatalogLoadFailed: 'Failed to load Spoolman filament catalog',
   },
 
-  // Timelapse
-  timelapse: {
-    title: 'Timelapse',
-    create: 'Create Timelapse',
-    download: 'Download',
-    delete: 'Delete',
-    preview: 'Preview',
-    frameRate: 'Frame Rate',
-    quality: 'Quality',
-    processing: 'Processing...',
-    noTimelapses: 'No timelapses available',
-  },
-
   // AMS
   ams: {
     title: 'AMS',
@@ -5879,12 +5863,6 @@ export default {
     resetZoom: 'Reset zoom',
     zoomIn: 'Zoom in',
     dragToResize: 'Drag to resize',
-  },
-
-  // Timelapse Viewer
-  timelapseViewer: {
-    skipBack5s: 'Skip back 5s',
-    skipForward5s: 'Skip forward 5s',
   },
 
   // Notification Providers

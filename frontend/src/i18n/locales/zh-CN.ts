@@ -1320,7 +1320,6 @@ export default {
       flowCalibration: '流量校准',
       vibrationCalibration: '振动校准',
       layerInspection: '首层检查',
-      timelapse: '延时摄影',
       useAms: '使用 AMS',
       nozzleOffsetCali: '喷嘴偏移校准',
       applyChanges: '应用更改',
@@ -2098,8 +2097,6 @@ export default {
     defaultVibrationCaliDesc: '减少振纹伪影',
     defaultLayerInspect: '首层检测',
     defaultLayerInspectDesc: 'AI首层检测',
-    defaultTimelapse: '延时摄影',
-    defaultTimelapseDesc: '录制延时摄影视频',
     defaultNozzleOffsetCali: '喷嘴偏移校准',
     defaultNozzleOffsetCaliDesc: '校准两个挤出机之间的喷嘴偏移',
     tempFanPresetsTitle: '温度与风扇预设',
@@ -4369,19 +4366,6 @@ export default {
     spoolmanCatalogLoadFailed: '无法加载 Spoolman 耗材目录',
   },
 
-  // Timelapse
-  timelapse: {
-    title: '延时摄影',
-    create: '创建延时摄影',
-    download: '下载',
-    delete: '删除',
-    preview: '预览',
-    frameRate: '帧率',
-    quality: '质量',
-    processing: '处理中...',
-    noTimelapses: '无可用延时摄影',
-  },
-
   // AMS
   ams: {
     title: 'AMS',
@@ -5823,12 +5807,6 @@ export default {
     resetZoom: '重置缩放',
     zoomIn: '放大',
     dragToResize: '拖动调整大小',
-  },
-
-  // Timelapse Viewer
-  timelapseViewer: {
-    skipBack5s: '后退 5 秒',
-    skipForward5s: '前进 5 秒',
   },
 
   // Notification Providers

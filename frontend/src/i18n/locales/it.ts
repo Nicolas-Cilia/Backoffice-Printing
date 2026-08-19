@@ -1320,7 +1320,6 @@ export default {
       flowCalibration: 'Calibrazione flusso',
       vibrationCalibration: 'Calibrazione vibrazioni',
       layerInspection: 'Controllo primo layer',
-      timelapse: 'Timelapse',
       useAms: 'Usa AMS',
       nozzleOffsetCali: 'Calibrazione offset ugelli',
       applyChanges: 'Applica modifiche',
@@ -2053,8 +2052,6 @@ export default {
     defaultVibrationCaliDesc: 'Riduce gli artefatti di ringing',
     defaultLayerInspect: 'Ispezione primo strato',
     defaultLayerInspectDesc: 'Ispezione IA del primo strato',
-    defaultTimelapse: 'Timelapse',
-    defaultTimelapseDesc: 'Registra un video timelapse',
     defaultNozzleOffsetCali: 'Calibrazione offset ugelli',
     defaultNozzleOffsetCaliDesc: 'Calibra gli offset tra gli ugelli',
     tempFanPresetsTitle: 'Preset di temperatura e ventola',
@@ -4369,19 +4366,6 @@ export default {
     spoolmanCatalogLoadFailed: 'Impossibile caricare il catalogo Spoolman',
   },
 
-  // Timelapse
-  timelapse: {
-    title: 'Timelapse',
-    create: 'Crea timelapse',
-    download: 'Scarica',
-    delete: 'Elimina',
-    preview: 'Anteprima',
-    frameRate: 'Frame rate',
-    quality: 'Qualità',
-    processing: 'Elaborazione...',
-    noTimelapses: 'Nessun timelapse disponibile',
-  },
-
   // AMS
   ams: {
     title: 'AMS',
@@ -5824,12 +5808,6 @@ export default {
     resetZoom: 'Reimposta zoom',
     zoomIn: 'Ingrandisci',
     dragToResize: 'Trascina per ridimensionare',
-  },
-
-  // Timelapse Viewer
-  timelapseViewer: {
-    skipBack5s: 'Indietro 5s',
-    skipForward5s: 'Avanti 5s',
   },
 
   // Notification Providers

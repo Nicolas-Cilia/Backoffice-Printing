@@ -1320,7 +1320,6 @@ export default {
       flowCalibration: 'Akış kalibrasyonu',
       vibrationCalibration: 'Titreşim kalibrasyonu',
       layerInspection: 'İlk katman denetimi',
-      timelapse: 'Zaman atlamalı video',
       useAms: "AMS Kullan",
       nozzleOffsetCali: 'Nozül ofset kalibrasyonu',
       applyChanges: 'Değişiklikleri Uygula',
@@ -2101,8 +2100,6 @@ export default {
     defaultVibrationCaliDesc: 'Çınlama artefaktlarını azalt',
     defaultLayerInspect: 'İlk Katman Denetimi',
     defaultLayerInspectDesc: 'İlk katmanın AI denetimi',
-    defaultTimelapse: 'Zaman Atlamalı Video',
-    defaultTimelapseDesc: 'Zaman atlamalı video kaydet',
     defaultNozzleOffsetCali: 'Nozül Ofset Kalibrasyonu',
     defaultNozzleOffsetCaliDesc: 'Ekstrüderler arasındaki nozül ofsetlerini kalibre et',
     tempFanPresetsTitle: 'Sıcaklık ve Fan Ön Ayarları',
@@ -4365,19 +4362,6 @@ export default {
     spoolmanCatalogLoadFailed: 'Spoolman filament kataloğu yüklenemedi',
   },
 
-  // Zaman Atlamalı Video
-  timelapse: {
-    title: 'Zaman Atlamalı Video',
-    create: 'Zaman Atlamalı Video Oluştur',
-    download: 'İndir',
-    delete: 'Sil',
-    preview: 'Önizleme',
-    frameRate: 'Kare Hızı',
-    quality: 'Kalite',
-    processing: 'İşleniyor...',
-    noTimelapses: 'Kullanılabilir zaman atlamalı video yok',
-  },
-
   // AMS
   ams: {
     title: 'AMS',
@@ -5786,12 +5770,6 @@ export default {
     resetZoom: 'Yakınlaştırmayı sıfırla',
     zoomIn: 'Yakınlaştır',
     dragToResize: 'Yeniden boyutlandırmak için sürükleyin',
-  },
-
-  // Zaman Atlamalı Video Görüntüleyici
-  timelapseViewer: {
-    skipBack5s: '5 sn geri al',
-    skipForward5s: '5 sn ileri al',
   },
 
   // Bildirim Sağlayıcıları

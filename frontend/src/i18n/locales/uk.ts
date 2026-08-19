@@ -1335,7 +1335,6 @@ export default {
       flowCalibration: "Калібрування потоку",
       vibrationCalibration: "Калібрування вібрації",
       layerInspection: "Перевірка першого шару",
-      timelapse: "Таймлапс",
       useAms: "Використовувати AMS",
       nozzleOffsetCali: "Калібрування зсуву сопла",
       applyChanges: "Застосувати зміни",
@@ -2116,8 +2115,6 @@ export default {
     defaultVibrationCaliDesc: "Зменшувати артефакти від вібрації",
     defaultLayerInspect: "Перевірка першого шару",
     defaultLayerInspectDesc: "Перевірка першого шару за допомогою ШІ",
-    defaultTimelapse: "Таймлапс",
-    defaultTimelapseDesc: "Записувати таймлапс",
     defaultNozzleOffsetCali: "Калібрування зсуву сопла",
     defaultNozzleOffsetCaliDesc: "Калібрувати зміщення сопел між екструдерами",
     tempFanPresetsTitle: "Профілі температури та вентилятора",
@@ -4424,19 +4421,6 @@ export default {
     spoolmanCatalogLoadFailed: "Не вдалося завантажити каталог філаментів Spoolman",
   },
 
-  // Timelapse
-  timelapse: {
-    title: "Таймлапс",
-    create: "Створити Timelapse",
-    download: "Завантажити",
-    delete: "Видалити",
-    preview: "Попередній перегляд",
-    frameRate: "Частота кадрів",
-    quality: "якість",
-    processing: "Обробка...",
-    noTimelapses: "Немає таймлапсів",
-  },
-
   // AMS
   ams: {
     title: "AMS",
@@ -5879,12 +5863,6 @@ export default {
     resetZoom: "Скинути масштаб",
     zoomIn: "Збільшити",
     dragToResize: "Перетягніть, щоб змінити розмір",
-  },
-
-  // Timelapse Viewer
-  timelapseViewer: {
-    skipBack5s: "Перейти на 5 секунд назад",
-    skipForward5s: "Перейти вперед на 5 с",
   },
 
   // Notification Providers
