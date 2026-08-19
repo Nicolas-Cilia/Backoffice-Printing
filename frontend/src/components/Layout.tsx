@@ -4,7 +4,6 @@ import { Printer, ListOrdered, BarChart3, Cloud, Settings, Sun, Moon, Monitor, C
 import { useTranslation } from 'react-i18next';
 import { useTheme } from '../contexts/ThemeContext';
 import { KeyboardShortcutsModal } from './KeyboardShortcutsModal';
-import { InstallAppButton } from './InstallAppButton';
 import { SwitchbarPopover } from './SwitchbarPopover';
 import { useQuery, useQueries } from '@tanstack/react-query';
 import { api, supportApi, type Permission } from '../api/client';
@@ -19,7 +18,6 @@ import { useToast } from '../contexts/ToastContext';
 import { Card, CardHeader, CardContent } from './Card';
 import { parseUTCDate } from '../utils/date';
 import { Button } from './Button';
-import { BugReportBubble } from './BugReportBubble';
 import {
   getHiddenSidebarSystemItemIds,
   getSidebarOrder,
@@ -640,9 +638,8 @@ export function Layout() {
                     <Info className="w-5 h-5" />
                   </span>
                 )}
-                <InstallAppButton />
                 <a
-                  href="https://github.com/maziggy/bambuddy"
+                  href="https://github.com/Nicolas-Cilia/Backoffice-Printing"
                   target="_blank"
                   rel="noopener noreferrer"
                   className="p-2 rounded-lg hover:bg-bambu-dark-tertiary transition-colors text-bambu-gray-light hover:text-white"
@@ -726,9 +723,8 @@ export function Layout() {
                   <Info className="w-5 h-5" />
                 </span>
               )}
-              <InstallAppButton />
               <a
-                href="https://github.com/maziggy/bambuddy"
+                href="https://github.com/Nicolas-Cilia/Backoffice-Printing"
                 target="_blank"
                 rel="noopener noreferrer"
                 className="p-2 rounded-lg hover:bg-bambu-dark-tertiary transition-colors text-bambu-gray-light hover:text-white"
@@ -1017,7 +1013,6 @@ export function Layout() {
           </Card>
         </div>
       )}
-      <BugReportBubble />
     </div>
   );
 }

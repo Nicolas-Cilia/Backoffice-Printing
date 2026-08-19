@@ -9,6 +9,7 @@ Thank you for your interest in contributing to Bambuddy! This document provides 
 - [Documentation Requirements](#documentation-requirements)
 - [Getting Started](#getting-started)
 - [Development Setup](#development-setup)
+- [Releasing the Docker Image](#releasing-the-docker-image)
 - [Making Changes](#making-changes)
 - [Code Style](#code-style)
 - [Internationalization (i18n)](#internationalization-i18n)
@@ -146,6 +147,26 @@ docker compose up -d --build
 docker compose -f docker-compose.test.yml run --rm backend-test
 docker compose -f docker-compose.test.yml run --rm frontend-test
 ```
+
+## Releasing the Docker Image
+
+Maintainer task — publishes a new multi-arch image to `ghcr.io/nicolas-cilia/backoffice-printing`:
+
+```bash
+cd /path/to/your/regular/bambuddy/checkout   # NOT a git worktree — see below
+git checkout main
+git pull
+./docker-publish.sh <version> --ghcr-only
+```
+
+This builds `linux/amd64` and `linux/arm64` and pushes both `:<version>` and `:latest`.
+Requires a one-time `docker login ghcr.io` with a PAT that has `write:packages` scope
+(see the script's own header comment for details).
+
+**Must be run from a regular checkout, never a git worktree** (e.g. `.claude/worktrees/*`).
+In a worktree, `.git` is a pointer file rather than a directory, so the Dockerfile's
+`COPY .git/HEAD ./.git/HEAD` step — which embeds the build branch for SpoolBuddy's
+remote-update flow — has nothing to copy and the build fails.
 
 ## Making Changes
 
@@ -388,7 +409,7 @@ All checks must pass before merging. Run `./test_all.sh` locally before pushing 
 
 ## Reporting Bugs
 
-Use the [Bug Report template](https://github.com/maziggy/bambuddy/issues/new?template=bug_report.yml) and include:
+Use the [Bug Report template](https://github.com/Nicolas-Cilia/Backoffice-Printing/issues/new?template=bug_report.yml) and include:
 
 - Clear description of the bug
 - Steps to reproduce
@@ -399,7 +420,7 @@ Use the [Bug Report template](https://github.com/maziggy/bambuddy/issues/new?tem
 
 ## Requesting Features
 
-Use the [Feature Request template](https://github.com/maziggy/bambuddy/issues/new?template=feature_request.yml) and include:
+Use the [Feature Request template](https://github.com/Nicolas-Cilia/Backoffice-Printing/issues/new?template=feature_request.yml) and include:
 
 - Clear description of the feature
 - Use case / problem it solves
@@ -408,9 +429,9 @@ Use the [Feature Request template](https://github.com/maziggy/bambuddy/issues/ne
 
 ## Questions?
 
-- Check the [Documentation](http://wiki.bambuddy.cool)
-- Open a [Discussion](https://github.com/maziggy/bambuddy/discussions)
-- Review existing [Issues](https://github.com/maziggy/bambuddy/issues)
+- Check the [Documentation](docs/)
+- Open a [Discussion](https://github.com/Nicolas-Cilia/Backoffice-Printing/discussions)
+- Review existing [Issues](https://github.com/Nicolas-Cilia/Backoffice-Printing/issues)
 
 ---
 

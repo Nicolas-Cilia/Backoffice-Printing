@@ -26,8 +26,6 @@ export default {
     switchToSystem: 'Zum Systemmodus wechseln',
     smartSwitches: 'Smart Switches',
     logout: 'Abmelden',
-    installApp: 'App installieren',
-    installAppSuccess: 'Bambuddy wurde installiert',
   },
 
   // Common
@@ -1322,7 +1320,6 @@ export default {
       flowCalibration: 'Fluss-Kalibrierung',
       vibrationCalibration: 'Vibrations-Kalibrierung',
       layerInspection: 'Erste-Schicht-Prüfung',
-      timelapse: 'Zeitraffer',
       useAms: 'AMS verwenden',
       nozzleOffsetCali: 'Düsenversatz-Kalibrierung',
       applyChanges: 'Änderungen übernehmen',
@@ -2099,8 +2096,6 @@ export default {
     defaultVibrationCaliDesc: 'Ringing-Artefakte reduzieren',
     defaultLayerInspect: 'Erste-Schicht-Inspektion',
     defaultLayerInspectDesc: 'KI-Inspektion der ersten Schicht',
-    defaultTimelapse: 'Zeitraffer',
-    defaultTimelapseDesc: 'Zeitraffervideo aufnehmen',
     defaultNozzleOffsetCali: 'Düsenversatz-Kalibrierung',
     defaultNozzleOffsetCaliDesc: 'Düsenversatz zwischen Extrudern kalibrieren',
     tempFanPresetsTitle: 'Temperatur- und Lüfter-Vorgaben',
@@ -4383,19 +4378,6 @@ export default {
     spoolmanCatalogLoadFailed: 'Spoolman-Filamentkatalog konnte nicht geladen werden',
   },
 
-  // Timelapse
-  timelapse: {
-    title: 'Zeitraffer',
-    create: 'Zeitraffer erstellen',
-    download: 'Herunterladen',
-    delete: 'Löschen',
-    preview: 'Vorschau',
-    frameRate: 'Bildrate',
-    quality: 'Qualität',
-    processing: 'Wird verarbeitet...',
-    noTimelapses: 'Keine Zeitraffer verfügbar',
-  },
-
   // AMS
   ams: {
     title: 'AMS',
@@ -5540,18 +5522,6 @@ export default {
   },
 
   // Rich Text Editor
-  richTextEditor: {
-    bold: 'Fett',
-    italic: 'Kursiv',
-    underline: 'Unterstrichen',
-    bulletList: 'Aufzählungsliste',
-    numberedList: 'Nummerierte Liste',
-    alignLeft: 'Linksbündig',
-    alignCenter: 'Zentriert',
-    alignRight: 'Rechtsbündig',
-    addLink: 'Link hinzufügen',
-    removeLink: 'Link entfernen',
-  },
 
   // External Links
   externalLinks: {
@@ -5849,12 +5819,6 @@ export default {
     resetZoom: 'Zoom zurücksetzen',
     zoomIn: 'Vergrößern',
     dragToResize: 'Ziehen zum Größe ändern',
-  },
-
-  // Timelapse Viewer
-  timelapseViewer: {
-    skipBack5s: '5s zurückspringen',
-    skipForward5s: '5s vorspringen',
   },
 
   // Notification Providers
@@ -6310,46 +6274,6 @@ export default {
     },
   },
 
-  bugReport: {
-    logHealthSummary: 'Bekannte Probleme in deinen Logs gefunden',
-    logHealthIntro: 'Aktuelle Logs entsprechen bekannten Problemen. Sieh dir die Lösungen unten an — sie zu beheben könnte dein Problem ohne Fehlerbericht lösen. Du kannst unten trotzdem einen Bericht senden.',
-    title: 'Fehler melden',
-    description: 'Beschreibung',
-    descriptionPlaceholder: 'Was ist schiefgelaufen? Bitte beschreiben Sie das Problem...',
-    email: 'E-Mail (optional)',
-    emailPlaceholder: 'ihre@email.de',
-    emailPrivacy: 'Falls angegeben, wird Ihre E-Mail in einem eingeklappten Abschnitt des GitHub-Issues aufgeführt, damit der Betreuer sich melden kann.',
-    screenshot: 'Screenshot',
-    uploadOrPaste: 'Bild hochladen, einfügen oder ziehen',
-    dataCollectedSummary: 'Welche Daten werden im Bericht gesendet?',
-    dataIncluded: 'Enthalten:',
-    dataIncludedList: 'App-Version, Betriebssystem, Architektur, Python-Version, Datenbankstatistiken (nur Anzahl), Druckermodelle, Düsenanzahl, Firmware-Versionen, Verbindungsstatus, Integrationsstatus (Spoolman, MQTT, HA), nicht-sensible Einstellungen, Netzwerkschnittstellenanzahl, Docker-Details, Abhängigkeitsversionen.',
-    dataNeverIncluded: 'Nie enthalten:',
-    dataNeverIncludedList: 'Druckernamen, Seriennummern, Zugangscodes, Passwörter, IP-Adressen, E-Mail-Adressen, API-Schlüssel, Tokens, Webhook-URLs, Hostnamen oder Benutzernamen.',
-    submit: 'Absenden',
-    startLogging: 'Debug-Protokollierung starten',
-    stepEnableLogging: 'Debug-Protokollierung aktiviert',
-    stepReproduce: 'Problem jetzt reproduzieren',
-    stepStopLogging: 'Stoppen & Bericht senden',
-    stopAndSubmit: 'Stoppen & Senden',
-    maxDuration: 'Stoppt automatisch nach {{minutes}} Min.',
-    stoppingLogs: 'Protokolle sammeln & senden...',
-    submitting: 'Fehlerbericht wird gesendet...',
-    submittingStepConnection: 'Drucker-Verbindungsprüfungen werden ausgeführt',
-    submittingStepVirtualPrinters: 'Setup-Prüfungen für virtuelle Drucker werden ausgeführt',
-    submittingStepLogScan: 'Aktuelle Protokolle werden auf bekannte Probleme überprüft',
-    submittingStepSubmit: 'Bericht wird an GitHub gesendet',
-    submitSuccess: 'Fehlerbericht erfolgreich gesendet!',
-    submitFailed: 'Fehlerbericht konnte nicht gesendet werden',
-    diagnosticChecking: 'Druckerverbindungen werden geprüft...',
-    diagnosticHealthy: 'Verbindungsprüfung bestanden — keine Probleme an Ihren Druckern gefunden.',
-    diagnosticSummary: '{{problems}} von {{total}} Druckern haben Verbindungsprobleme',
-    diagnosticIntro: 'Einer oder mehrere Drucker haben ein Verbindungsproblem, das die Ursache Ihres Problems sein könnte. Klappen Sie einen Drucker unten auf, um die Lösung zu sehen — sie zu beheben könnte das Problem ohne Fehlerbericht lösen. Sie können unten dennoch einen Bericht senden.',
-    thankYou: 'Vielen Dank!',
-    submitted: 'Ihr Fehlerbericht wurde eingereicht.',
-    viewIssue: 'Issue ansehen',
-    unexpectedError: 'Ein unerwarteter Fehler ist aufgetreten',
-  },
   failureDetection: {
     title: 'KI-Fehlererkennung',
     description: 'Überwacht Drucke über eine selbst gehostete Obico-ML-API und reagiert automatisch auf erkannte Fehldrucke.',

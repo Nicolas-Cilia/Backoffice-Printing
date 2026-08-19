@@ -191,7 +191,6 @@ async def _build_settings_response(db: AsyncSession, is_api_key: bool = False) -
             # branch; the TriState validator coerces legacy "true"/"false" rows.
             "default_vibration_cali",
             "default_layer_inspect",
-            "default_timelapse",
             "ldap_enabled",
             "ldap_auto_provision",
             "local_login_enabled",

@@ -1,6 +1,6 @@
 services:
   bambuddy:
-    image: ghcr.io/maziggy/bambuddy:latest
+    image: ghcr.io/nicolas-cilia/backoffice-printing:latest
     build: .
     # Usage:
     #   docker compose up -d          → pulls pre-built image from ghcr.io

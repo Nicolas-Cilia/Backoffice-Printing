@@ -490,7 +490,6 @@ class TestSettingsAPI:
         assert result["default_flow_cali"] == "auto"
         assert result["default_vibration_cali"] is True
         assert result["default_layer_inspect"] is False
-        assert result["default_timelapse"] is False
 
     @pytest.mark.asyncio
     @pytest.mark.integration
@@ -503,7 +502,6 @@ class TestSettingsAPI:
                 "default_flow_cali": "on",
                 "default_vibration_cali": False,
                 "default_layer_inspect": True,
-                "default_timelapse": True,
             },
         )
 
@@ -513,7 +511,6 @@ class TestSettingsAPI:
         assert result["default_flow_cali"] == "on"
         assert result["default_vibration_cali"] is False
         assert result["default_layer_inspect"] is True
-        assert result["default_timelapse"] is True
 
     @pytest.mark.asyncio
     @pytest.mark.integration
@@ -540,14 +537,12 @@ class TestSettingsAPI:
             "/api/v1/settings/",
             json={
                 "default_bed_levelling": "on",
-                "default_timelapse": True,
             },
         )
 
         response = await async_client.get("/api/v1/settings/")
         result = response.json()
         assert result["default_bed_levelling"] == "on"
-        assert result["default_timelapse"] is True
 
     @pytest.mark.asyncio
     @pytest.mark.integration

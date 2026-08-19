@@ -26,8 +26,6 @@ export default {
     switchToSystem: 'Cambiar a modo del sistema',
     smartSwitches: 'Interruptores inteligentes',
     logout: 'Cerrar sesión',
-    installApp: 'Instalar app',
-    installAppSuccess: 'Bambuddy se ha instalado',
   },
 
   // Common
@@ -1322,7 +1320,6 @@ export default {
       flowCalibration: 'Calibración del flujo',
       vibrationCalibration: 'Calibración de vibración',
       layerInspection: 'Inspección de la primera capa',
-      timelapse: 'Time-lapse',
       useAms: 'Usar AMS',
       nozzleOffsetCali: 'Calibración del offset de boquillas',
       applyChanges: 'Aplicar cambios',
@@ -2102,8 +2099,6 @@ export default {
     defaultVibrationCaliDesc: 'Reducir los artefactos de resonancia',
     defaultLayerInspect: 'Inspección de la primera capa',
     defaultLayerInspectDesc: 'Inspección de la primera capa por IA',
-    defaultTimelapse: 'Time-lapse',
-    defaultTimelapseDesc: 'Grabar vídeo time-lapse',
     defaultNozzleOffsetCali: 'Calibración del offset de boquillas',
     defaultNozzleOffsetCaliDesc: 'Calibrar los desplazamientos entre boquillas',
     tempFanPresetsTitle: 'Predefinidos de temperatura y ventilador',
@@ -4391,19 +4386,6 @@ export default {
     spoolmanCatalogLoadFailed: 'Error al cargar el catálogo de filamentos de Spoolman',
   },
 
-  // Timelapse
-  timelapse: {
-    title: 'Time-lapse',
-    create: 'Crear time-lapse',
-    download: 'Descargar',
-    delete: 'Eliminar',
-    preview: 'Vista previa',
-    frameRate: 'Velocidad de fotogramas',
-    quality: 'Calidad',
-    processing: 'Procesando...',
-    noTimelapses: 'No hay time-lapses disponibles',
-  },
-
   // AMS
   ams: {
     title: 'AMS',
@@ -5549,18 +5531,6 @@ export default {
   },
 
   // Rich Text Editor
-  richTextEditor: {
-    bold: 'Negrita',
-    italic: 'Cursiva',
-    underline: 'Subrayado',
-    bulletList: 'Lista con viñetas',
-    numberedList: 'Lista numerada',
-    alignLeft: 'Alinear a la izquierda',
-    alignCenter: 'Centrar',
-    alignRight: 'Alinear a la derecha',
-    addLink: 'Añadir enlace',
-    removeLink: 'Quitar enlace',
-  },
 
   // External Links
   externalLinks: {
@@ -5858,12 +5828,6 @@ export default {
     resetZoom: 'Restablecer el zoom',
     zoomIn: 'Acercar',
     dragToResize: 'Arrastre para redimensionar',
-  },
-
-  // Timelapse Viewer
-  timelapseViewer: {
-    skipBack5s: 'Retroceder 5 s',
-    skipForward5s: 'Avanzar 5 s',
   },
 
   // Notification Providers
@@ -6319,46 +6283,6 @@ export default {
     },
   },
 
-  bugReport: {
-    logHealthSummary: 'Se encontraron problemas conocidos en tus registros',
-    logHealthIntro: 'Los registros recientes coinciden con problemas conocidos. Revisa las soluciones de abajo: resolverlas podría arreglar tu problema sin un informe de error. Aun así, puedes enviar un informe abajo.',
-    title: 'Informar de un error',
-    description: 'Descripción',
-    descriptionPlaceholder: '¿Qué salió mal? Describa el problema...',
-    email: 'Correo (opcional)',
-    emailPlaceholder: 'su@correo.com',
-    emailPrivacy: 'Si lo proporciona, su correo se incluirá en una sección plegada de la incidencia de GitHub para que el mantenedor pueda hacer un seguimiento.',
-    screenshot: 'Captura de pantalla',
-    uploadOrPaste: 'Suba, pegue o arrastre una imagen',
-    dataCollectedSummary: '¿Qué datos se incluyen en el informe?',
-    dataIncluded: 'Incluidos:',
-    dataIncludedList: 'Versión de la aplicación, sistema operativo, arquitectura, versión de Python, estadísticas de la base de datos (solo recuentos), modelos de impresora, número de boquillas, versiones de firmware, estado de la conectividad, estado de las integraciones (Spoolman, MQTT, HA), ajustes no sensibles, número de interfaces de red, detalles de Docker, versiones de las dependencias.',
-    dataNeverIncluded: 'Nunca incluidos:',
-    dataNeverIncludedList: 'Nombres de impresora, números de serie, códigos de acceso, contraseñas, direcciones IP, direcciones de correo, claves API, tokens, URL de webhook, nombres de host o nombres de usuario.',
-    submit: 'Enviar',
-    startLogging: 'Iniciar el registro de depuración',
-    stepEnableLogging: 'Registro de depuración activado',
-    stepReproduce: 'Reproduzca el problema ahora',
-    stepStopLogging: 'Detener y enviar el informe',
-    stopAndSubmit: 'Detener y enviar',
-    maxDuration: 'Se detiene automáticamente tras {{minutes}} min',
-    stoppingLogs: 'Recopilando registros y enviando...',
-    submitting: 'Enviando el informe de error...',
-    submittingStepConnection: 'Ejecutando comprobaciones de conectividad de impresoras',
-    submittingStepVirtualPrinters: 'Ejecutando comprobaciones de configuración de impresoras virtuales',
-    submittingStepLogScan: 'Analizando los registros recientes en busca de problemas conocidos',
-    submittingStepSubmit: 'Enviando el informe a GitHub',
-    submitSuccess: '¡Informe de error enviado correctamente!',
-    submitFailed: 'Error al enviar el informe de error',
-    diagnosticChecking: 'Comprobando las conexiones de las impresoras...',
-    diagnosticHealthy: 'La comprobación de conexión se superó — no se encontraron problemas en sus impresoras.',
-    diagnosticSummary: '{{problems}} de {{total}} impresoras tienen problemas de conexión',
-    diagnosticIntro: 'Una o más impresoras tienen un problema de conexión que puede estar causando su problema. Despliegue una impresora a continuación para ver la solución — resolverla podría solucionar el problema sin un informe de error. Aún puede enviar un informe a continuación.',
-    thankYou: '¡Gracias!',
-    submitted: 'Su informe de error se ha enviado.',
-    viewIssue: 'Ver incidencia',
-    unexpectedError: 'Se produjo un error inesperado',
-  },
   failureDetection: {
     title: 'Detección de fallos por IA',
     description: 'Supervise las impresiones con una API de ML de Obico autoalojada y actúe automáticamente ante los fallos detectados.',

@@ -93,9 +93,7 @@ query-filters:
 
   # ── JavaScript Accepted Risk ─────────────────────────────────
 
-  # XSS through DOM: False positives —
-  # 1. coverage/sorter.js: generated Istanbul coverage report
-  # 2. TimelapseEditorModal.tsx: URL.createObjectURL(file) creates
-  #    a safe blob: URL used as <audio src>, not HTML injection.
+  # XSS through DOM: False positive —
+  # coverage/sorter.js: generated Istanbul coverage report, not our code.
   - exclude:
       id: js/xss-through-dom

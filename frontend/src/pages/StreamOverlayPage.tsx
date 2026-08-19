@@ -282,7 +282,7 @@ export function StreamOverlayPage() {
 
       {/* Bambuddy logo - top right */}
       <a
-        href="https://github.com/maziggy/bambuddy"
+        href="https://github.com/Nicolas-Cilia/Backoffice-Printing"
         target="_blank"
         rel="noopener noreferrer"
         className="absolute top-4 right-4 z-10"
