@@ -5582,18 +5582,6 @@ export default {
   },
 
   // Rich Text Editor
-  richTextEditor: {
-    bold: 'Bold',
-    italic: 'Italic',
-    underline: 'Underline',
-    bulletList: 'Bullet List',
-    numberedList: 'Numbered List',
-    alignLeft: 'Align Left',
-    alignCenter: 'Align Center',
-    alignRight: 'Align Right',
-    addLink: 'Add Link',
-    removeLink: 'Remove Link',
-  },
 
   // External Links
   externalLinks: {

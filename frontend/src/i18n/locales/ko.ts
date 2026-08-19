@@ -5253,18 +5253,6 @@ export default {
       saveError: '알림 환경 설정 저장 실패.'
     }
   },
-  richTextEditor: {
-    bold: '굵게',
-    italic: '기울임',
-    underline: '밑줄',
-    bulletList: '글머리 기호 목록',
-    numberedList: '번호 목록',
-    alignLeft: '왼쪽 정렬',
-    alignCenter: '가운데 정렬',
-    alignRight: '오른쪽 정렬',
-    addLink: '링크 추가',
-    removeLink: '링크 제거'
-  },
   externalLinks: {
     title: '사이드바 링크',
     sidebarLayout: '사이드바',

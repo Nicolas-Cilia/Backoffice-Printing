@@ -5539,18 +5539,6 @@ export default {
   },
 
   // Rich Text Editor
-  richTextEditor: {
-    bold: '太字',
-    italic: '斜体',
-    underline: '下線',
-    bulletList: '箇条書きリスト',
-    numberedList: '番号付きリスト',
-    alignLeft: '左揃え',
-    alignCenter: '中央揃え',
-    alignRight: '右揃え',
-    addLink: 'リンクを追加',
-    removeLink: 'リンクを削除',
-  },
 
   // External Links
   externalLinks: {

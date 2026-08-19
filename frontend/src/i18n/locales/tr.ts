@@ -5489,18 +5489,6 @@ export default {
   },
 
   // Zengin Metin Düzenleyici
-  richTextEditor: {
-    bold: 'Kalın',
-    italic: 'İtalik',
-    underline: 'Altı Çizili',
-    bulletList: 'Madde İşaretli Liste',
-    numberedList: 'Numaralı Liste',
-    alignLeft: 'Sola Hizala',
-    alignCenter: 'Ortaya Hizala',
-    alignRight: 'Sağa Hizala',
-    addLink: 'Bağlantı Ekle',
-    removeLink: 'Bağlantıyı Kaldır',
-  },
 
   // Harici Bağlantılar
   externalLinks: {

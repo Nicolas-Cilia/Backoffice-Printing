@@ -5526,18 +5526,6 @@ export default {
   },
 
   // Rich Text Editor
-  richTextEditor: {
-    bold: '粗体',
-    italic: '斜体',
-    underline: '下划线',
-    bulletList: '无序列表',
-    numberedList: '有序列表',
-    alignLeft: '左对齐',
-    alignCenter: '居中对齐',
-    alignRight: '右对齐',
-    addLink: '添加链接',
-    removeLink: '移除链接',
-  },
 
   // External Links
   externalLinks: {

@@ -5547,18 +5547,6 @@ export default {
   },
 
   // Rich Text Editor
-  richTextEditor: {
-    bold: 'Negrita',
-    italic: 'Cursiva',
-    underline: 'Subrayado',
-    bulletList: 'Lista con viñetas',
-    numberedList: 'Lista numerada',
-    alignLeft: 'Alinear a la izquierda',
-    alignCenter: 'Centrar',
-    alignRight: 'Alinear a la derecha',
-    addLink: 'Añadir enlace',
-    removeLink: 'Quitar enlace',
-  },
 
   // External Links
   externalLinks: {

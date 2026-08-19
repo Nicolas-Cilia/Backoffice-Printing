@@ -5240,18 +5240,6 @@ export default {
       saveError: "Не удалось сохранить настройки уведомлений.",
     },
   },
-  richTextEditor: {
-    bold: "Полужирный",
-    italic: "Курсив",
-    underline: "Подчёркивание",
-    bulletList: "Маркированный список",
-    numberedList: "Нумерованный список",
-    alignLeft: "По левому краю",
-    alignCenter: "По центру",
-    alignRight: "По правому краю",
-    addLink: "Добавить ссылку",
-    removeLink: "Удалить ссылку",
-  },
   externalLinks: {
     title: "Ссылки на боковой панели",
     sidebarLayout: "Боковая панель",

@@ -5527,18 +5527,6 @@ export default {
   },
 
   // Rich Text Editor
-  richTextEditor: {
-    bold: 'Grassetto',
-    italic: 'Corsivo',
-    underline: 'Sottolineato',
-    bulletList: 'Elenco puntato',
-    numberedList: 'Elenco numerato',
-    alignLeft: 'Allinea a sinistra',
-    alignCenter: 'Allinea al centro',
-    alignRight: 'Allinea a destra',
-    addLink: 'Aggiungi link',
-    removeLink: 'Rimuovi link',
-  },
 
   // External Links
   externalLinks: {

@@ -5582,18 +5582,6 @@ export default {
   },
 
   // Rich Text Editor
-  richTextEditor: {
-    bold: "жирний",
-    italic: "Курсив",
-    underline: "Підкреслити",
-    bulletList: "Список маркерів",
-    numberedList: "Нумерований список",
-    alignLeft: "Вирівняти по лівому краю",
-    alignCenter: "Вирівняти по центру",
-    alignRight: "Вирівняти праворуч",
-    addLink: "Додати посилання",
-    removeLink: "Видалити посилання",
-  },
 
   // External Links
   externalLinks: {

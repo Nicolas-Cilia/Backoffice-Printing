@@ -5528,18 +5528,6 @@ export default {
   },
 
   // Rich Text Editor
-  richTextEditor: {
-    bold: 'Gras',
-    italic: 'Italique',
-    underline: 'Souligné',
-    bulletList: 'Liste à puces',
-    numberedList: 'Liste numérotée',
-    alignLeft: 'Aligner à gauche',
-    alignCenter: 'Centrer',
-    alignRight: 'Aligner à droite',
-    addLink: 'Ajouter lien',
-    removeLink: 'Retirer lien',
-  },
 
   // External Links
   externalLinks: {

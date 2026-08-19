@@ -5538,18 +5538,6 @@ export default {
   },
 
   // Rich Text Editor
-  richTextEditor: {
-    bold: 'Fett',
-    italic: 'Kursiv',
-    underline: 'Unterstrichen',
-    bulletList: 'Aufzählungsliste',
-    numberedList: 'Nummerierte Liste',
-    alignLeft: 'Linksbündig',
-    alignCenter: 'Zentriert',
-    alignRight: 'Rechtsbündig',
-    addLink: 'Link hinzufügen',
-    removeLink: 'Link entfernen',
-  },
 
   // External Links
   externalLinks: {
