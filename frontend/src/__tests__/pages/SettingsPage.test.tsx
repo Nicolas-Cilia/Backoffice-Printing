@@ -642,7 +642,6 @@ describe('SettingsPage', () => {
         expect(screen.getByText('Flow Calibration')).toBeInTheDocument();
         expect(screen.getByText('Vibration Calibration')).toBeInTheDocument();
         expect(screen.getByText('First Layer Inspection')).toBeInTheDocument();
-        expect(screen.getByText('Timelapse')).toBeInTheDocument();
       });
     });
 

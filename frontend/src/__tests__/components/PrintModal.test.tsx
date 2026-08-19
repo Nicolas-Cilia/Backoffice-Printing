@@ -43,7 +43,6 @@ const createMockQueueItem = (overrides: Partial<PrintQueueItem> = {}): PrintQueu
   flow_cali: 'off',
   vibration_cali: true,
   layer_inspect: false,
-  timelapse: false,
   use_ams: true,
   status: 'pending',
   started_at: null,

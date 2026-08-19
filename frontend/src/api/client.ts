@@ -1059,7 +1059,6 @@ export interface AppSettings {
   default_flow_cali: CalibrationMode;
   default_vibration_cali: boolean;
   default_layer_inspect: boolean;
-  default_timelapse: boolean;
   default_nozzle_offset_cali: CalibrationMode;
   // Staggered batch start defaults
   stagger_group_size: number;
@@ -1989,7 +1988,6 @@ export interface PrintQueueItem {
   flow_cali: CalibrationMode;
   vibration_cali: boolean;
   layer_inspect: boolean;
-  timelapse: boolean;
   use_ams: boolean;
   nozzle_offset_cali: CalibrationMode;
   preheat_override: 'inherit' | 'on' | 'off';
@@ -2066,7 +2064,6 @@ export interface PrintQueueItemCreate {
   flow_cali?: CalibrationMode;
   vibration_cali?: boolean;
   layer_inspect?: boolean;
-  timelapse?: boolean;
   use_ams?: boolean;
   nozzle_offset_cali?: CalibrationMode;
   preheat_override?: 'inherit' | 'on' | 'off';
@@ -2108,7 +2105,6 @@ export interface PrintQueueItemUpdate {
   flow_cali?: CalibrationMode;
   vibration_cali?: boolean;
   layer_inspect?: boolean;
-  timelapse?: boolean;
   use_ams?: boolean;
   nozzle_offset_cali?: CalibrationMode;
   preheat_override?: 'inherit' | 'on' | 'off';
@@ -2129,7 +2125,6 @@ export interface PrintQueueBulkUpdate {
   flow_cali?: CalibrationMode;
   vibration_cali?: boolean;
   layer_inspect?: boolean;
-  timelapse?: boolean;
   use_ams?: boolean;
   nozzle_offset_cali?: CalibrationMode;
   preheat_override?: 'inherit' | 'on' | 'off';
@@ -4186,61 +4181,6 @@ export const api = {
       headers['Authorization'] = `Bearer ${authToken}`;
     }
     const response = await fetch(`${API_BASE}/archives/${archiveId}/timelapse/upload`, {
-      method: 'POST',
-      headers,
-      body: formData,
-    });
-    if (!response.ok) {
-      const error = await response.json().catch(() => ({}));
-      throw new Error(error.detail || `HTTP ${response.status}`);
-    }
-    return response.json();
-  },
-  // Timelapse Editor
-  getTimelapseInfo: (archiveId: number) =>
-    request<{
-      duration: number;
-      width: number;
-      height: number;
-      fps: number;
-      codec: string;
-      file_size: number;
-      has_audio: boolean;
-    }>(`/archives/${archiveId}/timelapse/info`),
-  getTimelapseThumbnails: (archiveId: number, count: number = 10) =>
-    request<{
-      thumbnails: string[];
-      timestamps: number[];
-    }>(`/archives/${archiveId}/timelapse/thumbnails?count=${count}`),
-  processTimelapse: async (
-    archiveId: number,
-    params: {
-      trimStart?: number;
-      trimEnd?: number;
-      speed?: number;
-      saveMode: 'replace' | 'new';
-      outputFilename?: string;
-    },
-    audioFile?: File
-  ): Promise<{ status: string; output_path: string | null; message: string }> => {
-    const formData = new FormData();
-    formData.append('trim_start', String(params.trimStart ?? 0));
-    if (params.trimEnd !== undefined) {
-      formData.append('trim_end', String(params.trimEnd));
-    }
-    formData.append('speed', String(params.speed ?? 1));
-    formData.append('save_mode', params.saveMode);
-    if (params.outputFilename) {
-      formData.append('output_filename', params.outputFilename);
-    }
-    if (audioFile) {
-      formData.append('audio', audioFile);
-    }
-    const headers: Record<string, string> = {};
-    if (authToken) {
-      headers['Authorization'] = `Bearer ${authToken}`;
-    }
-    const response = await fetch(`${API_BASE}/archives/${archiveId}/timelapse/process`, {
       method: 'POST',
       headers,
       body: formData,
