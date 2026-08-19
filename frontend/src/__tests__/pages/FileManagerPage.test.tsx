@@ -2,8 +2,8 @@
  * Tests for the FileManagerPage component.
  */
 
-import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
-import { screen, waitFor } from '@testing-library/react';
+import { describe, it, expect, beforeEach } from 'vitest';
+import { screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { render } from '../utils';
 import { FileManagerPage } from '../../pages/FileManagerPage';
@@ -116,7 +116,7 @@ const mockStats = {
 
 describe('FileManagerPage', () => {
   beforeEach(() => {
-    // Clear localStorage to ensure consistent view mode
+    // Clear localStorage to ensure consistent preferences
     localStorage.clear();
 
     server.use(
@@ -196,6 +196,31 @@ describe('FileManagerPage', () => {
         expect(screen.getByText('Upload')).toBeInTheDocument();
       });
     });
+
+    it('styles the Trash toolbar control like other header buttons', async () => {
+      render(<FileManagerPage />);
+
+      const trash = await screen.findByRole('button', { name: 'Trash' });
+      expect(trash.className).toContain('bg-bambu-dark-tertiary');
+      expect(trash.className).toContain('hover:text-[color:var(--text-primary)]');
+      expect(trash.className).not.toContain('hover:text-white');
+    });
+
+    it('renders the trash count in primary text on a solid accent chip', async () => {
+      server.use(
+        http.get('/api/v1/library/trash', () =>
+          HttpResponse.json({ items: [], total: 7, retention_days: 30 }),
+        ),
+      );
+      render(<FileManagerPage />);
+
+      const trash = await screen.findByRole('button', { name: /trash 7/i });
+      const count = within(trash).getByText('7');
+      expect(count.className).toContain('bg-bambu-green');
+      expect(count.className).toContain('text-[color:var(--text-primary)]');
+      expect(count.className).not.toContain('text-bambu-green');
+      expect(count.className).not.toContain('bg-bambu-green/20');
+    });
   });
 
   describe('stats display', () => {
@@ -248,6 +273,19 @@ describe('FileManagerPage', () => {
       expect(screen.queryByText('All Files')).not.toBeInTheDocument();
     });
 
+    it('shows unfiled root files on the landing page', async () => {
+      render(<FileManagerPage />);
+
+      await waitFor(() => {
+        expect(screen.getByText('Functional Parts')).toBeInTheDocument();
+      });
+      await waitFor(() => {
+        expect(screen.getByText('Unfiled')).toBeInTheDocument();
+        expect(screen.getByText('Benchy')).toBeInTheDocument();
+      });
+      expect(screen.queryByText('Brackets')).not.toBeInTheDocument();
+    });
+
     it('shows nested folders after entering a parent', async () => {
       const user = userEvent.setup();
       render(<FileManagerPage />);
@@ -260,12 +298,90 @@ describe('FileManagerPage', () => {
       });
     });
 
+    it('returns to the landing grid when the File Manager sidebar tab is clicked', async () => {
+      const user = userEvent.setup();
+      render(<FileManagerPage />);
+
+      await waitFor(() => expect(screen.getByText('Functional Parts')).toBeInTheDocument());
+      await user.click(screen.getByText('Functional Parts'));
+      await waitFor(() => {
+        expect(screen.getByText('Brackets')).toBeInTheDocument();
+        expect(screen.getByLabelText('Back to folders')).toBeInTheDocument();
+      });
+
+      window.dispatchEvent(new Event('bambuddy:file-manager-home'));
+
+      await waitFor(() => {
+        expect(screen.queryByLabelText('Back to folders')).not.toBeInTheDocument();
+        expect(screen.getByText('Functional Parts')).toBeInTheDocument();
+        expect(screen.queryByText('Brackets')).not.toBeInTheDocument();
+      });
+    });
+
     it('shows linked folder indicator', async () => {
       render(<FileManagerPage />);
 
       await waitFor(() => {
         expect(screen.getByText('Art Projects')).toBeInTheDocument();
       });
+    });
+
+    it('shows a tracking indicator on tracking folder cards only', async () => {
+      server.use(
+        http.get('/api/v1/library/sections', () =>
+          HttpResponse.json([
+            { id: 1, name: 'Production', sort_order: 1, folder_count: 1, kind: 'production', created_at: '', updated_at: '' },
+            { id: 2, name: 'Tests', sort_order: 2, folder_count: 1, kind: 'normal', created_at: '', updated_at: '' },
+          ]),
+        ),
+        http.get('/api/v1/library/folders', () =>
+          HttpResponse.json([
+            {
+              id: 10,
+              name: 'X1C',
+              parent_id: null,
+              file_count: 1,
+              project_id: null,
+              archive_id: null,
+              project_name: null,
+              archive_name: null,
+              latest_activity_at: null,
+              section_id: 1,
+              production_printer_model: 'X1C',
+              parameter_tracking: true,
+              children: [],
+            },
+            {
+              id: 20,
+              name: 'Fun parts',
+              parent_id: null,
+              file_count: 2,
+              project_id: null,
+              archive_id: null,
+              project_name: null,
+              archive_name: null,
+              latest_activity_at: null,
+              section_id: 2,
+              production_printer_model: null,
+              parameter_tracking: false,
+              children: [],
+            },
+          ]),
+        ),
+      );
+      render(<FileManagerPage />);
+
+      await waitFor(() => {
+        expect(screen.getByText('X1C')).toBeInTheDocument();
+        expect(screen.getByText('Fun parts')).toBeInTheDocument();
+      });
+
+      const x1cCard = screen.getByText('X1C').closest('div[class*="cursor-pointer"]') as HTMLElement;
+      const funCard = screen.getByText('Fun parts').closest('div[class*="cursor-pointer"]') as HTMLElement;
+      const trackingChip = within(x1cCard).getByRole('button', { name: 'Parameter tracking' });
+      expect(trackingChip).toHaveAttribute('title', 'Parameter tracking');
+      expect(within(funCard).queryByRole('button', { name: 'Parameter tracking' })).not.toBeInTheDocument();
+      expect(within(funCard).queryByTitle('Parameter tracking')).not.toBeInTheDocument();
     });
   });
 
@@ -274,7 +390,7 @@ describe('FileManagerPage', () => {
       server.use(
         http.get('/api/v1/library/sections', () =>
           HttpResponse.json([
-            { id: 1, name: 'Production', sort_order: 1, folder_count: 1, created_at: '', updated_at: '' },
+            { id: 1, name: 'Production', sort_order: 1, folder_count: 1, kind: 'production', created_at: '', updated_at: '' },
           ]),
         ),
         http.get('/api/v1/library/folders', () =>
@@ -288,6 +404,7 @@ describe('FileManagerPage', () => {
 
       await waitFor(() => {
         expect(screen.getByText('Production')).toBeInTheDocument();
+        expect(screen.getByText('Parameter tracking')).toBeInTheDocument();
         expect(screen.getByText('Functional Parts')).toBeInTheDocument();
         expect(screen.getByText('Art Projects')).toBeInTheDocument();
         expect(screen.getByText('Ungrouped')).toBeInTheDocument();
@@ -298,9 +415,9 @@ describe('FileManagerPage', () => {
       const user = userEvent.setup();
       server.use(
         http.post('/api/v1/library/sections', async ({ request }) => {
-          const body = await request.json() as { name: string };
+          const body = await request.json() as { name: string; kind?: string };
           return HttpResponse.json(
-            { id: 8, name: body.name, sort_order: 1, folder_count: 0, created_at: '', updated_at: '' },
+            { id: 8, name: body.name, kind: body.kind ?? 'normal', sort_order: 1, folder_count: 0, created_at: '', updated_at: '' },
             { status: 201 },
           );
         }),
@@ -315,6 +432,305 @@ describe('FileManagerPage', () => {
       await waitFor(() => {
         expect(screen.queryByPlaceholderText('e.g., Production')).not.toBeInTheDocument();
       });
+    });
+
+    it('creates a production-kind section when tracking is checked', async () => {
+      const user = userEvent.setup();
+      let posted: { name?: string; kind?: string } = {};
+      server.use(
+        http.post('/api/v1/library/sections', async ({ request }) => {
+          posted = await request.json() as { name: string; kind?: string };
+          return HttpResponse.json(
+            { id: 9, name: posted.name, kind: posted.kind ?? 'normal', sort_order: 1, folder_count: 0, created_at: '', updated_at: '' },
+            { status: 201 },
+          );
+        }),
+      );
+      render(<FileManagerPage />);
+
+      await waitFor(() => expect(screen.getByText('Add section')).toBeInTheDocument());
+      await user.click(screen.getByText('Add section'));
+      await waitFor(() => expect(screen.getByPlaceholderText('e.g., Production')).toBeInTheDocument());
+      await user.type(screen.getByPlaceholderText('e.g., Production'), 'QA Line');
+      await user.click(screen.getByText('Track print settings (replace-only uploads)'));
+      await user.click(screen.getByRole('button', { name: 'Save' }));
+      await waitFor(() => {
+        expect(posted.name).toBe('QA Line');
+        expect(posted.kind).toBe('production');
+      });
+    });
+
+    it('creates a folder already in a section from the section header', async () => {
+      const user = userEvent.setup();
+      let posted: { name?: string; section_id?: number | null; parameter_tracking?: boolean } = {};
+      server.use(
+        http.get('/api/v1/library/sections', () =>
+          HttpResponse.json([
+            { id: 4, name: 'Tests', sort_order: 1, folder_count: 0, kind: 'normal', created_at: '', updated_at: '' },
+          ]),
+        ),
+        http.post('/api/v1/library/folders', async ({ request }) => {
+          posted = await request.json() as {
+            name: string;
+            section_id?: number | null;
+            parameter_tracking?: boolean;
+          };
+          return HttpResponse.json({
+            id: 40,
+            name: posted.name,
+            parent_id: null,
+            section_id: posted.section_id,
+            children: [],
+          });
+        }),
+      );
+      render(<FileManagerPage />);
+
+      await waitFor(() => expect(screen.getByLabelText('Add folder')).toBeInTheDocument());
+      await user.click(screen.getByLabelText('Add folder'));
+      const sectionSelect = await screen.findByLabelText('Section');
+      expect(sectionSelect).toHaveValue('4');
+      await user.type(screen.getByPlaceholderText('e.g., Functional Parts'), 'Widgets');
+      await user.click(screen.getByRole('button', { name: 'Create' }));
+      await waitFor(() => {
+        expect(posted.name).toBe('Widgets');
+        expect(posted.section_id).toBe(4);
+        expect(posted.parameter_tracking).toBe(false);
+      });
+    });
+
+    it('locks tracking on when adding a folder to a tracking section', async () => {
+      const user = userEvent.setup();
+      let posted: { name?: string; section_id?: number | null; parameter_tracking?: boolean; production_printer_model?: string } = {};
+      server.use(
+        http.get('/api/v1/library/sections', () =>
+          HttpResponse.json([
+            { id: 5, name: 'QA Line', sort_order: 1, folder_count: 0, kind: 'production', created_at: '', updated_at: '' },
+          ]),
+        ),
+        http.post('/api/v1/library/folders', async ({ request }) => {
+          posted = await request.json() as {
+            name: string;
+            section_id?: number | null;
+            parameter_tracking?: boolean;
+            production_printer_model?: string;
+          };
+          return HttpResponse.json({
+            id: 50,
+            name: posted.name,
+            parent_id: null,
+            section_id: posted.section_id,
+            parameter_tracking: posted.parameter_tracking ?? false,
+            children: [],
+          });
+        }),
+      );
+      render(<FileManagerPage />);
+
+      await waitFor(() => expect(screen.getByLabelText('Add folder')).toBeInTheDocument());
+      await user.click(screen.getByLabelText('Add folder'));
+      const trackingToggle = await screen.findByRole('checkbox');
+      expect(trackingToggle).toBeChecked();
+      expect(trackingToggle).toBeDisabled();
+      expect(screen.queryByLabelText('Printer model')).not.toBeInTheDocument();
+      await user.click(screen.getByText('Track print settings (replace-only uploads)'));
+      expect(trackingToggle).toBeChecked();
+      await user.type(screen.getByPlaceholderText('e.g., Functional Parts'), 'Line extras');
+      await user.click(screen.getByRole('button', { name: 'Create' }));
+      await waitFor(() => {
+        expect(posted.name).toBe('Line extras');
+        expect(posted.section_id).toBe(5);
+        expect(posted.parameter_tracking).toBe(true);
+        expect(posted.production_printer_model).toBeUndefined();
+      });
+    });
+
+    it('can enable tracking on a folder in a normal Tests section', async () => {
+      const user = userEvent.setup();
+      let posted: { name?: string; section_id?: number | null; parameter_tracking?: boolean; production_printer_model?: string } = {};
+      server.use(
+        http.get('/api/v1/library/sections', () =>
+          HttpResponse.json([
+            { id: 4, name: 'Tests', sort_order: 1, folder_count: 0, kind: 'normal', created_at: '', updated_at: '' },
+          ]),
+        ),
+        http.post('/api/v1/library/folders', async ({ request }) => {
+          posted = await request.json() as {
+            name: string;
+            section_id?: number | null;
+            parameter_tracking?: boolean;
+            production_printer_model?: string;
+          };
+          return HttpResponse.json({
+            id: 41,
+            name: posted.name,
+            parent_id: null,
+            section_id: posted.section_id,
+            parameter_tracking: posted.parameter_tracking ?? false,
+            children: [],
+          });
+        }),
+      );
+      render(<FileManagerPage />);
+
+      await waitFor(() => expect(screen.getByLabelText('Add folder')).toBeInTheDocument());
+      await user.click(screen.getByLabelText('Add folder'));
+      const trackingToggle = await screen.findByRole('checkbox');
+      expect(trackingToggle).not.toBeChecked();
+      expect(trackingToggle).toBeEnabled();
+      await user.type(screen.getByPlaceholderText('e.g., Functional Parts'), 'Test files');
+      await user.click(screen.getByText('Track print settings (replace-only uploads)'));
+      expect(trackingToggle).toBeChecked();
+      expect(screen.queryByLabelText('Printer model')).not.toBeInTheDocument();
+      await user.click(screen.getByRole('button', { name: 'Create' }));
+      await waitFor(() => {
+        expect(posted.name).toBe('Test files');
+        expect(posted.section_id).toBe(4);
+        expect(posted.parameter_tracking).toBe(true);
+        expect(posted.production_printer_model).toBeUndefined();
+      });
+    });
+
+    it('can create a non-tracking Fun parts folder in a normal Tests section', async () => {
+      const user = userEvent.setup();
+      let posted: { name?: string; section_id?: number | null; parameter_tracking?: boolean } = {};
+      server.use(
+        http.get('/api/v1/library/sections', () =>
+          HttpResponse.json([
+            { id: 4, name: 'Tests', sort_order: 1, folder_count: 0, kind: 'normal', created_at: '', updated_at: '' },
+          ]),
+        ),
+        http.post('/api/v1/library/folders', async ({ request }) => {
+          posted = await request.json() as {
+            name: string;
+            section_id?: number | null;
+            parameter_tracking?: boolean;
+          };
+          return HttpResponse.json({
+            id: 42,
+            name: posted.name,
+            parent_id: null,
+            section_id: posted.section_id,
+            parameter_tracking: posted.parameter_tracking ?? false,
+            children: [],
+          });
+        }),
+      );
+      render(<FileManagerPage />);
+
+      await waitFor(() => expect(screen.getByLabelText('Add folder')).toBeInTheDocument());
+      await user.click(screen.getByLabelText('Add folder'));
+      expect(screen.getByRole('checkbox')).not.toBeChecked();
+      await user.type(screen.getByPlaceholderText('e.g., Functional Parts'), 'Fun parts');
+      await user.click(screen.getByRole('button', { name: 'Create' }));
+      await waitFor(() => {
+        expect(posted.name).toBe('Fun parts');
+        expect(posted.section_id).toBe(4);
+        expect(posted.parameter_tracking).toBe(false);
+      });
+    });
+  });
+
+  describe('move files modal', () => {
+    it('groups destinations by section and disables production folders', async () => {
+      const user = userEvent.setup();
+      server.use(
+        http.get('/api/v1/library/sections', () =>
+          HttpResponse.json([
+            { id: 1, name: 'Production', sort_order: 1, folder_count: 1, created_at: '', updated_at: '' },
+            { id: 2, name: 'Tests', sort_order: 2, folder_count: 1, created_at: '', updated_at: '' },
+            { id: 3, name: 'Misc', sort_order: 3, folder_count: 0, created_at: '', updated_at: '' },
+          ]),
+        ),
+        http.get('/api/v1/library/folders', () =>
+          HttpResponse.json([
+            {
+              id: 10,
+              name: 'X1C',
+              parent_id: null,
+              file_count: 1,
+              project_id: null,
+              archive_id: null,
+              project_name: null,
+              archive_name: null,
+              latest_activity_at: null,
+              section_id: 1,
+              production_printer_model: 'X1C',
+              children: [],
+            },
+            {
+              id: 20,
+              name: 'Calibration',
+              parent_id: null,
+              file_count: 2,
+              project_id: null,
+              archive_id: null,
+              project_name: null,
+              archive_name: null,
+              latest_activity_at: null,
+              section_id: 2,
+              production_printer_model: null,
+              children: [
+                {
+                  id: 21,
+                  name: 'SubCal',
+                  parent_id: 20,
+                  file_count: 1,
+                  project_id: null,
+                  archive_id: null,
+                  project_name: null,
+                  archive_name: null,
+                  latest_activity_at: null,
+                  section_id: 2,
+                  production_printer_model: null,
+                  children: [],
+                },
+              ],
+            },
+            {
+              ...mockFolders[1],
+              name: 'Art Projects',
+              section_id: null,
+            },
+          ]),
+        ),
+      );
+
+      render(<FileManagerPage />);
+
+      await waitFor(() => expect(screen.getByText('Benchy')).toBeInTheDocument());
+      const fileCard = screen.getByText('Benchy').closest('div[class*="cursor-pointer"]');
+      expect(fileCard).toBeTruthy();
+      await user.click(fileCard!);
+
+      await waitFor(() => expect(screen.getByText('1 selected')).toBeInTheDocument());
+      await user.click(screen.getByText('Move'));
+
+      const heading = await screen.findByText('Move 1 File(s)');
+      const modal = heading.closest('.fixed') as HTMLElement;
+      expect(modal).toBeTruthy();
+      const dialog = within(modal);
+
+      expect(dialog.getByRole('button', { name: /Root \(No Folder\)/ })).toBeDisabled();
+      expect(dialog.getByText('Ungrouped')).toBeInTheDocument();
+      expect(dialog.getByRole('button', { name: 'Art Projects' })).toBeEnabled();
+      expect(dialog.getByText('Production')).toBeInTheDocument();
+      expect(dialog.getByText('Tests')).toBeInTheDocument();
+      expect(dialog.queryByText('Misc')).not.toBeInTheDocument();
+
+      const productionFolder = dialog.getByRole('button', { name: /X1C/ });
+      expect(productionFolder).toBeDisabled();
+      expect(dialog.getByText('Managed by Production')).toBeInTheDocument();
+      expect(dialog.getByRole('button', { name: 'Calibration' })).toBeEnabled();
+      expect(dialog.getByRole('button', { name: 'SubCal' })).toBeEnabled();
+
+      const root = dialog.getByRole('button', { name: /Root \(No Folder\)/ });
+      const ungrouped = dialog.getByText('Ungrouped');
+      const productionHeader = dialog.getByText('Production');
+      const testsHeader = dialog.getByText('Tests');
+      expect(root.compareDocumentPosition(ungrouped) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+      expect(ungrouped.compareDocumentPosition(productionHeader) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+      expect(productionHeader.compareDocumentPosition(testsHeader) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
     });
   });
 
@@ -367,53 +783,6 @@ describe('FileManagerPage', () => {
       await waitFor(() => {
         expect(screen.getByText('bracket.stl')).toBeInTheDocument();
       });
-    });
-  });
-
-  describe('view modes', () => {
-    it('has grid view button', async () => {
-      render(<FileManagerPage />);
-
-      await waitFor(() => {
-        expect(screen.getByTitle('Grid view')).toBeInTheDocument();
-      });
-    });
-
-    it('has list view button', async () => {
-      render(<FileManagerPage />);
-
-      await waitFor(() => {
-        expect(screen.getByTitle('List view')).toBeInTheDocument();
-      });
-    });
-
-    it('can switch to list view', async () => {
-      const user = userEvent.setup();
-      render(<FileManagerPage />);
-
-      await waitFor(() => expect(screen.getByText('Functional Parts')).toBeInTheDocument());
-      await user.click(screen.getByText('Functional Parts'));
-
-      // Wait for files to load first
-      await waitFor(() => {
-        expect(screen.getByText('Benchy')).toBeInTheDocument();
-      });
-
-      // Both view mode buttons should be present and clickable
-      const gridButton = screen.getByTitle('Grid view');
-      const listButton = screen.getByTitle('List view');
-
-      expect(gridButton).toBeInTheDocument();
-      expect(listButton).toBeInTheDocument();
-
-      // Click list view button - verify no errors occur
-      await user.click(listButton);
-
-      // Clicking grid button should also work
-      await user.click(gridButton);
-
-      // Verify files are still displayed after toggling
-      expect(screen.getByText('Benchy')).toBeInTheDocument();
     });
   });
 
@@ -551,6 +920,41 @@ describe('FileManagerPage', () => {
       // Modal should close after creation
       await waitFor(() => {
         expect(screen.queryByText('Folder Name')).not.toBeInTheDocument();
+      });
+    });
+
+    it('lets the global New Folder picker assign a section', async () => {
+      const user = userEvent.setup();
+      let posted: { name?: string; section_id?: number | null } = {};
+      server.use(
+        http.get('/api/v1/library/sections', () =>
+          HttpResponse.json([
+            { id: 4, name: 'Tests', sort_order: 1, folder_count: 0, kind: 'normal', created_at: '', updated_at: '' },
+          ]),
+        ),
+        http.post('/api/v1/library/folders', async ({ request }) => {
+          posted = await request.json() as { name: string; section_id?: number | null };
+          return HttpResponse.json({
+            id: 41,
+            name: posted.name,
+            parent_id: null,
+            section_id: posted.section_id,
+            children: [],
+          });
+        }),
+      );
+      render(<FileManagerPage />);
+
+      await waitFor(() => expect(screen.getByText('New Folder')).toBeInTheDocument());
+      await user.click(screen.getByText('New Folder'));
+      const sectionSelect = await screen.findByLabelText('Section');
+      expect(sectionSelect).toHaveValue('');
+      await user.selectOptions(sectionSelect, '4');
+      await user.type(screen.getByPlaceholderText('e.g., Functional Parts'), 'Jigs');
+      await user.click(screen.getByRole('button', { name: 'Create' }));
+      await waitFor(() => {
+        expect(posted.name).toBe('Jigs');
+        expect(posted.section_id).toBe(4);
       });
     });
   });
@@ -827,8 +1231,12 @@ describe('FileManagerPage', () => {
     });
 
     it('uploads file and refreshes file list', async () => {
+      let uploaded = false;
+      const postedUrls: string[] = [];
       server.use(
-        http.post('/api/v1/library/files', () => {
+        http.post('/api/v1/library/files', ({ request }) => {
+          postedUrls.push(request.url);
+          uploaded = true;
           return HttpResponse.json({
             id: 10,
             filename: 'uploaded.3mf',
@@ -838,7 +1246,29 @@ describe('FileManagerPage', () => {
             duplicate_of: null,
             metadata: null,
           });
-        })
+        }),
+        http.get('/api/v1/library/files', ({ request }) => {
+          const url = new URL(request.url);
+          if (uploaded && !url.searchParams.get('folder_id')) {
+            return HttpResponse.json([
+              {
+                id: 10,
+                filename: 'uploaded.3mf',
+                file_path: '/library/uploaded.3mf',
+                file_size: 1024,
+                file_type: '3mf',
+                folder_id: null,
+                thumbnail_path: null,
+                print_name: null,
+                print_time_seconds: null,
+                print_count: 0,
+                duplicate_count: 0,
+                created_at: '2024-01-04T00:00:00Z',
+              },
+            ]);
+          }
+          return HttpResponse.json(mockFiles);
+        }),
       );
 
       const user = userEvent.setup();
@@ -865,11 +1295,16 @@ describe('FileManagerPage', () => {
       await waitFor(() => {
         expect(screen.queryByText('Upload Files')).not.toBeInTheDocument();
       });
+      expect(postedUrls[0]).not.toMatch(/folder_id=/);
+      await waitFor(() => {
+        expect(screen.getByText('uploaded.3mf')).toBeInTheDocument();
+        expect(screen.getByText('Unfiled')).toBeInTheDocument();
+      });
     });
   });
 
   describe('authentication-based UI changes', () => {
-    it('hides "Uploaded By" column and user filter when auth is disabled', async () => {
+    it('hides uploader name and user filter when auth is disabled', async () => {
       // Mock auth disabled (default)
       server.use(
         http.get('*/api/v1/auth/status', () => {
@@ -905,24 +1340,15 @@ describe('FileManagerPage', () => {
       await waitFor(() => expect(screen.getByText('Functional Parts')).toBeInTheDocument());
       await user.click(screen.getByText('Functional Parts'));
 
-      // Switch to list view to see the column headers
       await waitFor(() => {
         expect(screen.getByText('Test File')).toBeInTheDocument();
       });
 
-      const listViewButton = screen.getByRole('button', { name: /list/i });
-      await user.click(listViewButton);
-
-      // "Uploaded By" column header should not be present
-      await waitFor(() => {
-        expect(screen.queryByText('Uploaded By')).not.toBeInTheDocument();
-      });
-
-      // User filter dropdown should not be present
+      expect(screen.queryByText('testuser')).not.toBeInTheDocument();
       expect(screen.queryByPlaceholderText('Filter by user')).not.toBeInTheDocument();
     });
 
-    it('shows "Uploaded By" column and user filter when auth is enabled', async () => {
+    it('shows uploader name and user filter when auth is enabled', async () => {
       // Mock auth enabled
       server.use(
         http.get('*/api/v1/auth/status', () => {
@@ -964,23 +1390,11 @@ describe('FileManagerPage', () => {
       await waitFor(() => expect(screen.getByText('Functional Parts')).toBeInTheDocument());
       await user.click(screen.getByText('Functional Parts'));
 
-      // Switch to list view to see the column headers
       await waitFor(() => {
         expect(screen.getByText('Test File')).toBeInTheDocument();
       });
 
-      const listViewButton = screen.getByRole('button', { name: /list/i });
-      await user.click(listViewButton);
-
-      // "Uploaded By" column header should be present
-      await waitFor(() => {
-        expect(screen.getByText('Uploaded By')).toBeInTheDocument();
-      });
-
-      // User filter dropdown should be present
       expect(screen.getByPlaceholderText('Filter by user')).toBeInTheDocument();
-
-      // Username should be displayed in the column
       expect(screen.getByText('testuser')).toBeInTheDocument();
     });
   });
@@ -1109,6 +1523,217 @@ describe('FileManagerPage', () => {
         expect(screen.getByText('Brackets')).toBeInTheDocument();
       });
       expect(screen.queryByText(/Invalid/)).not.toBeInTheDocument();
+    });
+  });
+
+  describe('production folder view', () => {
+    it('renders production slots and hides generic upload when the folder is tagged', async () => {
+      const user = userEvent.setup();
+      server.use(
+        http.get('/api/v1/library/folders', () => {
+          return HttpResponse.json([
+            ...mockFolders,
+            {
+              id: 99,
+              name: 'X1C',
+              parent_id: null,
+              file_count: 1,
+              project_id: null,
+              archive_id: null,
+              project_name: null,
+              archive_name: null,
+              latest_activity_at: null,
+              section_id: null,
+              production_printer_model: 'X1C',
+              parameter_tracking: true,
+              children: [],
+            },
+          ]);
+        }),
+        http.get('/api/v1/production/folders/99', () => {
+          return HttpResponse.json({
+            folder_id: 99,
+            printer_model: 'X1C',
+            section_id: null,
+            parts: [
+              {
+                id: 1,
+                code: 'TOP',
+                name: 'Top',
+                instance_id: 10,
+                locked_parameters: {},
+                slots: [
+                  {
+                    id: 5,
+                    quantity: 1,
+                    major: 1,
+                    revision: 13,
+                    minor: 2,
+                    version: '1.13.2',
+                    active_file: {
+                      id: 42,
+                      filename: 'TOP - 1.13.2 - X1C.gcode.3mf',
+                      thumbnail_path: null,
+                      file_size: 1024,
+                      print_time_seconds: 3600,
+                      sliced_for_model: 'X1C',
+                    },
+                    has_overrides: false,
+                    last_mismatch: false,
+                  },
+                ],
+              },
+            ],
+          });
+        }),
+      );
+
+      render(<FileManagerPage />);
+      await waitFor(() => expect(screen.getByText('X1C')).toBeInTheDocument());
+      await user.click(screen.getByText('X1C'));
+
+      await waitFor(() => {
+        expect(screen.getByText('Production files')).toBeInTheDocument();
+      });
+      expect(screen.getByTestId('scroll-fade-scroller')).toBeInTheDocument();
+      expect(screen.getByText('Replace')).toBeInTheDocument();
+      expect(screen.getByText('Add production file')).toBeInTheDocument();
+      expect(screen.queryByText('Upload')).not.toBeInTheDocument();
+      expect(screen.queryByText('New Folder')).not.toBeInTheDocument();
+      expect(screen.queryByText('Upload Files')).not.toBeInTheDocument();
+    });
+
+    it('shows ProductionFolderView for a tracking folder with no printer model', async () => {
+      const user = userEvent.setup();
+      server.use(
+        http.get('/api/v1/library/folders', () => {
+          return HttpResponse.json([
+            {
+              id: 77,
+              name: 'Test files',
+              parent_id: null,
+              file_count: 0,
+              project_id: null,
+              archive_id: null,
+              project_name: null,
+              archive_name: null,
+              latest_activity_at: null,
+              section_id: null,
+              production_printer_model: null,
+              parameter_tracking: true,
+              children: [],
+            },
+          ]);
+        }),
+        http.get('/api/v1/production/folders/77', () => {
+          return HttpResponse.json({
+            folder_id: 77,
+            printer_model: '',
+            section_id: 4,
+            parts: [],
+          });
+        }),
+      );
+
+      render(<FileManagerPage />);
+      await waitFor(() => expect(screen.getByText('Test files')).toBeInTheDocument());
+      await user.click(screen.getByText('Test files'));
+
+      await waitFor(() => {
+        expect(screen.getByText('Production files')).toBeInTheDocument();
+      });
+      expect(screen.getByText('Add part')).toBeInTheDocument();
+      expect(screen.getByText('Add production file')).toBeInTheDocument();
+      expect(screen.queryByText('Upload Files')).not.toBeInTheDocument();
+    });
+  });
+
+  describe('file tags', () => {
+    const taggedFiles = [
+      { ...mockFiles[0], tags: [{ id: 1, name: 'toy' }] },
+      mockFiles[1],
+      mockFiles[2],
+    ];
+    const catalog = [
+      { id: 1, name: 'toy', file_count: 1, created_at: '2026-01-01T00:00:00Z', updated_at: '2026-01-01T00:00:00Z' },
+      { id: 2, name: 'petg', file_count: 0, created_at: '2026-01-01T00:00:00Z', updated_at: '2026-01-01T00:00:00Z' },
+    ];
+
+    beforeEach(() => {
+      server.use(
+        http.get('/api/v1/library/files', () => HttpResponse.json(taggedFiles)),
+        http.get('/api/v1/library/tags', () => HttpResponse.json(catalog)),
+        http.post('/api/v1/library/tags/bulk-assign', () => {
+          return HttpResponse.json({
+            files_updated: 1,
+            associations_added: 1,
+            associations_removed: 1,
+          });
+        }),
+      );
+    });
+
+    it('opens the file tag picker from the add-tags control', async () => {
+      const user = userEvent.setup();
+      render(<FileManagerPage />);
+
+      await waitFor(() => expect(screen.getByText('Benchy')).toBeInTheDocument());
+      const fileCard = screen.getByText('Benchy').closest('div[class*="cursor-pointer"]') as HTMLElement;
+      await user.click(within(fileCard).getByLabelText('Add tags to this file'));
+
+      expect(await screen.findByText('Tags on this file')).toBeInTheDocument();
+      const toyCheckbox = screen
+        .getAllByRole('checkbox')
+        .find((el) => el.parentElement?.textContent?.includes('toy'));
+      expect(toyCheckbox).toBeChecked();
+    });
+
+    it('detaches a tag from the chip remove button', async () => {
+      const user = userEvent.setup();
+      let body: { file_ids?: number[]; tag_ids?: number[]; action?: string } | null = null;
+      server.use(
+        http.post('/api/v1/library/tags/bulk-assign', async ({ request }) => {
+          body = await request.json() as { file_ids?: number[]; tag_ids?: number[]; action?: string };
+          return HttpResponse.json({
+            files_updated: 1,
+            associations_added: 0,
+            associations_removed: 1,
+          });
+        }),
+      );
+
+      render(<FileManagerPage />);
+      await waitFor(() => expect(screen.getByText('Benchy')).toBeInTheDocument());
+      await user.click(screen.getByLabelText('Remove tag toy from this file'));
+
+      await waitFor(() => {
+        expect(body).toEqual({ file_ids: [1], tag_ids: [1], action: 'remove' });
+      });
+    });
+
+    it('opens the picker from the landing selection toolbar', async () => {
+      const user = userEvent.setup();
+      render(<FileManagerPage />);
+
+      await waitFor(() => expect(screen.getByText('Benchy')).toBeInTheDocument());
+      const fileCard = screen.getByText('Benchy').closest('div[class*="cursor-pointer"]');
+      await user.click(fileCard!);
+      await waitFor(() => expect(screen.getByText('1 selected')).toBeInTheDocument());
+
+      await user.click(screen.getByText('Tag'));
+      expect(await screen.findByText('Tags on this file')).toBeInTheDocument();
+    });
+
+    it('opens the picker from the file card overflow menu', async () => {
+      const user = userEvent.setup();
+      render(<FileManagerPage />);
+
+      await waitFor(() => expect(screen.getByText('Benchy')).toBeInTheDocument());
+      const fileCard = screen.getByText('Benchy').closest('div[class*="cursor-pointer"]') as HTMLElement;
+      await user.click(within(fileCard).getByLabelText('Actions'));
+      await user.click(within(fileCard).getByRole('button', { name: 'Tags' }));
+
+      expect(await screen.findByText('Tags on this file')).toBeInTheDocument();
     });
   });
 });

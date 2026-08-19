@@ -9,7 +9,7 @@ body:
         Thanks for taking the time to report a bug!
 
         **Before you submit, please:**
-        1. Search [existing issues](https://github.com/maziggy/bambuddy/issues?q=is%3Aissue) — your problem may already be reported or resolved.
+        1. Search [existing issues](https://github.com/Nicolas-Cilia/Backoffice-Printing/issues?q=is%3Aissue) — your problem may already be reported or resolved.
         2. Skim the [Troubleshooting wiki](https://wiki.bambuddy.cool/reference/troubleshooting/) — roughly 1 in 5 closed bug reports turn out to be setup or configuration issues already documented there.
         3. If your printer won't connect / won't print / camera won't load, run the in-app **Connection Diagnostic** (printer card or System → Diagnostics) FIRST. Most connection bugs are diagnosed in 30 seconds by the diagnostic and need no GitHub issue.
         4. Generate a **Support Package** from System → Download Support Package — without it, most bugs cannot be investigated.

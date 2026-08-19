@@ -65,6 +65,7 @@ async def _to_response(db: AsyncSession, section: LibraryFolderSection) -> Folde
         name=section.name,
         sort_order=section.sort_order,
         folder_count=int(count or 0),
+        kind=section.kind or "normal",
         created_at=section.created_at,
         updated_at=section.updated_at,
     )
@@ -83,10 +84,14 @@ async def list_sections(
 ) -> list[FolderSectionResponse]:
     """List every section ordered for the folder-picker grid (sort_order, then name)."""
     rows = (
-        await db.execute(
-            select(LibraryFolderSection).order_by(LibraryFolderSection.sort_order, LibraryFolderSection.name)
+        (
+            await db.execute(
+                select(LibraryFolderSection).order_by(LibraryFolderSection.sort_order, LibraryFolderSection.name)
+            )
         )
-    ).scalars().all()
+        .scalars()
+        .all()
+    )
     return [await _to_response(db, s) for s in rows]
 
 
@@ -103,6 +108,7 @@ async def create_section(
         name=payload.name.strip(),
         name_key=_name_key(payload.name),
         sort_order=(max_order or 0) + 1,
+        kind=payload.kind,
     )
     db.add(section)
     try:

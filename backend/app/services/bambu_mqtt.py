@@ -4768,7 +4768,6 @@ class BambuMQTTClient:
         flow_cali: str = "auto",
         vibration_cali: bool = True,
         layer_inspect: bool = False,
-        timelapse: bool = False,
         use_ams: bool = True,
         nozzle_offset_cali: str = "auto",
         nozzle_mapping: str | None = None,
@@ -4782,7 +4781,6 @@ class BambuMQTTClient:
             plate_id: Plate number to print (default 1)
             ams_mapping: List of tray IDs for each filament slot in the 3MF.
                          Global tray ID = (ams_id * 4) + slot_id, external = 254
-            timelapse: Record timelapse video
             bed_levelling: Bed levelling — tri-state "off"/"on"/"auto" (auto skips
                 if the bed was levelled recently, matching BambuStudio).
             flow_cali: Flow/pressure advance calibration — "off"/"on"/"auto".
@@ -4984,7 +4982,7 @@ class BambuMQTTClient:
                     "file": filename,
                     "md5": "",
                     "bed_type": "auto",
-                    "timelapse": timelapse,
+                    "timelapse": False,
                     # bed_leveling stays a JSON bool (true only for "on") and
                     # auto_bed_leveling carries the tri-state int — the exact
                     # two-field shape BambuStudio sends. The int must stay a plain
@@ -6789,30 +6787,6 @@ class BambuMQTTClient:
         logger.info("[%s] Publishing extrusion_cali_set: tray %s, k_value=%s", self.serial_number, tray_id, k_value)
         logger.debug("[%s] extrusion_cali_set command: %s", self.serial_number, command_json)
         self._client.publish(self.topic_publish, command_json, qos=1)
-        return True
-
-    def set_timelapse(self, enable: bool) -> bool:
-        """Enable or disable timelapse recording.
-
-        Args:
-            enable: True to enable, False to disable
-
-        Returns:
-            True if command was sent, False otherwise
-        """
-        if not self._client or not self.state.connected:
-            logger.warning("[%s] Cannot set timelapse: not connected", self.serial_number)
-            return False
-
-        command = {"pushing": {"command": "pushall", "sequence_id": "0"}}
-        # First send the timelapse setting
-        timelapse_cmd = {
-            "print": {"command": "gcode_line", "param": f"M981 S{1 if enable else 0} P20000", "sequence_id": "0"}
-        }
-        self._client.publish(self.topic_publish, json.dumps(timelapse_cmd), qos=1)
-        # Request status update
-        self._client.publish(self.topic_publish, json.dumps(command), qos=1)
-        logger.info("[%s] Set timelapse %s", self.serial_number, "enabled" if enable else "disabled")
         return True
 
     def set_liveview(self, enable: bool) -> bool:

@@ -90,12 +90,11 @@ class PrintQueueItem(Base):
 
     # Print options. bed_levelling / flow_cali / nozzle_offset_cali are tri-state
     # strings (off/on/auto) matching BambuStudio; "auto" = skip if recently done.
-    # The remaining three stay boolean (BambuStudio exposes no auto for them).
+    # The remaining two stay boolean (BambuStudio exposes no auto for them).
     bed_levelling: Mapped[str] = mapped_column(String(8), default="auto")
     flow_cali: Mapped[str] = mapped_column(String(8), default="auto")
     vibration_cali: Mapped[bool] = mapped_column(Boolean, default=True)
     layer_inspect: Mapped[bool] = mapped_column(Boolean, default=False)
-    timelapse: Mapped[bool] = mapped_column(Boolean, default=False)
     use_ams: Mapped[bool] = mapped_column(Boolean, default=True)
     # Nozzle offset calibration — dual-nozzle printers only, MQTT-gated (#1682)
     nozzle_offset_cali: Mapped[str] = mapped_column(String(8), default="auto")

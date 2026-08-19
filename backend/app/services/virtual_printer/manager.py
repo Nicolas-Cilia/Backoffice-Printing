@@ -290,8 +290,8 @@ class VirtualPrinterInstance:
 
         # Slicer-side print options captured from the MQTT `project_file`
         # command, keyed by filename. Used by `_add_to_print_queue` so the
-        # queue item inherits the user's slicer-chosen timelapse / bed_leveling
-        # / flow_cali / vibration_cali / layer_inspect / use_ams toggles rather
+        # queue item inherits the user's slicer-chosen bed_leveling / flow_cali
+        # / vibration_cali / layer_inspect / use_ams toggles rather
         # than falling back to the global `default_*` settings (#1403). FTP
         # completes a few hundred ms before the slicer's MQTT `project_file`
         # arrives, so the queue-add path waits briefly on the event below
@@ -398,7 +398,7 @@ class VirtualPrinterInstance:
     async def on_print_command(self, filename: str, data: dict) -> None:
         """Handle print command from MQTT.
 
-        Captures the slicer's project_file options (`timelapse`, `bed_leveling`,
+        Captures the slicer's project_file options (`bed_leveling`,
         `flow_cali`, `vibration_cali`, `layer_inspect`, `use_ams`, plus the
         H2C rack-pick `nozzle_mapping`) so the VP-queue path can inherit them
         when adding the item to the queue, rather than falling back to the
@@ -506,7 +506,6 @@ class VirtualPrinterInstance:
         for mqtt_field, column in (
             ("vibration_cali", "vibration_cali"),
             ("layer_inspect", "layer_inspect"),
-            ("timelapse", "timelapse"),
             ("use_ams", "use_ams"),
         ):
             if mqtt_field in data:
@@ -796,7 +795,7 @@ class VirtualPrinterInstance:
 
         # Wait briefly for the slicer's MQTT `project_file` command so the
         # queue item can inherit the slicer-side print options the user
-        # picked (timelapse, bed_leveling, etc). Slicers send the FTP upload
+        # picked (bed_leveling, etc). Slicers send the FTP upload
         # first and the MQTT command immediately after, so the typical lag
         # is a few hundred ms. The window is generous enough to absorb
         # wireless / loaded-Pi jitter without making every VP-queue add
@@ -903,7 +902,6 @@ class VirtualPrinterInstance:
                 layer_inspect = _slicer_or(
                     "layer_inspect", _bool_setting(await get_setting(db, "default_layer_inspect"), False)
                 )
-                timelapse = _slicer_or("timelapse", _bool_setting(await get_setting(db, "default_timelapse"), False))
 
                 # H2C dual-nozzle-rack slicer-pick preservation (#1780).
                 # BambuStudio's project_file MQTT command for rack-swap models
@@ -1132,7 +1130,6 @@ class VirtualPrinterInstance:
                             flow_cali=flow_cali,
                             vibration_cali=vibration_cali,
                             layer_inspect=layer_inspect,
-                            timelapse=timelapse,
                             # Per-VP opt-in for auto-print G-code injection (#1516).
                             # Default off; when on, the scheduler still no-ops unless
                             # gcode_snippets are configured for the target model, so it's

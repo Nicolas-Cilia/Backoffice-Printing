@@ -8,12 +8,12 @@ Interactive installation scripts for BamBuddy with support for both native and D
 
 **Linux/macOS:**
 ```bash
-curl -fsSL https://raw.githubusercontent.com/maziggy/bambuddy/main/install/docker-install.sh -o docker-install.sh && chmod +x docker-install.sh && ./docker-install.sh
+curl -fsSL https://raw.githubusercontent.com/Nicolas-Cilia/Backoffice-Printing/main/install/docker-install.sh -o docker-install.sh && chmod +x docker-install.sh && ./docker-install.sh
 ```
 
 **Windows (Command Prompt or PowerShell):**
 ```cmd
-powershell -ExecutionPolicy Bypass -Command "iwr -useb https://raw.githubusercontent.com/maziggy/bambuddy/main/install/docker-install.ps1 -OutFile docker-install.ps1; .\docker-install.ps1"
+powershell -ExecutionPolicy Bypass -Command "iwr -useb https://raw.githubusercontent.com/Nicolas-Cilia/Backoffice-Printing/main/install/docker-install.ps1 -OutFile docker-install.ps1; .\docker-install.ps1"
 ```
 
 > Requires Docker Desktop running. Printer auto-discovery is unavailable in Docker Desktop — add printers manually by IP.
@@ -22,21 +22,9 @@ powershell -ExecutionPolicy Bypass -Command "iwr -useb https://raw.githubusercon
 
 **Linux/macOS:**
 ```bash
-curl -fsSL https://raw.githubusercontent.com/maziggy/bambuddy/main/install/install.sh -o install.sh && chmod +x install.sh && ./install.sh
+curl -fsSL https://raw.githubusercontent.com/Nicolas-Cilia/Backoffice-Printing/main/install/install.sh -o install.sh && chmod +x install.sh && ./install.sh
 ```
 
-### Windows Native Installation
-
-**Windows PowerShell:**
-
-```powershell
-powershell -ExecutionPolicy Bypass -Command "iwr -useb https://raw.githubusercontent.com/maziggy/bambuddy/main/install/windows-installer.ps1 -OutFile windows-installer.ps1; .\windows-installer.ps1"
-```
-
-**Unattended:**
-```powershell
-.\windows-installer.ps1 -InstallDir C:\Bambuddy -Port 8000 -Yes
-```
 ---
 
 ## Scripts Overview
@@ -46,7 +34,6 @@ powershell -ExecutionPolicy Bypass -Command "iwr -useb https://raw.githubusercon
 | `install.sh` | Linux, macOS | Native (Python venv) |
 | `docker-install.sh` | Linux, macOS | Docker |
 | `docker-install.ps1` | Windows (Docker Desktop) | Docker |
-| `windows-installer.ps1` | Windows (Native) | Windows Service |
 | `update.sh` | Linux (systemd) | Native update helper |
 
 ---
@@ -91,32 +78,6 @@ Installs BamBuddy with Python virtual environment and optional systemd/launchd s
 # Skip service setup
 ./install.sh --no-service -y
 ```
-### `windows-installer.ps1` (Windows)
-
-Windows PowerShell (run as Administrator — the installer self-elevates via UAC if not):
-
-```powershell
-powershell -ExecutionPolicy Bypass -Command "iwr -useb https://raw.githubusercontent.com/maziggy/bambuddy/main/install/windows-installer.ps1 -OutFile windows-installer.ps1; .\windows-installer.ps1"
-```
-
-> Installs Bambuddy natively on Windows using Git, Python, a virtual environment, and optional NSSM Windows Service registration. See the [Windows Installer Guide](https://wiki.bambuddy.cool/getting-started/windows-installer/) for full parameter reference.
-
-**Parameters:**
-```powershell
--InstallDir PATH  Installation directory (default: C:\Bambuddy)
--Port PORT        Port to listen on (default: 8000)
--Yes              Non-interactive mode, accept defaults
--Silent           Non-interactive mode with reduced console output
--NoService        Skip Windows Service setup
--NoStart          Do not start Bambuddy at the end
--LocalOnly        Bind to 127.0.0.1 instead of all LAN interfaces
-```
-
-The installer stores the Git checkout in `INSTALL_DIR\bambuddy`, user data in
-`INSTALL_DIR\data`, and application logs in `INSTALL_DIR\logs` so updates and
-re-clones do not delete runtime data. If an earlier Windows installer run left
-runtime data in the Git checkout, the installer moves known data and log paths
-to the new locations before starting Bambuddy.
 
 ---
 
@@ -233,15 +194,6 @@ launchctl load ~/Library/LaunchAgents/com.bambuddy.app.plist    # Start
 launchctl unload ~/Library/LaunchAgents/com.bambuddy.app.plist  # Stop
 ```
 
-**Windows (NSSM service):**
-```powershell
-Get-Service Bambuddy        # Check status
-Start-Service Bambuddy      # Start
-Stop-Service Bambuddy       # Stop
-Restart-Service Bambuddy    # Restart
-Get-Content "C:\Bambuddy\bambuddy-runtime.log" -Tail 100 -Wait  # View logs
-```
-
 **Docker:**
 ```bash
 docker compose ps           # Check status
@@ -255,7 +207,7 @@ docker compose logs -f      # View logs
 
 **Native installation:**
 ```bash
-curl -fsSL https://raw.githubusercontent.com/maziggy/bambuddy/main/install/update.sh -o update.sh
+curl -fsSL https://raw.githubusercontent.com/Nicolas-Cilia/Backoffice-Printing/main/install/update.sh -o update.sh
 chmod +x update.sh
 sudo ./update.sh
 ```
@@ -297,13 +249,6 @@ git pull
 docker compose up -d --build
 ```
 
-**Windows (native):** rerun the installer; it detects the existing checkout and offers `git pull`, leaving `INSTALL_DIR\data` and `INSTALL_DIR\logs` untouched. Stop the service first if it is registered:
-```powershell
-Stop-Service Bambuddy
-.\windows-installer.ps1 -Yes
-Start-Service Bambuddy
-```
-
 ---
 
 ## Troubleshooting
@@ -334,22 +279,6 @@ Choose a different port during installation or stop the conflicting service:
 sudo lsof -i :8000  # Linux/macOS
 ```
 
-```powershell
-# Windows
-Get-NetTCPConnection -LocalPort 8000 -State Listen
-```
-
-### Windows: Service Won't Start
-Test the start script manually first:
-```powershell
-powershell.exe -ExecutionPolicy Bypass -File "C:\Bambuddy\Start-Bambuddy.ps1"
-```
-
-Then check the NSSM runtime logs:
-```powershell
-Get-Content "C:\Bambuddy\bambuddy-runtime-error.log" -Tail 100
-```
-
 ---
 
 ## Requirements
@@ -369,5 +298,4 @@ Get-Content "C:\Bambuddy\bambuddy-runtime-error.log" -Tail 100
 ## Support
 
 - **Documentation:** https://wiki.bambuddy.cool
-- **Discord:** https://discord.gg/aFS3ZfScHM
-- **Issues:** https://github.com/maziggy/bambuddy/issues
+- **Issues:** https://github.com/Nicolas-Cilia/Backoffice-Printing/issues

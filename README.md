@@ -10,68 +10,22 @@
 </p>
 
 <p align="center">
-  <a href="https://github.com/maziggy/bambuddy/releases"><img src="https://img.shields.io/github/v/release/maziggy/bambuddy?style=flat-square&color=blue&cacheSeconds=3600" alt="Release"></a>
-  <img src="https://github.com/maziggy/bambuddy/actions/workflows/ci.yml/badge.svg?branch=main">
-  <img src="https://github.com/maziggy/bambuddy/actions/workflows/github-code-scanning/codeql/badge.svg">
-  <img src="https://github.com/maziggy/bambuddy/actions/workflows/security.yml/badge.svg">
-  <a href="https://github.com/maziggy/bambuddy/blob/main/LICENSE"><img src="https://img.shields.io/github/license/maziggy/bambuddy?style=flat-square&cacheSeconds=3600" alt="License"></a>
-  <a href="https://github.com/maziggy/bambuddy/stargazers"><img src="https://img.shields.io/github/stars/maziggy/bambuddy?style=flat-square&cacheSeconds=3600" alt="Stars"></a>
-  <a href="https://github.com/maziggy/bambuddy/issues"><img src="https://img.shields.io/github/issues/maziggy/bambuddy?style=flat-square&cacheSeconds=3600" alt="Issues"></a>
-  <a href="https://discord.gg/aFS3ZfScHM"><img src="https://img.shields.io/discord/1461241694715645994?style=flat-square&logo=discord&logoColor=white&label=Discord&color=5865F2" alt="Discord"></a>
-  <a href="https://github.com/sponsors/maziggy"><img src="https://img.shields.io/badge/GitHub_Sponsors-Sponsor-ea4aaa?style=flat-square&logo=github-sponsors&logoColor=white" alt="GitHub Sponsors"></a>
-  <a href="https://sponsors.bambuddy.cool"><img src="https://img.shields.io/badge/Sponsors_Portal-sponsors.bambuddy.cool-2dd4bf?style=flat-square&logo=heart&logoColor=white" alt="Sponsors Portal"></a>
-  <a href="https://ko-fi.com/maziggy"><img src="https://img.shields.io/badge/Ko--fi-Support-ff5e5b?style=flat-square&logo=ko-fi&logoColor=white" alt="Ko-fi" target=_blank></a>
+  <a href="https://github.com/Nicolas-Cilia/Backoffice-Printing/releases"><img src="https://img.shields.io/github/v/release/Nicolas-Cilia/Backoffice-Printing?style=flat-square&color=blue&cacheSeconds=3600" alt="Release"></a>
+  <img src="https://github.com/Nicolas-Cilia/Backoffice-Printing/actions/workflows/ci.yml/badge.svg?branch=main">
+  <img src="https://github.com/Nicolas-Cilia/Backoffice-Printing/actions/workflows/github-code-scanning/codeql/badge.svg">
+  <img src="https://github.com/Nicolas-Cilia/Backoffice-Printing/actions/workflows/security.yml/badge.svg">
+  <a href="https://github.com/Nicolas-Cilia/Backoffice-Printing/blob/main/LICENSE"><img src="https://img.shields.io/github/license/Nicolas-Cilia/Backoffice-Printing?style=flat-square&cacheSeconds=3600" alt="License"></a>
+  <a href="https://github.com/Nicolas-Cilia/Backoffice-Printing/stargazers"><img src="https://img.shields.io/github/stars/Nicolas-Cilia/Backoffice-Printing?style=flat-square&cacheSeconds=3600" alt="Stars"></a>
+  <a href="https://github.com/Nicolas-Cilia/Backoffice-Printing/issues"><img src="https://img.shields.io/github/issues/Nicolas-Cilia/Backoffice-Printing?style=flat-square&cacheSeconds=3600" alt="Issues"></a>
 </p>
 
 <p align="center">
-  <sub><strong>Backed by</strong></sub><br>
-  <a href="https://northpole3dprinting.com/"><img src="static/img/sponsors/northpole-3d-printing.jpg" alt="North Pole 3D Printing" height="60"></a>
-</p>
-
-<p align="center">
-  <a href="https://demo.bambuddy.cool"><strong>🎮 Try the Live Demo</strong></a> •
   <a href="#-features">Features</a> •
   <a href="#-screenshots">Screenshots</a> •
   <a href="#-quick-start">Quick Start</a> •
   <a href="http://wiki.bambuddy.cool">Documentation</a> •
-  <a href="https://discord.gg/aFS3ZfScHM">Discord</a> •
   <a href="#-contributing">Contributing</a>
 </p>
-
-<p align="center">
-  <a href="https://demo.bambuddy.cool">
-    <img src="https://img.shields.io/badge/🎮_Live_Demo-demo.bambuddy.cool-00ae42?style=for-the-badge&labelColor=0a0d14" alt="Live Demo">
-  </a>
-  <br>
-  <em>Spin up your own private Bambuddy in ~10 seconds — no install, no signup, 30-minute session.</em>
-</p>
-
----
-
-## 📰 As Featured In
-
-> **"Bambuddy is the companion app that Bambu Lab should have built from day one."**
-> — Adam Conway, [XDA-Developers](https://www.xda-developers.com/finally-have-full-control-bambu-lab-printer-ditched-bambu-cloud/)
-
-<p align="center">
-  <a href="https://hackaday.com/2026/06/13/bambuddy-says-bye-to-bambu-lab-cloud-services/"><img src="https://img.shields.io/badge/Hackaday-Read-F2A724?style=flat-square&labelColor=000000" alt="Hackaday"></a>
-  <a href="https://www.xda-developers.com/finally-have-full-control-bambu-lab-printer-ditched-bambu-cloud/"><img src="https://img.shields.io/badge/XDA--Developers-Read-C8102E?style=flat-square" alt="XDA-Developers"></a>
-  <a href="https://www.howtogeek.com/free-your-bambu-lab-3d-printer-from-the-cloud/"><img src="https://img.shields.io/badge/How--To%20Geek-Read-33A6CA?style=flat-square" alt="How-To Geek"></a>
-  <a href="https://www.makeuseof.com/free-browser-tool-beats-bambu-lab-at-own-game/"><img src="https://img.shields.io/badge/MakeUseOf-Read-E02D2D?style=flat-square" alt="MakeUseOf"></a>
-  <a href="https://www.fabbaloo.com/news/bambuddy-launches-as-open-source-alternative-to-bambu-labs-cloud"><img src="https://img.shields.io/badge/Fabbaloo-Read-F77B0F?style=flat-square" alt="Fabbaloo"></a>
-  <a href="https://itsfoss.com/news/bambuddy-self-hosted-bambu-lab-alternative/"><img src="https://img.shields.io/badge/It's%20FOSS-Read-00B5AD?style=flat-square" alt="It's FOSS"></a>
-  <a href="https://www.igorslab.de/en/bambuddy-the-silent-alternative-to-the-bamboo-cloud/"><img src="https://img.shields.io/badge/Igor's%20Lab-Read-E10000?style=flat-square" alt="Igor's Lab"></a>
-  <a href="https://3druck.com/en/programs/bambuddy-open-source-tool-replaces-bambu-cloud-for-management-and-automation-of-3d-print-jobs-38153226/"><img src="https://img.shields.io/badge/3Druck-Read-0080C0?style=flat-square" alt="3Druck"></a>
-  <a href="https://www.fastblinker.com/bambuddy-the-open-source-solution-thats-revolutionizing-bambu-lab-3d-printer-management/"><img src="https://img.shields.io/badge/FastBlinker-Read-00B0FF?style=flat-square" alt="FastBlinker"></a>
-</p>
-
-Two leading 3D-printing publications independently concluded that Bambuddy's feature set **already exceeds Bambu's own cloud**:
-
-> *"The features seem to exceed those provided by Bambu Lab's own cloud."* — [Fabbaloo](https://www.fabbaloo.com/news/bambuddy-launches-as-open-source-alternative-to-bambu-labs-cloud)
->
-> *"The list of functions seems so extensive that it even goes beyond what Bambu Lab offers in its own cloud."* — [3Druck.com](https://3druck.com/en/programs/bambuddy-open-source-tool-replaces-bambu-cloud-for-management-and-automation-of-3d-print-jobs-38153226/)
-
-📄 **[See all press coverage →](https://bambuddy.cool/press.html)**
 
 ---
 
@@ -353,18 +307,6 @@ Optional but recommended — drop the [`slicer-api/` Compose stack](slicer-api/R
 ## 🎬 Demo
 
 <p align="center">
-  <a href="https://demo.bambuddy.cool">
-    <img src="https://img.shields.io/badge/🎮_Try_It_Live-demo.bambuddy.cool-00ae42?style=for-the-badge&labelColor=0a0d14" alt="Live Demo">
-  </a>
-  <br>
-  <em>Spin up your own private Bambuddy with simulated printers and pre-loaded print history. Click around freely — it's your sandbox. ~10 seconds to spawn, 30-minute session, no signup.</em>
-</p>
-
-<p align="center">
-  <strong>Prefer a video walkthrough?</strong>
-</p>
-
-<p align="center">
   <a href="https://youtu.be/bmq2Z0lEXeo">
     <img src="https://img.youtube.com/vi/bmq2Z0lEXeo/maxresdefault.jpg" alt="Bambuddy Demo Video" width="800">
   </a>
@@ -514,32 +456,18 @@ Optional but recommended — drop the [`slicer-api/` Compose stack](slicer-api/R
 
 ### Installation
 
-#### Windows (Native Installer)
-
-Self-contained `.exe` — no Python, Node, Docker, or Git required on the target machine. The installer bundles Python 3.13, the React frontend, ffmpeg, and registers Bambuddy as a Windows service.
-
-Download the latest installer:
-
-> https://github.com/maziggy/bambuddy/releases/latest/download/bambuddy-windows-x64-setup.exe
-
-Run it (one-time UAC prompt — admin install) → Bambuddy starts as a Windows service and the dashboard opens at **http://localhost:8000** automatically. Data lives at `C:\ProgramData\Bambuddy\`, install at `C:\Program Files\Bambuddy\`. To update, just run a newer installer over the existing install — your database and archives are preserved.
-
-> **SmartScreen warning:** until our SignPath OSS code-signing approval lands, you'll see "Windows protected your PC" on first run. Click **More info → Run anyway**.
-
-See the [Windows Installer Guide](https://wiki.bambuddy.cool/getting-started/windows-installer/) for service management, logs, and troubleshooting.
-
 #### Docker (Linux / macOS / Windows via Docker Desktop)
 
 **Option A: Pre-built image (fastest)**
 ```bash
 mkdir bambuddy && cd bambuddy
-curl -O https://raw.githubusercontent.com/maziggy/bambuddy/main/docker-compose.yml
+curl -O https://raw.githubusercontent.com/Nicolas-Cilia/Backoffice-Printing/main/docker-compose.yml
 docker compose up -d
 ```
 
 **Option B: Build from source**
 ```bash
-git clone https://github.com/maziggy/bambuddy.git
+git clone https://github.com/Nicolas-Cilia/Backoffice-Printing.git
 cd bambuddy
 docker compose up -d --build
 ```
@@ -588,9 +516,9 @@ Beta builds with the latest fixes are pushed regularly to the same beta version 
 
 ```bash
 # Pull the current beta
-docker pull ghcr.io/maziggy/bambuddy:0.2.2b1
+docker pull ghcr.io/nicolas-cilia/backoffice-printing:0.2.2b1
 # or from Docker Hub
-docker pull maziggy/bambuddy:0.2.2b1
+docker pull nicolas-cilia/backoffice-printing:0.2.2b1
 ```
 
 Use [Watchtower](https://containrrr.dev/watchtower/) to automatically update when new daily builds are pushed.
@@ -661,7 +589,7 @@ services:
 
 ```bash
 # Clone and setup
-git clone https://github.com/maziggy/bambuddy.git
+git clone https://github.com/Nicolas-Cilia/Backoffice-Printing.git
 cd bambuddy
 python3 -m venv venv
 source venv/bin/activate
@@ -674,16 +602,6 @@ uvicorn backend.app.main:app --host 0.0.0.0 --port 8000 --loop asyncio
 Open **http://localhost:8000** and add your printer!
 
 > **Need detailed instructions?** See the [Installation Guide](http://wiki.bambuddy.cool/getting-started/installation/)
-
-### Windows Native Installation
-
-Windows PowerShell (run as Administrator — the installer self-elevates via UAC if not):
-
-```powershell
-powershell -ExecutionPolicy Bypass -Command "iwr -useb https://raw.githubusercontent.com/maziggy/bambuddy/main/install/windows-installer.ps1 -OutFile windows-installer.ps1; .\windows-installer.ps1"
-```
-
-> Installs Bambuddy natively on Windows using Git, Python, a virtual environment, separate data/log directories, and optional NSSM Windows Service registration. See the [Windows Installer Guide](http://wiki.bambuddy.cool/getting-started/windows-installer/) for parameters and unattended-install options.
 
 ### Enabling Developer Mode
 
@@ -788,22 +706,10 @@ AGPL-3.0 License — see [LICENSE](LICENSE) for details.
 
 ---
 
-## 💖 Support Bambuddy
-
-Bambuddy stays independent because real people support it directly. If Bambuddy makes your printers more useful, please consider:
-
-- **[GitHub Sponsors](https://github.com/sponsors/maziggy)** — five recurring tiers from $5/mo (Backer) to $300/mo (Corporate). Supporter+ ($15/mo) get access to a private sponsors space with a monthly newsletter and early release notes. Patron+ ($35/mo) vote on the quarterly roadmap. Sustaining Sponsor+ ($150/mo) get a direct async email line for technical questions (~2-3 business days). Corporate ($300/mo) get priority email response (next business day), README header logo, sitewide footer logo on [bambuddy.cool](https://bambuddy.cool), and [Press page](https://bambuddy.cool/press.html) placement.
-- **[Ko-fi](https://ko-fi.com/maziggy)** — one-time tip or recurring.
-
-Sponsors get listed in [BACKERS.md](BACKERS.md). Need commercial support (SLA, multi-printer consulting)? Email `martin@bambuddy.cool`.
-
----
-
 <p align="center">
   Made with ❤️ for the 3D printing community
   <br><br>
-  <a href="https://discord.gg/aFS3ZfScHM">Join our Discord</a> •
-  <a href="https://github.com/maziggy/bambuddy/issues">Report Bug</a> •
-  <a href="https://github.com/maziggy/bambuddy/issues">Request Feature</a> •
+  <a href="https://github.com/Nicolas-Cilia/Backoffice-Printing/issues">Report Bug</a> •
+  <a href="https://github.com/Nicolas-Cilia/Backoffice-Printing/issues">Request Feature</a> •
   <a href="http://wiki.bambuddy.cool">Documentation</a>
 </p>

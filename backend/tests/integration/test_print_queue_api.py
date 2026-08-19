@@ -444,7 +444,6 @@ class TestPrintQueueAPI:
             "flow_cali": "on",
             "vibration_cali": False,
             "layer_inspect": True,
-            "timelapse": True,
             "use_ams": False,
         }
         response = await async_client.post("/api/v1/queue/", json=data)
@@ -454,7 +453,6 @@ class TestPrintQueueAPI:
         assert result["flow_cali"] == "on"
         assert result["vibration_cali"] is False
         assert result["layer_inspect"] is True
-        assert result["timelapse"] is True
         assert result["use_ams"] is False
 
     @pytest.mark.asyncio
@@ -476,13 +474,11 @@ class TestPrintQueueAPI:
             f"/api/v1/queue/{item.id}",
             json={
                 "bed_levelling": "off",
-                "timelapse": True,
             },
         )
         assert response.status_code == 200
         result = response.json()
         assert result["bed_levelling"] == "off"
-        assert result["timelapse"] is True
 
     @pytest.mark.asyncio
     @pytest.mark.integration
@@ -1081,7 +1077,6 @@ class TestQueueLibraryFileSupport:
             "ams_mapping": [1, 2, -1, -1],
             "plate_id": 2,
             "bed_levelling": "off",
-            "timelapse": True,
             "manual_start": True,
         }
         response = await async_client.post("/api/v1/queue/", json=data)
@@ -1091,7 +1086,6 @@ class TestQueueLibraryFileSupport:
         assert result["ams_mapping"] == [1, 2, -1, -1]
         assert result["plate_id"] == 2
         assert result["bed_levelling"] == "off"
-        assert result["timelapse"] is True
         assert result["manual_start"] is True
 
     @pytest.mark.asyncio
@@ -2402,7 +2396,6 @@ class TestAbortedStatusNormalisation:
             "archive_id": archive.id,
             "quantity": 2,
             "bed_levelling": "off",
-            "timelapse": True,
         }
         response = await async_client.post("/api/v1/queue/", json=data)
         assert response.status_code == 200
@@ -2413,7 +2406,6 @@ class TestAbortedStatusNormalisation:
         assert len(batch_items) == 2
         for item in batch_items:
             assert item["bed_levelling"] == "off"
-            assert item["timelapse"] is True
 
     @pytest.mark.asyncio
     @pytest.mark.integration

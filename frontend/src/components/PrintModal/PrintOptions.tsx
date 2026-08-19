@@ -27,7 +27,7 @@ const BOOLEAN_MODES = ['off', 'on'] as const;
 
 /**
  * Print options toggle panel with collapsible UI.
- * Shows bed levelling, flow/vibration calibration, layer inspection, timelapse,
+ * Shows bed levelling, flow/vibration calibration, layer inspection,
  * and (for dual-nozzle printers only) nozzle offset calibration.
  */
 export function PrintOptionsPanel({
@@ -46,7 +46,6 @@ export function PrintOptionsPanel({
     { key: 'flow_cali', label: t('settings.defaultFlowCali'), desc: t('settings.defaultFlowCaliDesc'), tristate: true },
     { key: 'vibration_cali', label: t('settings.defaultVibrationCali'), desc: t('settings.defaultVibrationCaliDesc') },
     { key: 'layer_inspect', label: t('settings.defaultLayerInspect'), desc: t('settings.defaultLayerInspectDesc') },
-    { key: 'timelapse', label: t('settings.defaultTimelapse'), desc: t('settings.defaultTimelapseDesc') },
     { key: 'nozzle_offset_cali', label: t('settings.defaultNozzleOffsetCali'), desc: t('settings.defaultNozzleOffsetCaliDesc'), dualNozzleOnly: true, tristate: true },
   ];
 

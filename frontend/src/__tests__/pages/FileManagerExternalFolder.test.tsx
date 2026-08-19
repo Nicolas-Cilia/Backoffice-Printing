@@ -143,12 +143,14 @@ describe('FileManagerPage - External Folders', () => {
   });
 
   describe('rendering', () => {
-    it('shows Link External button', async () => {
+    it('does not show Link External button', async () => {
       render(<FileManagerPage />);
 
       await waitFor(() => {
-        expect(screen.getByText('Link External')).toBeInTheDocument();
+        expect(screen.getByText('Regular Folder')).toBeInTheDocument();
       });
+
+      expect(screen.queryByText('Link External')).not.toBeInTheDocument();
     });
 
     it('shows external folder cards', async () => {
@@ -181,73 +183,15 @@ describe('FileManagerPage - External Folders', () => {
   });
 
   describe('external folder modal', () => {
-    it('opens modal when Link External clicked', async () => {
-      const user = userEvent.setup();
+    it('does not expose the link-external modal', async () => {
       render(<FileManagerPage />);
 
       await waitFor(() => {
-        expect(screen.getByText('Link External')).toBeInTheDocument();
+        expect(screen.getByText('Regular Folder')).toBeInTheDocument();
       });
 
-      await user.click(screen.getByText('Link External'));
-
-      await waitFor(() => {
-        expect(screen.getByText('Link External Folder')).toBeInTheDocument();
-      });
-    });
-
-    it('modal has name and path fields', async () => {
-      const user = userEvent.setup();
-      render(<FileManagerPage />);
-
-      await waitFor(() => {
-        expect(screen.getByText('Link External')).toBeInTheDocument();
-      });
-
-      await user.click(screen.getByText('Link External'));
-
-      await waitFor(() => {
-        expect(screen.getByPlaceholderText('e.g., NAS Prints')).toBeInTheDocument();
-        expect(screen.getByPlaceholderText('/mnt/nas/3d-prints')).toBeInTheDocument();
-      });
-    });
-
-    it('modal has readonly checkbox checked by default', async () => {
-      const user = userEvent.setup();
-      render(<FileManagerPage />);
-
-      await waitFor(() => {
-        expect(screen.getByText('Link External')).toBeInTheDocument();
-      });
-
-      await user.click(screen.getByText('Link External'));
-
-      await waitFor(() => {
-        expect(screen.getByText('Link External Folder')).toBeInTheDocument();
-        const readonlyCheckbox = screen.getByRole('checkbox', { name: /read only/i });
-        expect(readonlyCheckbox).toBeChecked();
-      });
-    });
-
-    it('modal can be closed', async () => {
-      const user = userEvent.setup();
-      render(<FileManagerPage />);
-
-      await waitFor(() => {
-        expect(screen.getByText('Link External')).toBeInTheDocument();
-      });
-
-      await user.click(screen.getByText('Link External'));
-
-      await waitFor(() => {
-        expect(screen.getByText('Link External Folder')).toBeInTheDocument();
-      });
-
-      await user.click(screen.getByText('Cancel'));
-
-      await waitFor(() => {
-        expect(screen.queryByText('Link External Folder')).not.toBeInTheDocument();
-      });
+      expect(screen.queryByText('Link External')).not.toBeInTheDocument();
+      expect(screen.queryByText('Link External Folder')).not.toBeInTheDocument();
     });
   });
 

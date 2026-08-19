@@ -4,15 +4,14 @@
 
 No cloud dependency. Complete privacy. Full control.
 
-[![GitHub](https://img.shields.io/github/stars/maziggy/bambuddy?style=flat-square&label=GitHub)](https://github.com/maziggy/bambuddy)
-[![License](https://img.shields.io/github/license/maziggy/bambuddy?style=flat-square)](https://github.com/maziggy/bambuddy/blob/main/LICENSE)
-[![Discord](https://img.shields.io/discord/1461241694715645994?style=flat-square&logo=discord&logoColor=white&label=Discord&color=5865F2)](https://discord.gg/aFS3ZfScHM)
+[![GitHub](https://img.shields.io/github/stars/Nicolas-Cilia/Backoffice-Printing?style=flat-square&label=GitHub)](https://github.com/Nicolas-Cilia/Backoffice-Printing)
+[![License](https://img.shields.io/github/license/Nicolas-Cilia/Backoffice-Printing?style=flat-square)](https://github.com/Nicolas-Cilia/Backoffice-Printing/blob/main/LICENSE)
 
 ## Quick Start
 
 ```bash
 mkdir bambuddy && cd bambuddy
-curl -O https://raw.githubusercontent.com/maziggy/bambuddy/main/docker-compose.yml
+curl -O https://raw.githubusercontent.com/Nicolas-Cilia/Backoffice-Printing/main/docker-compose.yml
 docker compose up -d
 ```
 
@@ -63,7 +62,7 @@ Open **http://localhost:8000** and add your printer.
 ```yaml
 services:
   bambuddy:
-    image: maziggy/bambuddy:latest
+    image: nicolas-cilia/backoffice-printing:latest
     container_name: bambuddy
     network_mode: host
     environment:
@@ -94,7 +93,7 @@ Beta builds with the latest fixes are pushed regularly to the same beta version 
 
 ```bash
 # Pull the current beta
-docker pull maziggy/bambuddy:0.2.2b1
+docker pull nicolas-cilia/backoffice-printing:0.2.2b1
 ```
 
 Use [Watchtower](https://containrrr.dev/watchtower/) to automatically update when new daily builds are pushed.
@@ -115,12 +114,10 @@ All printers require **Developer Mode** enabled for LAN access.
 
 ## Links
 
-- **Website:** [bambuddy.cool](https://bambuddy.cool)
 - **Documentation:** [wiki.bambuddy.cool](http://wiki.bambuddy.cool)
-- **GitHub:** [github.com/maziggy/bambuddy](https://github.com/maziggy/bambuddy)
-- **Discord:** [discord.gg/aFS3ZfScHM](https://discord.gg/aFS3ZfScHM)
-- **Issues:** [GitHub Issues](https://github.com/maziggy/bambuddy/issues)
+- **GitHub:** [github.com/Nicolas-Cilia/Backoffice-Printing](https://github.com/Nicolas-Cilia/Backoffice-Printing)
+- **Issues:** [GitHub Issues](https://github.com/Nicolas-Cilia/Backoffice-Printing/issues)
 
 ## License
 
-MIT License - see [LICENSE](https://github.com/maziggy/bambuddy/blob/main/LICENSE) for details.
+AGPL-3.0 License - see [LICENSE](https://github.com/Nicolas-Cilia/Backoffice-Printing/blob/main/LICENSE) for details.

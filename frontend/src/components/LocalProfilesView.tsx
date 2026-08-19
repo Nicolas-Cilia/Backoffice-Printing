@@ -1,25 +1,41 @@
-import { useState, useMemo, useCallback } from 'react';
+import { useState, useMemo, useCallback, useRef } from 'react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { useTranslation } from 'react-i18next';
 import {
-  Upload,
   Loader2,
   Search,
   Trash2,
   ChevronDown,
+  ChevronRight,
   ChevronUp,
   HardDrive,
   Droplet,
   Settings2,
   Layers,
   AlertCircle,
+  FolderInput,
+  X,
 } from 'lucide-react';
 import { api } from '../api/client';
-import type { LocalPreset, LocalPresetsResponse } from '../api/client';
+import type { LocalPreset, LocalPresetsResponse, ProfilePartSectionView } from '../api/client';
 import { Card, CardContent } from './Card';
 import { Button } from './Button';
+import { ProcessSpecsModal } from './ProcessSpecsModal';
+import { LocalPresetDownloadButton } from './LocalPresetDownloadButton';
+import { ProfilePartSections, PROFILE_PARTS_KEY, type ProfilePartAttachFn } from './ProfilePartSections';
 import { useToast } from '../contexts/ToastContext';
 import { useAuth } from '../contexts/AuthContext';
+import {
+  compactSpecItems,
+  hasViewableSpecs,
+  mergeProductionSpecs,
+} from '../utils/productionSpecs';
+
+const PRESET_SOURCE_LABEL_KEYS: Record<string, string> = {
+  bambu: 'profiles.localProfiles.sourceLabels.bambu',
+  orcaslicer: 'profiles.localProfiles.sourceLabels.orcaslicer',
+  manual: 'profiles.localProfiles.sourceLabels.manual',
+};
 
 // Known material types for name-parsing fallback
 const MATERIAL_TYPES = ['PLA', 'PETG', 'PCTG', 'ABS', 'ASA', 'TPU', 'PC', 'PA', 'PVA', 'HIPS', 'PP', 'PET', 'NYLON'];
@@ -60,14 +76,21 @@ function PresetCard({
   onDelete,
   onExpand,
   isExpanded,
+  onMove,
 }: {
   preset: LocalPreset;
   onDelete: (id: number) => void;
   onExpand: (id: number | null) => void;
   isExpanded: boolean;
+  onMove?: (preset: LocalPreset) => void;
 }) {
   const { t } = useTranslation();
   const { hasPermission } = useAuth();
+  const [showSpecs, setShowSpecs] = useState(false);
+  const isProcess = preset.preset_type === 'process';
+  const specs = isProcess ? mergeProductionSpecs(preset.locked_parameters, null) : {};
+  const canViewSpecs = isProcess && hasViewableSpecs(specs);
+  const summary = canViewSpecs ? compactSpecItems(specs, t) : [];
 
   // Resolve material type: DB field → parse from name
   const material = preset.filament_type || parseMaterialFromName(preset.name);
@@ -99,7 +122,8 @@ function PresetCard({
   }
 
   return (
-    <Card className="bg-bambu-dark border-bambu-dark-tertiary hover:border-bambu-dark-tertiary/80 transition-colors">
+    <>
+    <Card className="bg-bambu-dark border-bambu-dark-tertiary shadow-none [box-shadow:none] hover:border-bambu-dark-tertiary/80 transition-colors">
       <CardContent className="p-3">
         <div className="flex items-start justify-between gap-2">
           <div className="flex-1 min-w-0">
@@ -131,10 +155,37 @@ function PresetCard({
                 {t('profiles.localProfiles.badge')}
               </span>
             </div>
+
+            {canViewSpecs && (
+              <button
+                type="button"
+                onClick={() => setShowSpecs(true)}
+                className="mt-2 inline-flex items-start gap-0.5 text-left text-[11px] text-bambu-gray leading-snug hover:text-white transition-colors"
+                data-testid="process-spec-summary"
+                aria-haspopup="dialog"
+                aria-expanded={showSpecs}
+                aria-label={t('fileManager.production.specs.view')}
+              >
+                <span>{summary.length > 0 ? summary.join(' · ') : t('fileManager.production.specs.view')}</span>
+                <ChevronRight className="w-3 h-3 opacity-80 flex-shrink-0 mt-0.5" aria-hidden />
+              </button>
+            )}
           </div>
 
           <div className="flex items-center gap-1 flex-shrink-0">
-            {/* 4) Only delete, no edit */}
+            {onMove && hasPermission('settings:update') && (
+              <button
+                type="button"
+                onClick={() => onMove(preset)}
+                className="p-1 text-bambu-gray hover:text-bambu-green transition-colors"
+                title={t('profiles.localProfiles.partSections.moveToSection')}
+                aria-label={t('profiles.localProfiles.partSections.moveToSection')}
+                data-testid="move-unfiled-process"
+              >
+                <FolderInput className="w-3.5 h-3.5" />
+              </button>
+            )}
+            <LocalPresetDownloadButton presetId={preset.id} />
             {hasPermission('settings:update') && (
               <button
                 onClick={() => onDelete(preset.id)}
@@ -209,69 +260,46 @@ function PresetCard({
             )}
             <div className="flex justify-between">
               <span className="text-bambu-gray">{t('profiles.localProfiles.source')}</span>
-              <span className="text-white capitalize">{preset.source}</span>
+              <span className="text-white" data-testid="preset-source">
+                {PRESET_SOURCE_LABEL_KEYS[preset.source]
+                  ? t(PRESET_SOURCE_LABEL_KEYS[preset.source])
+                  : preset.source}
+              </span>
             </div>
           </div>
         )}
       </CardContent>
     </Card>
+    {showSpecs && canViewSpecs && (
+      <ProcessSpecsModal
+        title={preset.name}
+        specs={specs}
+        onClose={() => setShowSpecs(false)}
+      />
+    )}
+    </>
   );
 }
 
 export function LocalProfilesView() {
   const { t } = useTranslation();
-  const { hasPermission } = useAuth();
   const queryClient = useQueryClient();
   const { showToast } = useToast();
   const [searchQuery, setSearchQuery] = useState('');
   const [expandedId, setExpandedId] = useState<number | null>(null);
-  const [isDragging, setIsDragging] = useState(false);
+  const [processesOpen, setProcessesOpen] = useState(false);
   const [deleteConfirm, setDeleteConfirm] = useState<number | null>(null);
+  const [movingPreset, setMovingPreset] = useState<LocalPreset | null>(null);
+  const attachRef = useRef<ProfilePartAttachFn | null>(null);
 
   const { data: presets, isLoading } = useQuery({
     queryKey: ['localPresets'],
     queryFn: () => api.getLocalPresets(),
   });
 
-  const importMutation = useMutation({
-    mutationFn: async (files: FileList) => {
-      const results = [];
-      for (const file of Array.from(files)) {
-        const formData = new FormData();
-        formData.append('file', file);
-        results.push(await api.importLocalPresets(formData));
-      }
-      return results;
-    },
-    onSuccess: (results) => {
-      queryClient.invalidateQueries({ queryKey: ['localPresets'] });
-      // The SliceModal reads from a separate `slicerPresets` query that lists
-      // cloud + local + standard in one shot. Without this second invalidation
-      // freshly-imported profiles wouldn't appear in the SliceModal dropdown
-      // until that query's staleTime elapsed plus a refocus / remount (#1581).
-      queryClient.invalidateQueries({ queryKey: ['slicerPresets'] });
-      let totalImported = 0;
-      let totalSkipped = 0;
-      let totalErrors = 0;
-      for (const r of results) {
-        totalImported += r.imported;
-        totalSkipped += r.skipped;
-        totalErrors += r.errors.length;
-      }
-
-      if (totalImported > 0) {
-        showToast(t('profiles.localProfiles.toast.importSuccess', { count: totalImported }));
-      }
-      if (totalSkipped > 0) {
-        showToast(t('profiles.localProfiles.toast.importSkipped', { count: totalSkipped }), 'warning');
-      }
-      if (totalErrors > 0) {
-        showToast(t('profiles.localProfiles.toast.importError', { count: totalErrors }), 'error');
-      }
-    },
-    onError: (err: Error) => {
-      showToast(err.message, 'error');
-    },
+  const { data: partSections = [] } = useQuery({
+    queryKey: PROFILE_PARTS_KEY,
+    queryFn: () => api.getProfilePartSections(),
   });
 
   const deleteMutation = useMutation({
@@ -302,17 +330,6 @@ export function LocalProfilesView() {
     },
   });
 
-  const handleFiles = useCallback((files: FileList | null) => {
-    if (!files || files.length === 0) return;
-    importMutation.mutate(files);
-  }, [importMutation]);
-
-  const handleDrop = useCallback((e: React.DragEvent) => {
-    e.preventDefault();
-    setIsDragging(false);
-    handleFiles(e.dataTransfer.files);
-  }, [handleFiles]);
-
   const filterPresets = useCallback((list: LocalPreset[]) => {
     if (!searchQuery) return list;
     const q = searchQuery.toLowerCase();
@@ -323,10 +340,23 @@ export function LocalProfilesView() {
     );
   }, [searchQuery]);
 
+  const attachedPresetIds = useMemo(() => {
+    const ids = new Set<number>();
+    for (const section of partSections) {
+      for (const slot of section.slots) {
+        if (slot.preset?.id != null) ids.add(slot.preset.id);
+      }
+    }
+    return ids;
+  }, [partSections]);
+
   const filaments = useMemo(() => filterPresets(presets?.filament || []), [presets?.filament, filterPresets]);
   const printers = useMemo(() => filterPresets(presets?.printer || []), [presets?.printer, filterPresets]);
-  const processes = useMemo(() => filterPresets(presets?.process || []), [presets?.process, filterPresets]);
-  const totalCount = filaments.length + printers.length + processes.length;
+  const unfiledProcesses = useMemo(
+    () => filterPresets((presets?.process || []).filter((preset) => !attachedPresetIds.has(preset.id))),
+    [presets?.process, attachedPresetIds, filterPresets],
+  );
+  const totalCount = filaments.length + printers.length + unfiledProcesses.length;
   // Count of imported presets BEFORE the search filter — drives whether the
   // search bar shows at all. Gating the search bar on totalCount (post-filter)
   // made it vanish the moment a query matched nothing, leaving the user unable
@@ -347,40 +377,6 @@ export function LocalProfilesView() {
 
   return (
     <div className="space-y-6">
-      {/* Import Zone */}
-      {hasPermission('settings:update') && (
-        <div
-          onDragOver={(e) => { e.preventDefault(); setIsDragging(true); }}
-          onDragLeave={() => setIsDragging(false)}
-          onDrop={handleDrop}
-          className={`relative border-2 border-dashed rounded-lg p-6 text-center transition-colors ${
-            isDragging
-              ? 'border-bambu-green bg-bambu-green/10'
-              : 'border-bambu-dark-tertiary hover:border-bambu-gray'
-          }`}
-        >
-          <input
-            type="file"
-            accept=".json,.zip,.orca_filament,.bbscfg,.bbsflmt"
-            multiple
-            className="absolute inset-0 w-full h-full opacity-0 cursor-pointer"
-            onChange={(e) => handleFiles(e.target.files)}
-          />
-          {importMutation.isPending ? (
-            <div className="flex items-center justify-center gap-2">
-              <Loader2 className="w-5 h-5 text-bambu-green animate-spin" />
-              <span className="text-bambu-gray">{t('profiles.localProfiles.importing')}</span>
-            </div>
-          ) : (
-            <>
-              <Upload className="w-8 h-8 text-bambu-gray mx-auto mb-2" />
-              <p className="text-sm text-white font-medium">{t('profiles.localProfiles.import')}</p>
-              <p className="text-xs text-bambu-gray mt-1">{t('profiles.localProfiles.importDesc')}</p>
-            </>
-          )}
-        </div>
-      )}
-
       {/* Search Bar */}
       {hasAnyPresets && (
         <div className="relative">
@@ -395,17 +391,20 @@ export function LocalProfilesView() {
         </div>
       )}
 
+      <ProfilePartSections attachRef={attachRef} />
+
       {/* No presets imported at all */}
       {!hasAnyPresets && !isLoading && (
         <div className="text-center py-12">
           <HardDrive className="w-12 h-12 text-bambu-gray mx-auto mb-3 opacity-50" />
           <p className="text-bambu-gray">{t('profiles.localProfiles.noPresets')}</p>
-          <p className="text-xs text-bambu-gray/60 mt-1">{t('profiles.localProfiles.importDesc')}</p>
         </div>
       )}
 
-      {/* Presets exist, but the search query matched none of them */}
-      {hasAnyPresets && totalCount === 0 && !isLoading && (
+      {/* Presets exist, but a typed search query matched none of the column lists.
+          Do not treat “all processes are in part sections” (empty Unfiled) as a
+          search miss when the box is empty. */}
+      {hasAnyPresets && searchQuery.trim() !== '' && totalCount === 0 && !isLoading && (
         <div className="text-center py-12">
           <Search className="w-12 h-12 text-bambu-gray mx-auto mb-3 opacity-50" />
           <p className="text-bambu-gray">{t('profiles.localProfiles.noSearchResults')}</p>
@@ -439,26 +438,50 @@ export function LocalProfilesView() {
             </div>
           )}
 
-          {/* Process Column */}
-          {processes.length > 0 && (
+          {/* Unfiled process column */}
+          {unfiledProcesses.length > 0 && (
             <div>
-              <div className="flex items-center gap-2 mb-3">
+              <button
+                type="button"
+                onClick={() => setProcessesOpen((open) => !open)}
+                className="flex items-center gap-2 mb-3 text-left w-full hover:opacity-90"
+                aria-expanded={processesOpen}
+                aria-label={processesOpen ? t('common.collapse') : t('common.expand')}
+                data-testid="toggle-unfiled-processes"
+              >
+                <ChevronDown
+                  className={`w-4 h-4 text-bambu-gray flex-shrink-0 transition-transform duration-300 ease-in-out ${
+                    processesOpen ? 'rotate-0' : '-rotate-90'
+                  }`}
+                  aria-hidden
+                />
                 <Layers className="w-4 h-4 text-blue-600 dark:text-blue-400" />
                 <h3 className="text-sm font-medium text-white">
                   {t('profiles.localProfiles.process')}
                 </h3>
-                <span className="text-xs text-bambu-gray">({processes.length})</span>
-              </div>
-              <div className="space-y-2">
-                {processes.map(p => (
-                  <PresetCard
-                    key={p.id}
-                    preset={p}
-                    onDelete={(id) => setDeleteConfirm(id)}
-                    onExpand={setExpandedId}
-                    isExpanded={expandedId === p.id}
-                  />
-                ))}
+                <span className="text-xs text-bambu-gray">({unfiledProcesses.length})</span>
+              </button>
+              <div
+                className={`rounded-xl transition-[max-height,opacity] duration-300 ease-in-out ${
+                  processesOpen
+                    ? 'max-h-[4000px] opacity-100 overflow-visible'
+                    : 'max-h-0 opacity-0 overflow-hidden'
+                }`}
+                data-testid="unfiled-processes-list"
+                aria-hidden={!processesOpen}
+              >
+                <div className="space-y-2">
+                  {unfiledProcesses.map(p => (
+                    <PresetCard
+                      key={p.id}
+                      preset={p}
+                      onDelete={(id) => setDeleteConfirm(id)}
+                      onExpand={setExpandedId}
+                      isExpanded={expandedId === p.id}
+                      onMove={setMovingPreset}
+                    />
+                  ))}
+                </div>
               </div>
             </div>
           )}
@@ -486,6 +509,61 @@ export function LocalProfilesView() {
               </div>
             </div>
           )}
+        </div>
+      )}
+
+      {movingPreset && (
+        <div
+          className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-4"
+          onClick={() => setMovingPreset(null)}
+          role="presentation"
+        >
+          <div
+            className="bg-bambu-dark-secondary border border-bambu-dark-tertiary rounded-lg w-full max-w-md max-h-[80vh] flex flex-col"
+            onClick={(e) => e.stopPropagation()}
+            role="dialog"
+            aria-labelledby="move-unfiled-title"
+            data-testid="move-unfiled-section-picker"
+          >
+            <div className="flex items-center justify-between gap-3 p-4 border-b border-bambu-dark-tertiary">
+              <h2 id="move-unfiled-title" className="text-sm font-semibold text-white">
+                {t('profiles.localProfiles.partSections.pickSection')}
+              </h2>
+              <button
+                type="button"
+                onClick={() => setMovingPreset(null)}
+                className="p-1 text-bambu-gray hover:text-white"
+                aria-label={t('common.close')}
+              >
+                <X className="w-4 h-4" />
+              </button>
+            </div>
+            <div className="p-4 border-b border-bambu-dark-tertiary">
+              <p className="text-xs text-bambu-gray">{t('profiles.localProfiles.partSections.incomingProcess')}</p>
+              <p className="text-sm text-white font-medium truncate">{movingPreset.name}</p>
+            </div>
+            <div className="overflow-y-auto p-4 space-y-2">
+              {partSections.length === 0 ? (
+                <p className="text-sm text-bambu-gray">{t('profiles.localProfiles.partSections.noSectionsToMove')}</p>
+              ) : (
+                partSections.map((section: ProfilePartSectionView) => (
+                  <button
+                    key={section.id}
+                    type="button"
+                    className="w-full text-left bg-bambu-dark border border-bambu-dark-tertiary rounded px-3 py-2 hover:border-bambu-green"
+                    data-testid="move-unfiled-section-option"
+                    onClick={() => {
+                      const preset = movingPreset;
+                      setMovingPreset(null);
+                      attachRef.current?.(section.id, preset);
+                    }}
+                  >
+                    <span className="text-sm text-white">{section.name}</span>
+                  </button>
+                ))
+              )}
+            </div>
+          </div>
         </div>
       )}
 
