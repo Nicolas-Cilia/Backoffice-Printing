@@ -162,7 +162,6 @@ async def archive_case(tmp_path):
                 flow_cali="off",
                 vibration_cali=True,
                 layer_inspect=False,
-                timelapse=False,
                 use_ams=True,
                 nozzle_offset_cali="on",
             )
