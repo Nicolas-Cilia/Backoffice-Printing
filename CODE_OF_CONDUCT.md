@@ -2,14 +2,16 @@
 
 ## Our Commitment
 
-The Bambuddy community is dedicated to providing a welcoming and supportive environment for everyone. We value respectful collaboration and constructive dialogue.
+This repository is meant to stay a respectful place for anyone who reads the
+code, opens an issue, or otherwise interacts with it. We value clear discussion
+and constructive feedback.
 
 ## Expected Behavior
 
 - **Be Respectful**: Treat others with kindness and consideration. Disagreements are fine; personal attacks are not.
 - **Be Inclusive**: Welcome people of all backgrounds and experience levels. Avoid exclusionary language or behavior.
 - **Be Constructive**: Offer helpful feedback. Focus on ideas, not individuals.
-- **Be Patient**: Remember that contributors have varying levels of experience and availability.
+- **Be Patient**: Remember that people have varying levels of experience and availability.
 
 ## Unacceptable Behavior
 
@@ -21,26 +23,23 @@ The Bambuddy community is dedicated to providing a welcoming and supportive envi
 
 ## Reporting Issues
 
-If you experience or witness unacceptable behavior:
+If you experience or witness unacceptable behavior in this repository, report it
+on GitHub: **[Nicolas-Cilia/Backoffice-Printing](https://github.com/Nicolas-Cilia/Backoffice-Printing)**.
 
-1. **Contact the maintainers** via email or GitHub
-2. **Provide details** about what happened and when
-3. **All reports will be handled confidentially**
-
-We will review and respond to all reports promptly.
+1. Open an issue, or contact the repository owner through GitHub
+2. Include what happened and when
+3. Reports are handled confidentially
 
 ## Enforcement
 
-Maintainers may take any action they deem appropriate, including:
+The repository owner may take any action they deem appropriate, including:
 
 - Requesting a change in behavior
-- Temporary or permanent bans from community spaces
+- Temporary or permanent blocks from this repository
 - Removal of contributions that violate this code
 
 ## Scope
 
-This code of conduct applies to all Bambuddy community spaces, including GitHub issues, pull requests, discussions, and any other communication channels.
-
----
-
-Thank you for helping make Bambuddy a welcoming community!
+This code of conduct applies to this GitHub repository: issues, pull requests,
+discussions, and other communication attached to
+[Nicolas-Cilia/Backoffice-Printing](https://github.com/Nicolas-Cilia/Backoffice-Printing).

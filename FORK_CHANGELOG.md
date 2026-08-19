@@ -3,6 +3,34 @@
 Changes made in this fork on top of upstream Bambuddy. Upstream's own release notes stay
 in `CHANGELOG.md`. Planned work lives in `FORK_PLAN.md`.
 
+## 2026-08-19: GitHub docs rewritten for this fork
+
+Fork plan entry #7. The five GitHub community tabs now describe this personal rework
+instead of upstream Bambuddy: what it is, who wrote most of it, how it runs today, and
+that it is not affiliated with or endorsed by maziggy/bambuddy.
+
+`README.md` keeps Bambuddy's shape (logo, pitch, tools, how to run, license) and
+replaces the content. Fork notice sits high on the page. Tools match the current
+sidebar. Native Mac (venv + uvicorn :8000, Vite :5173 in dev) is the path that works;
+Docker Compose `up -d --build` from this repo is documented as a first-class intended
+path, without promising unpublished GHCR/Docker Hub tags, daily betas, or Watchtower.
+Screenshot gallery, Discord, sponsors, wiki, live demo, Proxy Mode, Virtual Printers,
+slicer-api, pipelines, Archives, MakerWorld, Projects, smart plugs, and in-app Update
+are not advertised.
+
+`CONTRIBUTING.md` is how this checkout is developed (clone, uvicorn, Vite, compose
+`--build`, Ruff, ESLint, i18n, tests). It does not recruit contributors or document
+an image-publish pipeline. `CODE_OF_CONDUCT.md` applies to this repository and reports
+on GitHub. `SECURITY.md` points private advisories at this repo, drops SLAs and the
+0.1.x/0.2.x support table, and keeps the CI security-stance rules.
+
+`LICENSE` was not touched. In-app GitHub URLs / `GITHUB_REPO` are entry #6.
+
+### Changes
+
+- `README.md`, `CONTRIBUTING.md`, `CODE_OF_CONDUCT.md`, `SECURITY.md`: rewritten.
+- `FORK_PLAN.md`: entry #7 marked done on `docs/fork-attribution`.
+
 ## 2026-08-19: Download local print profiles
 
 Fork plan entry #15. Local presets can be downloaded from Profiles →
