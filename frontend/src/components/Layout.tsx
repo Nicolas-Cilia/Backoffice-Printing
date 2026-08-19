@@ -642,7 +642,7 @@ export function Layout() {
                 )}
                 <InstallAppButton />
                 <a
-                  href="https://github.com/maziggy/bambuddy"
+                  href="https://github.com/Nicolas-Cilia/Backoffice-Printing"
                   target="_blank"
                   rel="noopener noreferrer"
                   className="p-2 rounded-lg hover:bg-bambu-dark-tertiary transition-colors text-bambu-gray-light hover:text-white"
@@ -728,7 +728,7 @@ export function Layout() {
               )}
               <InstallAppButton />
               <a
-                href="https://github.com/maziggy/bambuddy"
+                href="https://github.com/Nicolas-Cilia/Backoffice-Printing"
                 target="_blank"
                 rel="noopener noreferrer"
                 className="p-2 rounded-lg hover:bg-bambu-dark-tertiary transition-colors text-bambu-gray-light hover:text-white"
