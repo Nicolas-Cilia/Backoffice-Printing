@@ -28,7 +28,7 @@ set -e
 
 # Configuration
 GHCR_REGISTRY="ghcr.io"
-IMAGE_NAME="maziggy/bambuddy-beta"
+IMAGE_NAME="nicolas-cilia/backoffice-printing-beta"
 GHCR_IMAGE="${GHCR_REGISTRY}/${IMAGE_NAME}"
 PLATFORMS="linux/amd64,linux/arm64"
 BUILDER_NAME="bambuddy-builder"
