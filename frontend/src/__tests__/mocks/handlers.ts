@@ -594,6 +594,7 @@ export const handlers = [
     }),
   ),
   http.get('/api/v1/filament-tracking/events', () => HttpResponse.json([])),
+  http.get('/api/v1/filament-tracking/printer-consumption', () => HttpResponse.json([])),
   http.get('/api/v1/filament-tracking/assignments', () => HttpResponse.json([])),
   http.post('/api/v1/cloud/filament-info', () => HttpResponse.json({ filaments: [] })),
   http.post('/api/v1/printers/camera/stream-token', () =>

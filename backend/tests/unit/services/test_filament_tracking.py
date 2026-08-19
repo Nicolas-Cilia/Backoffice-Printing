@@ -3,7 +3,7 @@ from datetime import datetime, timedelta, timezone
 import pytest
 from sqlalchemy import select
 
-from backend.app.models.filament_tracking import FilamentColorBucket, FilamentSlotAssignment
+from backend.app.models.filament_tracking import FilamentColorBucket, FilamentColorUsage, FilamentSlotAssignment
 from backend.app.services.filament_tracking import (
     PlanBucket,
     PlanEvent,
@@ -13,6 +13,7 @@ from backend.app.services.filament_tracking import (
     get_or_create_bucket,
     global_tray_to_slot,
     hex_to_basic_color_name,
+    load_printer_consumption,
     mapping_tray_id,
     normalize_color_name,
     normalize_effect_type,
@@ -378,3 +379,51 @@ async def test_get_or_create_treats_brand_subtype_as_distinct_sku(db_session):
     assert again.id == basic.id
     buckets = (await db_session.execute(select(FilamentColorBucket))).scalars().all()
     assert len(buckets) == 2
+
+
+@pytest.mark.asyncio
+async def test_printer_consumption_sums_usage_per_printer(db_session, printer_factory):
+    first = await printer_factory()
+    second = await printer_factory()
+    bucket = FilamentColorBucket(
+        color_name="White",
+        material="PLA",
+        color_hex="FFFFFF",
+        on_hand_grams=10000,
+        spool_weight_grams=1000,
+        stock_initialized=True,
+    )
+    db_session.add(bucket)
+    await db_session.flush()
+    db_session.add_all(
+        [
+            FilamentColorUsage(
+                bucket_id=bucket.id,
+                grams=200,
+                kind="completed",
+                printer_id=first.id,
+                source_key="test:printer-a",
+            ),
+            FilamentColorUsage(
+                bucket_id=bucket.id,
+                grams=50,
+                kind="failed",
+                printer_id=first.id,
+                source_key="test:printer-a-fail",
+            ),
+            FilamentColorUsage(
+                bucket_id=bucket.id,
+                grams=80,
+                kind="completed",
+                printer_id=second.id,
+                source_key="test:printer-b",
+            ),
+        ]
+    )
+    await db_session.commit()
+
+    rows = await load_printer_consumption(db_session)
+    by_id = {row.printer_id: row.grams for row in rows}
+    assert by_id[first.id] == 250
+    assert by_id[second.id] == 80
+    assert rows[0].printer_id == first.id

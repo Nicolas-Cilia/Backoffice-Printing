@@ -21,6 +21,7 @@ from backend.app.schemas.filament_tracking import (
     BucketStockUpdate,
     FilamentPlanResponse,
     MaterialPlanResponse,
+    PrinterConsumptionResponse,
     SlotAssignmentCreate,
     SlotAssignmentResponse,
     UsageEventResponse,
@@ -30,6 +31,7 @@ from backend.app.services.filament_tracking import (
     get_or_create_bucket,
     identity_or_none,
     load_plan,
+    load_printer_consumption,
     normalize_color_name,
     normalize_effect_type,
     normalize_extra_colors,
@@ -340,3 +342,14 @@ async def list_usage_events(
             )
         )
     return rows
+
+
+@router.get("/printer-consumption", response_model=list[PrinterConsumptionResponse])
+async def list_printer_consumption(
+    db: AsyncSession = Depends(get_db),
+    _: User | None = RequirePermissionIfAuthEnabled(Permission.INVENTORY_READ),
+):
+    return [
+        PrinterConsumptionResponse(printer_id=row.printer_id, name=row.name, grams=row.grams)
+        for row in await load_printer_consumption(db)
+    ]

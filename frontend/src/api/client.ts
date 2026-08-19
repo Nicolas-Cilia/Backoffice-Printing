@@ -3010,6 +3010,12 @@ export interface FilamentTrackingBucketCreate {
   lead_time_days?: number;
 }
 
+export interface FilamentTrackingPrinterConsumption {
+  printer_id: number;
+  name: string;
+  grams: number;
+}
+
 export interface FilamentTrackingAssignment {
   id: number;
   printer_id: number;
@@ -5453,6 +5459,8 @@ export const api = {
     request<FilamentTrackingPlan>('/filament-tracking/plan'),
   getFilamentTrackingEvents: (limit = 40) =>
     request<FilamentTrackingEvent[]>(`/filament-tracking/events?limit=${limit}`),
+  getFilamentTrackingPrinterConsumption: () =>
+    request<FilamentTrackingPrinterConsumption[]>('/filament-tracking/printer-consumption'),
   createFilamentTrackingBucket: (data: FilamentTrackingBucketCreate) =>
     request<FilamentTrackingMaterial>('/filament-tracking/buckets', {
       method: 'POST',

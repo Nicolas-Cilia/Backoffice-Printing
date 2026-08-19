@@ -141,3 +141,9 @@ class FilamentPlanResponse(BaseModel):
     total_recommended_spools: int
     soonest_days_until_order: int | None = None
     tracking_started_at: datetime | None
+
+
+class PrinterConsumptionResponse(BaseModel):
+    printer_id: int
+    name: str
+    grams: float

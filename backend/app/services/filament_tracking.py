@@ -15,6 +15,7 @@ from backend.app.models.filament_tracking import (
     FilamentColorUsage,
     FilamentSlotAssignment,
 )
+from backend.app.models.printer import Printer
 
 CalibrationStage = Literal["collecting", "day", "week", "month"]
 
@@ -100,6 +101,13 @@ class PurchasePlan:
     total_on_hand_value: float | None = None
     total_monthly_cost_estimate: float | None = None
     soonest_days_until_order: int | None = None
+
+
+@dataclass(frozen=True)
+class PrinterConsumption:
+    printer_id: int
+    name: str
+    grams: float
 
 
 def normalize_material(value: str | None) -> str:
@@ -777,3 +785,27 @@ async def load_plan(db: AsyncSession) -> PurchasePlan:
             for e in events
         ],
     )
+
+
+async def load_printer_consumption(db: AsyncSession) -> list[PrinterConsumption]:
+    usage_rows = (
+        await db.execute(
+            select(
+                FilamentColorUsage.printer_id,
+                func.coalesce(func.sum(FilamentColorUsage.grams), 0).label("grams"),
+            )
+            .where(
+                FilamentColorUsage.kind.in_(PRINT_USAGE_KINDS),
+                FilamentColorUsage.printer_id.is_not(None),
+            )
+            .group_by(FilamentColorUsage.printer_id)
+        )
+    ).all()
+    grams_by_id = {row.printer_id: float(row.grams or 0) for row in usage_rows}
+    printers = list((await db.execute(select(Printer).order_by(Printer.name))).scalars().all())
+    rows = [
+        PrinterConsumption(printer_id=printer.id, name=printer.name, grams=grams_by_id.get(printer.id, 0.0))
+        for printer in printers
+    ]
+    rows.sort(key=lambda row: (-row.grams, row.name.lower()))
+    return rows
