@@ -1651,6 +1651,7 @@ export interface LocalPreset {
   version: string | null;
   created_at: string;
   updated_at: string;
+  locked_parameters?: Record<string, unknown> | null;
 }
 
 export interface LocalPresetDetail extends LocalPreset {
@@ -1668,6 +1669,71 @@ export interface ImportResponse {
   imported: number;
   skipped: number;
   errors: string[];
+}
+
+export interface ProfilePartPresetSummary {
+  id: number;
+  name: string;
+  printer_model: string;
+  locked_parameters?: Record<string, unknown> | null;
+}
+
+export interface ProfilePartSlotView {
+  id: number;
+  printer_model: string;
+  last_mismatch: boolean;
+  spec_status: 'mismatch' | 'match';
+  parameter_diff: ProductionParameterDiff[];
+  parameter_overrides?: Record<string, unknown> | null;
+  preset: ProfilePartPresetSummary | null;
+}
+
+export interface ProfilePartSectionView {
+  id: number;
+  name: string;
+  locked_parameters: Record<string, unknown> | null;
+  created_at: string;
+  updated_at: string;
+  slots: ProfilePartSlotView[];
+}
+
+export interface ProfilePartReplacePreview {
+  parameter_diff: ProductionParameterDiff[];
+  has_mismatches: boolean;
+  incoming_parameters: Record<string, unknown>;
+  printer_model: string;
+}
+
+export interface ProfilePartImportAttached {
+  slot: ProfilePartSlotView;
+  spec_status: 'mismatch' | 'match';
+  parameter_diff: ProductionParameterDiff[];
+}
+
+export interface ProfilePartImportNeedsReplace {
+  printer_model: string;
+  preset_id: number;
+  preset_name: string;
+  existing_slot_id: number;
+  preview: ProfilePartReplacePreview;
+}
+
+export interface ProfilePartImportNeedsConfirm {
+  printer_model: string;
+  preset_id: number;
+  preset_name: string;
+  preview: ProfilePartReplacePreview;
+}
+
+export interface ProfilePartImportResponse {
+  success: boolean;
+  imported: number;
+  skipped: number;
+  errors: string[];
+  attached: ProfilePartImportAttached[];
+  needs_replace: ProfilePartImportNeedsReplace[];
+  needs_confirm: ProfilePartImportNeedsConfirm[];
+  section: ProfilePartSectionView;
 }
 
 export interface FieldOption {
@@ -6395,6 +6461,45 @@ export const api = {
     request<{ success: boolean }>(`/local-presets/${id}`, { method: 'DELETE' }),
   refreshBaseProfileCache: () =>
     request<{ refreshed: number; failed: number; total: number }>('/local-presets/base-cache/refresh', { method: 'POST' }),
+  getProfilePartSections: () =>
+    request<ProfilePartSectionView[]>('/profile-parts/sections'),
+  createProfilePartSection: (name: string) =>
+    request<ProfilePartSectionView>('/profile-parts/sections', {
+      method: 'POST',
+      body: JSON.stringify({ name }),
+    }),
+  deleteProfilePartSection: (sectionId: number) =>
+    request<{ success: boolean }>(`/profile-parts/sections/${sectionId}`, { method: 'DELETE' }),
+  addProfilePartSlot: (sectionId: number, presetId: number, resolution?: 'proceed') =>
+    request<ProfilePartSectionView>('/profile-parts/slots', {
+      method: 'POST',
+      body: JSON.stringify({ section_id: sectionId, preset_id: presetId, resolution }),
+    }),
+  previewAddProfilePartSlot: (sectionId: number, presetId: number) =>
+    request<ProfilePartReplacePreview>(`/profile-parts/sections/${sectionId}/preview-add`, {
+      method: 'POST',
+      body: JSON.stringify({ preset_id: presetId }),
+    }),
+  previewReplaceProfilePartSlot: (slotId: number, presetId: number) =>
+    request<ProfilePartReplacePreview>(`/profile-parts/slots/${slotId}/preview-replace`, {
+      method: 'POST',
+      body: JSON.stringify({ preset_id: presetId }),
+    }),
+  replaceProfilePartSlot: (
+    slotId: number,
+    data: { preset_id: number; resolution: 'proceed' | 'accept_baseline'; reason?: string | null },
+  ) =>
+    request<ProfilePartSectionView>(`/profile-parts/slots/${slotId}/replace`, {
+      method: 'POST',
+      body: JSON.stringify(data),
+    }),
+  deleteProfilePartSlot: (slotId: number) =>
+    request<ProfilePartSectionView>(`/profile-parts/slots/${slotId}`, { method: 'DELETE' }),
+  importProfilePartSectionProcess: (sectionId: number, file: File) => {
+    const formData = new FormData();
+    formData.append('file', file);
+    return postFormData<ProfilePartImportResponse>(`/profile-parts/sections/${sectionId}/import`, formData);
+  },
 };
 
 // AMS History types

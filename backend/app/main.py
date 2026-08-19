@@ -57,6 +57,7 @@ from backend.app.api.routes import (
     printer_sensor_history,
     printers,
     production,
+    profile_parts,
     settings as settings_routes,
     slice_jobs,
     slicer_pipelines,
@@ -7908,6 +7909,7 @@ app.include_router(library_sections.router, prefix=app_settings.api_prefix)
 app.include_router(library_tags.router, prefix=app_settings.api_prefix)
 app.include_router(library_trash.router, prefix=app_settings.api_prefix)
 app.include_router(production.router, prefix=app_settings.api_prefix)
+app.include_router(profile_parts.router, prefix=app_settings.api_prefix)
 app.include_router(slice_jobs.router, prefix=app_settings.api_prefix)
 app.include_router(slicer_pipelines.router, prefix=app_settings.api_prefix)
 app.include_router(pipeline_runs.pipeline_run_create_router, prefix=app_settings.api_prefix)

@@ -583,6 +583,66 @@ Every entry heading carries a status marker, kept in step with its **Status:** l
   different object-level settings.
 - **Branch:** `feat/production-file-slots`
 
+### 15. Profile parameter tracking 🟠
+
+- **Status:** 15a + source-label + **15b (part process sections + replace +
+  upload-into-section)** + **H2D/H2S layer-height cap** in progress on
+  `feat/profile-parameter-tracking` (uncommitted). Stacked on
+  `feat/production-file-slots` (`1519b52f`).
+- **Area:** backend + frontend
+- **What:** Apply the production print-settings contract to local slicer **process**
+  presets on the Profiles tab, analogous to File Manager production tracking.
+  - **15a — Read-only contract display.** Extract `CONTRACT_KEYS` from process preset
+    JSON and show File Manager spec chips + spec modal on process cards. Filament and
+    printer presets skipped. No import-mismatch flow.
+  - **Source-label fix.** Import stored every preset as `orcaslicer`, so Bambu Studio
+    exports showed as "Orcaslicer". Detect `bambu` vs `orcaslicer` from file type
+    (`.bbscfg`/`.bbsflmt` vs `.orca_filament`) and payload markers (`@BBL`, Bambu
+    printer ids, Bambu Studio fields). Correct existing rows on list/detail. UI
+    shows **Bambu Lab** / **Orca Slicer**.
+  - **15b — Part process sections + replace/diff + upload.** User-named sections
+    (not the production TOP/KNB/BOT catalog). Attach one process per printer;
+    first process seeds `locked_parameters`. Later adds/replaces
+    `diff_parameters` against that baseline. Replace preview + proceed (keep
+    baseline, mark mismatch) or accept-new-baseline (section contract ← incoming,
+    clear that slot's mismatch and recompute the others). Upload a process file
+    onto a section (`POST .../sections/{id}/import`); duplicate library names
+    update the existing row; occupied printer slots return `needs_replace` for
+    the existing replace modal. Matches spec / mismatch chips open the same
+    Current print specs panel as File Manager.
+  - **H2D / H2S layer-height cap.** Those printers max out at 0.24 mm. When
+    the section baseline is thicker (e.g. 0.28 from X1C) and the incoming
+    H2D/H2S/H2D Pro process is 0.24, treat it as a match — the printer's
+    equivalent of the spec. 0.16 vs 0.28 is still a mismatch; 0.24 vs a
+    locked 0.20 is a mismatch (they could have used 0.20). X1C / A1 / P1S
+    stay strict. Implemented as `diff_parameters(..., printer_model=None)`
+    so File Manager production diffs are unchanged unless a model is passed.
+  - **Unfiled processes.** Profiles no longer lists every process in an
+    **All processes** column. **Unfiled processes** shows only process
+    presets that are not `active_preset_id` on any part-section slot.
+    The user picks an existing section to move into (same attach /
+    replace / Proceed anyway gates as upload). Filed processes stay
+    only in their section.
+- **Why:** Catch accidental process-preset drift the same way production file replace
+  catches 3MF settings drift. Group the same part's processes across printers.
+- **Acceptance (15a):** process cards show compact spec summary when `locked_parameters`
+  is present; list API does not include the full `setting` blob; filament/printer cards
+  unchanged; extract-from-process unit tests and LocalProfilesView test pass.
+- **Acceptance (15b):** create a named section; add 0.20 X1C then 0.28 A1 and see
+  mismatch on layer_height; replace proceed keeps baseline; accept_baseline updates
+  it. Upload a process JSON into an empty section (seeds contract); second printer
+  with a different layer_height flags mismatch; same printer again returns
+  `needs_replace` (not a second slot); filament-only upload is 400; duplicate
+  name updates and attaches. Isolated `profile_part_*` tables. Process library
+  cards stay. No auto-seeded TOP/KNB/BOT. Combo plates out of scope. UI heading
+  **Part process sections**, add control **Add part process sections**.
+  H2S/H2D 0.24 vs a 0.28 section baseline Matches spec; H2S 0.16 still needs
+  Proceed anyway. **Unfiled processes** (not All processes): heading + count,
+  collapsed by default, move-to-section picker; attached presets leave Unfiled.
+- **Deliberately not done:** combo plates; filament/printer presets; a display
+  toggle; per-slot overrides UI. Library page import still skips duplicate names.
+- **Branch:** `feat/profile-parameter-tracking`
+
 ---
 
 ## Explicitly out of scope

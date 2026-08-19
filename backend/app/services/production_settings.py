@@ -1,4 +1,4 @@
-"""Extract and diff the locked production print-settings contract from a 3MF."""
+"""Extract and diff the locked production print-settings contract from a 3MF or process preset."""
 
 from __future__ import annotations
 
@@ -21,6 +21,15 @@ _EXTRUDER_RIGHT = 0
 _EXTRUDER_LEFT = 1
 
 MM_EPSILON = 1e-4
+
+# Max printable layer height (mm) for printers that cannot reach a thicker
+# section spec. Short codes match PRINTER_MODEL_MAP / profile_part_printer.
+# H2D Pro shares the H2D motion stack; H2C is not included.
+LAYER_HEIGHT_CAPS: dict[str, float] = {
+    "H2D": 0.24,
+    "H2D Pro": 0.24,
+    "H2S": 0.24,
+}
 
 # Stored on the contract for gated comparison; never emitted by diff_parameters.
 MULTI_COLOR_KEY = "_multi_color"
@@ -131,6 +140,23 @@ _BED_TYPE_ALIASES = {
 }
 
 
+def extract_from_process_settings(config: Any) -> dict[str, Any]:
+    """Read the production contract from a resolved process-preset dict.
+
+    Reuses the same :data:`CONTRACT_KEYS` loop as a 3MF extract. Skips zip-only
+    inference (mesh/G-code fuzzy-skin paint, 3MF nozzle mapping, slice_info
+    multi-color). ``filament_settings_id`` still sets :data:`MULTI_COLOR_KEY`
+    when it is a list.
+    """
+    if not isinstance(config, dict) or not config:
+        return {}
+    contract = _contract_from_config(config)
+    filaments = config.get("filament_settings_id")
+    if isinstance(filaments, list):
+        contract[MULTI_COLOR_KEY] = len(filaments) > 1
+    return contract
+
+
 def extract_production_settings(source: bytes | zipfile.ZipFile) -> dict[str, Any]:
     """Read the production contract from a 3MF (bytes or an open ZipFile).
 
@@ -147,7 +173,12 @@ def extract_production_settings(source: bytes | zipfile.ZipFile) -> dict[str, An
         return {}
 
 
-def diff_parameters(locked: dict, incoming: dict) -> list[dict[str, Any]]:
+def diff_parameters(
+    locked: dict,
+    incoming: dict,
+    *,
+    printer_model: str | None = None,
+) -> list[dict[str, Any]]:
     """Compare two contract dicts.
 
     Returns ``{key, locked, incoming, match}`` for each applicable contract key.
@@ -156,6 +187,11 @@ def diff_parameters(locked: dict, incoming: dict) -> list[dict[str, Any]]:
     single-color files, ``nozzles_used`` without a dual-nozzle mapping) are
     omitted. A key present on the locked contract but missing on incoming is a
     mismatch.
+
+    ``printer_model`` is optional so File Manager production diffs stay
+    unchanged. When it is a :data:`LAYER_HEIGHT_CAPS` printer, ``layer_height``
+    also matches if the locked spec is thicker than that printer's cap and
+    incoming is at the cap (the printer's equivalent of the spec).
     """
     locked = locked or {}
     incoming = incoming or {}
@@ -170,6 +206,14 @@ def diff_parameters(locked: dict, incoming: dict) -> list[dict[str, Any]]:
         locked_value = locked.get(key) if locked_has else None
         incoming_value = incoming.get(key) if incoming_has else None
         match = locked_has and incoming_has and _values_match(key, locked_value, incoming_value)
+        if (
+            not match
+            and key == "layer_height"
+            and locked_has
+            and incoming_has
+            and _layer_height_matches_printer_cap(locked_value, incoming_value, printer_model)
+        ):
+            match = True
         rows.append(
             {
                 "key": key,
@@ -181,11 +225,31 @@ def diff_parameters(locked: dict, incoming: dict) -> list[dict[str, Any]]:
     return rows
 
 
-def _extract_from_zip(zf: zipfile.ZipFile) -> dict[str, Any]:
-    config = _read_project_settings(zf)
-    if not config:
-        return {}
+def _layer_height_matches_printer_cap(
+    locked: Any,
+    incoming: Any,
+    printer_model: str | None,
+) -> bool:
+    """True when incoming is at a capped printer's max and the spec is thicker."""
+    if not printer_model:
+        return False
+    cap = LAYER_HEIGHT_CAPS.get(printer_model)
+    if cap is None:
+        return False
+    locked_number = _as_number(locked)
+    incoming_number = _as_number(incoming)
+    if locked_number is None or incoming_number is None:
+        return False
+    locked_mm = float(locked_number)
+    incoming_mm = float(incoming_number)
+    return locked_mm > cap + MM_EPSILON and abs(incoming_mm - cap) <= MM_EPSILON
 
+
+def _contract_from_config(config: dict[str, Any]) -> dict[str, Any]:
+    """Normalize CONTRACT_KEYS present on a process/project settings dict.
+
+    ``nozzles_used`` is zip-only (3MF nozzle mapping) and is skipped here.
+    """
     contract: dict[str, Any] = {}
     for key in CONTRACT_KEYS:
         if key == "nozzles_used":
@@ -197,6 +261,15 @@ def _extract_from_zip(zf: zipfile.ZipFile) -> dict[str, Any]:
         if key == "curr_bed_type" and not normalized:
             continue
         contract[key] = normalized
+    return contract
+
+
+def _extract_from_zip(zf: zipfile.ZipFile) -> dict[str, Any]:
+    config = _read_project_settings(zf)
+    if not config:
+        return {}
+
+    contract = _contract_from_config(config)
 
     mapping = extract_nozzle_mapping_from_3mf(zf)
     if mapping:

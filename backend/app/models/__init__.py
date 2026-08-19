@@ -28,6 +28,11 @@ from backend.app.models.production import (
     ProductionRevision,
     ProductionSlot,
 )
+from backend.app.models.profile_part import (
+    ProfilePartRevision,
+    ProfilePartSection,
+    ProfilePartSlot,
+)
 from backend.app.models.settings import Settings
 from backend.app.models.slicer_pipeline import SlicerPipeline
 from backend.app.models.smart_plug import SmartPlug
@@ -71,6 +76,9 @@ __all__ = [
     "ProductionPartInstance",
     "ProductionSlot",
     "ProductionRevision",
+    "ProfilePartSection",
+    "ProfilePartSlot",
+    "ProfilePartRevision",
     "Location",
     "User",
     "Group",

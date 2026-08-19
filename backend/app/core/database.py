@@ -280,6 +280,7 @@ async def init_db():
         print_queue,
         printer,
         printer_sensor_history,
+        profile_part,
         settings,
         shopping_list,
         slicer_pipeline,

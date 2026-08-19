@@ -347,3 +347,155 @@ class TestExtractCoreFields:
         assert core["nozzle_temp_max"] == 260
         assert core["filament_cost"] == "19.99"
         assert core["filament_density"] == "1.27"
+
+
+class TestDetectPresetSource:
+    """Tests for detect_preset_source() / looks_like_bambu()."""
+
+    def test_bbscfg_extension_is_bambu(self):
+        from backend.app.services.orca_profiles import detect_preset_source
+
+        assert detect_preset_source(filename="printer.bbscfg", data={"name": "Custom"}) == "bambu"
+
+    def test_bbsflmt_extension_is_bambu(self):
+        from backend.app.services.orca_profiles import detect_preset_source
+
+        assert detect_preset_source(filename="filaments.BBSFLMT", data={"name": "Custom"}) == "bambu"
+
+    def test_orca_filament_extension_is_orcaslicer_even_with_bbl_name(self):
+        from backend.app.services.orca_profiles import detect_preset_source
+
+        data = {"name": "Bambu PLA Basic @BBL X1C"}
+        assert detect_preset_source(filename="export.orca_filament", data=data) == "orcaslicer"
+
+    def test_json_with_bbl_in_name_is_bambu(self):
+        from backend.app.services.orca_profiles import detect_preset_source
+
+        data = {"name": "Bambu PLA Basic @BBL X1C", "type": "filament"}
+        assert detect_preset_source(filename="preset.json", data=data) == "bambu"
+
+    def test_json_with_bbl_in_compatible_printers_is_bambu(self):
+        from backend.app.services.orca_profiles import detect_preset_source
+
+        data = {
+            "name": "Custom PLA",
+            "compatible_printers": ["Something @BBL X1C 0.4 nozzle"],
+        }
+        assert detect_preset_source(filename="custom.json", data=data) == "bambu"
+
+    def test_json_with_bambu_lab_printer_is_bambu(self):
+        from backend.app.services.orca_profiles import detect_preset_source
+
+        data = {
+            "name": "Custom PLA",
+            "compatible_printers": ["Bambu Lab X1 Carbon 0.4 nozzle"],
+        }
+        assert detect_preset_source(filename="custom.json", data=data) == "bambu"
+
+    def test_json_with_bambu_studio_field_is_bambu(self):
+        from backend.app.services.orca_profiles import detect_preset_source
+
+        data = {"name": "Custom PLA", "filament_adhesiveness_category": "standard"}
+        assert detect_preset_source(filename="custom.json", data=data) == "bambu"
+
+    def test_json_with_bambu_model_id_is_bambu(self):
+        from backend.app.services.orca_profiles import detect_preset_source
+
+        data = {"name": "X1C", "printer_model": "BL-P001"}
+        assert detect_preset_source(filename="printer.json", data=data) == "bambu"
+
+    def test_generic_json_is_orcaslicer(self):
+        from backend.app.services.orca_profiles import detect_preset_source
+
+        data = {"name": "Generic PLA @Voron 2.4", "type": "filament"}
+        assert detect_preset_source(filename="generic.json", data=data) == "orcaslicer"
+
+    def test_json_with_orca_setting_keys_is_orcaslicer(self):
+        from backend.app.services.orca_profiles import detect_preset_source
+
+        data = {
+            "name": "Bambu PLA Basic @BBL X1C",
+            "filament_adaptive_volumetric_speed": ["1"],
+        }
+        assert detect_preset_source(filename="tuned.json", data=data) == "orcaslicer"
+
+    def test_orca_in_filename_is_orcaslicer(self):
+        from backend.app.services.orca_profiles import detect_preset_source
+
+        data = {"name": "Bambu PLA Basic @BBL X1C"}
+        assert detect_preset_source(filename="orcaslicer-export.zip", data=data) == "orcaslicer"
+
+    def test_zip_without_markers_is_orcaslicer(self):
+        from backend.app.services.orca_profiles import detect_preset_source
+
+        assert detect_preset_source(filename="bundle.zip", data={"name": "My Preset"}) == "orcaslicer"
+
+
+class TestMaybeCorrectLocalPresetSource:
+    """Existing orcaslicer rows are corrected when they are clearly Bambu."""
+
+    def test_corrects_bbl_name(self):
+        from backend.app.models.local_preset import LocalPreset
+        from backend.app.services.orca_profiles import maybe_correct_local_preset_source
+
+        preset = LocalPreset(
+            name="Bambu PLA Basic @BBL X1C",
+            preset_type="filament",
+            source="orcaslicer",
+            setting="{}",
+        )
+        assert maybe_correct_local_preset_source(preset) is True
+        assert preset.source == "bambu"
+
+    def test_corrects_compatible_printers(self):
+        from backend.app.models.local_preset import LocalPreset
+        from backend.app.services.orca_profiles import maybe_correct_local_preset_source
+
+        preset = LocalPreset(
+            name="Custom PLA",
+            preset_type="filament",
+            source="orcaslicer",
+            compatible_printers='["Bambu Lab P1S 0.4 nozzle"]',
+            setting="{}",
+        )
+        assert maybe_correct_local_preset_source(preset) is True
+        assert preset.source == "bambu"
+
+    def test_corrects_setting_markers(self):
+        from backend.app.models.local_preset import LocalPreset
+        from backend.app.services.orca_profiles import maybe_correct_local_preset_source
+
+        preset = LocalPreset(
+            name="Custom PLA",
+            preset_type="filament",
+            source="orcaslicer",
+            setting=json.dumps({"nozzle_volume_type": "standard"}),
+        )
+        assert maybe_correct_local_preset_source(preset) is True
+        assert preset.source == "bambu"
+
+    def test_leaves_manual_alone(self):
+        from backend.app.models.local_preset import LocalPreset
+        from backend.app.services.orca_profiles import maybe_correct_local_preset_source
+
+        preset = LocalPreset(
+            name="Bambu PLA Basic @BBL X1C",
+            preset_type="filament",
+            source="manual",
+            setting="{}",
+        )
+        assert maybe_correct_local_preset_source(preset) is False
+        assert preset.source == "manual"
+
+    def test_leaves_generic_orcaslicer_alone(self):
+        from backend.app.models.local_preset import LocalPreset
+        from backend.app.services.orca_profiles import maybe_correct_local_preset_source
+
+        preset = LocalPreset(
+            name="Generic PLA @Voron 2.4",
+            preset_type="filament",
+            source="orcaslicer",
+            setting=json.dumps({"name": "Generic PLA @Voron 2.4"}),
+        )
+        assert maybe_correct_local_preset_source(preset) is False
+        assert preset.source == "orcaslicer"

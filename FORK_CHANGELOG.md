@@ -3,6 +3,155 @@
 Changes made in this fork on top of upstream Bambuddy. Upstream's own release notes stay
 in `CHANGELOG.md`. Planned work lives in `FORK_PLAN.md`.
 
+## 2026-08-18: Unfiled processes (replace All processes)
+
+Fork plan entry #15. The Profiles process column is now **Unfiled
+processes**: process presets that are not `active_preset_id` on any
+part-section slot (client-side: `getLocalPresets().process` minus
+preset ids on `getProfilePartSections()` slots). The user picks an
+existing section to move into — matching / first-in-empty-section
+attaches immediately; mismatch uses Proceed anyway / **Don't move**;
+an occupied printer slot opens the existing Replace flow. H2D/H2S
+0.24 vs a thicker locked spec is a match (same cap as add/upload).
+Filament and printer columns are unchanged.
+
+### Verified
+
+- LocalProfilesView vitest: All processes gone; Unfiled heading +
+  collapsed list; filed process omitted; move picker; match attaches;
+  occupied slot opens Replace; mismatch shows Don't move.
+
+### Not run here
+
+Docker, live browser, production frontend build / `static/assets` refresh.
+
+## 2026-08-18: H2D/H2S layer-height cap on part sections
+
+Fork plan entry #15. H2D, H2S, and H2D Pro max out at 0.24 mm layer
+height. When a part-section baseline is thicker (e.g. 0.28 from X1C), an
+incoming process at 0.24 **matches spec** — that printer's equivalent of
+the spec, not a skip of the key. Anything other than 0.24 when locked
+> 0.24 is still a mismatch; 0.24 vs a locked 0.20 is a mismatch. X1C /
+A1 / P1S stay strict. Implemented as optional `printer_model` on
+`diff_parameters` (default `None`), so File Manager production 3MF
+tracking is unchanged. Combo plates still out of scope.
+
+### Verified
+
+- Unit: H2S/H2D/H2D Pro 0.24 vs locked 0.28 match; H2S 0.16 vs 0.28
+  mismatch; X1C/A1/P1S 0.24 vs 0.28 mismatch; H2S 0.24 vs locked 0.20
+  mismatch; equal 0.24 still matches.
+- Integration: add and upload of H2S 0.24 onto a 0.28-seeded section
+  attach as match (no Don't upload / Proceed). H2S 0.16 still needs
+  Proceed anyway.
+
+### Not run here
+
+Docker, live browser, production frontend build / `static/assets` refresh.
+
+### Changes
+
+- `backend/app/services/production_settings.py`: `LAYER_HEIGHT_CAPS` and
+  `diff_parameters(..., printer_model=None)`.
+- `backend/app/api/routes/profile_parts.py`: pass the incoming slot's
+  `printer_model` into add / upload / replace / preview diffs.
+
+## 2026-08-18: Profile part process sections + replace/diff + upload
+
+Fork plan entry #15b. Profiles can group process presets into user-named
+**part process sections** (example: "Top part") with one slot per printer.
+The first attached process seeds the section `locked_parameters` via
+`extract_from_process_settings`. Later adds and replaces `diff_parameters`
+against that baseline — same `CONTRACT_KEYS` as File Manager production.
+Replace preview shows the diff; **Proceed** keeps the baseline and marks
+mismatch; **Accept new baseline** writes the incoming contract onto the
+section and recomputes other slots.
+
+Upload a process file (`.json`, `.bbscfg`, `.zip`, same accept list as
+Profiles import) directly onto a section:
+`POST /api/v1/profile-parts/sections/{id}/import`. All preset types in the
+archive are imported, but only process presets attach. Filament/printer-only
+files return 400. Duplicate library names **update** the existing row on this
+path (page-level import still skips). Uploading onto an occupied printer
+returns `needs_replace` with a preview; the UI opens the existing Replace
+modal (Proceed / Accept baseline) — no second slot.
+
+Matches spec / mismatch chips on printer slots open the same Current print
+specs panel as File Manager (`mergeProductionSpecs` of section
+`locked_parameters` + slot overrides).
+
+Isolated tables (`profile_part_sections` / `_slots` / `_revisions`). Does not
+reuse the production TOP/KNB/BOT catalog and does not auto-seed those codes.
+Filament/printer library columns are unchanged. Combo plates out of scope.
+
+### Verified
+
+- Backend integration: seed / mismatch / proceed / accept_baseline; upload
+  into empty section; second-printer mismatch; same-printer `needs_replace`;
+  filament-only 400; duplicate name updates and attaches; library import
+  still skips duplicates.
+- Frontend vitest: heading **Part process sections** / add **Add part
+  process sections**; upload control; Matches spec chip opens Current print
+  specs; `needs_replace` opens the replace modal.
+
+### Not run here
+
+Docker, live browser, production frontend build / `static/assets` refresh.
+
+### Changes
+
+- `backend/app/models/profile_part.py`, `schemas/profile_part.py`,
+  `api/routes/profile_parts.py`, `services/profile_part_printer.py`,
+  `services/orca_profiles.py` (`on_duplicate="update"` for section import only).
+- `frontend/src/components/ProfilePartSections.tsx` plus client types/methods.
+- LocalProfilesView shows part process sections above the three preset columns.
+
+## 2026-08-18: Local preset source labels (Bambu Lab vs Orca Slicer)
+
+Fork plan entry #15 source-label fix (not 15b/15c). Import hardcoded
+`source="orcaslicer"`, so Bambu Studio presets displayed as "Orcaslicer".
+
+Import now stores `bambu` for `.bbscfg`/`.bbsflmt` and for json/zip with `@BBL`,
+Bambu Lab printer ids, or Bambu Studio fields. `.orca_filament` and clear Orca
+markers stay `orcaslicer`. List/detail correct existing `orcaslicer` rows that
+are clearly Bambu and persist the fix — no manual migration. UI shows
+**Bambu Lab** and **Orca Slicer**.
+
+### Changes
+
+- `backend/app/services/orca_profiles.py`: `detect_preset_source` on import;
+  `maybe_correct_local_preset_source` on list/detail.
+- `frontend/src/components/LocalProfilesView.tsx` plus `sourceLabels` i18n.
+- Unit tests for detection; local-presets API and LocalProfilesView label tests.
+
+## 2026-08-18: Process preset print-settings chips
+
+Profiles process cards had no view of the locked print-settings contract that File
+Manager already extracts from production 3MFs. The same CONTRACT_KEYS loop now runs
+against resolved process-preset JSON (not a zip), and list/detail responses include
+`locked_parameters` without dumping the full `setting` blob on the list.
+
+Process cards on the Profiles tab show File Manager-style compact spec chips and open
+the same spec-row modal. Filament and printer cards are unchanged. Re-import mismatch
+(proceed / accept-new-baseline) is not in this unit.
+
+Verified: extract-from-process unit tests; local-presets API create/list/detail;
+LocalProfilesView spec-summary vitest; full frontend vitest 2553 passed; backend
+pytest 8259 passed (ignored `test_bambu_ftp.py`, no xdist). `tsc --noEmit` and
+eslint on the touched frontend files are clean. Not run: frontend production
+build, live browser pass, `ruff check` on all of `production_settings.py`
+(pre-existing zip-only lint).
+
+### Changes
+
+- `backend/app/services/production_settings.py`: `extract_from_process_settings` plus
+  shared `_contract_from_config` used by the 3MF zip path.
+- `backend/app/schemas/local_preset.py`, `backend/app/api/routes/local_presets.py`:
+  `locked_parameters` on process preset responses, computed on GET from `setting`.
+- `frontend/src/api/client.ts`, `frontend/src/components/LocalProfilesView.tsx`:
+  process-card spec chips and spec modal via `productionSpecs.ts`.
+- Tests for process-JSON extract, local-presets API wiring, and process-card UI.
+
 ## 2026-08-18: Attach tags to library files
 
 Tags already had a catalog (create / rename / delete) and a bulk-assign API,
