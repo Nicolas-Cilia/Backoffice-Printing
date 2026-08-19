@@ -194,6 +194,37 @@ describe('QueuePage', () => {
       });
     });
 
+    it('does not link archive-backed jobs to the removed archives page', async () => {
+      render(<QueuePage />);
+
+      await screen.findByText('Active Print');
+
+      expect(document.querySelector('a[href*="/archives"]')).not.toBeInTheDocument();
+      expect(screen.queryByTitle('View archive')).not.toBeInTheDocument();
+    });
+
+    it('links library-backed jobs to File Manager', async () => {
+      server.use(
+        http.get('/api/v1/queue/', () => {
+          return HttpResponse.json([
+            {
+              ...mockQueueItems[0],
+              archive_id: null,
+              archive_name: null,
+              archive_thumbnail: null,
+              library_file_id: 42,
+              library_file_name: 'Library Model',
+            },
+          ]);
+        }),
+      );
+
+      render(<QueuePage />);
+
+      const link = await screen.findByTitle('View in File Manager');
+      expect(link).toHaveAttribute('href', '/files?highlight=42');
+    });
+
     it('shows one if-started-now ETA for an eligible pending item', async () => {
       // Printer 1 is free: nothing is printing on it and nothing is queued ahead.
       server.use(

@@ -576,17 +576,9 @@ function SortableQueueItem({
               {item.archive_name || item.library_file_name || `File #${item.archive_id || item.library_file_id}`}
               {(platesData?.is_multi_plate ?? false) && item.plate_id !== undefined && item.plate_id !== null && ` • ${plates.find(plate => plate.index === item.plate_id)?.name || t('queue.plateNumber', { index: item.plate_id })}`}
             </p>
-            {item.archive_id ? (
+            {item.library_file_id && !item.archive_id ? (
               <Link
-                to={`/archives?highlight=${item.archive_id}`}
-                className="text-bambu-gray hover:text-bambu-green transition-colors flex-shrink-0"
-                title={t('queue.viewArchive')}
-              >
-                <ExternalLink className="w-3.5 h-3.5" />
-              </Link>
-            ) : item.library_file_id ? (
-              <Link
-                to={`/library?highlight=${item.library_file_id}`}
+                to={`/files?highlight=${item.library_file_id}`}
                 className="text-bambu-gray hover:text-bambu-green transition-colors flex-shrink-0"
                 title={t('queue.viewInFileManager')}
               >
