@@ -3913,6 +3913,26 @@ async def run_migrations(conn):
             )
         )
 
+    # Migration: part-section parameter tracking. Existing sections keep the
+    # shared print-settings contract (default true). Create may opt out.
+    if is_sqlite():
+        await _safe_execute(
+            conn, "ALTER TABLE profile_part_sections ADD COLUMN parameter_tracking BOOLEAN DEFAULT 1"
+        )
+    else:
+        await _safe_execute(
+            conn,
+            "ALTER TABLE profile_part_sections ADD COLUMN parameter_tracking BOOLEAN DEFAULT true",
+        )
+    async with conn.begin_nested():
+        await conn.execute(
+            _sql_text(
+                "UPDATE profile_part_sections SET parameter_tracking = "
+                + ("1" if is_sqlite() else "true")
+                + " WHERE parameter_tracking IS NULL"
+            )
+        )
+
     await _migrate_production_instance_folder_uniqueness(conn)
 
 

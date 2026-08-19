@@ -35,6 +35,7 @@ class ProfilePartSectionView(BaseModel):
     id: int
     name: str
     locked_parameters: dict[str, Any] | None = None
+    parameter_tracking: bool = True
     created_at: datetime
     updated_at: datetime
     slots: list[ProfilePartSlotView] = Field(default_factory=list)
@@ -44,6 +45,7 @@ class ProfilePartSectionCreate(BaseModel):
     """Create a user-named part section."""
 
     name: str
+    parameter_tracking: bool = True
 
 
 class ProfilePartSlotCreate(BaseModel):

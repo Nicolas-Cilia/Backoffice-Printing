@@ -489,6 +489,7 @@ export const handlers = [
         id: 0,
         name: '',
         locked_parameters: null,
+        parameter_tracking: true,
         created_at: '2026-01-01T00:00:00Z',
         updated_at: '2026-01-01T00:00:00Z',
         slots: [],

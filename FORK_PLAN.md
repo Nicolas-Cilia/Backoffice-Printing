@@ -586,9 +586,9 @@ Every entry heading carries a status marker, kept in step with its **Status:** l
 ### 15. Profile parameter tracking 🟠
 
 - **Status:** 15a + source-label + **15b (part process sections + replace +
-  upload-into-section)** + **H2D/H2S layer-height cap** in progress on
-  `feat/profile-parameter-tracking` (uncommitted). Stacked on
-  `feat/production-file-slots` (`1519b52f`).
+  upload-into-section)** + **H2D/H2S layer-height cap** + **Unfiled
+  processes** on `feat/profile-parameter-tracking`. **Local preset
+  download** on stacked `feat/profile-download`.
 - **Area:** backend + frontend
 - **What:** Apply the production print-settings contract to local slicer **process**
   presets on the Profiles tab, analogous to File Manager production tracking.
@@ -623,6 +623,15 @@ Every entry heading carries a status marker, kept in step with its **Status:** l
     The user picks an existing section to move into (same attach /
     replace / Proceed anyway gates as upload). Filed processes stay
     only in their section.
+  - **Local preset download** (branch `feat/profile-download`, stacked
+    on this tip). `GET /local-presets/{id}/download` returns the stored
+    resolved `setting` JSON as an attachment named `{sanitized-name}.json`
+    (re-importable via the existing import path). Download control on
+    Unfiled process cards, filament/printer cards, and part-section slot
+    cards. `settings:read` is enough. Plain JSON rather than `.bbscfg`;
+    section zip skipped. Page-level Import Profiles drop zone removed
+    (Unfiled dump). Slot **Replace** uploads a process file into the
+    section (`?slot_id=`) and uses the existing replace-confirm modal.
 - **Why:** Catch accidental process-preset drift the same way production file replace
   catches 3MF settings drift. Group the same part's processes across printers.
 - **Acceptance (15a):** process cards show compact spec summary when `locked_parameters`
@@ -635,13 +644,16 @@ Every entry heading carries a status marker, kept in step with its **Status:** l
   `needs_replace` (not a second slot); filament-only upload is 400; duplicate
   name updates and attaches. Isolated `profile_part_*` tables. Process library
   cards stay. No auto-seeded TOP/KNB/BOT. Combo plates out of scope. UI heading
-  **Part process sections**, add control **Add part process sections**.
+  **Part process sections**, add control **Add process sections**.
   H2S/H2D 0.24 vs a 0.28 section baseline Matches spec; H2S 0.16 still needs
   Proceed anyway. **Unfiled processes** (not All processes): heading + count,
   collapsed by default, move-to-section picker; attached presets leave Unfiled.
+- **Acceptance (download):** Unfiled process / filament / printer / slot cards
+  show a download control; `GET /local-presets/{id}/download` returns JSON
+  + filename header; missing id is 404; file re-imports via existing import.
 - **Deliberately not done:** combo plates; filament/printer presets; a display
   toggle; per-slot overrides UI. Library page import still skips duplicate names.
-- **Branch:** `feat/profile-parameter-tracking`
+- **Branch:** `feat/profile-parameter-tracking` (download: `feat/profile-download`)
 
 ---
 

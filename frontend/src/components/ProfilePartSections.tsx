@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState, type MutableRefObject } from 'react';
+import { useCallback, useEffect, useState, type MutableRefObject } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { useTranslation } from 'react-i18next';
 import { ChevronRight, Layers, Loader2, Plus, Trash2, Upload, X } from 'lucide-react';
@@ -8,6 +8,7 @@ import { useAuth } from '../contexts/AuthContext';
 import { useToast } from '../contexts/ToastContext';
 import { compactSpecItems, hasViewableSpecs, mergeProductionSpecs } from '../utils/productionSpecs';
 import { Button } from './Button';
+import { LocalPresetDownloadButton } from './LocalPresetDownloadButton';
 import { ProcessSpecsModal } from './ProcessSpecsModal';
 import { ProductionParameterDiffTable } from './production/ProductionParameterDiffTable';
 
@@ -44,10 +45,11 @@ function NamePromptModal({
   confirmLabel: string;
   submitting: boolean;
   onClose: () => void;
-  onSubmit: (name: string) => void;
+  onSubmit: (name: string, options: { parameter_tracking: boolean }) => void;
 }) {
   const { t } = useTranslation();
   const [name, setName] = useState('');
+  const [trackParameters, setTrackParameters] = useState(true);
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-4" onClick={onClose} role="presentation">
       <div
@@ -67,6 +69,21 @@ function NamePromptModal({
             className="mt-1 w-full bg-bambu-dark border border-bambu-dark-tertiary rounded px-3 py-2 text-white placeholder-bambu-gray focus:outline-none focus:border-bambu-green"
           />
         </label>
+        <label className="flex items-start gap-2 mt-3 cursor-pointer">
+          <input
+            type="checkbox"
+            checked={trackParameters}
+            onChange={(e) => setTrackParameters(e.target.checked)}
+            className="mt-0.5 rounded border-bambu-dark-tertiary bg-bambu-dark text-bambu-green focus:ring-bambu-green"
+            data-testid="track-parameters"
+          />
+          <span>
+            <span className="block text-sm text-white">{t('profiles.localProfiles.partSections.trackParameters')}</span>
+            <span className="block text-xs text-bambu-gray mt-0.5">
+              {t('profiles.localProfiles.partSections.trackParametersHelp')}
+            </span>
+          </span>
+        </label>
         <div className="flex justify-end gap-2 mt-4">
           <Button type="button" variant="secondary" size="sm" onClick={onClose} disabled={submitting}>
             {t('profiles.localProfiles.cancel')}
@@ -75,98 +92,11 @@ function NamePromptModal({
             type="button"
             size="sm"
             disabled={!name.trim() || submitting}
-            onClick={() => onSubmit(name.trim())}
+            onClick={() => onSubmit(name.trim(), { parameter_tracking: trackParameters })}
           >
             {submitting ? <Loader2 className="w-4 h-4 animate-spin" /> : null}
             {confirmLabel}
           </Button>
-        </div>
-      </div>
-    </div>
-  );
-}
-
-function AddProcessModal({
-  section,
-  processes,
-  onClose,
-  onAdd,
-  onReplace,
-  adding,
-}: {
-  section: ProfilePartSectionView;
-  processes: LocalPreset[];
-  onClose: () => void;
-  onAdd: (presetId: number) => void;
-  onReplace: (slot: ProfilePartSlotView, preset: LocalPreset) => void;
-  adding: boolean;
-}) {
-  const { t } = useTranslation();
-  const usedPresetIds = new Set(section.slots.map((slot) => slot.preset?.id).filter((id): id is number => id != null));
-  const available = processes.filter((preset) => !usedPresetIds.has(preset.id));
-
-  const groups = useMemo(() => {
-    const byPrinter = new Map<string, LocalPreset[]>();
-    for (const preset of available) {
-      const label = printerLabel(preset, t);
-      const list = byPrinter.get(label) ?? [];
-      list.push(preset);
-      byPrinter.set(label, list);
-    }
-    return [...byPrinter.entries()].sort(([a], [b]) => a.localeCompare(b));
-  }, [available, t]);
-
-  return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-4" onClick={onClose} role="presentation">
-      <div
-        className="bg-bambu-dark-secondary border border-bambu-dark-tertiary rounded-lg w-full max-w-md max-h-[80vh] flex flex-col"
-        onClick={(e) => e.stopPropagation()}
-        role="dialog"
-        aria-labelledby="add-process-title"
-      >
-        <div className="flex items-center justify-between gap-3 p-4 border-b border-bambu-dark-tertiary">
-          <h2 id="add-process-title" className="text-sm font-semibold text-white">
-            {t('profiles.localProfiles.partSections.pickProcess')}
-          </h2>
-          <button type="button" onClick={onClose} className="p-1 text-bambu-gray hover:text-white" aria-label={t('common.close')}>
-            <X className="w-4 h-4" />
-          </button>
-        </div>
-        <div className="overflow-y-auto p-4 space-y-4">
-          {available.length === 0 ? (
-            <p className="text-sm text-bambu-gray">{t('profiles.localProfiles.partSections.noAvailable')}</p>
-          ) : (
-            groups.map(([label, presets]) => {
-              return (
-                <div key={label}>
-                  <p className="text-xs font-medium text-bambu-gray mb-2">{label}</p>
-                  <div className="space-y-2">
-                    {presets.map((preset) => {
-                      const replaceSlot = section.slots.find((slot) => slot.printer_model === label);
-                      return (
-                        <div
-                          key={preset.id}
-                          className="flex items-center justify-between gap-2 bg-bambu-dark border border-bambu-dark-tertiary rounded px-3 py-2"
-                        >
-                          <span className="text-sm text-white truncate">{preset.name}</span>
-                          {replaceSlot ? (
-                            <Button type="button" size="sm" variant="secondary" disabled={adding} onClick={() => onReplace(replaceSlot, preset)}>
-                              {t('profiles.localProfiles.partSections.replace')}
-                            </Button>
-                          ) : (
-                            <Button type="button" size="sm" disabled={adding} onClick={() => onAdd(preset.id)}>
-                              {adding ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : null}
-                              {t('profiles.localProfiles.partSections.addProcess')}
-                            </Button>
-                          )}
-                        </div>
-                      );
-                    })}
-                  </div>
-                </div>
-              );
-            })
-          )}
         </div>
       </div>
     </div>
@@ -357,20 +287,24 @@ function SlotMismatchModal({
 
 function SlotCard({
   slot,
-  onReplace,
+  onReplaceFile,
   onRemove,
   canEdit,
+  replacePending,
+  parameterTracking,
 }: {
   slot: ProfilePartSlotView;
-  onReplace: () => void;
+  onReplaceFile: (files: FileList | null) => void;
   onRemove: () => void;
   canEdit: boolean;
+  replacePending: boolean;
+  parameterTracking: boolean;
 }) {
   const { t } = useTranslation();
   const [showSpecs, setShowSpecs] = useState(false);
   const specs = mergeProductionSpecs(slot.preset?.locked_parameters ?? null, slot.parameter_overrides ?? null);
   const canViewSpecs = Boolean(slot.preset && hasViewableSpecs(specs));
-  const isMismatch = slot.spec_status === 'mismatch' || slot.last_mismatch;
+  const isMismatch = parameterTracking && (slot.spec_status === 'mismatch' || slot.last_mismatch);
   const diffRows = slot.parameter_diff ?? [];
   const canViewDiff = isMismatch && diffRows.length > 0;
   const statusLabel = isMismatch
@@ -378,7 +312,8 @@ function SlotCard({
     : t('fileManager.production.matchesSpec');
   const statusClass = isMismatch ? 'bg-red-500/20 text-red-400' : 'bg-bambu-green/20 text-bambu-green';
   const statusChipClass = `text-xs px-1.5 py-0.5 rounded ${statusClass}`;
-  const canOpenStatus = canViewDiff || canViewSpecs;
+  const canOpenStatus = parameterTracking && (canViewDiff || canViewSpecs);
+  const replaceInputId = `replace-part-process-${slot.id}`;
 
   return (
     <>
@@ -390,40 +325,77 @@ function SlotCard({
           <div className="min-w-0">
             <div className="flex items-center gap-2 flex-wrap mb-1">
               <span className="text-xs font-semibold text-white">{displayPrinter(slot.printer_model, t)}</span>
-              {canOpenStatus ? (
-                <button
-                  type="button"
-                  onClick={() => setShowSpecs(true)}
-                  className={`${statusChipClass} inline-flex items-center gap-0.5 cursor-pointer hover:brightness-125 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-current`}
-                  aria-haspopup="dialog"
-                  aria-expanded={showSpecs}
-                  data-testid="profile-part-slot-status"
-                >
-                  {statusLabel}
-                  <ChevronRight className="w-3 h-3 opacity-80" aria-hidden />
-                </button>
-              ) : (
-                <span className={statusChipClass} data-testid="profile-part-slot-status">
-                  {statusLabel}
-                </span>
+              {parameterTracking && (
+                canOpenStatus ? (
+                  <button
+                    type="button"
+                    onClick={() => setShowSpecs(true)}
+                    className={`${statusChipClass} inline-flex items-center gap-0.5 cursor-pointer hover:brightness-125 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-current`}
+                    aria-haspopup="dialog"
+                    aria-expanded={showSpecs}
+                    data-testid="profile-part-slot-status"
+                  >
+                    {statusLabel}
+                    <ChevronRight className="w-3 h-3 opacity-80" aria-hidden />
+                  </button>
+                ) : (
+                  <span className={statusChipClass} data-testid="profile-part-slot-status">
+                    {statusLabel}
+                  </span>
+                )
               )}
             </div>
-            <p className="text-sm text-white truncate">{slot.preset?.name ?? '—'}</p>
-          </div>
-          {canEdit && (
-            <div className="flex items-center gap-1 flex-shrink-0">
-              <Button type="button" size="sm" variant="secondary" onClick={onReplace} data-testid="profile-part-slot-replace">
-                {t('profiles.localProfiles.partSections.replace')}
-              </Button>
+            {!parameterTracking && canViewSpecs ? (
               <button
                 type="button"
-                onClick={onRemove}
-                className="p-1 text-bambu-gray hover:text-red-400"
-                title={t('profiles.localProfiles.partSections.remove')}
-                data-testid="profile-part-slot-remove"
+                onClick={() => setShowSpecs(true)}
+                className="text-sm text-white truncate max-w-full text-left hover:text-bambu-green"
+                data-testid="profile-part-slot-own-specs"
               >
-                <Trash2 className="w-3.5 h-3.5" />
+                {slot.preset?.name ?? '—'}
               </button>
+            ) : (
+              <p className="text-sm text-white truncate">{slot.preset?.name ?? '—'}</p>
+            )}
+          </div>
+          {(slot.preset || canEdit) && (
+            <div className="flex items-center gap-1 flex-shrink-0">
+              {slot.preset && <LocalPresetDownloadButton presetId={slot.preset.id} />}
+              {canEdit && (
+                <>
+                  <input
+                    id={replaceInputId}
+                    type="file"
+                    accept={PROCESS_FILE_ACCEPT}
+                    className="sr-only"
+                    data-testid="replace-part-process"
+                    disabled={replacePending}
+                    onChange={(e) => {
+                      onReplaceFile(e.target.files);
+                      e.target.value = '';
+                    }}
+                  />
+                  <Button
+                    type="button"
+                    size="sm"
+                    variant="secondary"
+                    disabled={replacePending}
+                    data-testid="profile-part-slot-replace"
+                    onClick={() => document.getElementById(replaceInputId)?.click()}
+                  >
+                    {t('profiles.localProfiles.partSections.replace')}
+                  </Button>
+                  <button
+                    type="button"
+                    onClick={onRemove}
+                    className="p-1 text-bambu-gray hover:text-red-400"
+                    title={t('profiles.localProfiles.partSections.remove')}
+                    data-testid="profile-part-slot-remove"
+                  >
+                    <Trash2 className="w-3.5 h-3.5" />
+                  </button>
+                </>
+              )}
             </div>
           )}
         </div>
@@ -458,10 +430,8 @@ function findOccupiedSlot(
 }
 
 export function ProfilePartSections({
-  processes,
   attachRef,
 }: {
-  processes: LocalPreset[];
   attachRef?: MutableRefObject<ProfilePartAttachFn | null>;
 }) {
   const { t } = useTranslation();
@@ -476,7 +446,6 @@ export function ProfilePartSections({
   const [replaceError, setReplaceError] = useState<string | null>(null);
   const [specSection, setSpecSection] = useState<ProfilePartSectionView | null>(null);
   const [deleteSectionId, setDeleteSectionId] = useState<number | null>(null);
-  const [pickerForReplace, setPickerForReplace] = useState<ProfilePartSlotView | null>(null);
   const [reviewDiff, setReviewDiff] = useState<{ title: string; rows: ProfilePartSlotView['parameter_diff'] } | null>(null);
   const [confirmAttach, setConfirmAttach] = useState<{
     sectionId: number;
@@ -497,7 +466,8 @@ export function ProfilePartSections({
   };
 
   const createMutation = useMutation({
-    mutationFn: (name: string) => api.createProfilePartSection(name),
+    mutationFn: ({ name, parameter_tracking }: { name: string; parameter_tracking: boolean }) =>
+      api.createProfilePartSection(name, { parameter_tracking }),
     onSuccess: () => {
       invalidate();
       setCreating(false);
@@ -551,7 +521,6 @@ export function ProfilePartSections({
       invalidate();
       setReplaceTarget(null);
       setReplacePreview(null);
-      setPickerForReplace(null);
       showToast(t('profiles.localProfiles.partSections.toast.replaced'));
     },
     onError: (err: Error) => {
@@ -560,8 +529,8 @@ export function ProfilePartSections({
   });
 
   const importMutation = useMutation({
-    mutationFn: ({ sectionId, file }: { sectionId: number; file: File }) =>
-      api.importProfilePartSectionProcess(sectionId, file),
+    mutationFn: ({ sectionId, file, slotId }: { sectionId: number; file: File; slotId?: number }) =>
+      api.importProfilePartSectionProcess(sectionId, file, slotId),
     onSuccess: (result) => {
       invalidate();
       if (result.errors.length > 0) {
@@ -619,7 +588,6 @@ export function ProfilePartSections({
     preset: ReplacePresetRef,
     preview?: ProfilePartReplacePreview,
   ) => {
-    setPickerForReplace(null);
     setReplaceTarget({ slot, preset });
     setReplaceError(null);
     if (preview) {
@@ -647,6 +615,10 @@ export function ProfilePartSections({
       const occupied = findOccupiedSlot(section, preset, t);
       if (occupied) {
         void openReplace(occupied, preset);
+        return;
+      }
+      if (section.parameter_tracking === false) {
+        addMutation.mutate({ sectionId, presetId: preset.id });
         return;
       }
       try {
@@ -688,10 +660,10 @@ export function ProfilePartSections({
     };
   }, [attachRef, handleAttach]);
 
-  const handleSectionUpload = (sectionId: number, files: FileList | null) => {
+  const handleSectionUpload = (sectionId: number, files: FileList | null, slotId?: number) => {
     const file = files?.[0];
     if (!file) return;
-    importMutation.mutate({ sectionId, file });
+    importMutation.mutate({ sectionId, file, slotId });
   };
 
   return (
@@ -715,8 +687,9 @@ export function ProfilePartSections({
 
       <div className="space-y-4">
         {sections.map((section) => {
+          const tracking = section.parameter_tracking !== false;
           const specs = mergeProductionSpecs(section.locked_parameters, null);
-          const canViewSpecs = hasViewableSpecs(specs);
+          const canViewSpecs = tracking && hasViewableSpecs(specs);
           const summary = canViewSpecs ? compactSpecItems(specs, t) : [];
           return (
             <div
@@ -760,7 +733,9 @@ export function ProfilePartSections({
                       key={slot.id}
                       slot={slot}
                       canEdit={canEdit}
-                      onReplace={() => setPickerForReplace(slot)}
+                      parameterTracking={section.parameter_tracking !== false}
+                      replacePending={importMutation.isPending}
+                      onReplaceFile={(files) => handleSectionUpload(section.id, files, slot.id)}
                       onRemove={() => removeSlotMutation.mutate(slot.id)}
                     />
                   ))}
@@ -812,33 +787,7 @@ export function ProfilePartSections({
           confirmLabel={t('profiles.localProfiles.partSections.create')}
           submitting={createMutation.isPending}
           onClose={() => setCreating(false)}
-          onSubmit={(name) => createMutation.mutate(name)}
-        />
-      )}
-
-      {pickerForReplace && (
-        <AddProcessModal
-          section={
-            sections.find((section) => section.slots.some((slot) => slot.id === pickerForReplace.id))
-            ?? { ...sections[0], slots: [pickerForReplace] }
-          }
-          processes={processes.filter((preset) => {
-            const slotSection = sections.find((section) => section.slots.some((slot) => slot.id === pickerForReplace.id));
-            const used = new Set(
-              (slotSection?.slots ?? [])
-                .filter((slot) => slot.id !== pickerForReplace.id)
-                .map((slot) => slot.preset?.id)
-                .filter((id): id is number => id != null),
-            );
-            return !used.has(preset.id);
-          })}
-          adding={false}
-          onClose={() => setPickerForReplace(null)}
-          onAdd={(presetId) => {
-            const preset = processes.find((item) => item.id === presetId);
-            if (preset) void openReplace(pickerForReplace, preset);
-          }}
-          onReplace={(slot, preset) => void openReplace(slot, preset)}
+          onSubmit={(name, options) => createMutation.mutate({ name, ...options })}
         />
       )}
 

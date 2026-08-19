@@ -5,7 +5,7 @@ from __future__ import annotations
 import json
 from typing import Any
 
-from fastapi import APIRouter, Depends, File, HTTPException, UploadFile
+from fastapi import APIRouter, Depends, File, HTTPException, Query, UploadFile
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
@@ -55,6 +55,11 @@ def _has_mismatches(diff: list[dict[str, Any]]) -> bool:
     return any(not row.get("match", False) for row in diff)
 
 
+def _tracks_parameters(section: ProfilePartSection) -> bool:
+    """Treat missing/legacy rows as tracking on (migration default)."""
+    return section.parameter_tracking is not False
+
+
 def _process_parameters(preset: LocalPreset) -> dict[str, Any]:
     if not preset.setting:
         return {}
@@ -87,6 +92,8 @@ def _apply_shared_contract(
     ``locked_parameters``. Later adds that mismatch require ``resolution='proceed'``
     to attach without changing the baseline. Replace also accepts ``accept_baseline``.
     """
+    if not _tracks_parameters(section):
+        return False, False
     if not section.locked_parameters:
         section.locked_parameters = incoming
         return False, True
@@ -108,7 +115,7 @@ def _slot_diff(
     incoming: dict[str, Any],
     printer_model: str | None = None,
 ) -> list[dict[str, Any]]:
-    if not section.locked_parameters:
+    if not _tracks_parameters(section) or not section.locked_parameters:
         return []
     return diff_parameters(section.locked_parameters, incoming, printer_model=printer_model)
 
@@ -118,7 +125,7 @@ def _mismatches_contract(
     incoming: dict[str, Any],
     printer_model: str | None = None,
 ) -> bool:
-    if not section.locked_parameters:
+    if not _tracks_parameters(section) or not section.locked_parameters:
         return False
     return _has_mismatches(_slot_diff(section, incoming, printer_model=printer_model))
 
@@ -136,12 +143,14 @@ def _slot_view(section: ProfilePartSection, slot: ProfilePartSlot) -> ProfilePar
             printer_model=printer,
             locked_parameters=incoming or None,
         )
+    tracking = _tracks_parameters(section)
+    mismatch = bool(slot.last_mismatch) if tracking else False
     return ProfilePartSlotView(
         id=slot.id,
         printer_model=slot.printer_model,
-        last_mismatch=bool(slot.last_mismatch),
-        spec_status="mismatch" if slot.last_mismatch else "match",
-        parameter_diff=[ProductionParameterDiff(**row) for row in rows],
+        last_mismatch=mismatch,
+        spec_status="mismatch" if mismatch else "match",
+        parameter_diff=[ProductionParameterDiff(**row) for row in rows] if tracking else [],
         parameter_overrides=slot.parameter_overrides,
         preset=preset_summary,
     )
@@ -153,6 +162,7 @@ def _section_view(section: ProfilePartSection) -> ProfilePartSectionView:
         id=section.id,
         name=section.name,
         locked_parameters=section.locked_parameters,
+        parameter_tracking=_tracks_parameters(section),
         created_at=section.created_at,
         updated_at=section.updated_at,
         slots=[_slot_view(section, slot) for slot in slots],
@@ -217,8 +227,9 @@ async def _load_process_preset(db: AsyncSession, preset_id: int) -> LocalPreset:
 
 async def _refresh_section_mismatches(section: ProfilePartSection) -> None:
     """Recompute last_mismatch for every slot against the current baseline."""
+    tracking = _tracks_parameters(section)
     for slot in section.slots:
-        if slot.active_preset is None:
+        if not tracking or slot.active_preset is None:
             slot.last_mismatch = False
             continue
         incoming = _process_parameters(slot.active_preset)
@@ -308,7 +319,11 @@ async def create_section(
     db: AsyncSession = Depends(get_db),
 ):
     """Create an empty user-named part section. Does not seed TOP/KNB/BOT."""
-    section = ProfilePartSection(name=_normalize_section_name(body.name), locked_parameters=None)
+    section = ProfilePartSection(
+        name=_normalize_section_name(body.name),
+        locked_parameters=None,
+        parameter_tracking=body.parameter_tracking,
+    )
     db.add(section)
     await db.flush()
     await db.refresh(section)
@@ -316,6 +331,7 @@ async def create_section(
         id=section.id,
         name=section.name,
         locked_parameters=None,
+        parameter_tracking=_tracks_parameters(section),
         created_at=section.created_at,
         updated_at=section.updated_at,
         slots=[],
@@ -326,6 +342,7 @@ async def create_section(
 async def import_into_section(
     section_id: int,
     file: UploadFile = File(...),
+    slot_id: int | None = Query(None),
     _: User | None = RequirePermissionIfAuthEnabled(Permission.SETTINGS_UPDATE),
     db: AsyncSession = Depends(get_db),
 ):
@@ -335,6 +352,8 @@ async def import_into_section(
     printer slot returns ``needs_replace`` instead of a second slot. A new
     printer that mismatches the section baseline returns ``needs_confirm``
     and is not attached until the client posts the slot with ``resolution='proceed'``.
+    Pass ``slot_id`` to bind the import as a replace of that occupied slot
+    (no second slot), used by the slot Replace control.
     """
     if not file.filename:
         raise HTTPException(status_code=400, detail="No filename provided")
@@ -343,6 +362,12 @@ async def import_into_section(
         raise HTTPException(status_code=400, detail="Empty file")
 
     section = await _load_section(db, section_id)
+    target_slot = None
+    if slot_id is not None:
+        target_slot = next((slot for slot in section.slots if slot.id == slot_id), None)
+        if target_slot is None:
+            raise HTTPException(status_code=404, detail="Slot not found in this section")
+
     result = await import_orca_file(file.filename, content, db, on_duplicate="update")
     await db.flush()
 
@@ -355,6 +380,36 @@ async def import_into_section(
     attached: list[ProfilePartImportAttached] = []
     needs_replace: list[ProfilePartImportNeedsReplace] = []
     needs_confirm: list[ProfilePartImportNeedsConfirm] = []
+
+    if target_slot is not None:
+        chosen = next(
+            (preset for preset in process_presets if _preset_printer_model(preset) == target_slot.printer_model),
+            process_presets[0],
+        )
+        needs_replace.append(
+            ProfilePartImportNeedsReplace(
+                printer_model=_preset_printer_model(chosen),
+                preset_id=chosen.id,
+                preset_name=chosen.name,
+                existing_slot_id=target_slot.id,
+                preview=_replace_preview(section, chosen),
+            )
+        )
+        await db.flush()
+        section = await _load_section(db, section_id)
+        errors = result.get("errors") or []
+        imported = int(result.get("imported") or 0)
+        skipped = int(result.get("skipped") or 0)
+        return ProfilePartImportResponse(
+            success=bool(needs_replace or imported > 0),
+            imported=imported,
+            skipped=skipped,
+            errors=errors,
+            attached=[],
+            needs_replace=needs_replace,
+            needs_confirm=[],
+            section=_section_view(section),
+        )
 
     for preset in process_presets:
         printer_model = _preset_printer_model(preset)
@@ -371,7 +426,9 @@ async def import_into_section(
                 )
             )
             continue
-        if _mismatches_contract(section, incoming, printer_model=printer_model):
+        if _tracks_parameters(section) and _mismatches_contract(
+            section, incoming, printer_model=printer_model
+        ):
             needs_confirm.append(
                 ProfilePartImportNeedsConfirm(
                     printer_model=printer_model,
@@ -436,7 +493,11 @@ async def add_slot(
     existing = next((slot for slot in section.slots if slot.printer_model == printer_model), None)
     if existing is not None:
         raise HTTPException(status_code=409, detail=_SLOT_EXISTS_DETAIL)
-    if _mismatches_contract(section, incoming, printer_model=printer_model) and body.resolution != "proceed":
+    if (
+        _tracks_parameters(section)
+        and _mismatches_contract(section, incoming, printer_model=printer_model)
+        and body.resolution != "proceed"
+    ):
         raise HTTPException(status_code=409, detail=_MISMATCH_CONFIRM_DETAIL)
 
     await _attach_new_slot(db, section, preset, resolution=body.resolution)

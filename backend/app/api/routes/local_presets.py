@@ -2,8 +2,10 @@
 
 import json
 import logging
+import re
 
 from fastapi import APIRouter, Depends, HTTPException, UploadFile
+from fastapi.responses import Response
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -30,10 +32,26 @@ from backend.app.services.orca_profiles import (
     resolve_preset,
 )
 from backend.app.services.production_settings import extract_from_process_settings
+from backend.app.utils.http import build_content_disposition
 
 logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/local-presets", tags=["Local Presets"])
+
+_UNSAFE_FILENAME_RE = re.compile(r'[<>:"/\\|?*\x00-\x1f]+')
+
+
+def _download_filename(name: str) -> str:
+    """Build a filesystem-safe `{name}.json` download filename from a preset name."""
+    base = _UNSAFE_FILENAME_RE.sub("_", name or "")
+    base = re.sub(r"_+", "_", base).strip(" ._")
+    if base.lower().endswith(".json"):
+        base = base[:-5].rstrip(" ._")
+    if not base:
+        base = "preset"
+    if len(base) > 180:
+        base = base[:180].rstrip(" ._") or "preset"
+    return f"{base}.json"
 
 
 def _locked_parameters_from_setting(setting: str | None) -> dict | None:
@@ -98,6 +116,34 @@ async def get_local_preset(
         data["setting"] = {}
 
     return LocalPresetDetail(**data)
+
+
+@router.get("/{preset_id}/download")
+async def download_local_preset(
+    preset_id: int,
+    _: User | None = RequirePermissionIfAuthEnabled(Permission.SETTINGS_READ),
+    db: AsyncSession = Depends(get_db),
+):
+    """Download the stored resolved setting JSON so it can be re-imported."""
+    result = await db.execute(select(LocalPreset).where(LocalPreset.id == preset_id))
+    preset = result.scalar_one_or_none()
+    if not preset:
+        raise HTTPException(404, "Local preset not found")
+
+    try:
+        parsed = json.loads(preset.setting)
+    except (ValueError, TypeError):
+        raise HTTPException(500, "Preset setting is not valid JSON") from None
+    if not isinstance(parsed, dict):
+        raise HTTPException(500, "Preset setting is not a JSON object")
+
+    body = json.dumps(parsed, indent=2, ensure_ascii=False) + "\n"
+    filename = _download_filename(preset.name)
+    return Response(
+        content=body.encode("utf-8"),
+        media_type="application/json",
+        headers={"Content-Disposition": build_content_disposition(filename)},
+    )
 
 
 @router.post("/import", response_model=ImportResponse)

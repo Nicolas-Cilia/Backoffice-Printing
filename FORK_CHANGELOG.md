@@ -3,6 +3,37 @@
 Changes made in this fork on top of upstream Bambuddy. Upstream's own release notes stay
 in `CHANGELOG.md`. Planned work lives in `FORK_PLAN.md`.
 
+## 2026-08-19: Download local print profiles
+
+Fork plan entry #15. Local presets can be downloaded from Profiles →
+Local Profiles. `GET /local-presets/{id}/download` returns the stored
+resolved `setting` JSON with `Content-Disposition: attachment` and a
+sanitized `{name}.json` filename (re-importable via the existing
+import). Download icon sits next to delete on Unfiled process cards,
+filament/printer cards, and part-section slot cards. Read permission
+is enough. Bambu `.bbscfg` wrapping and section-as-zip were skipped.
+
+The page-level **Import Profiles** drop zone is gone — it dumped files
+into Unfiled. **Upload process** on each part section still imports
+and attaches. Slot **Replace** now opens a file picker (same accept
+list) and `POST .../sections/{id}/import?slot_id=` so the occupied
+printer is replaced, not doubled; mismatch still uses Proceed /
+Accept baseline.
+
+### Verified
+
+- Integration: download returns JSON body + filename header; unsafe
+  names sanitized; missing id is 404. Section import with `slot_id`
+  returns `needs_replace` for that slot and does not add a second slot.
+- LocalProfilesView vitest: download control on Unfiled/filament cards
+  and part-section slots; click calls `downloadLocalPreset`. Import
+  drop zone gone. Slot Replace uploads a file (no “Choose a process
+  preset” picker); section Upload process still opens replace-confirm.
+
+### Not run here
+
+Docker, live browser, production frontend build / `static/assets` refresh.
+
 ## 2026-08-18: Unfiled processes (replace All processes)
 
 Fork plan entry #15. The Profiles process column is now **Unfiled

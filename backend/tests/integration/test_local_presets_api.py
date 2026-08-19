@@ -211,3 +211,52 @@ class TestLocalPresetSourceLabel:
 
         leftover = await db_session.execute(select(LocalPreset).where(LocalPreset.id == preset_id))
         assert leftover.scalar_one().source == "bambu"
+
+
+@pytest.mark.asyncio
+@pytest.mark.integration
+class TestLocalPresetDownload:
+    async def test_download_returns_setting_json_and_filename(self, async_client: AsyncClient):
+        created = await async_client.post(
+            "/api/v1/local-presets/",
+            json={
+                "name": "0.20mm Standard @BBL X1C",
+                "preset_type": "process",
+                "setting": _process_setting(),
+            },
+        )
+        assert created.status_code == 200
+        preset_id = created.json()["id"]
+
+        resp = await async_client.get(f"/api/v1/local-presets/{preset_id}/download")
+        assert resp.status_code == 200
+        assert resp.headers["content-type"].startswith("application/json")
+        disposition = resp.headers["content-disposition"]
+        assert disposition.startswith("attachment;")
+        assert "0.20mm Standard @BBL X1C.json" in disposition
+
+        body = resp.json()
+        assert body["layer_height"] == "0.2"
+        assert body["sparse_infill_density"] == "20%"
+        assert body["curr_bed_type"] == "Textured PEI Plate"
+
+    async def test_download_sanitizes_filename(self, async_client: AsyncClient):
+        created = await async_client.post(
+            "/api/v1/local-presets/",
+            json={
+                "name": "Foo/Bar:Baz<>.json",
+                "preset_type": "filament",
+                "setting": {"filament_type": "PLA", "name": "Foo/Bar:Baz<>.json"},
+            },
+        )
+        assert created.status_code == 200
+        preset_id = created.json()["id"]
+
+        resp = await async_client.get(f"/api/v1/local-presets/{preset_id}/download")
+        assert resp.status_code == 200
+        assert "Foo_Bar_Baz.json" in resp.headers["content-disposition"]
+        assert resp.json()["filament_type"] == "PLA"
+
+    async def test_download_missing_preset_is_404(self, async_client: AsyncClient):
+        resp = await async_client.get("/api/v1/local-presets/999999/download")
+        assert resp.status_code == 404

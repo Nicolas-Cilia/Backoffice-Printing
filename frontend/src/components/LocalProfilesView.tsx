@@ -2,7 +2,6 @@ import { useState, useMemo, useCallback, useRef } from 'react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { useTranslation } from 'react-i18next';
 import {
-  Upload,
   Loader2,
   Search,
   Trash2,
@@ -22,6 +21,7 @@ import type { LocalPreset, LocalPresetsResponse, ProfilePartSectionView } from '
 import { Card, CardContent } from './Card';
 import { Button } from './Button';
 import { ProcessSpecsModal } from './ProcessSpecsModal';
+import { LocalPresetDownloadButton } from './LocalPresetDownloadButton';
 import { ProfilePartSections, PROFILE_PARTS_KEY, type ProfilePartAttachFn } from './ProfilePartSections';
 import { useToast } from '../contexts/ToastContext';
 import { useAuth } from '../contexts/AuthContext';
@@ -185,6 +185,7 @@ function PresetCard({
                 <FolderInput className="w-3.5 h-3.5" />
               </button>
             )}
+            <LocalPresetDownloadButton presetId={preset.id} />
             {hasPermission('settings:update') && (
               <button
                 onClick={() => onDelete(preset.id)}
@@ -282,13 +283,11 @@ function PresetCard({
 
 export function LocalProfilesView() {
   const { t } = useTranslation();
-  const { hasPermission } = useAuth();
   const queryClient = useQueryClient();
   const { showToast } = useToast();
   const [searchQuery, setSearchQuery] = useState('');
   const [expandedId, setExpandedId] = useState<number | null>(null);
   const [processesOpen, setProcessesOpen] = useState(false);
-  const [isDragging, setIsDragging] = useState(false);
   const [deleteConfirm, setDeleteConfirm] = useState<number | null>(null);
   const [movingPreset, setMovingPreset] = useState<LocalPreset | null>(null);
   const attachRef = useRef<ProfilePartAttachFn | null>(null);
@@ -301,47 +300,6 @@ export function LocalProfilesView() {
   const { data: partSections = [] } = useQuery({
     queryKey: PROFILE_PARTS_KEY,
     queryFn: () => api.getProfilePartSections(),
-  });
-
-  const importMutation = useMutation({
-    mutationFn: async (files: FileList) => {
-      const results = [];
-      for (const file of Array.from(files)) {
-        const formData = new FormData();
-        formData.append('file', file);
-        results.push(await api.importLocalPresets(formData));
-      }
-      return results;
-    },
-    onSuccess: (results) => {
-      queryClient.invalidateQueries({ queryKey: ['localPresets'] });
-      // The SliceModal reads from a separate `slicerPresets` query that lists
-      // cloud + local + standard in one shot. Without this second invalidation
-      // freshly-imported profiles wouldn't appear in the SliceModal dropdown
-      // until that query's staleTime elapsed plus a refocus / remount (#1581).
-      queryClient.invalidateQueries({ queryKey: ['slicerPresets'] });
-      let totalImported = 0;
-      let totalSkipped = 0;
-      let totalErrors = 0;
-      for (const r of results) {
-        totalImported += r.imported;
-        totalSkipped += r.skipped;
-        totalErrors += r.errors.length;
-      }
-
-      if (totalImported > 0) {
-        showToast(t('profiles.localProfiles.toast.importSuccess', { count: totalImported }));
-      }
-      if (totalSkipped > 0) {
-        showToast(t('profiles.localProfiles.toast.importSkipped', { count: totalSkipped }), 'warning');
-      }
-      if (totalErrors > 0) {
-        showToast(t('profiles.localProfiles.toast.importError', { count: totalErrors }), 'error');
-      }
-    },
-    onError: (err: Error) => {
-      showToast(err.message, 'error');
-    },
   });
 
   const deleteMutation = useMutation({
@@ -371,17 +329,6 @@ export function LocalProfilesView() {
       showToast(t('profiles.localProfiles.toast.deleted'));
     },
   });
-
-  const handleFiles = useCallback((files: FileList | null) => {
-    if (!files || files.length === 0) return;
-    importMutation.mutate(files);
-  }, [importMutation]);
-
-  const handleDrop = useCallback((e: React.DragEvent) => {
-    e.preventDefault();
-    setIsDragging(false);
-    handleFiles(e.dataTransfer.files);
-  }, [handleFiles]);
 
   const filterPresets = useCallback((list: LocalPreset[]) => {
     if (!searchQuery) return list;
@@ -430,40 +377,6 @@ export function LocalProfilesView() {
 
   return (
     <div className="space-y-6">
-      {/* Import Zone */}
-      {hasPermission('settings:update') && (
-        <div
-          onDragOver={(e) => { e.preventDefault(); setIsDragging(true); }}
-          onDragLeave={() => setIsDragging(false)}
-          onDrop={handleDrop}
-          className={`relative border-2 border-dashed rounded-lg p-6 text-center transition-colors ${
-            isDragging
-              ? 'border-bambu-green bg-bambu-green/10'
-              : 'border-bambu-dark-tertiary hover:border-bambu-gray'
-          }`}
-        >
-          <input
-            type="file"
-            accept=".json,.zip,.orca_filament,.bbscfg,.bbsflmt"
-            multiple
-            className="absolute inset-0 w-full h-full opacity-0 cursor-pointer"
-            onChange={(e) => handleFiles(e.target.files)}
-          />
-          {importMutation.isPending ? (
-            <div className="flex items-center justify-center gap-2">
-              <Loader2 className="w-5 h-5 text-bambu-green animate-spin" />
-              <span className="text-bambu-gray">{t('profiles.localProfiles.importing')}</span>
-            </div>
-          ) : (
-            <>
-              <Upload className="w-8 h-8 text-bambu-gray mx-auto mb-2" />
-              <p className="text-sm text-white font-medium">{t('profiles.localProfiles.import')}</p>
-              <p className="text-xs text-bambu-gray mt-1">{t('profiles.localProfiles.importDesc')}</p>
-            </>
-          )}
-        </div>
-      )}
-
       {/* Search Bar */}
       {hasAnyPresets && (
         <div className="relative">
@@ -478,14 +391,13 @@ export function LocalProfilesView() {
         </div>
       )}
 
-      <ProfilePartSections processes={presets?.process || []} attachRef={attachRef} />
+      <ProfilePartSections attachRef={attachRef} />
 
       {/* No presets imported at all */}
       {!hasAnyPresets && !isLoading && (
         <div className="text-center py-12">
           <HardDrive className="w-12 h-12 text-bambu-gray mx-auto mb-3 opacity-50" />
           <p className="text-bambu-gray">{t('profiles.localProfiles.noPresets')}</p>
-          <p className="text-xs text-bambu-gray/60 mt-1">{t('profiles.localProfiles.importDesc')}</p>
         </div>
       )}
 

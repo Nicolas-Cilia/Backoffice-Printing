@@ -12,6 +12,7 @@ import { render } from '../utils';
 import { ThemeProvider } from '../../contexts/ThemeContext';
 import { ToastProvider } from '../../contexts/ToastContext';
 import { AuthProvider } from '../../contexts/AuthContext';
+import { api } from '../../api/client';
 import { LocalProfilesView } from '../../components/LocalProfilesView';
 
 const mockLocalPresets = {
@@ -142,6 +143,7 @@ describe('LocalProfilesView', () => {
     expect(screen.getByTestId('unfiled-processes-list')).toHaveAttribute('aria-hidden', 'false');
     expect(screen.getByText('0.20mm Standard @BBL X1C')).toBeInTheDocument();
     expect(screen.getByTestId('move-unfiled-process')).toBeInTheDocument();
+    expect(screen.getAllByTestId('download-local-preset').length).toBeGreaterThan(0);
     expect(screen.getByText('Unfiled processes')).toBeInTheDocument();
     fireEvent.click(toggle);
     expect(toggle).toHaveAttribute('aria-expanded', 'false');
@@ -275,14 +277,35 @@ describe('LocalProfilesView', () => {
     });
   });
 
-  it('shows import zone', async () => {
+  it('does not show a page-level import drop zone', async () => {
     render(<LocalProfilesView />);
 
     await waitFor(() => {
-      expect(screen.getByText(/import profiles/i)).toBeInTheDocument();
+      expect(screen.getByText('Overture PLA Matte @BBL X1C')).toBeInTheDocument();
     });
 
-    expect(screen.getByText(/\.bbscfg/i)).toBeInTheDocument();
+    expect(screen.queryByText(/import profiles/i)).not.toBeInTheDocument();
+    expect(screen.queryByText(/drop \.bbscfg/i)).not.toBeInTheDocument();
+  });
+
+  it('downloads a local preset from the card control', async () => {
+    const downloadSpy = vi.spyOn(api, 'downloadLocalPreset').mockResolvedValue(undefined);
+
+    render(<LocalProfilesView />);
+
+    await waitFor(() => {
+      expect(screen.getByText('Overture PLA Matte @BBL X1C')).toBeInTheDocument();
+    });
+
+    const heading = screen.getByText('Overture PLA Matte @BBL X1C');
+    const card = heading.closest('.bg-bambu-dark');
+    expect(card).toBeTruthy();
+    fireEvent.click(within(card as HTMLElement).getByTestId('download-local-preset'));
+
+    await waitFor(() => {
+      expect(downloadSpy).toHaveBeenCalledWith(1);
+    });
+    downloadSpy.mockRestore();
   });
 
   it('shows a compact spec summary and full specs on process cards', async () => {
@@ -384,6 +407,7 @@ describe('LocalProfilesView', () => {
   const mockPartSection = {
     id: 10,
     name: 'Top part',
+    parameter_tracking: true,
     locked_parameters: {
       layer_height: 0.2,
       sparse_infill_density: 20,
@@ -454,7 +478,7 @@ describe('LocalProfilesView', () => {
 
     expect(screen.getByTestId('profile-part-sections')).toBeInTheDocument();
     expect(screen.getByText('Part process sections')).toBeInTheDocument();
-    expect(screen.getByRole('button', { name: 'Add part process sections' })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Add process sections' })).toBeInTheDocument();
     expect(screen.getByText('0.28mm Strength @BBL A1')).toBeInTheDocument();
     expect(screen.getByText('Last replace had mismatches')).toBeInTheDocument();
     expect(screen.getByRole('button', { name: 'Matches spec' })).toBeInTheDocument();
@@ -464,6 +488,11 @@ describe('LocalProfilesView', () => {
     expect(screen.getByTestId('upload-part-process')).toBeInTheDocument();
     expect(screen.queryByTestId('toggle-unfiled-processes')).not.toBeInTheDocument();
     expect(screen.getAllByTestId('profile-part-slot-replace').length).toBeGreaterThan(0);
+    expect(screen.getAllByTestId('replace-part-process').length).toBeGreaterThan(0);
+    expect(screen.queryByText('Choose a process preset')).not.toBeInTheDocument();
+    const slots = screen.getAllByTestId('profile-part-slot');
+    expect(slots.length).toBeGreaterThan(0);
+    expect(within(slots[0]).getByTestId('download-local-preset')).toBeInTheDocument();
 
     expect(screen.queryByText('Current print specs')).not.toBeInTheDocument();
     fireEvent.click(screen.getByRole('button', { name: 'Matches spec' }));
@@ -480,6 +509,67 @@ describe('LocalProfilesView', () => {
     expect(screen.getByText('1 parameter(s) differ')).toBeInTheDocument();
     expect(screen.getByText('Locked value')).toBeInTheDocument();
     expect(screen.getByText('Incoming value')).toBeInTheDocument();
+  });
+
+  it('creates a section with track parameters on by default and can turn it off', async () => {
+    const posted: { name?: string; parameter_tracking?: boolean }[] = [];
+    server.use(
+      http.post('/api/v1/profile-parts/sections', async ({ request }) => {
+        const body = (await request.json()) as { name: string; parameter_tracking?: boolean };
+        posted.push(body);
+        return HttpResponse.json({
+          id: 11,
+          name: body.name,
+          parameter_tracking: body.parameter_tracking ?? true,
+          locked_parameters: null,
+          created_at: '2026-01-01T00:00:00Z',
+          updated_at: '2026-01-01T00:00:00Z',
+          slots: [],
+        });
+      }),
+    );
+
+    render(<LocalProfilesView />);
+
+    await waitFor(() => {
+      expect(screen.getByTestId('add-part-section')).toBeInTheDocument();
+    });
+    fireEvent.click(screen.getByTestId('add-part-section'));
+    const checkbox = screen.getByTestId('track-parameters');
+    expect(checkbox).toBeChecked();
+    expect(screen.getByText('Track parameters')).toBeInTheDocument();
+
+    fireEvent.change(screen.getByPlaceholderText('Top part'), { target: { value: 'Bottom part' } });
+    fireEvent.click(checkbox);
+    expect(checkbox).not.toBeChecked();
+    fireEvent.click(screen.getByRole('button', { name: 'Create' }));
+
+    await waitFor(() => {
+      expect(posted).toEqual([{ name: 'Bottom part', parameter_tracking: false }]);
+    });
+  });
+
+  it('hides match chips when parameter tracking is off', async () => {
+    server.use(
+      http.get('/api/v1/profile-parts/sections', () => {
+        return HttpResponse.json([{ ...mockPartSection, parameter_tracking: false }]);
+      }),
+    );
+
+    render(<LocalProfilesView />);
+
+    await waitFor(() => {
+      expect(screen.getByText('Top part')).toBeInTheDocument();
+    });
+
+    expect(screen.queryByText('Matches spec')).not.toBeInTheDocument();
+    expect(screen.queryByText('Last replace had mismatches')).not.toBeInTheDocument();
+    expect(screen.queryByTestId('profile-part-slot-status')).not.toBeInTheDocument();
+    expect(screen.getByTestId('upload-part-process')).toBeInTheDocument();
+    expect(screen.getAllByTestId('profile-part-slot-replace').length).toBeGreaterThan(0);
+    expect(screen.getAllByTestId('download-local-preset').length).toBeGreaterThan(0);
+    fireEvent.click(screen.getAllByTestId('profile-part-slot-own-specs')[0]);
+    expect(screen.getByText('Current print specs')).toBeInTheDocument();
   });
 
   it('does not show a search-miss empty state when the query is empty and processes are in sections', async () => {
@@ -623,6 +713,67 @@ describe('LocalProfilesView', () => {
     fireEvent.click(screen.getByTestId('confirm-attach-cancel'));
     expect(screen.queryByTestId('confirm-attach-modal')).not.toBeInTheDocument();
     expect(screen.queryByText('H2S')).not.toBeInTheDocument();
+  });
+
+  it('replace on a slot uploads a file instead of opening the library picker', async () => {
+    server.use(
+      http.get('/api/v1/profile-parts/sections', () => {
+        return HttpResponse.json([mockPartSection]);
+      }),
+      http.post('/api/v1/profile-parts/sections/:sectionId/import', ({ request }) => {
+        const url = new URL(request.url);
+        expect(url.searchParams.get('slot_id')).toBe('21');
+        return HttpResponse.json({
+          success: true,
+          imported: 1,
+          skipped: 0,
+          errors: [],
+          attached: [],
+          needs_confirm: [],
+          needs_replace: [
+            {
+              printer_model: 'X1C',
+              preset_id: 9,
+              preset_name: '0.16mm Optimal @BBL X1C',
+              existing_slot_id: 21,
+              preview: {
+                parameter_diff: [
+                  { key: 'layer_height', locked: 0.2, incoming: 0.16, match: false },
+                ],
+                has_mismatches: true,
+                incoming_parameters: { layer_height: 0.16 },
+                printer_model: 'X1C',
+              },
+            },
+          ],
+          section: mockPartSection,
+        });
+      }),
+    );
+
+    render(<LocalProfilesView />);
+
+    await waitFor(() => {
+      expect(screen.getAllByTestId('profile-part-slot-replace').length).toBeGreaterThan(0);
+    });
+
+    fireEvent.click(screen.getAllByTestId('profile-part-slot-replace')[0]);
+    expect(screen.queryByText('Choose a process preset')).not.toBeInTheDocument();
+
+    const file = new File(
+      [JSON.stringify({ name: '0.16mm Optimal @BBL X1C', type: 'process', layer_height: '0.16' })],
+      'process.json',
+      { type: 'application/json' },
+    );
+    fireEvent.change(screen.getAllByTestId('replace-part-process')[0], { target: { files: [file] } });
+
+    await waitFor(() => {
+      expect(screen.getByText('Replace process')).toBeInTheDocument();
+    });
+    expect(screen.getByText('0.16mm Optimal @BBL X1C')).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: /proceed/i })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: /accept/i })).toBeInTheDocument();
+    expect(screen.queryByText('Choose a process preset')).not.toBeInTheDocument();
   });
 
   const h2sProcess = {
@@ -820,5 +971,65 @@ describe('LocalProfilesView', () => {
     expect(screen.getByRole('button', { name: /proceed anyway/i })).toBeInTheDocument();
     expect(screen.getByRole('button', { name: /don't move/i })).toBeInTheDocument();
     expect(screen.queryByRole('button', { name: /don't upload/i })).not.toBeInTheDocument();
+  });
+
+  it('moves an unfiled process into a non-tracking section without mismatch confirm', async () => {
+    const addCalls: unknown[] = [];
+    const loose = {
+      ...mockPartSection,
+      parameter_tracking: false,
+      locked_parameters: null,
+    };
+    const extra = {
+      ...h2sProcess,
+      id: 12,
+      name: '0.28mm Strength @BBL P1S',
+      locked_parameters: { layer_height: 0.28 },
+    };
+    const p1sSlot = {
+      id: 24,
+      printer_model: 'P1S',
+      last_mismatch: false,
+      spec_status: 'match' as const,
+      parameter_diff: [],
+      parameter_overrides: null,
+      preset: {
+        id: 12,
+        name: extra.name,
+        printer_model: 'P1S',
+        locked_parameters: { layer_height: 0.28 },
+      },
+    };
+    let sections = [loose];
+    server.use(
+      http.get('/api/v1/local-presets/', () => {
+        return HttpResponse.json({
+          ...mockLocalPresets,
+          process: [...mockLocalPresets.process, extra],
+        });
+      }),
+      http.get('/api/v1/profile-parts/sections', () => {
+        return HttpResponse.json(sections);
+      }),
+      http.post('/api/v1/profile-parts/slots', async ({ request }) => {
+        addCalls.push(await request.json());
+        sections = [{ ...loose, slots: [...loose.slots, p1sSlot] }];
+        return HttpResponse.json(sections[0]);
+      }),
+    );
+
+    render(<LocalProfilesView />);
+
+    await waitFor(() => {
+      expect(screen.getByTestId('toggle-unfiled-processes')).toBeInTheDocument();
+    });
+    fireEvent.click(screen.getByTestId('toggle-unfiled-processes'));
+    fireEvent.click(screen.getByTestId('move-unfiled-process'));
+    fireEvent.click(screen.getByTestId('move-unfiled-section-option'));
+
+    await waitFor(() => {
+      expect(addCalls).toEqual([{ section_id: 10, preset_id: 12 }]);
+    });
+    expect(screen.queryByTestId('confirm-attach-modal')).not.toBeInTheDocument();
   });
 });

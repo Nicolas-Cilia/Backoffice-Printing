@@ -1692,6 +1692,7 @@ export interface ProfilePartSectionView {
   id: number;
   name: string;
   locked_parameters: Record<string, unknown> | null;
+  parameter_tracking: boolean;
   created_at: string;
   updated_at: string;
   slots: ProfilePartSlotView[];
@@ -6459,14 +6460,36 @@ export const api = {
     }),
   deleteLocalPreset: (id: number) =>
     request<{ success: boolean }>(`/local-presets/${id}`, { method: 'DELETE' }),
+  downloadLocalPreset: async (id: number): Promise<void> => {
+    const headers: Record<string, string> = {};
+    if (authToken) {
+      headers['Authorization'] = `Bearer ${authToken}`;
+    }
+    const response = await fetch(`${API_BASE}/local-presets/${id}/download`, { headers });
+    if (!response.ok) {
+      const error = await response.json().catch(() => ({}));
+      throw new Error(error.detail || `HTTP ${response.status}`);
+    }
+    const disposition = response.headers.get('Content-Disposition');
+    const filename = parseContentDispositionFilename(disposition) || `preset_${id}.json`;
+    const blob = await response.blob();
+    const url = window.URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = filename;
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    window.URL.revokeObjectURL(url);
+  },
   refreshBaseProfileCache: () =>
     request<{ refreshed: number; failed: number; total: number }>('/local-presets/base-cache/refresh', { method: 'POST' }),
   getProfilePartSections: () =>
     request<ProfilePartSectionView[]>('/profile-parts/sections'),
-  createProfilePartSection: (name: string) =>
+  createProfilePartSection: (name: string, options?: { parameter_tracking?: boolean }) =>
     request<ProfilePartSectionView>('/profile-parts/sections', {
       method: 'POST',
-      body: JSON.stringify({ name }),
+      body: JSON.stringify({ name, parameter_tracking: options?.parameter_tracking ?? true }),
     }),
   deleteProfilePartSection: (sectionId: number) =>
     request<{ success: boolean }>(`/profile-parts/sections/${sectionId}`, { method: 'DELETE' }),
@@ -6495,10 +6518,11 @@ export const api = {
     }),
   deleteProfilePartSlot: (slotId: number) =>
     request<ProfilePartSectionView>(`/profile-parts/slots/${slotId}`, { method: 'DELETE' }),
-  importProfilePartSectionProcess: (sectionId: number, file: File) => {
+  importProfilePartSectionProcess: (sectionId: number, file: File, slotId?: number) => {
     const formData = new FormData();
     formData.append('file', file);
-    return postFormData<ProfilePartImportResponse>(`/profile-parts/sections/${sectionId}/import`, formData);
+    const qs = slotId != null ? `?slot_id=${slotId}` : '';
+    return postFormData<ProfilePartImportResponse>(`/profile-parts/sections/${sectionId}/import${qs}`, formData);
   },
 };
 

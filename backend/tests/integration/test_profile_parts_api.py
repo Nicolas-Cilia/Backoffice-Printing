@@ -47,6 +47,7 @@ class TestProfilePartsAPI:
         assert created.status_code == 200, created.text
         section = created.json()
         assert section["name"] == "Top part"
+        assert section["parameter_tracking"] is True
         assert section["locked_parameters"] is None
         assert section["slots"] == []
 
@@ -235,6 +236,38 @@ class TestProfilePartsAPI:
         listed = await async_client.get("/api/v1/profile-parts/sections")
         assert listed.json() == []
 
+    async def test_add_slot_skips_mismatch_when_tracking_off(self, async_client: AsyncClient):
+        created = await async_client.post(
+            "/api/v1/profile-parts/sections",
+            json={"name": "Loose", "parameter_tracking": False},
+        )
+        assert created.status_code == 200, created.text
+        section = created.json()
+        assert section["parameter_tracking"] is False
+
+        x1c = await _create_process(async_client, "0.20mm Standard @BBL X1C", layer_height="0.2")
+        a1 = await _create_process(async_client, "0.28mm Strength @BBL A1", layer_height="0.28")
+
+        first = await async_client.post(
+            "/api/v1/profile-parts/slots",
+            json={"section_id": section["id"], "preset_id": x1c["id"]},
+        )
+        assert first.status_code == 200, first.text
+        assert first.json()["locked_parameters"] is None
+        assert first.json()["parameter_tracking"] is False
+
+        second = await async_client.post(
+            "/api/v1/profile-parts/slots",
+            json={"section_id": section["id"], "preset_id": a1["id"]},
+        )
+        assert second.status_code == 200, second.text
+        body = second.json()
+        assert body["locked_parameters"] is None
+        assert len(body["slots"]) == 2
+        a1_slot = next(slot for slot in body["slots"] if slot["printer_model"] == "A1")
+        assert a1_slot["last_mismatch"] is False
+        assert a1_slot["spec_status"] == "match"
+
 
 def _process_file_payload(name: str, **setting_overrides) -> dict:
     payload = _process_setting(**setting_overrides)
@@ -343,6 +376,35 @@ class TestProfilePartSectionImport:
         assert after_accept["locked_parameters"]["layer_height"] == 0.16
         assert after_accept["slots"][0]["last_mismatch"] is False
 
+    async def test_upload_with_slot_id_replaces_that_slot_not_a_second(self, async_client: AsyncClient):
+        section = (await async_client.post("/api/v1/profile-parts/sections", json={"name": "Top part"})).json()
+        first = await _upload_process(async_client, section["id"], "0.20mm Standard @BBL X1C")
+        assert first.status_code == 200, first.text
+        slot_id = first.json()["section"]["slots"][0]["id"]
+
+        payload = _process_file_payload("0.16mm Optimal @BBL X1C", layer_height="0.16")
+        again = await async_client.post(
+            f"/api/v1/profile-parts/sections/{section['id']}/import",
+            params={"slot_id": slot_id},
+            files={"file": ("0.16mm Optimal @BBL X1C.json", json.dumps(payload).encode(), "application/json")},
+        )
+        assert again.status_code == 200, again.text
+        body = again.json()
+        assert body["attached"] == []
+        assert body["needs_confirm"] == []
+        assert len(body["needs_replace"]) == 1
+        pending = body["needs_replace"][0]
+        assert pending["existing_slot_id"] == slot_id
+        assert pending["preset_name"] == "0.16mm Optimal @BBL X1C"
+        assert len(body["section"]["slots"]) == 1
+
+        missing = await async_client.post(
+            f"/api/v1/profile-parts/sections/{section['id']}/import",
+            params={"slot_id": 999999},
+            files={"file": ("x.json", json.dumps(payload).encode(), "application/json")},
+        )
+        assert missing.status_code == 404
+
     async def test_upload_h2s_max_layer_attaches_as_match(self, async_client: AsyncClient):
         section = (await async_client.post("/api/v1/profile-parts/sections", json={"name": "Top part"})).json()
         first = await _upload_process(
@@ -417,6 +479,57 @@ class TestProfilePartSectionImport:
         assert uploaded.json()["detail"] == "This file does not contain a process preset"
         listed = await async_client.get("/api/v1/profile-parts/sections")
         assert listed.json()[0]["slots"] == []
+
+    async def test_upload_mismatched_heights_attach_when_tracking_off(self, async_client: AsyncClient):
+        section = (
+            await async_client.post(
+                "/api/v1/profile-parts/sections",
+                json={"name": "Loose", "parameter_tracking": False},
+            )
+        ).json()
+        assert section["parameter_tracking"] is False
+        first = await _upload_process(async_client, section["id"], "0.20mm Standard @BBL X1C")
+        assert first.status_code == 200, first.text
+        assert first.json()["needs_confirm"] == []
+        assert first.json()["section"]["locked_parameters"] is None
+
+        second = await _upload_process(
+            async_client, section["id"], "0.28mm Strength @BBL A1", layer_height="0.28"
+        )
+        assert second.status_code == 200, second.text
+        body = second.json()
+        assert body["needs_confirm"] == []
+        assert body["needs_replace"] == []
+        assert len(body["attached"]) == 1
+        assert body["section"]["locked_parameters"] is None
+        assert body["section"]["parameter_tracking"] is False
+        assert len(body["section"]["slots"]) == 2
+        a1 = next(slot for slot in body["section"]["slots"] if slot["printer_model"] == "A1")
+        assert a1["spec_status"] == "match"
+        assert a1["last_mismatch"] is False
+
+    async def test_upload_mismatched_heights_confirm_when_tracking_on(self, async_client: AsyncClient):
+        section = (
+            await async_client.post(
+                "/api/v1/profile-parts/sections",
+                json={"name": "Top part", "parameter_tracking": True},
+            )
+        ).json()
+        assert section["parameter_tracking"] is True
+        first = await _upload_process(async_client, section["id"], "0.20mm Standard @BBL X1C")
+        assert first.status_code == 200, first.text
+
+        second = await _upload_process(
+            async_client, section["id"], "0.28mm Strength @BBL A1", layer_height="0.28"
+        )
+        assert second.status_code == 200, second.text
+        body = second.json()
+        assert body["attached"] == []
+        assert len(body["needs_confirm"]) == 1
+        assert body["section"]["locked_parameters"]["layer_height"] == 0.2
+        pending = body["needs_confirm"][0]
+        assert pending["printer_model"] == "A1"
+        assert pending["preview"]["has_mismatches"] is True
 
     async def test_duplicate_name_updates_and_attaches(self, async_client: AsyncClient, db_session):
         existing = await _create_process(async_client, "0.20mm Standard @BBL X1C", layer_height="0.2")
