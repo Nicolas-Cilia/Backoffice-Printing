@@ -8,8 +8,10 @@ from pydantic_settings import BaseSettings
 
 # Application version - single source of truth
 APP_VERSION = "1.2.5.2"
-GITHUB_REPO = "maziggy/bambuddy"
-BUG_REPORT_RELAY_URL = os.environ.get("BUG_REPORT_RELAY_URL", "https://bambuddy.cool/api/bug-report")
+GITHUB_REPO = "Nicolas-Cilia/Backoffice-Printing"
+# No relay of our own yet — leave unset by default so bug reports aren't silently
+# sent to the upstream project's relay. Set BUG_REPORT_RELAY_URL to opt back in.
+BUG_REPORT_RELAY_URL = os.environ.get("BUG_REPORT_RELAY_URL", "")
 
 # App directory - where the application is installed (for static files)
 _app_dir = Path(__file__).resolve().parent.parent.parent.parent
