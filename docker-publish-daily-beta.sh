@@ -40,7 +40,7 @@ IMAGE_NAME="nicolas-cilia/backoffice-printing"
 GHCR_IMAGE="${GHCR_REGISTRY}/${IMAGE_NAME}"
 DOCKERHUB_IMAGE="${DOCKERHUB_REGISTRY}/${IMAGE_NAME}"
 PLATFORMS="linux/amd64,linux/arm64"
-BUILDER_NAME="bambuddy-builder"
+BUILDER_NAME="backoffice-printing-builder"
 CONFIG_FILE="backend/app/core/config.py"
 CHANGELOG_FILE="CHANGELOG.md"
 

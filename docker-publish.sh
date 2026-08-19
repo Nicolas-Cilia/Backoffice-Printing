@@ -25,6 +25,12 @@
 # Supported architectures:
 #   - linux/amd64 (x86_64, most servers/desktops)
 #   - linux/arm64 (Raspberry Pi 4/5, Apple Silicon via emulation)
+#
+# IMPORTANT: Run this from a regular checkout, never from a git worktree
+# (e.g. .claude/worktrees/*). In a worktree, .git is a pointer file rather
+# than a directory, so the Dockerfile's `COPY .git/HEAD ./.git/HEAD` step
+# (used to embed the build branch for SpoolBuddy's remote-update flow) has
+# nothing to copy and the build fails.
 
 set -e
 
@@ -35,7 +41,7 @@ IMAGE_NAME="nicolas-cilia/backoffice-printing"
 GHCR_IMAGE="${GHCR_REGISTRY}/${IMAGE_NAME}"
 DOCKERHUB_IMAGE="${DOCKERHUB_REGISTRY}/${IMAGE_NAME}"
 PLATFORMS="linux/amd64,linux/arm64"
-BUILDER_NAME="bambuddy-builder"
+BUILDER_NAME="backoffice-printing-builder"
 
 # Colors for output
 RED='\033[0;31m'
