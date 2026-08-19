@@ -579,6 +579,22 @@ export const handlers = [
   http.get('/openapi.json', () =>
     HttpResponse.json({ openapi: '3.0.0', info: { title: 'Bambuddy', version: '0.1.5' }, paths: {} })
   ),
+  http.get('/api/v1/filament-tracking/plan', () =>
+    HttpResponse.json({
+      stage: 'collecting',
+      days_observed: 0,
+      window_label: 'Collecting first-day usage',
+      materials: [],
+      total_on_hand_grams: 0,
+      total_observed_usage_grams: 0,
+      total_monthly_estimate_grams: 0,
+      total_recommended_spools: 0,
+      soonest_days_until_order: null,
+      tracking_started_at: null,
+    }),
+  ),
+  http.get('/api/v1/filament-tracking/events', () => HttpResponse.json([])),
+  http.get('/api/v1/filament-tracking/assignments', () => HttpResponse.json([])),
   http.post('/api/v1/cloud/filament-info', () => HttpResponse.json({ filaments: [] })),
   http.post('/api/v1/printers/camera/stream-token', () =>
     HttpResponse.json({ token: 'test-token', expires_at: '2099-01-01T00:00:00Z' })

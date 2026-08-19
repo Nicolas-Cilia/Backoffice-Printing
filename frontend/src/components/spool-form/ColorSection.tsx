@@ -33,6 +33,7 @@ export function ColorSection({
   recentColors,
   onColorUsed,
   catalogColors,
+  showAdvanced = true,
 }: ColorSectionProps) {
   const { t } = useTranslation();
   const [showAllColors, setShowAllColors] = useState(false);
@@ -481,6 +482,7 @@ export function ColorSection({
 
       {/* #1154: Multi-colour gradient stops + visual effect. Optional —
           empty values keep the spool rendering as a solid swatch. */}
+      {showAdvanced && (
       <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 pt-2 border-t border-bambu-dark-tertiary/50">
         <div>
           <label className="block text-sm font-medium text-bambu-gray mb-1">
@@ -533,6 +535,7 @@ export function ColorSection({
           </div>
         </div>
       </div>
+      )}
     </div>
   );
 }

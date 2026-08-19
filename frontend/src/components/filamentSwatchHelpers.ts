@@ -9,9 +9,10 @@ import { hash_fnv1a32, random_mulberry32 } from '../utils/random';
  *
  * Inputs the swatch composes:
  *   1. `rgba`        — RRGGBBAA hex (the Bambu/AMS canonical form)
- *   2. `extraColors` — comma-separated 6/8-char hex stops; turns the swatch
- *                      into a gradient. Conic when either `subtype` or
- *                      `effectType` is `multicolor`, otherwise linear.
+ *   2. `extraColors` — comma-separated 6/8-char hex stops. For gradient /
+ *                      dual-color / tri-color / multicolor they become the
+ *                      colour-layer stops. For particle effects (`sparkle`)
+ *                      they become flecks on top of the main `rgba` fill.
  *   3. `effectType`  — visual variant. Some carry a CSS overlay (sparkle,
  *                      wood, marble, glow, matte, silk, galaxy, metal),
  *                      others are categorical labels only.
@@ -97,17 +98,46 @@ export const CHECKERBOARD_BG =
   'repeating-conic-gradient(#979797 0% 25%, #f5f5f5 0% 50%)';
 export const CHECKERBOARD_TILE_SIZE = '12px 12px';
 
+/** Particle effects paint extra colors as flecks on top of the main fill.
+ *  Extra-color stops must not become the background for these — that inversion
+ *  made Sparkle look like a black field with white dots when the user set
+ *  white main + black extras. */
+export const PARTICLE_EFFECTS: ReadonlySet<string> = new Set(['sparkle']);
+
+export function isParticleEffect(effectType?: string | null): boolean {
+  return PARTICLE_EFFECTS.has((effectType ?? '').toLowerCase());
+}
+
+/** Convert a CSS hex token (#RRGGBB or #RRGGBBAA) to rgba() with the given alpha. */
+export function cssHexToRgba(hex: string, alpha: number): string {
+  const t = hex.trim().replace(/^#/, '');
+  const r = parseInt(t.slice(0, 2), 16) || 0;
+  const g = parseInt(t.slice(2, 4), 16) || 0;
+  const b = parseInt(t.slice(4, 6), 16) || 0;
+  return `rgba(${r},${g},${b},${alpha})`;
+}
+
+/** Default sparkle fleck when no extra colors are set. */
+const SPARKLE_FALLBACK_RGB = '255,248,220';
+
+/** Overlay factory: seed + size + optional extra-color stops for particle flecks. */
+type OverlayFactory = (
+  effectSeed?: number,
+  effectSize?: SwatchType,
+  extraStops?: string[],
+) => EffectLayer;
+
 /** Optional CSS overlay layer for variants that have a visual treatment.
  *  Variants without an entry are categorical labels only — they don't paint
  *  an overlay, just sit in the data. `multicolor` is special: its visual
  *  effect is to switch the colour layer to a conic-gradient (see
  *  `buildColorLayer`), not to add an overlay layer. */
-export const EFFECT_OVERLAYS: Partial<
-  Record<FilamentEffect, (effectSeed?: number, effectSize?: SwatchType) => EffectLayer>
-> = {
-  // Sparkle: bright flecks — positions seeded from spool color+extracolors+subtype+effectType.
-  // to give identical spools the same sparkle pattern while different spools get different patterns.
-  sparkle: (spoolSeed = 0, effectSize = 'table') => {
+export const EFFECT_OVERLAYS: Partial<Record<FilamentEffect, OverlayFactory>> = {
+  // Sparkle: flecks on the main fill. Extra colors become the particle colour(s);
+  // without extras the flecks stay the original cream highlight.
+  // Positions are seeded from spool color+extracolors+subtype+effectType so
+  // identical spools share a pattern while different spools differ.
+  sparkle: (spoolSeed = 0, effectSize = 'table', extraStops = []) => {
     const rand = random_mulberry32(spoolSeed);
     const preset = SWATCH_TYPE_PRESETS[effectSize] ?? SWATCH_TYPE_PRESETS.table;
     const sparks: string[] = [];
@@ -116,7 +146,10 @@ export const EFFECT_OVERLAYS: Partial<
       const y = rand.intBetween(1, 99);
       const s = rand.floatBetween(1.0, preset.dotScale);
       const a = rand.floatBetween(0.65, 1.0);
-      sparks.push(`radial-gradient(circle at ${x}% ${y}%, rgba(255,248,220,${a}) 0 ${s/2}px, transparent ${s}px)`);
+      const color = extraStops.length > 0
+        ? cssHexToRgba(extraStops[i % extraStops.length], a)
+        : `rgba(${SPARKLE_FALLBACK_RGB},${a})`;
+      sparks.push(`radial-gradient(circle at ${x}% ${y}%, ${color} 0 ${s/2}px, transparent ${s}px)`);
     }
     return sparks;
   },
@@ -224,9 +257,10 @@ export function resolveEffectOverlay(
   effectKey: string,
   effectSize: SwatchType,
   effectSeed?: number,
+  extraStops?: string[],
 ): EffectLayer | null {
   const fn = EFFECT_OVERLAYS[effectKey as FilamentEffect];
-  return fn ? fn(effectSeed, effectSize) : null;
+  return fn ? fn(effectSeed, effectSize, extraStops) : null;
 }
 
 /** Public helper: produce a CSS background-image value (list of layered
@@ -245,11 +279,14 @@ export function buildFilamentBackground(opts: {
   subtype?: string | null;
 }): { backgroundImage: string; backgroundSize: string } {
   const stops = parseStops(opts.extraColors);
-  const colorLayer = buildColorLayer(opts.rgba, stops, opts.subtype, opts.effectType);
+  // Particle effects (sparkle): main rgba is the field; extra colors are flecks.
+  // Non-particle effects keep extra colors as gradient/hard-split stops.
+  const colorStops = isParticleEffect(opts.effectType) ? [] : stops;
+  const colorLayer = buildColorLayer(opts.rgba, colorStops, opts.subtype, opts.effectType);
   const effectSeed = hash_fnv1a32(opts.rgba, opts.extraColors, opts.subtype, opts.effectType);
   const effectLayer =
     typeof opts.effectType === 'string'
-      ? resolveEffectOverlay(opts.effectType, opts.effectSize, effectSeed)
+      ? resolveEffectOverlay(opts.effectType, opts.effectSize, effectSeed, stops)
       : null;
   // Layer order (top → bottom): effect overlay → colour layer → checkerboard.
   // Per-layer background-size: 'cover' on the painted layers (so they fill

@@ -2932,6 +2932,99 @@ export interface ShoppingListItemCreate {
   note?: string | null;
 }
 
+export type FilamentTrackingStage = 'collecting' | 'day' | 'week' | 'month';
+
+export interface FilamentTrackingMaterial {
+  bucket_id: number;
+  color_name: string;
+  material: string;
+  brand?: string | null;
+  subtype?: string | null;
+  extra_colors?: string | null;
+  effect_type?: string | null;
+  color_hex: string | null;
+  on_hand_grams: number;
+  stock_initialized: boolean;
+  spool_weight_grams: number;
+  spool_equivalent: number;
+  observed_usage_grams: number;
+  daily_rate_grams: number;
+  monthly_estimate_grams: number;
+  projected_remaining_grams: number;
+  recommended_spools: number;
+  days_of_cover: number | null;
+  days_until_order?: number | null;
+  lead_time_days?: number;
+  reorder_grams?: number | null;
+  stage: FilamentTrackingStage;
+  cost_per_kg?: number | null;
+  on_hand_value?: number | null;
+  monthly_cost_estimate?: number | null;
+}
+
+export interface FilamentTrackingPlan {
+  stage: FilamentTrackingStage;
+  days_observed: number;
+  window_label: string;
+  materials: FilamentTrackingMaterial[];
+  total_on_hand_grams: number;
+  total_observed_usage_grams: number;
+  total_monthly_estimate_grams: number;
+  total_on_hand_value?: number | null;
+  total_monthly_cost_estimate?: number | null;
+  total_recommended_spools: number;
+  soonest_days_until_order?: number | null;
+  tracking_started_at: string | null;
+}
+
+export interface FilamentTrackingEvent {
+  id: number;
+  bucket_id: number;
+  color_name: string;
+  material: string;
+  brand?: string | null;
+  subtype?: string | null;
+  extra_colors?: string | null;
+  effect_type?: string | null;
+  color_hex: string | null;
+  grams: number;
+  occurred_at: string;
+  kind: string;
+  progress: number | null;
+  archive_id: number | null;
+  printer_id: number | null;
+  print_name: string | null;
+}
+
+export interface FilamentTrackingBucketCreate {
+  color_name: string;
+  material: string;
+  brand?: string | null;
+  subtype?: string | null;
+  extra_colors?: string | null;
+  effect_type?: string | null;
+  color_hex?: string | null;
+  on_hand_grams?: number;
+  spool_weight_grams?: number;
+  cost_per_kg?: number | null;
+  lead_time_days?: number;
+}
+
+export interface FilamentTrackingAssignment {
+  id: number;
+  printer_id: number;
+  ams_id: number;
+  tray_id: number;
+  bucket_id: number;
+  color_name: string;
+  material: string;
+  brand?: string | null;
+  subtype?: string | null;
+  extra_colors?: string | null;
+  effect_type?: string | null;
+  color_hex: string | null;
+}
+
 // Update types
 export interface VersionInfo {
   version: string;
@@ -5356,6 +5449,58 @@ export const api = {
     request<{ status: string }>(`/inventory/spools/${spoolId}/usage`, { method: 'DELETE' }),
   syncWeightsFromAms: () =>
     request<{ synced: number; skipped: number }>('/inventory/sync-ams-weights', { method: 'POST' }),
+  getFilamentTrackingPlan: () =>
+    request<FilamentTrackingPlan>('/filament-tracking/plan'),
+  getFilamentTrackingEvents: (limit = 40) =>
+    request<FilamentTrackingEvent[]>(`/filament-tracking/events?limit=${limit}`),
+  createFilamentTrackingBucket: (data: FilamentTrackingBucketCreate) =>
+    request<FilamentTrackingMaterial>('/filament-tracking/buckets', {
+      method: 'POST',
+      body: JSON.stringify(data),
+    }),
+  updateFilamentTrackingBucket: (
+    id: number,
+    data: {
+      color_name?: string;
+      material?: string;
+      brand?: string | null;
+      subtype?: string | null;
+      extra_colors?: string | null;
+      effect_type?: string | null;
+      on_hand_grams?: number;
+      add_grams?: number;
+      color_hex?: string | null;
+      spool_weight_grams?: number;
+      cost_per_kg?: number | null;
+      lead_time_days?: number;
+    },
+  ) =>
+    request<FilamentTrackingMaterial>(`/filament-tracking/buckets/${id}`, {
+      method: 'PATCH',
+      body: JSON.stringify(data),
+    }),
+  deleteFilamentTrackingBucket: (id: number) =>
+    request<{ status: string }>(`/filament-tracking/buckets/${id}`, { method: 'DELETE' }),
+  getFilamentTrackingAssignments: (printerId?: number) =>
+    request<FilamentTrackingAssignment[]>(
+      printerId != null
+        ? `/filament-tracking/assignments?printer_id=${printerId}`
+        : '/filament-tracking/assignments',
+    ),
+  assignFilamentTrackingSlot: (data: {
+    printer_id: number;
+    ams_id: number;
+    tray_id: number;
+    bucket_id: number;
+  }) =>
+    request<FilamentTrackingAssignment>('/filament-tracking/assignments', {
+      method: 'POST',
+      body: JSON.stringify(data),
+    }),
+  unassignFilamentTrackingSlot: (printerId: number, amsId: number, trayId: number) =>
+    request<{ status: string }>(`/filament-tracking/assignments/${printerId}/${amsId}/${trayId}`, {
+      method: 'DELETE',
+    }),
   getSkuSettings: () =>
     request<FilamentSkuSettings[]>('/inventory/sku-settings'),
   upsertSkuSettings: (data: Omit<FilamentSkuSettings, 'id'>) =>
