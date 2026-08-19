@@ -78,7 +78,7 @@ def invalidate_validation_cache(token: str | None = None) -> None:
 # OrcaSlicer fork was called out for in the May 2026 Bambu Lab blog post
 # ("Setting the record straight on cloud access and community"): we do not
 # introduce ourselves as official Bambu Studio.
-_USER_AGENT = "Bambuddy/1.0 (+https://github.com/maziggy/bambuddy)"
+_USER_AGENT = "Bambuddy/1.0 (+https://github.com/Nicolas-Cilia/Backoffice-Printing)"
 
 # Cloudflare protection on Bambu Lab's edge intermittently returns interstitials /
 # challenges instead of the JSON the API normally produces (issue #1575). The

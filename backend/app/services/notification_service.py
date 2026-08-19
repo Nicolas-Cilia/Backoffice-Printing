@@ -27,7 +27,7 @@ logger = logging.getLogger(__name__)
 # inventory). Previously this client leaked python-httpx/<version>, which
 # was both inconsistent with the rest of the project and a more obvious
 # bot signature for upstream WAFs.
-_USER_AGENT = "Bambuddy/1.0 (+https://github.com/maziggy/bambuddy)"
+_USER_AGENT = "Bambuddy/1.0 (+https://github.com/Nicolas-Cilia/Backoffice-Printing)"
 
 
 def _looks_like_cloudflare_challenge(response: httpx.Response) -> bool:
