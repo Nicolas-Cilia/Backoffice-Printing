@@ -147,7 +147,7 @@ jobs:
       # wiki, newsletters) can link to a stable URL that survives version
       # bumps:
       #
-      #   https://github.com/maziggy/bambuddy/releases/latest/download/bambuddy-windows-x64-setup.exe
+      #   https://github.com/Nicolas-Cilia/Backoffice-Printing/releases/latest/download/bambuddy-windows-x64-setup.exe
       #
       # GitHub's `latest` redirect excludes prereleases, so this URL always
       # points at whatever was released as a full release. Daily prereleases
