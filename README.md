@@ -2,7 +2,7 @@
   <img src="static/img/backoffice_printing_logo.png" alt="Backoffice Printing Logo" width="300">
 </p>
 
-<h1 align="center">Bambuddy</h1>
+<h1 align="center">Backoffice Printing</h1>
 
 <p align="center">
   <strong>Your printers. No cloud. Your rules.</strong><br>
@@ -23,9 +23,19 @@
   <a href="#-features">Features</a> •
   <a href="#-screenshots">Screenshots</a> •
   <a href="#-quick-start">Quick Start</a> •
-  <a href="http://wiki.bambuddy.cool">Documentation</a> •
   <a href="#-contributing">Contributing</a>
 </p>
+
+---
+
+**Backoffice Printing is a fork of [Bambuddy](https://github.com/maziggy/bambuddy)**,
+the excellent open-source Bambu Lab print farm manager created by
+[maziggy](https://github.com/maziggy) and its contributors. The large majority of the
+design and code here is theirs — this fork exists to run a customized, pared-down
+variant for a specific internal setup (some features removed, branding and install
+paths repointed to this repository). If you're looking for the actively-maintained
+upstream project with the full feature set and community support, go there instead:
+**[github.com/maziggy/bambuddy](https://github.com/maziggy/bambuddy)**.
 
 ---
 
@@ -68,7 +78,7 @@ Optional but recommended — drop the [`slicer-api/` Compose stack](slicer-api/R
 
 ## 🧩 NEW: Slicer Pipelines — Save a Recipe, Reuse in One Click
 
-**Stop re-picking the same printer + process + filament + bed-type combination every slice.** Save a Slicer **Pipeline** once from the Slice dialog, then apply the whole bundle to any file with a single click — from File Manager, Archives, or MakerWorld imports.
+**Stop re-picking the same printer + process + filament + bed-type combination every slice.** Save a Slicer **Pipeline** once from the Slice dialog, then apply the whole bundle to any file with a single click — from File Manager or Archives.
 
 - 🧩 **One-click reuse** — A pipeline captures the entire Slice modal selection (printer + process + per-AMS-slot filaments + bed type) and surfaces as **Run with pipeline → \<name\>** on every sliceable row.
 - 🎯 **Specific printer or printer class** — Pin a pipeline to one printer, or to a *class* (e.g. *any X1C*) and let the queue scheduler pick the first available match. Identical-fleet farms get a single recipe instead of one-per-printer.
@@ -100,7 +110,6 @@ Optional but recommended — drop the [`slicer-api/` Compose stack](slicer-api/R
 - 3D model preview (Three.js)
 - Duplicate detection & full-text search
 - Photo attachments & failure analysis
-- Timelapse editor (trim, speed, music) with automatic AVI-to-MP4 conversion for P1-series printers, manual upload & remove
 - Re-print to any connected printer with AMS mapping (auto-match or manual slot selection, multi-plate support, nozzle-aware matching for dual-nozzle H2D/H2D Pro, **Filament Track Switch (FTS) support** — when the FTS accessory is installed the per-nozzle filter is suppressed since the FTS routes any AMS slot to either extruder)
 - Plate thumbnail browsing for multi-plate archives (hover to navigate between plates)
 - Archive comparison (side-by-side diff)
@@ -115,7 +124,7 @@ Optional but recommended — drop the [`slicer-api/` Compose stack](slicer-api/R
 - **Cam Wall view** — Toggle the Printers page from cards into a responsive grid of camera tiles for at-a-glance monitoring across the whole farm. On-screen tiles stream live up to a configurable cap (default 4) so RPi installs stay sustainable; the rest fall back to periodic snapshot polling, and off-screen tiles pause entirely. Per-user settings (live cap, snapshot interval); click any tile to open the floating viewer or the dedicated camera window depending on your existing camera-view preference
 - **Long-lived camera tokens** for Home Assistant / Frigate / kiosks — mint a token from Settings → API Keys, paste it once, capped at 365 days, revocable at any time (no infinite tokens — leaked permanent tokens are unsafe by design)
 - **Streaming overlay for OBS** - Embeddable page with camera + status for live streaming (`/overlay/:printerId`), configurable FPS (`?fps=30`), status-only mode (`?camera=false`)
-- External camera support (MJPEG, RTSP, HTTP snapshot, USB/V4L2) with layer-based timelapse
+- External camera support (MJPEG, RTSP, HTTP snapshot, USB/V4L2)
 - **Build plate empty detection** - Auto-pause print if objects detected on plate (multi-reference calibration, ROI adjustment)
 - Fan monitoring and **speed control** for part-cooling, auxiliary, and chamber fans (0–100% with customizable quick-select presets)
 - Printer control (stop, pause, resume, chamber light, print speed, **airduct mode** for P2S/H2*, **temperature setpoints** for nozzle / bed / **chamber heater** on H2C/H2D/H2DPro/H2S/X2D, **Z-jog / XY-jog / extruder jog**, customizable temperature & fan presets under Settings → Workflow)
@@ -154,7 +163,7 @@ Optional but recommended — drop the [`slicer-api/` Compose stack](slicer-api/R
 - Batch grouping — multi-plate prints auto-group into a collapsible row; any 2+ selected items can be grouped manually via "Group as batch", with ungroup on the batch parent
 - Batch print quantity (print multiple copies — set quantity in the print/schedule dialog, first copy prints immediately, rest are queued)
 - Staggered batch start (start printers in groups with configurable interval to avoid power spikes — works in both Print and Queue dialogs)
-- Configurable default print options (bed levelling, flow/vibration calibration, first layer inspection, timelapse) in Settings → Workflow
+- Configurable default print options (bed levelling, flow/vibration calibration, first layer inspection) in Settings → Workflow
 - Model-based queue assignment (send to "any X1C" for load balancing) with location filtering
 - Filament override for model-based queue (swap filament colors/types before scheduling)
 - Filament validation (only assign to printers with required filaments)
@@ -189,26 +198,6 @@ Optional but recommended — drop the [`slicer-api/` Compose stack](slicer-api/R
 - Duplicate detection via file hash
 - Mobile-friendly with always-visible action buttons
 - **Server-side Slice button** (optional) — slice STL/3MF without a desktop slicer when the [`slicer-api/` Compose stack](slicer-api/README.md) is running; the result lands as a new `.gcode.3mf` in the same folder, with progress shown via a toast tracker that follows the job to completion. Supports importing **Bambu Studio Printer Preset Bundles** (`.bbscfg`) so a curated printer + process + filament triplet can be picked in the Slice dialog without re-uploading JSON profiles ([details](https://wiki.bambuddy.cool/features/slicer-api/#slicer-bundles-bbscfg))
-
-### 🌍 MakerWorld Integration
-- Paste any `makerworld.com/models/…` URL → preview, plate picker, and import without leaving Bambuddy
-- Per-plate **Save** or **Save & Slice in Bambu Studio / OrcaSlicer** (your preferred slicer from Settings)
-- **Import all plates** button for multi-plate models
-- Auto-creates a "MakerWorld" folder in File Manager; override with any existing folder via the picker
-- Per-plate image gallery with keyboard-navigable lightbox
-- Recent imports sidebar — last 10 MakerWorld imports with one-click jump to File Manager or slicer
-- Remove-from-library for imported plates with confirm modal (no LAN cookie paste, no browser extension)
-- Reuses your existing Bambu Cloud login — no separate OAuth flow or browser extension to install
-
-### 📁 Projects
-- Group related prints (e.g., "Voron Build")
-- Track plates (print jobs) and parts separately
-- Auto-detect parts count from 3MF files
-- Color-coded project badges
-- **Project URL + cover photo** — paste a MakerWorld/Printables/Thingiverse link and upload a hero image so each card is immediately recognisable; the URL renders as a one-click link beside the project name
-- Bulk assign archives via multi-select toolbar
-- Import/Export projects as ZIP (includes files) or JSON
-- Print or queue files from linked library folders directly in the project view (resulting archive auto-linked to the project)
 
 </td>
 <td width="50%" valign="top">
@@ -277,7 +266,6 @@ Optional but recommended — drop the [`slicer-api/` Compose stack](slicer-api/R
 - Debug logging toggle with live indicator
 - Live application log viewer with filtering
 - Support bundle generator with comprehensive diagnostics (privacy-filtered)
-- **In-app bug reporting** — Submit bug reports directly from the UI with optional screenshot (upload, paste, or drag & drop), interactive debug log capture (start logging, reproduce at your own pace, stop & submit), and system info. Reports create GitHub issues via a secure relay. Privacy-first: all logs are sanitized and sensitive data (IPs, serials, credentials) is never included.
 
 ### 🔒 Optional Authentication
 - Enable/disable authentication any time
@@ -300,7 +288,7 @@ Optional but recommended — drop the [`slicer-api/` Compose stack](slicer-api/R
 </tr>
 </table>
 
-**Plus:** Configurable slicer (Bambu Studio / OrcaSlicer) • Customizable themes (style, background, accent) • Mobile responsive • Keyboard shortcuts • Multi-language (EN/DE/JA/IT) • Auto updates • Database backup/restore • System info dashboard
+**Plus:** Configurable slicer (Bambu Studio / OrcaSlicer) • Customizable themes (style, background, accent) • Mobile responsive • Keyboard shortcuts • Multi-language (13 locales: EN/DE/ES/FR/IT/JA/KO/PT-BR/RU/TR/UK/ZH-CN/ZH-TW) • Auto updates • Database backup/restore • System info dashboard
 
 ---
 
@@ -329,32 +317,12 @@ Optional but recommended — drop the [`slicer-api/` Compose stack](slicer-api/R
 
 <p align="center">
   <img src="docs/screenshots/archives.png" alt="Archives" width="800">
-  <br><em>Print archive with 3D preview and project assignment</em>
+  <br><em>Print archive with 3D preview</em>
 </p>
 
 <p align="center">
   <img src="docs/screenshots/reprint_ams_mapping.png" alt="Reprint AMS Mapping" width="800">
   <br><em>Re-print with AMS filament mapping preview</em>
-</p>
-
-<p align="center">
-  <img src="docs/screenshots/edit-timelapse.png" alt="Timelapse Editor" width="800">
-  <br><em>Built-in timelapse editor with trim, speed, and music</em>
-</p>
-
-<p align="center">
-  <img src="docs/screenshots/projects.png" alt="Projects" width="800">
-  <br><em>Group related prints into projects</em>
-</p>
-
-<p align="center">
-  <img src="docs/screenshots/project-detail-1.png" alt="Project Detail" width="800">
-  <br><em>Project detail view with assigned archives</em>
-</p>
-
-<p align="center">
-  <img src="docs/screenshots/project-detail-2.png" alt="Project Detail Timeline" width="800">
-  <br><em>Project timeline and print history</em>
 </p>
 
 <p align="center">
@@ -627,13 +595,19 @@ In Bambu Studio or OrcaSlicer, enable **"Store sent files on external storage"**
 
 ## 📚 Documentation
 
-Full documentation available at **[wiki.bambuddy.cool](http://wiki.bambuddy.cool)**:
+This fork doesn't maintain separate documentation. For most features — anything not
+called out as changed in this README — the upstream Bambuddy project's wiki at
+**[wiki.bambuddy.cool](http://wiki.bambuddy.cool)** is still an accurate reference, since
+the underlying mechanics are largely unmodified here:
 
 - [Installation](http://wiki.bambuddy.cool/getting-started/installation/) — All installation methods
 - [Getting Started](http://wiki.bambuddy.cool/getting-started/) — First printer setup
 - [Features](http://wiki.bambuddy.cool/features/) — Detailed feature guides
 - [Troubleshooting](http://wiki.bambuddy.cool/reference/troubleshooting/) — Common issues & solutions
 - [API Reference](http://wiki.bambuddy.cool/reference/api/) — REST API documentation
+
+For anything this fork has changed (see the fork notice at the top of this README),
+the wiki may be out of date — open an issue on this repo if something doesn't match.
 
 ---
 
@@ -665,29 +639,10 @@ Full documentation available at **[wiki.bambuddy.cool](http://wiki.bambuddy.cool
 
 ## 🤝 Contributing
 
-Contributions welcome! Ways to help:
-
-1. **📝 Document** — Improve the wiki and guides *(urgently needed!)*
-2. **Test** — Report issues with your printer model
-3. **Translate** — Add new languages
-4. **Code** — Submit PRs for bugs or features
-5. **🔒 Security review** — *(specifically wanted, see below)*
-
-Not sure where to start? Reach out on [Discord](https://discord.gg/aFS3ZfScHM) or email **martin@bambuddy.cool** — I'll help you find something that fits.
-
-### 🔒 Looking for a security-focused contributor
-
-I'm bringing on a contributor whose specific focus is keeping an eye on Bambuddy's security.
-
-Concretely:
-
-Track the `dev` branch and flag changes touching auth, permissions, token handling, or the CI security backstops. Async post-merge — no gating of in-flight PRs.
-
-What matters more than formal qualifications: fail-closed thinking by default, comfortable reading the auth layer (FastAPI + SQLAlchemy on the backend, a small React surface), willing to push back on `except Exception` shapes in security-sensitive code.
-
-No fixed time commitment. If you're interested — or know someone who fits — email `martin@bambuddy.cool` or DM on Discord.
-
-See [CONTRIBUTING.md](CONTRIBUTING.md) for guidelines.
+This fork isn't actively recruiting contributors, but issues and PRs against this repo
+are welcome. See [CONTRIBUTING.md](CONTRIBUTING.md) for the development setup and
+guidelines. For general Bambuddy discussion, documentation, and the upstream community,
+see the [original project](https://github.com/maziggy/bambuddy).
 
 ---
 
@@ -699,6 +654,7 @@ AGPL-3.0 License — see [LICENSE](LICENSE) for details.
 
 ## 🙏 Acknowledgments
 
+- **[Bambuddy](https://github.com/maziggy/bambuddy) by [maziggy](https://github.com/maziggy)** and its contributors — this fork is built entirely on their work; nearly all of the design, features, and code originate there
 - [SpoolEase](https://github.com/yanshay/SpoolEase) by yanshay — early inspiration for NFC-based spool tracking and AMS inventory concepts
 - [Bambu Lab](https://bambulab.com/) for amazing printers
 - The reverse engineering community for protocol documentation
