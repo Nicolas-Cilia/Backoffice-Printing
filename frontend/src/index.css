@@ -588,3 +588,8 @@ body {
     opacity: 1;
   }
 }
+
+/* Printer share donut: Recharts tooltip otherwise slides in from the left. */
+.printer-share-chart .recharts-tooltip-wrapper {
+  transition: none !important;
+}

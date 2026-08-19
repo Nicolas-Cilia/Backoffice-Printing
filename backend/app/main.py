@@ -28,6 +28,7 @@ from backend.app.api.routes import (
     cloud,
     discovery,
     external_links,
+    filament_tracking,
     filaments,
     firmware,
     github_backup,
@@ -5420,6 +5421,60 @@ async def on_print_complete(printer_id: int, data: dict):
                 )
                 await db.commit()
                 logger.info("[PRINT_LOG] Log entry written for archive %s", archive_id)
+
+                try:
+                    from backend.app.services.filament_tracking import record_print_usage
+                    from backend.app.utils.threemf_tools import extract_filament_usage_from_3mf
+
+                    tracking_slots: list[dict] = []
+                    tracking_status = _run_status
+                    tracking_progress = data.get("progress")
+                    if _est_full_path is not None and _est_full_path.exists():
+                        tracking_slots = extract_filament_usage_from_3mf(
+                            _est_full_path, archive.plate_id
+                        )
+                    if not tracking_slots and _run_grams:
+                        types = [
+                            part.strip()
+                            for part in (archive.filament_type or "UNKNOWN").split(",")
+                            if part.strip()
+                        ]
+                        colors = [
+                            part.strip()
+                            for part in (archive.filament_color or "").split(",")
+                            if part.strip()
+                        ]
+                        count = max(len(types), len(colors), 1)
+                        each = round(float(_run_grams) / count, 1)
+                        tracking_slots = [
+                            {
+                                "type": types[i] if i < len(types) else types[-1],
+                                "color": colors[i] if i < len(colors) else (colors[-1] if colors else None),
+                                "used_g": each,
+                            }
+                            for i in range(count)
+                        ]
+                        tracking_status = "completed"
+                        tracking_progress = 100
+                    if tracking_slots:
+                        await record_print_usage(
+                            db,
+                            slots=tracking_slots,
+                            status=tracking_status,
+                            progress=tracking_progress,
+                            archive_id=archive.id,
+                            printer_id=printer_id,
+                            print_name=archive.print_name,
+                            occurred_at=archive.completed_at,
+                            ams_mapping=stored_ams_mapping,
+                        )
+                        await db.commit()
+                except Exception as track_err:
+                    logger.warning(
+                        "[FILAMENT_TRACKING] Failed to record usage for archive %s: %s",
+                        archive_id,
+                        track_err,
+                    )
     except Exception as e:
         logger.warning("[PRINT_LOG] Failed to write log entry for archive %s: %s", archive_id, e)
 
@@ -7790,6 +7845,7 @@ app.include_router(groups.router, prefix=app_settings.api_prefix)
 app.include_router(printers.router, prefix=app_settings.api_prefix)
 app.include_router(archives.router, prefix=app_settings.api_prefix)
 app.include_router(filaments.router, prefix=app_settings.api_prefix)
+app.include_router(filament_tracking.router, prefix=app_settings.api_prefix)
 app.include_router(inventory.router, prefix=app_settings.api_prefix)
 app.include_router(labels.router, prefix=app_settings.api_prefix)
 app.include_router(settings_routes.router, prefix=app_settings.api_prefix)

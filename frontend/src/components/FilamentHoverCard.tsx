@@ -4,6 +4,7 @@ import { useNavigate } from 'react-router-dom';
 import { useTranslation } from 'react-i18next';
 import { Droplets, Copy, Check, Settings2, Package, Unlink } from 'lucide-react';
 import { isLightColor } from '../utils/colors';
+import { trackingProductLabel } from '../utils/filamentTracking';
 
 interface FilamentData {
   vendor: 'Bambu Lab' | 'Generic';
@@ -38,6 +39,19 @@ interface ConfigureSlotConfig {
   onConfigure?: () => void;
 }
 
+interface TrackingConfig {
+  assigned?: {
+    bucket_id: number;
+    color_name: string;
+    material: string;
+    brand?: string | null;
+    subtype?: string | null;
+    color_hex: string | null;
+  } | null;
+  onAssign?: () => void;
+  onUnassign?: () => void;
+}
+
 interface FilamentHoverCardProps {
   data: FilamentData;
   children: ReactNode;
@@ -45,6 +59,7 @@ interface FilamentHoverCardProps {
   className?: string;
   spoolman?: SpoolmanConfig;
   inventory?: InventoryConfig;
+  tracking?: TrackingConfig;
   configureSlot?: ConfigureSlotConfig;
   actions?: ReactNode;
 }
@@ -53,7 +68,7 @@ interface FilamentHoverCardProps {
  * A hover card that displays filament details when hovering over AMS slots.
  * Replaces the basic browser tooltip with a styled popover.
  */
-export function FilamentHoverCard({ data, children, disabled, className = '', spoolman, inventory, configureSlot, actions }: FilamentHoverCardProps) {
+export function FilamentHoverCard({ data, children, disabled, className = '', spoolman, inventory, tracking, configureSlot, actions }: FilamentHoverCardProps) {
   const { t } = useTranslation();
   const navigate = useNavigate();
   const [isVisible, setIsVisible] = useState(false);
@@ -434,6 +449,61 @@ export function FilamentHoverCard({ data, children, disabled, className = '', sp
                       {t('inventory.assignSpool')}
                     </button>
                   ) : null}
+                </div>
+              )}
+
+              {tracking && (
+                <div className="pt-2 mt-2 border-t border-bambu-dark-tertiary space-y-2">
+                  <div className="flex items-center gap-1.5">
+                    <Droplets className="w-3 h-3 text-bambu-green" />
+                    <span className="text-[10px] uppercase tracking-wider text-bambu-gray font-medium">
+                      {t('inventory.trackingTab', 'Tracking')}
+                    </span>
+                  </div>
+                  {tracking.assigned ? (
+                    <>
+                      <p className="text-xs text-white">
+                        {trackingProductLabel(tracking.assigned)}
+                      </p>
+                      <button
+                        type="button"
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          dismiss();
+                          tracking.onAssign?.();
+                        }}
+                        className="w-full flex items-center justify-center gap-1.5 px-2 py-1.5 text-xs font-medium rounded transition-colors bg-bambu-blue/20 hover:bg-bambu-blue/30 text-bambu-blue"
+                      >
+                        {t('inventory.trackingChangeAssign', 'Change tracking color')}
+                      </button>
+                      {tracking.onUnassign && (
+                        <button
+                          type="button"
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            dismiss();
+                            tracking.onUnassign?.();
+                          }}
+                          className="w-full flex items-center justify-center gap-1.5 px-2 py-1.5 text-xs font-medium rounded transition-colors bg-red-100 dark:bg-red-500/20 hover:bg-red-200 dark:hover:bg-red-500/30 text-red-700 dark:text-red-400"
+                        >
+                          <Unlink className="w-3.5 h-3.5" />
+                          {t('inventory.trackingUnassign', 'Unassign tracking')}
+                        </button>
+                      )}
+                    </>
+                  ) : (
+                    <button
+                      type="button"
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        dismiss();
+                        tracking.onAssign?.();
+                      }}
+                      className="w-full flex items-center justify-center gap-1.5 px-2 py-1.5 text-xs font-medium rounded transition-colors bg-bambu-blue/20 hover:bg-bambu-blue/30 text-bambu-blue"
+                    >
+                      {t('inventory.trackingAssignTitle', 'Assign tracking color')}
+                    </button>
+                  )}
                 </div>
               )}
 
