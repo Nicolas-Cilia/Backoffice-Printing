@@ -5,25 +5,9 @@
 <h1 align="center">Backoffice Printing</h1>
 
 <p align="center">
-  <strong>Self-hosted shop-floor control for a local Bambu Lab print setup.</strong>
+  <strong>Self-hosted shop-floor control for a local Bambu Lab print Farm.</strong>
 </p>
 
-<p align="center">
-  <a href="https://github.com/Nicolas-Cilia/Backoffice-Printing/releases"><img src="https://img.shields.io/github/v/release/Nicolas-Cilia/Backoffice-Printing?style=flat-square&color=blue&cacheSeconds=3600" alt="Release"></a>
-  <img src="https://github.com/Nicolas-Cilia/Backoffice-Printing/actions/workflows/ci.yml/badge.svg?branch=main">
-  <img src="https://github.com/Nicolas-Cilia/Backoffice-Printing/actions/workflows/github-code-scanning/codeql/badge.svg">
-  <img src="https://github.com/Nicolas-Cilia/Backoffice-Printing/actions/workflows/security.yml/badge.svg">
-  <a href="https://github.com/Nicolas-Cilia/Backoffice-Printing/blob/main/LICENSE"><img src="https://img.shields.io/github/license/Nicolas-Cilia/Backoffice-Printing?style=flat-square&cacheSeconds=3600" alt="License"></a>
-  <a href="https://github.com/Nicolas-Cilia/Backoffice-Printing/stargazers"><img src="https://img.shields.io/github/stars/Nicolas-Cilia/Backoffice-Printing?style=flat-square&cacheSeconds=3600" alt="Stars"></a>
-  <a href="https://github.com/Nicolas-Cilia/Backoffice-Printing/issues"><img src="https://img.shields.io/github/issues/Nicolas-Cilia/Backoffice-Printing?style=flat-square&cacheSeconds=3600" alt="Issues"></a>
-</p>
-
-<p align="center">
-  <a href="#what-this-install-is">Install</a> •
-  <a href="#tools">Tools</a> •
-  <a href="#quick-start">Quick Start</a> •
-  <a href="#license">License</a>
-</p>
 
 ---
 
@@ -56,43 +40,36 @@ The sidebar in this install is: **Printers**, **Inventory**, **Queue**, **Files*
 
 ### Printers
 
-Live printer status, cameras, AMS, and start / stop / pause.
+This is the live floor. Each printer is a card with connection state, current job, temperatures, and AMS trays. You can start, pause, resume, and stop a print from the card, open the camera, or jump to a camera wall of every connected printer. Add printers by LAN discovery or by IP, serial, and access code. From an AMS tray you can assign or unassign a spool from Inventory so the slot matches what is actually loaded.
 
-### Inventory
 
-Spools, colors, and AMS assignment.
+### Filament
+
+This has two tabs: Spools and Tracking. Spools is the local catalog — add and edit spools (material, color, remaining weight, location), import or export CSV, and print labels. The table shows which AMS tray a spool is assigned to; assign and unassign live on the printer card. Tracking is stock and usage by color and material over time, including consumption against the printers.
 
 ### Queue
 
-The Queue tab is still in the sidebar. Prints started from Files still go through
-the queue machinery.
+This is the job list behind prints you start from Files. Pending jobs wait here; you can reorder them, start a staged job, cancel, or skip. History and a timeline show what already ran. If plate-clear or resume-after-failure is on in Settings, those gates show up here too.
 
 ### Files
 
-File Manager landing page, production sections, and per-printer folders. Production
-part slots hold **one live 3MF**. Replacing a file diffs the new 3MF against the
-locked print-settings contract. You can print from a file on this tab.
+This is the File Manager: a folder grid of ungrouped folders plus named sections. A Production section holds one folder per printer model. Inside a printer folder, each part has slots, and each slot holds one live 3MF. Replacing that file previews a spec diff against the locked print-settings contract (match, intended overrides, or mismatch). You can print a sliced 3MF from this tab; the job goes through Queue. Ordinary folders are for upload, tags, rename, and trash.
 
 ### Profiles
 
-Local presets only. Unfiled processes, part process sections, spec chips on process
-cards, and download of stored preset JSON.
+This is local slicer presets only: filament, printer, and process JSON on this install. Process presets that are not attached to a part sit in Unfiled. Part process sections group processes by part, with a slot per printer model. Process cards show spec chips; you can open the full spec and download the stored preset JSON. Attaching or replacing a process in a part section diffs it against that section’s locked contract, same idea as Files.
 
 ### Maintenance
 
-Per-printer maintenance types, intervals, and due tracking.
+This is per-printer types (lubrication, belts, PTFE, and so on) with intervals in print hours or calendar days. Mark a task done when you do it; the page shows what is due or overdue. You can add custom types and optional documentation links.
 
 ### Stats
 
-Print activity, filament use, and related totals from local history.
-
-### Notifications
-
-Per-user email preferences for print start, complete, failed, and stopped.
+This is totals from local print history: print count, time, filament, and cost, plus success rate, a calendar, filament trends, and a per-printer breakdown. Filter by timeframe. This is the dashboard on this install, not a separate history product.
 
 ### Settings
 
-Printers, users, appearance, and the rest of the local install configuration.
+This is the rest of the local install: language, theme, default landing view, and camera options. Users and permission groups live here when authentication is on, along with SMTP / notification routing and queue dispatch options such as plate-clear. Printers themselves are added on the Printers tab; Settings is where you tune how this host behaves.
 
 ## Quick Start
 
