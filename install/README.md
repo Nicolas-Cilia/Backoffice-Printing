@@ -1,22 +1,8 @@
 # BamBuddy Installation Scripts
 
-Interactive installation scripts for BamBuddy with support for both native and Docker deployments.
+Interactive installation scripts for BamBuddy, run natively from a git checkout.
 
 ## Quick Start
-
-### Docker Installation (Recommended)
-
-**Linux/macOS:**
-```bash
-curl -fsSL https://raw.githubusercontent.com/Nicolas-Cilia/Backoffice-Printing/main/install/docker-install.sh -o docker-install.sh && chmod +x docker-install.sh && ./docker-install.sh
-```
-
-**Windows (Command Prompt or PowerShell):**
-```cmd
-powershell -ExecutionPolicy Bypass -Command "iwr -useb https://raw.githubusercontent.com/Nicolas-Cilia/Backoffice-Printing/main/install/docker-install.ps1 -OutFile docker-install.ps1; .\docker-install.ps1"
-```
-
-> Requires Docker Desktop running. Printer auto-discovery is unavailable in Docker Desktop — add printers manually by IP.
 
 ### Native Installation
 
@@ -44,8 +30,6 @@ powershell -ExecutionPolicy Bypass -Command "iwr -useb https://raw.githubusercon
 | Script | Platform | Method |
 |--------|----------|--------|
 | `install.sh` | Linux, macOS | Native (Python venv) |
-| `docker-install.sh` | Linux, macOS | Docker |
-| `docker-install.ps1` | Windows (Docker Desktop) | Docker |
 | `windows-installer.ps1` | Windows (Native) | Windows Service |
 | `update.sh` | Linux (systemd) | Native update helper |
 
@@ -120,81 +104,13 @@ to the new locations before starting Bambuddy.
 
 ---
 
-## Docker Installation Scripts
-
-### `docker-install.sh` (Linux/macOS)
-
-Installs BamBuddy using Docker containers.
-
-**Options:**
-```
---path PATH        Installation directory (default: ~/bambuddy)
---port PORT        Port to expose (default: 8000)
---tz TIMEZONE      Timezone (default: system timezone)
---build            Build from source instead of using pre-built image
---yes, -y          Non-interactive mode, accept defaults
-```
-
-**Examples:**
-```bash
-# Interactive installation
-./docker-install.sh
-
-# Unattended with custom settings
-./docker-install.sh --path /srv/bambuddy --port 3000 --tz Europe/Berlin --yes
-
-# Build from source
-./docker-install.sh --build --yes
-```
-
-### `docker-install.ps1` (Windows)
-
-PowerShell mirror of `docker-install.sh` for Windows + Docker Desktop. Verifies
-Docker Desktop is running, downloads `docker-compose.yml`, rewrites it to use
-port mappings instead of host networking (Docker Desktop doesn't support host
-networking), and starts the container.
-
-**Requirements:**
-- Docker Desktop installed and running ([download](https://www.docker.com/products/docker-desktop))
-- PowerShell 5.1+ (ships with Windows 10/11) or PowerShell 7+
-
-**Parameters:**
-```
--InstallPath PATH    Installation directory (default: %USERPROFILE%\bambuddy)
--Port PORT           Port to expose (default: 8000)
--TimeZone TZ         IANA timezone (default: derived from Get-TimeZone or UTC)
--Build               Build from source instead of pulling pre-built image
--Yes                 Non-interactive mode, accept defaults
--Help                Show full help (Get-Help)
-```
-
-**Examples:**
-```powershell
-# Interactive
-.\docker-install.ps1
-
-# Unattended
-.\docker-install.ps1 -InstallPath C:\bambuddy -Port 8080 -TimeZone Europe/Berlin -Yes
-
-# Build from source
-.\docker-install.ps1 -Build -Yes
-```
-
-> **Limitations on Windows / Docker Desktop:** Printer auto-discovery (SSDP)
-> does not work — add printers manually by IP. The Virtual Printer feature
-> requires manually uncommenting the relevant port mappings in
-> `docker-compose.yml` (the script leaves them commented because most users
-> don't need them).
-
----
-
 ## Configuration Options
 
 All scripts support these configuration options:
 
 | Option | Description | Default |
 |--------|-------------|---------|
-| Install Path | Where BamBuddy is installed | `/opt/bambuddy` (Linux/Docker) |
+| Install Path | Where BamBuddy is installed | `/opt/bambuddy` (Linux) |
 | Port | HTTP port for web interface | `8000` |
 | Timezone | Server timezone | System timezone or `UTC` |
 | Data Directory | Database and archives | `INSTALL_PATH/data` |
@@ -242,15 +158,6 @@ Restart-Service Bambuddy    # Restart
 Get-Content "C:\Bambuddy\bambuddy-runtime.log" -Tail 100 -Wait  # View logs
 ```
 
-**Docker:**
-```bash
-docker compose ps           # Check status
-docker compose up -d        # Start
-docker compose down         # Stop
-docker compose restart      # Restart
-docker compose logs -f      # View logs
-```
-
 ### Updating
 
 **Native installation:**
@@ -283,20 +190,6 @@ BACKUP_MODE=skip sudo ./update.sh
 BAMBUDDY_API_KEY=bb_xxx BACKUP_MODE=require sudo ./update.sh
 ```
 
-**Docker (pre-built image):**
-```bash
-cd ~/bambuddy
-docker compose pull
-docker compose up -d
-```
-
-**Docker (from source):**
-```bash
-cd ~/bambuddy
-git pull
-docker compose up -d --build
-```
-
 **Windows (native):** rerun the installer; it detects the existing checkout and offers `git pull`, leaving `INSTALL_DIR\data` and `INSTALL_DIR\logs` untouched. Stop the service first if it is registered:
 ```powershell
 Stop-Service Bambuddy
@@ -314,17 +207,11 @@ Run with `sudo` or ensure your user has appropriate permissions:
 sudo ./install.sh
 ```
 
-### Docker: Printer Discovery Not Working
-Docker Desktop for macOS doesn't support host networking. Add printers manually by IP address in the BamBuddy web interface.
-
 ### Service Won't Start
 Check logs for errors:
 ```bash
 # Linux
 sudo journalctl -u bambuddy -n 50
-
-# Docker
-docker compose logs bambuddy
 ```
 
 ### Port Already in Use
@@ -360,14 +247,9 @@ Get-Content "C:\Bambuddy\bambuddy-runtime-error.log" -Tail 100
 - Git (automatically installed if missing)
 - ~500MB disk space
 
-### Docker Installation
-- Docker Engine 20+ or Docker Desktop
-- ~1GB disk space (includes image)
-
 ---
 
 ## Support
 
 - **Documentation:** https://wiki.bambuddy.cool
-- **Discord:** https://discord.gg/aFS3ZfScHM
 - **Issues:** https://github.com/Nicolas-Cilia/Backoffice-Printing/issues
