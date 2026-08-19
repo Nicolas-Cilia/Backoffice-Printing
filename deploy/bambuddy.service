@@ -53,7 +53,7 @@ RestartSec=5
 # on a Pi with several virtual printers.
 TimeoutStopSec=30
 
-# Kill zombie ffmpeg processes (timelapse processing)
+# Kill zombie ffmpeg processes (camera streaming/snapshots, archive thumbnails)
 ExecStartPre=-/usr/bin/pkill -9 -f "ffmpeg.*bambuddy"
 ExecStopPost=-/usr/bin/pkill -9 -f "ffmpeg.*bambuddy"
 
