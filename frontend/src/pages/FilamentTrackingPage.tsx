@@ -1,8 +1,8 @@
 import { useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import { useSearchParams } from 'react-router-dom';
 import { useTranslation } from 'react-i18next';
 import { Clock, Edit2, Loader2, Package, Plus, Save, Trash2, TrendingDown, Wallet, X } from 'lucide-react';
+import { Pie, PieChart, Cell, Tooltip, ResponsiveContainer } from 'recharts';
 import { api } from '../api/client';
 import type {
   FilamentTrackingEvent,
@@ -57,12 +57,13 @@ function formatUsageGrams(grams: number): string {
 
 function formatConsumed(grams: number): string {
   const abs = Math.abs(grams);
+  if (abs <= 0) return '0 g';
   if (abs >= 1000) {
     const kg = abs / 1000;
     const value = kg % 1 === 0 ? String(kg.toFixed(0)) : kg.toLocaleString(undefined, { maximumFractionDigits: 2 });
-    return `${value} kg used`;
+    return `${value} kg`;
   }
-  return `${Math.round(abs)} g used`;
+  return `${Math.round(abs)} g`;
 }
 
 function formatMoney(amount: number | null | undefined, symbol: string): string {
@@ -88,108 +89,25 @@ function rowLabel(row: Pick<FilamentTrackingMaterial, 'color_name' | 'material' 
   return trackingProductLabel(row);
 }
 
-/** Temporary Recent usage preview. Open /inventory?previewUsage=1 then drop this block. */
-const PREVIEW_USAGE_EVENTS: FilamentTrackingEvent[] = [
-  {
-    id: -1,
-    bucket_id: -1,
-    color_name: 'EasyRock White',
-    material: 'PLA',
-    brand: 'Bambu',
-    subtype: 'Basic',
-    extra_colors: null,
-    effect_type: null,
-    color_hex: 'FFFFFF',
-    grams: 42.6,
-    occurred_at: '2026-08-18T21:10:00Z',
-    kind: 'completed',
-    progress: 100,
-    archive_id: 8,
-    printer_id: null,
-    print_name: 'Benchy',
-  },
-  {
-    id: -2,
-    bucket_id: -2,
-    color_name: 'Jade White',
-    material: 'PLA',
-    brand: 'Bambu',
-    subtype: 'Matte',
-    extra_colors: '000000',
-    effect_type: 'sparkle',
-    color_hex: 'FFFFFF',
-    grams: 18.4,
-    occurred_at: '2026-08-18T18:40:00Z',
-    kind: 'failed',
-    progress: 47,
-    archive_id: 6,
-    printer_id: null,
-    print_name: 'Gridfinity bin',
-  },
-  {
-    id: -3,
-    bucket_id: -3,
-    color_name: 'Black',
-    material: 'PETG',
-    brand: 'Sunlu',
-    subtype: 'Basic',
-    extra_colors: null,
-    effect_type: null,
-    color_hex: '000000',
-    grams: 6.2,
-    occurred_at: '2026-08-18T16:05:00Z',
-    kind: 'cancelled',
-    progress: 12,
-    archive_id: 3,
-    printer_id: null,
-    print_name: 'Calibration cube',
-  },
-  {
-    id: -4,
-    bucket_id: -4,
-    color_name: 'Fire Red',
-    material: 'PLA',
-    brand: null,
-    subtype: 'Silk',
-    extra_colors: null,
-    effect_type: null,
-    color_hex: 'C41E3A',
-    grams: 1288,
-    occurred_at: '2026-08-17T22:15:00Z',
-    kind: 'completed',
-    progress: 100,
-    archive_id: 5,
-    printer_id: null,
-    print_name: 'AMS adapter · plate 2',
-  },
-  {
-    id: -5,
-    bucket_id: -5,
-    color_name: 'Galaxy Black',
-    material: 'PLA',
-    brand: 'Bambu',
-    subtype: 'Sparkle',
-    extra_colors: 'C0C0C0',
-    effect_type: 'sparkle',
-    color_hex: '1A1A1A',
-    grams: 31.5,
-    occurred_at: '2026-08-17T09:20:00Z',
-    kind: 'aborted',
-    progress: 63,
-    archive_id: 2,
-    printer_id: null,
-    print_name: null,
-  },
+const PRINTER_SLICE_COLORS = [
+  '#07bcec',
+  '#3b82f6',
+  '#f59e0b',
+  '#a78bfa',
+  '#34d399',
+  '#f472b6',
+  '#fb923c',
+  '#38bdf8',
+  '#e879f9',
+  '#4ade80',
 ];
 
-const PREVIEW_PRINTER_CONSUMPTION: FilamentTrackingPrinterConsumption[] = [
-  { printer_id: 1, name: 'Ricardo', grams: 1580 },
-  { printer_id: 8, name: 'Diego', grams: 410 },
-  { printer_id: 6, name: 'Kenji', grams: 310 },
-  { printer_id: 3, name: 'Omar', grams: 240 },
-  { printer_id: 5, name: 'Sofia', grams: 180 },
-  { printer_id: 2, name: 'A1 Mini', grams: 90 },
-];
+function printerSliceColor(printerId: number): string {
+  return PRINTER_SLICE_COLORS[Math.abs(printerId) % PRINTER_SLICE_COLORS.length];
+}
+
+const RING_CORNER = 6;
+const RING_GAP_ANGLE = 3;
 
 export function InventorySectionTabs({
   tab,
@@ -227,8 +145,6 @@ export function FilamentTrackingPage() {
   const { t } = useTranslation();
   const { showToast } = useToast();
   const queryClient = useQueryClient();
-  const [searchParams] = useSearchParams();
-  const previewUsage = searchParams.get('previewUsage') === '1';
   const [stockModal, setStockModal] = useState<
     { mode: 'add' } | { mode: 'edit'; row: FilamentTrackingMaterial } | null
   >(null);
@@ -335,11 +251,9 @@ export function FilamentTrackingPage() {
 
   const plan = planQuery.data;
   const calibrating = plan?.stage === 'collecting';
-  const events = previewUsage ? PREVIEW_USAGE_EVENTS : (eventsQuery.data ?? []);
-  const printerConsumption = previewUsage
-    ? PREVIEW_PRINTER_CONSUMPTION
-    : (printerConsumptionQuery.data ?? []);
-  const maxPrinterGrams = Math.max(0, ...printerConsumption.map((item) => item.grams));
+  const events = eventsQuery.data ?? [];
+  const printerConsumption = printerConsumptionQuery.data ?? [];
+  const totalPrinterGrams = printerConsumption.reduce((sum, item) => sum + item.grams, 0);
   const rows = useMemo(() => plan?.materials ?? [], [plan]);
   const currencySymbol = getCurrencySymbol(settingsQuery.data?.currency || 'USD');
   const defaultCostPerKg = settingsQuery.data?.default_filament_cost ?? null;
@@ -485,14 +399,14 @@ export function FilamentTrackingPage() {
       </section>
 
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
-        <section className="bg-bambu-dark-secondary rounded-lg p-4">
+        <section className="bg-bambu-dark-secondary rounded-lg p-4 flex flex-col min-h-0">
           <h2 className="text-white font-semibold mb-1">
             {t('inventory.trackingByPrinter', 'Consumption by printer')}
           </h2>
           <p className="text-xs text-bambu-gray mb-1">
             {t(
               'inventory.trackingByPrinterHint',
-              'Total filament used on each machine since tracking began.',
+              'Each slice is that printer’s share of all tracked usage.',
             )}
           </p>
           {printerConsumption.length === 0 ? (
@@ -500,30 +414,14 @@ export function FilamentTrackingPage() {
               {t('inventory.trackingNoPrinterUsage', 'No printer usage recorded yet.')}
             </p>
           ) : (
-            <>
-              <ul className="divide-y divide-bambu-dark-tertiary">
-                {printerConsumption.map((row) => (
-                  <PrinterConsumptionRow
-                    key={row.printer_id}
-                    row={row}
-                    maxGrams={maxPrinterGrams}
-                  />
-                ))}
-              </ul>
-              <div className="flex items-center gap-2 mt-3 text-xs text-bambu-gray">
-                <span className="w-2.5 h-2.5 rounded-sm bg-bambu-green inline-block" />
-                {t('inventory.trackingCompletedUsage', 'Completed usage')}
-              </div>
-            </>
+            <PrinterConsumptionChart rows={printerConsumption} totalGrams={totalPrinterGrams} />
           )}
         </section>
 
-        <section className="bg-bambu-dark-secondary rounded-lg p-4">
+        <section className="bg-bambu-dark-secondary rounded-lg p-4 flex flex-col min-h-0">
           <h2 className="text-white font-semibold mb-1">{t('inventory.trackingRecent', 'Recent usage')}</h2>
           <p className="text-xs text-bambu-gray mb-1">
-            {previewUsage
-              ? 'Preview rows — remove ?previewUsage=1 from the URL to hide.'
-              : t('inventory.trackingRecentHint', 'Completed and failed prints feeding the average.')}
+            {t('inventory.trackingRecentHint', 'Completed and failed prints feeding the average.')}
           </p>
           {events.length === 0 ? (
             <p className="text-sm text-bambu-gray mt-3">{t('inventory.trackingNoEvents', 'No usage recorded yet.')}</p>
@@ -592,31 +490,114 @@ function Kpi({
   );
 }
 
-function PrinterConsumptionRow({
-  row,
-  maxGrams,
+function PrinterSliceTooltip({
+  active,
+  payload,
 }: {
-  row: FilamentTrackingPrinterConsumption;
-  maxGrams: number;
+  active?: boolean;
+  payload?: Array<{ payload?: FilamentTrackingPrinterConsumption }>;
 }) {
-  const pct = maxGrams > 0 ? Math.min(100, (row.grams / maxGrams) * 100) : 0;
+  const row = payload?.[0]?.payload;
+  if (!active || !row) return null;
   return (
-    <li className="flex items-center gap-3 py-3">
-      <span className="w-2.5 h-2.5 rounded-full bg-bambu-green flex-shrink-0" />
-      <div className="min-w-0 flex-1">
-        <div className="text-sm font-medium text-white truncate">
-          #{row.printer_id} {row.name}
+    <div className="bg-bambu-dark border border-bambu-dark-tertiary rounded-lg px-3 py-2 shadow-lg">
+      <div className="flex items-center gap-2">
+        <span
+          className="w-2.5 h-2.5 rounded-full flex-shrink-0"
+          style={{ backgroundColor: printerSliceColor(row.printer_id) }}
+        />
+        <span className="text-sm font-medium text-white">{row.name}</span>
+      </div>
+      <div className="text-xs text-bambu-gray mt-0.5">{formatConsumed(row.grams)}</div>
+    </div>
+  );
+}
+
+function PrinterConsumptionChart({
+  rows,
+  totalGrams,
+}: {
+  rows: FilamentTrackingPrinterConsumption[];
+  totalGrams: number;
+}) {
+  const [hoveredId, setHoveredId] = useState<number | null>(null);
+  const pieRows = rows.filter((row) => row.grams > 0);
+  const label = rows
+    .map((row) => `${row.name} ${formatConsumed(row.grams)}`)
+    .join(', ');
+  return (
+    <div className="flex-1 min-h-[10.5rem] flex items-stretch gap-6 mt-3 overflow-visible">
+      <div
+        className="relative flex-shrink-0 h-full min-h-[10.5rem] min-w-[10.5rem] max-h-full aspect-square max-w-[50%] overflow-visible printer-share-chart"
+        role="img"
+        aria-label={totalGrams > 0 ? label : 'No usage recorded'}
+      >
+        {pieRows.length > 0 && (
+          <ResponsiveContainer width="100%" height="100%">
+            <PieChart>
+              <Pie
+                data={pieRows}
+                dataKey="grams"
+                nameKey="name"
+                cx="50%"
+                cy="50%"
+                innerRadius="62%"
+                outerRadius="95%"
+                paddingAngle={pieRows.length > 1 ? RING_GAP_ANGLE : 0}
+                cornerRadius={RING_CORNER}
+                startAngle={90}
+                endAngle={-270}
+                stroke="none"
+                isAnimationActive={false}
+                onMouseEnter={(data) => {
+                  const id = (data as FilamentTrackingPrinterConsumption | undefined)?.printer_id;
+                  setHoveredId(id ?? null);
+                }}
+                onMouseLeave={() => setHoveredId(null)}
+              >
+                {pieRows.map((row) => (
+                  <Cell
+                    key={row.printer_id}
+                    fill={printerSliceColor(row.printer_id)}
+                    style={{ cursor: 'pointer', outline: 'none' }}
+                  />
+                ))}
+              </Pie>
+              <Tooltip
+                content={<PrinterSliceTooltip />}
+                isAnimationActive={false}
+                animationDuration={0}
+                allowEscapeViewBox={{ x: true, y: true }}
+                wrapperStyle={{ zIndex: 30, outline: 'none', pointerEvents: 'none', transition: 'none' }}
+              />
+            </PieChart>
+          </ResponsiveContainer>
+        )}
+        <div className="absolute inset-0 flex flex-col items-center justify-center text-center pointer-events-none">
+          <div className="text-lg font-bold text-white leading-none">{formatConsumed(totalGrams)}</div>
+          <div className="text-[11px] text-bambu-gray mt-1">used</div>
         </div>
       </div>
-      <div className="w-28 flex-shrink-0">
-        <div className="h-1.5 rounded-full bg-bambu-dark-tertiary overflow-hidden">
-          <div className="h-full rounded-full bg-bambu-green" style={{ width: `${pct}%` }} />
-        </div>
-        <div className="text-xs text-bambu-gray mt-1 text-right">
-          {formatConsumed(row.grams)}
-        </div>
-      </div>
-    </li>
+      <ul className="flex-1 min-w-0 flex flex-col justify-evenly py-1">
+        {rows.map((row) => (
+          <li
+            key={row.printer_id}
+            className={`flex items-center gap-2 text-sm min-w-0 transition-opacity ${
+              hoveredId != null && hoveredId !== row.printer_id ? 'opacity-40' : ''
+            }`}
+          >
+            <span
+              className="w-2.5 h-2.5 rounded-full flex-shrink-0"
+              style={{ backgroundColor: printerSliceColor(row.printer_id) }}
+            />
+            <span className="text-white truncate min-w-0 flex-1">{row.name}</span>
+            <span className="text-bambu-gray whitespace-nowrap flex-shrink-0">
+              {formatConsumed(row.grams)}
+            </span>
+          </li>
+        ))}
+      </ul>
+    </div>
   );
 }
 
