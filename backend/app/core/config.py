@@ -9,9 +9,6 @@ from pydantic_settings import BaseSettings
 # Application version - single source of truth
 APP_VERSION = "1.2.5.2"
 GITHUB_REPO = "Nicolas-Cilia/Backoffice-Printing"
-# No relay of our own yet — leave unset by default so bug reports aren't silently
-# sent to the upstream project's relay. Set BUG_REPORT_RELAY_URL to opt back in.
-BUG_REPORT_RELAY_URL = os.environ.get("BUG_REPORT_RELAY_URL", "")
 
 # App directory - where the application is installed (for static files)
 _app_dir = Path(__file__).resolve().parent.parent.parent.parent
@@ -136,7 +133,6 @@ _INTENTIONAL_UNSETTINGS = {
     "DATABASE_URL",  # config.py (above)
     "LOG_DIR",  # config.py (above)
     "LOG_LEVEL",  # main.py logging setup
-    "BUG_REPORT_RELAY_URL",  # config.py (above)
     # #1589 — api/routes/auth.py reads this on the login path. Unregistered it
     # logged "possible typo" at every boot, telling an operator who is locked
     # out and following the documented recovery that the variable is not real.
