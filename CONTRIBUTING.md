@@ -388,7 +388,7 @@ All checks must pass before merging. Run `./test_all.sh` locally before pushing 
 
 ## Reporting Bugs
 
-Use the [Bug Report template](https://github.com/maziggy/bambuddy/issues/new?template=bug_report.yml) and include:
+Use the [Bug Report template](https://github.com/Nicolas-Cilia/Backoffice-Printing/issues/new?template=bug_report.yml) and include:
 
 - Clear description of the bug
 - Steps to reproduce
@@ -399,7 +399,7 @@ Use the [Bug Report template](https://github.com/maziggy/bambuddy/issues/new?tem
 
 ## Requesting Features
 
-Use the [Feature Request template](https://github.com/maziggy/bambuddy/issues/new?template=feature_request.yml) and include:
+Use the [Feature Request template](https://github.com/Nicolas-Cilia/Backoffice-Printing/issues/new?template=feature_request.yml) and include:
 
 - Clear description of the feature
 - Use case / problem it solves
@@ -408,9 +408,9 @@ Use the [Feature Request template](https://github.com/maziggy/bambuddy/issues/ne
 
 ## Questions?
 
-- Check the [Documentation](http://wiki.bambuddy.cool)
-- Open a [Discussion](https://github.com/maziggy/bambuddy/discussions)
-- Review existing [Issues](https://github.com/maziggy/bambuddy/issues)
+- Check the [Documentation](docs/)
+- Open a [Discussion](https://github.com/Nicolas-Cilia/Backoffice-Printing/discussions)
+- Review existing [Issues](https://github.com/Nicolas-Cilia/Backoffice-Printing/issues)
 
 ---
 
