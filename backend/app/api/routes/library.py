@@ -413,8 +413,7 @@ def _move_file_bytes(file: LibraryFile, target_folder: LibraryFolder | None) -> 
 def _clean_3mf_metadata(obj):
     """Strip bytes and thumbnail-carrier keys so the payload is JSON-storable.
 
-    Shared by ``upload_file`` and :func:`save_3mf_bytes_to_library` — the
-    ``ThreeMFParser`` output embeds the thumbnail bytes under
+    Used by ``upload_file`` — the ``ThreeMFParser`` output embeds the thumbnail bytes under
     ``_thumbnail_data``/``_thumbnail_ext`` and may also include raw bytes in
     other fields, none of which can be JSON-encoded.
     """
@@ -452,8 +451,9 @@ def _without_print_name(metadata: dict | None) -> dict | None:
     """Drop the embedded 3MF Title (``print_name``) from library-file metadata.
 
     The 3MF ``<metadata name="Title">`` holds the in-app project title — the
-    generic ``"Exported 3D Model"`` for a Bambu Studio "Save As", a marketing
-    title for a MakerWorld download — never the filename the user saved as.
+    generic ``"Exported 3D Model"`` for a Bambu Studio "Save As", or a
+    marketing title from wherever the model was designed — never the
+    filename the user saved as.
     The FileManager keys its display name, search and sort off ``print_name``,
     so storing it makes every card show the wrong name (#1489). A library
     file's display name is its filename; only ``PrintArchive`` carries a real
@@ -463,99 +463,6 @@ def _without_print_name(metadata: dict | None) -> dict | None:
     if not metadata or "print_name" not in metadata:
         return metadata
     return {k: v for k, v in metadata.items() if k != "print_name"}
-
-
-async def save_3mf_bytes_to_library(
-    db: AsyncSession,
-    *,
-    file_bytes: bytes,
-    filename: str,
-    folder_id: int | None = None,
-    source_type: str | None = None,
-    source_url: str | None = None,
-    owner_id: int | None = None,
-) -> tuple[LibraryFile, bool]:
-    """Save a 3MF blob into the library and return ``(library_file, was_existing)``.
-
-    Used by routes that receive a 3MF in-process rather than as a multipart
-    upload (currently: MakerWorld import; reusable for any future source that
-    fetches bytes server-side). Deduplicates by ``source_url`` when provided —
-    if a LibraryFile with the same source_url already exists, the existing
-    row is returned and the bytes are NOT re-saved (MakerWorld signed URLs
-    change each download, so hash-based dedupe alone would miss re-imports).
-
-    Parses 3MF metadata + thumbnail the same way the multipart upload route
-    does, via :class:`ThreeMFParser`. Paths are stored as relative so the
-    library is portable across installs.
-    """
-    # Source-URL-based dedupe: return the existing row untouched.
-    if source_url:
-        existing = await db.execute(LibraryFile.active().where(LibraryFile.source_url == source_url).limit(1))
-        existing_row = existing.scalar_one_or_none()
-        if existing_row is not None:
-            return existing_row, True
-
-    # Resolve target folder so writable-external destinations land on the
-    # mount with the real filename, instead of being silently misrouted to
-    # the internal library dir with a UUID name (#1645). Mirrors what the
-    # multipart-upload path has done since #1112. ``_resolve_upload_destination``
-    # also enforces the 403 read-only / 400 unwritable / 409 collision
-    # rejections — the makerworld route layer already pre-checks read-only,
-    # but the helper's checks remain as defence-in-depth for any future
-    # caller that skips that route gate.
-    target_folder: LibraryFolder | None = None
-    if folder_id is not None:
-        folder_q = await db.execute(select(LibraryFolder).where(LibraryFolder.id == folder_id))
-        target_folder = folder_q.scalar_one_or_none()
-
-    file_path, is_external = _resolve_upload_destination(target_folder, filename)
-    ext = file_path.suffix.lower() or ".3mf"
-    with open(file_path, "wb") as fh:
-        fh.write(file_bytes)
-
-    file_hash = calculate_file_hash(file_path)
-
-    # Extract metadata + thumbnail from the 3MF.
-    metadata: dict | None = None
-    thumbnail_path: str | None = None
-    if ext == ".3mf":
-        try:
-            parser = ThreeMFParser(str(file_path))
-            raw_metadata = parser.parse()
-            thumb_data = raw_metadata.get("_thumbnail_data")
-            thumb_ext = raw_metadata.get("_thumbnail_ext", ".png")
-            if thumb_data:
-                thumbs_dir = get_library_thumbnails_dir()
-                thumb_filename = f"{uuid.uuid4().hex}{thumb_ext}"
-                thumb_path = thumbs_dir / thumb_filename  # SEC-PATH-OK: thumb_filename = uuid.uuid4().hex + thumb_ext
-                with open(thumb_path, "wb") as fh:
-                    fh.write(thumb_data)
-                thumbnail_path = str(thumb_path)
-            metadata = _clean_3mf_metadata(raw_metadata) or None
-        except Exception as exc:
-            # Matches the multipart upload route's behaviour — a bad 3MF should
-            # still land in the library so the user can see / delete it rather
-            # than failing the whole request.
-            logger.warning("Failed to parse 3MF %s: %s", filename, exc)
-
-    library_file = LibraryFile(
-        folder_id=folder_id,
-        is_external=is_external,
-        filename=filename,
-        file_path=_stored_file_path(file_path, is_external),
-        file_type=classify_file_type(filename),
-        file_size=len(file_bytes),
-        file_hash=file_hash,
-        thumbnail_path=to_relative_path(thumbnail_path) if thumbnail_path else None,
-        file_metadata=_without_print_name(metadata),
-        source_type=source_type,
-        source_url=source_url,
-        created_by_id=owner_id,
-    )
-    db.add(library_file)
-    await db.commit()
-    await db.refresh(library_file)
-    return library_file, False
 
 
 def extract_gcode_thumbnail(file_path: Path) -> bytes | None:
@@ -4275,8 +4182,8 @@ async def slice_and_persist_as_archive(
     job_id: int | None = None,
 ):
     """Slice a model and save the result as a new ``PrintArchive`` row,
-    inheriting printer / makerworld metadata from the source
-    archive. Always exports as a `.gcode.3mf` so the existing thumbnail
+    inheriting printer metadata from the source archive. Always exports
+    as a `.gcode.3mf` so the existing thumbnail
     and plates infrastructure (which expects a zip-shaped 3MF) works on
     the new archive. Returns ``SliceArchiveResponse``.
     """
@@ -4428,7 +4335,6 @@ async def slice_and_persist_as_archive(
         # absent (older sidecar / older slice profile) the source archive's
         # bed_type is the right default.
         bed_type=parsed_metadata.get("bed_type") or source_archive.bed_type,
-        makerworld_url=source_archive.makerworld_url,
         designer=source_archive.designer,
         # Sliced-but-not-printed: keep status default ("completed") so it
         # surfaces in the normal archives list, but do not stamp

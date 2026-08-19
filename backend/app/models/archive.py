@@ -82,8 +82,8 @@ class PrintArchive(Base):
     # Extended metadata (JSON blob for flexibility)
     extra_data: Mapped[dict | None] = mapped_column(JSON)
 
-    # MakerWorld info (auto-extracted from 3MF)
-    makerworld_url: Mapped[str | None] = mapped_column(String(500))
+    # Designer/author, auto-extracted from the 3MF's embedded metadata when
+    # present. Indexed into archive_fts (core/database.py) for search.
     designer: Mapped[str | None] = mapped_column(String(255))
 
     # User-defined external link (Printables, Thingiverse, etc.)

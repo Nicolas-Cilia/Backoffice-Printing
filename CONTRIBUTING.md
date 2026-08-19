@@ -6,7 +6,7 @@ Thank you for your interest in contributing to Bambuddy! This document provides 
 
 - [Code of Conduct](#code-of-conduct)
 - [Before You Start](#before-you-start)
-- [Documentation Requirements](#documentation-requirements)
+- [Documentation](#documentation)
 - [Getting Started](#getting-started)
 - [Development Setup](#development-setup)
 - [Releasing the Docker Image](#releasing-the-docker-image)
@@ -37,62 +37,24 @@ Please read and follow our [Code of Conduct](CODE_OF_CONDUCT.md) to keep our com
 
 This keeps everyone on the same page, avoids wasted effort on changes that may not fit the project's direction, and prevents multiple contributors from working on the same thing.
 
-## Documentation Requirements
+## Documentation
 
-Features and user-visible behavior changes **must** include matching documentation updates in the docs repos:
-
-- **[bambuddy-wiki](https://github.com/maziggy/bambuddy-wiki)** — end-user guide (installation, configuration, feature walkthroughs, reference)
-- **[bambuddy-website](https://github.com/maziggy/bambuddy-website)** — marketing site (updated only when the change affects public claims or feature lists)
-
-### When docs updates are required
-
-| Change | Needs wiki? | Needs website? |
-|---|---|---|
-| New feature | ✅ | Maybe (if in the feature list) |
-| New config key / setting | ✅ | ❌ |
-| New port, URL, API endpoint | ✅ | ❌ |
-| Installation or upgrade steps change | ✅ | ✅ |
-| UI change that affects screenshots | ✅ | ❌ |
-| Bug fix with no observable behavior change | ❌ | ❌ |
-| Internal refactor | ❌ | ❌ |
-| Test-only change | ❌ | ❌ |
-
-### Workflow
-
-1. Open your code PR here in `bambuddy`
-2. Open companion PR(s) in `bambuddy-wiki` and/or `bambuddy-website`
-3. **Link the companion PR(s) in the code PR description** (the PR template has a dedicated section)
-4. Merge the PRs together — usually code first, then docs, unless the docs reference new things that don't exist yet
-
-If your change truly doesn't need docs (internal refactor, silent bug fix), say so in the PR description and give a one-line reason.
-
-### Previews before you merge
-
-Clone the docs repo and run it locally to see your changes rendered with the real theme before opening the PR:
-
-- **Wiki** (`bambuddy-wiki`) — `pip install -r requirements.txt && mkdocs serve` — live-reload on `http://localhost:8000`
-- **Website** (`bambuddy-website`) — static HTML/CSS, open the changed file directly or serve with `python -m http.server`
-
-Review like you would the production site. Catch broken links, layout regressions, typos, missing images. If it looks right, open the PR.
-
-### Editing docs without a local clone
-
-Both docs repos can be edited directly in the browser, no `git clone` required:
-
-- **GitHub web editor** — click the pencil icon on any file in the repo
-- **github.dev** — press `.` (period) on any repo page to open VS Code in your browser, with multi-file editing and syntax highlighting
+This fork doesn't maintain a separate wiki or website. For a feature or behavior this
+fork hasn't changed, the upstream [Bambuddy wiki](https://github.com/maziggy/bambuddy-wiki)
+is still a reasonable reference. If your change affects something this README documents,
+update it in the same PR.
 
 ## Getting Started
 
 1. **Fork the repository** on GitHub
 2. **Clone your fork** locally:
    ```bash
-   git clone https://github.com/YOUR_USERNAME/bambuddy.git
-   cd bambuddy
+   git clone https://github.com/YOUR_USERNAME/Backoffice-Printing.git
+   cd Backoffice-Printing
    ```
-3. **Add the upstream remote**:
+3. **Add the upstream remote** (this repo, not the original Bambuddy project):
    ```bash
-   git remote add upstream https://github.com/maziggy/bambuddy.git
+   git remote add upstream https://github.com/Nicolas-Cilia/Backoffice-Printing.git
    ```
 
 ## Development Setup

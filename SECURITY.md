@@ -6,11 +6,11 @@ The Bambuddy team takes security seriously. We appreciate your efforts to respon
 
 ### How to Report
 
-**Please DO NOT report security vulnerabilities through public GitHub.**
+**Please DO NOT report security vulnerabilities through public GitHub issues.**
 
-Instead, please report them via email to:
-
-**security@bambuddy.cool**
+Instead, use GitHub's private vulnerability reporting: go to the
+[Security tab](https://github.com/Nicolas-Cilia/Backoffice-Printing/security) on this
+repository and select **Report a vulnerability**.
 
 ### What to Include
 

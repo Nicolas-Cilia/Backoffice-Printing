@@ -75,7 +75,6 @@ class ArchiveResponse(BaseModel):
 
     extra_data: dict | None
 
-    makerworld_url: str | None
     designer: str | None
     # User-defined link (Printables, Thingiverse, etc.)
     external_url: str | None = None
@@ -197,11 +196,6 @@ class ProjectPageResponse(BaseModel):
     profile_cover: str | None = None
     profile_user_id: str | None = None
     profile_user_name: str | None = None
-
-    # MakerWorld info
-    design_model_id: str | None = None
-    design_profile_id: str | None = None
-    design_region: str | None = None
 
     # Images
     model_pictures: list[ProjectPageImage] = []

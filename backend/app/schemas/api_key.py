@@ -10,7 +10,7 @@ class APIKeyCreate(BaseModel):
     can_queue: bool = True
     can_control_printer: bool = False
     can_read_status: bool = True
-    can_manage_library: bool = True  # Upload / rename / delete own library files + MakerWorld import
+    can_manage_library: bool = True  # Upload / rename / delete own library files
     can_manage_inventory: bool = True  # Inventory writes — SpoolBuddy NFC/scale/system, manual stock edits via API
     can_manage_maintenance: bool = (
         True  # Log/reset maintenance items, edit intervals, manage type catalog (#1832 follow-up)

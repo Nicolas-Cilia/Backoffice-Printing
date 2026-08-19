@@ -43,7 +43,6 @@ from backend.app.api.routes import (
     local_backup,
     local_presets,
     maintenance,
-    makerworld,
     metrics,
     mfa,
     notification_templates,
@@ -6985,18 +6984,12 @@ async def lifespan(app: FastAPI):
     import httpx as _httpx
 
     from backend.app.services.bambu_cloud import set_shared_http_client
-    from backend.app.services.makerworld import (
-        set_shared_http_client as set_shared_makerworld_http_client,
-    )
     from backend.app.services.orca_cloud import (
         set_shared_http_client as set_shared_orca_http_client,
     )
 
     _shared_cloud_http_client = _httpx.AsyncClient(timeout=30.0)
     set_shared_http_client(_shared_cloud_http_client)
-    # Reuse the same connection pool for MakerWorld — different host, same
-    # keep-alive pool saves a TLS handshake per request.
-    set_shared_makerworld_http_client(_shared_cloud_http_client)
     # Same for Orca Cloud — without this the per-request OrcaCloudService()
     # each spun up (and never closed) its own client, leaking sockets.
     set_shared_orca_http_client(_shared_cloud_http_client)
@@ -7388,7 +7381,6 @@ async def lifespan(app: FastAPI):
 
     # Drop the shared Bambu Cloud HTTP client we registered at startup.
     set_shared_http_client(None)
-    set_shared_makerworld_http_client(None)
     set_shared_orca_http_client(None)
     await _shared_cloud_http_client.aclose()
 
@@ -7871,7 +7863,6 @@ app.include_router(pipeline_runs.pipeline_run_create_router, prefix=app_settings
 app.include_router(pipeline_runs.pipeline_run_router, prefix=app_settings.api_prefix)
 app.include_router(slicer_presets.router, prefix=app_settings.api_prefix)
 app.include_router(archive_purge.router, prefix=app_settings.api_prefix)
-app.include_router(makerworld.router, prefix=app_settings.api_prefix)
 app.include_router(api_keys.router, prefix=app_settings.api_prefix)
 app.include_router(webhook.router, prefix=app_settings.api_prefix)
 app.include_router(ams_history.router, prefix=app_settings.api_prefix)
