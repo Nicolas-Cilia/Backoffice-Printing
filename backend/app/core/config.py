@@ -6,8 +6,9 @@ from pathlib import Path
 from pydantic import Field
 from pydantic_settings import BaseSettings
 
-# Application version - single source of truth
-APP_VERSION = "1.2.5.2"
+# Application version — Backoffice Printing (not upstream Bambuddy).
+# Sidebar and Settings read this via GET /updates/version.
+APP_VERSION = "1.0.0"
 GITHUB_REPO = "Nicolas-Cilia/Backoffice-Printing"
 
 # App directory - where the application is installed (for static files)
