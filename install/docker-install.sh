@@ -315,7 +315,8 @@ customize_compose() {
             sed -i.bak \
                 -e 's/^[[:space:]]*network_mode: host/#    network_mode: host/' \
                 -e 's/^[[:space:]]*#ports:/    ports:/' \
-                -e 's/^[[:space:]]*#[[:space:]]*- "\${PORT:-8000}:8000"/      - "\${PORT:-8000}:8000"/' \
+                -e 's/^[[:space:]]*#[[:space:]]*- "\${HOST_PORT:-8484}:8000"/      - "\${HOST_PORT:-8484}:8000"/' \
+                -e 's/^[[:space:]]*#[[:space:]]*- "\${PORT:-8000}:8000"/      - "\${HOST_PORT:-8484}:8000"/' \
                 docker-compose.yml
 
             log_warn "Printer discovery may not work. Add printers manually by IP address."

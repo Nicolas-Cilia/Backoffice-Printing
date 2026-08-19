@@ -27,11 +27,11 @@ printer control, filament inventory, production files, and local print profiles.
 **Native Mac is what currently works.** The backend is a Python virtualenv plus
 **uvicorn on port 8000**. In development the frontend is **Vite on port 5173**.
 
-**Docker Compose is a first-class intended install path**, not leftover packaging.
-The compose file lives at the repo root (`build: .` plus an `image:` name). This
-fork does not publish GHCR or Docker Hub tags, so the documented Docker command is
-`docker compose up -d --build` from this source tree. Native is the path that runs
-today; Docker is kept and documented because it is meant to run here too.
+**Docker Compose is a first-class install path.** Images are on GHCR as
+`ghcr.io/nicolas-cilia/backoffice-printing`. Other machines `docker compose pull`
+then `up -d`. This Mac can `--build` from git while developing. Native
+(venv + uvicorn :8000, Vite :5173) still works. Details:
+[docs/docker-workflow.md](docs/docker-workflow.md).
 
 ## Tools
 
@@ -107,22 +107,25 @@ on port 8000 also serves the UI from `static/`.
 
 ### Docker (intended)
 
-From this repository:
+**Run the published image** (another PC, or this Mac on a release):
 
 ```bash
 git clone https://github.com/Nicolas-Cilia/Backoffice-Printing.git
 cd Backoffice-Printing
+docker compose pull
+docker compose up -d
+```
+
+**Build from this git tree** (this Mac while developing):
+
+```bash
 docker compose up -d --build
 ```
 
-Open **http://localhost:8000**. Always pass `--build` so Compose builds from this
-tree. The compose file also names `ghcr.io/nicolas-cilia/backoffice-printing:latest`;
-that tag is not published by this fork, so a plain `docker compose up -d` (pull
-only) is not the install path.
+Open **http://localhost:8484**. Compose publishes host port **8484** (container still uses 8000). To use a different host port, set `HOST_PORT` in `.env` and run `docker compose up -d` — no image rebuild.
+Printer discovery will not work in that mode — add printers by IP.
 
-On macOS / Windows Docker Desktop, `network_mode: host` is not supported. Comment
-that line out in `docker-compose.yml` and uncomment the `ports:` block. Printer
-discovery will not work in that mode — add printers by IP.
+Install, publish, and version bumps: [docs/docker-workflow.md](docs/docker-workflow.md).
 
 ### Enabling Developer Mode
 
