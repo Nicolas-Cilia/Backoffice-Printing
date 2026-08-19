@@ -44,8 +44,6 @@ def is_expiry_401(response: httpx.Response) -> bool:
     documented expiry body, so a benign 401 no longer nukes the whole cloud
     integration. An unparseable / unsigned 401 is deliberately NOT expiry.
 
-    Shared by the Bambu Cloud and MakerWorld services — both carry the same
-    token and see the same expiry body.
     """
     try:
         body = response.json()

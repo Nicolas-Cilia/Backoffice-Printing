@@ -6,7 +6,7 @@ Server-side proxy that fetches an admin-supplied icon URL and returns
 ``/api/v1/auth/oidc/providers/{id}/icon`` (same-origin) — avoiding any
 loosening of the strict ``img-src 'self' data: blob:`` CSP.
 
-Pattern mirrors ``services/makerworld.fetch_thumbnail``:
+Same SSRF-hardening pattern used by every other server-side proxy in this codebase:
 - ``follow_redirects=False`` so the SSRF host allowlist (here: assert_safe_public_https_url)
   isn't bypassed by a 302 to a private address.
 - MIME whitelist (PNG/JPEG/WebP/GIF). SVG is rejected in v1 — XML payloads

@@ -2800,9 +2800,10 @@ async def run_migrations(conn):
     async with conn.begin_nested():
         await conn.execute(text("UPDATE users SET password_changed_at = created_at WHERE password_changed_at IS NULL"))
 
-    # Migration: Provenance columns on library_files for MakerWorld imports.
-    # source_url is indexed so "already imported" dedupe lookups stay O(log N)
-    # as the library grows.
+    # Migration: generic provenance columns on library_files (which external
+    # source a file was imported from, e.g. a model URL). source_url is
+    # indexed so "already imported" dedupe lookups stay O(log N) as the
+    # library grows.
     await _safe_execute(conn, "ALTER TABLE library_files ADD COLUMN source_type VARCHAR(32)")
     await _safe_execute(conn, "ALTER TABLE library_files ADD COLUMN source_url VARCHAR(512)")
     await _safe_execute(
@@ -2856,8 +2857,8 @@ async def run_migrations(conn):
     # GHSA-r2qv-8222-hqg3 (CVE-2026-pending, CVSS 9.9): split file-management out
     # of the implicit "any API key" grant into an explicit scope flag. The
     # allowlist-based ``_check_apikey_permissions`` (see ``core/auth.py``) routes
-    # LIBRARY_UPLOAD / LIBRARY_UPDATE_OWN / LIBRARY_DELETE_OWN / MAKERWORLD_IMPORT
-    # through this flag. DEFAULT TRUE matches the existing "queue + read" trust
+    # LIBRARY_UPLOAD / LIBRARY_UPDATE_OWN / LIBRARY_DELETE_OWN through this
+    # flag. DEFAULT TRUE matches the existing "queue + read" trust
     # baseline; backfill mirrors can_queue so a key the user previously created as
     # "queue-only" retains the file-upload step its queue workflow already used,
     # while a hardened "read-only" key (can_queue=False) does not silently gain a
@@ -4048,32 +4049,6 @@ async def seed_default_groups():
             ):
                 group.permissions = [*group.permissions, "printers:clear_plate"]
                 logger.info("Added printers:clear_plate to group '%s' (has printers:control)", group.name)
-        await session.commit()
-
-        # Migrate new permissions for MakerWorld integration: groups that
-        # already have library:upload (i.e. can write to the library) are
-        # the correct audience for makerworld:view + makerworld:import, and
-        # groups that only have library:read get makerworld:view (browse
-        # only). Matches the intent of DEFAULT_GROUPS without clobbering
-        # any user-customised permission lists.
-        result = await session.execute(select(Group))
-        for group in result.scalars().all():
-            if not group.permissions:
-                continue
-            perms = list(group.permissions)
-            changed = False
-            if "library:upload" in perms:
-                for new_perm in ("makerworld:view", "makerworld:import"):
-                    if new_perm not in perms:
-                        perms.append(new_perm)
-                        changed = True
-                        logger.info("Added %s to group '%s' (has library:upload)", new_perm, group.name)
-            elif "library:read" in perms and "makerworld:view" not in perms:
-                perms.append("makerworld:view")
-                changed = True
-                logger.info("Added makerworld:view to group '%s' (has library:read)", group.name)
-            if changed:
-                group.permissions = perms
         await session.commit()
 
         # Backfill: sync the Administrators system group to ALL_PERMISSIONS.

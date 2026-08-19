@@ -83,8 +83,6 @@ _PUBLIC_ROUTES: frozenset[tuple[str, str]] = frozenset(
         ("GET", "/api/v1/library/files/{file_id}/dl/{token}/{filename}"),
         # Obico cached frame — one-time nonce embedded in <img> tags.
         ("GET", "/api/v1/obico/cached-frame/{nonce}"),
-        # MakerWorld thumbnail proxy — fetches external URL; no Bambuddy data exposed.
-        ("GET", "/api/v1/makerworld/thumbnail"),
         # ---- HTTP API: operational + UI-bootstrap (no sensitive data) ----
         # Operational liveness probe — minimal payload, used by container orchestrators.
         ("GET", "/health"),

@@ -10,7 +10,7 @@ from datetime import date, datetime, time, timezone
 from pathlib import Path
 
 from defusedxml import ElementTree as ET
-from sqlalchemy import and_, or_, select, text
+from sqlalchemy import and_, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from backend.app.core.config import settings
@@ -507,7 +507,7 @@ class ThreeMFParser:
                     pass  # Skip settings with unconvertible values
 
     def _parse_3dmodel(self, zf: zipfile.ZipFile):
-        """Parse 3D/3dmodel.model for MakerWorld metadata."""
+        """Parse 3D/3dmodel.model for embedded project metadata (e.g. Title)."""
         try:
             model_path = "3D/3dmodel.model"
             if model_path not in zf.namelist():
@@ -515,8 +515,7 @@ class ThreeMFParser:
 
             content = zf.read(model_path).decode("utf-8", errors="ignore")
 
-            # Parse XML metadata elements
-            # MakerWorld adds metadata like: <metadata name="Designer">username</metadata>
+            # Parse XML metadata elements, e.g.: <metadata name="Title">...</metadata>
             metadata_pattern = r'<metadata\s+name="([^"]+)"[^>]*>([^<]*)</metadata>'
             matches = re.findall(metadata_pattern, content)
 
@@ -526,41 +525,22 @@ class ThreeMFParser:
             # in a loop until the string stabilises. Without this, a Title like
             # "Foo & Bar" lands in the DB as raw "Foo &amp; Bar" and React then
             # double-escapes it on render to "Foo &amp;amp; Bar" (#1658).
-            makerworld_fields = {}
+            project_fields = {}
             for name, value in matches:
                 decoded = value.strip()
                 prev = None
                 while prev != decoded:
                     prev = decoded
                     decoded = html.unescape(decoded)
-                makerworld_fields[name] = decoded
+                project_fields[name] = decoded
 
-            # Check for direct MakerWorld URL in content
-            url_pattern = r'https?://makerworld\.com/[^\s<>"\']+/models/(\d+)'
-            url_match = re.search(url_pattern, content)
-            if url_match:
-                self.metadata["makerworld_url"] = url_match.group(0)
-                self.metadata["makerworld_model_id"] = url_match.group(1)
-
-            # Extract model ID from DSM reference in image URLs
-            # Format: https://makerworld.bblmw.com/makerworld/model/DSM00000001275614/...
-            # The numeric part (1275614) is the MakerWorld model ID
-            if "makerworld_url" not in self.metadata:
-                dsm_pattern = r"DSM0+(\d+)"
-                dsm_match = re.search(dsm_pattern, content)
-                if dsm_match:
-                    model_id = dsm_match.group(1)
-                    self.metadata["makerworld_url"] = f"https://makerworld.com/en/models/{model_id}"
-                    self.metadata["makerworld_model_id"] = model_id
-
-            # Store designer info
-            if "Designer" in makerworld_fields:
-                self.metadata["designer"] = makerworld_fields["Designer"]
-            if "Title" in makerworld_fields:
-                self.metadata["print_name"] = makerworld_fields["Title"]
+            if "Designer" in project_fields:
+                self.metadata["designer"] = project_fields["Designer"]
+            if "Title" in project_fields:
+                self.metadata["print_name"] = project_fields["Title"]
 
         except Exception:
-            pass  # MakerWorld/3dmodel metadata is optional
+            pass  # 3dmodel metadata is optional
 
     def _extract_thumbnail(self, zf: zipfile.ZipFile):
         """Extract thumbnail image from 3MF.
@@ -1047,7 +1027,6 @@ class ArchiveService:
         archive_id: int,
         content_hash: str | None = None,
         print_name: str | None = None,
-        makerworld_model_id: str | None = None,
     ) -> list[dict]:
         """Find duplicate archives based on hash or name matching.
 
@@ -1079,38 +1058,21 @@ class ArchiveService:
                     }
                 )
 
-        # Then, find similar matches by print name or MakerWorld ID
+        # Then, find similar matches by print name.
         # Prefer strict name+hash matching when hash exists; fallback to name-only for legacy/manual
         # archives that may not have a content_hash.
-        if print_name or makerworld_model_id:
+        if print_name:
             conditions = [PrintArchive.id != archive_id, PrintArchive.deleted_at.is_(None)]
 
             name_conditions = []
-            if print_name:
-                if content_hash:
-                    # Match if print names are similar AND have the same hash (same file)
-                    name_conditions.append(
-                        and_(PrintArchive.print_name.ilike(print_name), PrintArchive.content_hash == content_hash)
-                    )
-                else:
-                    # Fallback for archives without hash data: match by print name only.
-                    name_conditions.append(PrintArchive.print_name.ilike(print_name))
-            if makerworld_model_id:
-                # Match by MakerWorld model ID stored in extra_data
-                from backend.app.core.db_dialect import is_sqlite
-
-                if is_sqlite():
-                    from sqlalchemy import func
-
-                    name_conditions.append(
-                        func.json_extract(PrintArchive.extra_data, "$.makerworld_model_id") == str(makerworld_model_id)
-                    )
-                else:
-                    name_conditions.append(
-                        text("(extra_data::jsonb->>'makerworld_model_id') = :mw_id").bindparams(
-                            mw_id=str(makerworld_model_id)
-                        )
-                    )
+            if content_hash:
+                # Match if print names are similar AND have the same hash (same file)
+                name_conditions.append(
+                    and_(PrintArchive.print_name.ilike(print_name), PrintArchive.content_hash == content_hash)
+                )
+            else:
+                # Fallback for archives without hash data: match by print name only.
+                name_conditions.append(PrintArchive.print_name.ilike(print_name))
 
             if name_conditions:
                 conditions.append(or_(*name_conditions))
@@ -1340,7 +1302,6 @@ class ArchiveService:
             bed_type=metadata.get("bed_type"),
             nozzle_temperature=metadata.get("nozzle_temperature"),
             sliced_for_model=metadata.get("sliced_for_model"),
-            makerworld_url=metadata.get("makerworld_url"),
             designer=metadata.get("designer"),
             status=status,
             started_at=started_at,

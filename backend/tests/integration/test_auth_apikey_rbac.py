@@ -321,7 +321,6 @@ class TestCheckApiKeyPermissionsMatrix:
         ("LIBRARY_UPDATE_ALL", "can_manage_library", "rename any library file"),
         ("LIBRARY_DELETE_OWN", "can_manage_library", "delete own library file"),
         ("LIBRARY_DELETE_ALL", "can_manage_library", "delete any library file"),
-        ("MAKERWORLD_IMPORT", "can_manage_library", "import from MakerWorld"),
         # can_manage_inventory
         ("INVENTORY_CREATE", "can_manage_inventory", "create spool record"),
         ("INVENTORY_UPDATE", "can_manage_inventory", "update spool / SpoolBuddy kiosk write"),
