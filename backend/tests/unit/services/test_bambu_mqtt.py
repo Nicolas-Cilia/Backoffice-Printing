@@ -4280,7 +4280,6 @@ class TestStartPrintAmsMapping:
         mqtt_client.model = "X2D"
         mqtt_client.start_print(
             "test.3mf",
-            timelapse=True,
             bed_levelling="off",
             flow_cali="on",
             vibration_cali=False,
@@ -4288,7 +4287,7 @@ class TestStartPrintAmsMapping:
         )
 
         cmd = self._get_published_command(mqtt_client)
-        assert cmd["timelapse"] is True
+        assert cmd["timelapse"] is False
         # bed_leveling stays a bool (true only for "on"); the tri-state rides on
         # the auto_bed_leveling int.
         assert cmd["bed_leveling"] is False
@@ -4302,10 +4301,10 @@ class TestStartPrintAmsMapping:
     def test_p2s_uses_boolean_format(self, mqtt_client):
         """P2S sends calibration fields as JSON booleans (single-nozzle, like X1C/A1/P1)."""
         mqtt_client.model = "P2S"
-        mqtt_client.start_print("test.3mf", timelapse=True, flow_cali="off")
+        mqtt_client.start_print("test.3mf", flow_cali="off")
 
         cmd = self._get_published_command(mqtt_client)
-        assert cmd["timelapse"] is True
+        assert cmd["timelapse"] is False
         assert cmd["flow_cali"] is False
         # flow_cali "off" → extrude_cali_flag=0 (firmware skips the pre-print
         # calibration stage entirely). "auto" would send 2 instead.
@@ -4352,7 +4351,6 @@ class TestStartPrintAmsMapping:
         mqtt_client.model = "H2S"
         mqtt_client.start_print(
             "test.3mf",
-            timelapse=True,
             bed_levelling="off",
             flow_cali="on",
             vibration_cali=False,
@@ -4360,7 +4358,7 @@ class TestStartPrintAmsMapping:
         )
 
         cmd = self._get_published_command(mqtt_client)
-        assert cmd["timelapse"] is True
+        assert cmd["timelapse"] is False
         assert cmd["bed_leveling"] is False
         assert cmd["flow_cali"] is True
         assert cmd["vibration_cali"] is False

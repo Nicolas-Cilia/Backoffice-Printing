@@ -26,8 +26,6 @@ export default {
     switchToSystem: "Перейти в системний режим",
     smartSwitches: "Розумні перемикачі",
     logout: "Вийти",
-    installApp: "Встановити додаток",
-    installAppSuccess: "Bambuddy встановлено",
   },
 
   // Common
@@ -1337,7 +1335,6 @@ export default {
       flowCalibration: "Калібрування потоку",
       vibrationCalibration: "Калібрування вібрації",
       layerInspection: "Перевірка першого шару",
-      timelapse: "Таймлапс",
       useAms: "Використовувати AMS",
       nozzleOffsetCali: "Калібрування зсуву сопла",
       applyChanges: "Застосувати зміни",
@@ -2118,8 +2115,6 @@ export default {
     defaultVibrationCaliDesc: "Зменшувати артефакти від вібрації",
     defaultLayerInspect: "Перевірка першого шару",
     defaultLayerInspectDesc: "Перевірка першого шару за допомогою ШІ",
-    defaultTimelapse: "Таймлапс",
-    defaultTimelapseDesc: "Записувати таймлапс",
     defaultNozzleOffsetCali: "Калібрування зсуву сопла",
     defaultNozzleOffsetCaliDesc: "Калібрувати зміщення сопел між екструдерами",
     tempFanPresetsTitle: "Профілі температури та вентилятора",
@@ -4426,19 +4421,6 @@ export default {
     spoolmanCatalogLoadFailed: "Не вдалося завантажити каталог філаментів Spoolman",
   },
 
-  // Timelapse
-  timelapse: {
-    title: "Таймлапс",
-    create: "Створити Timelapse",
-    download: "Завантажити",
-    delete: "Видалити",
-    preview: "Попередній перегляд",
-    frameRate: "Частота кадрів",
-    quality: "якість",
-    processing: "Обробка...",
-    noTimelapses: "Немає таймлапсів",
-  },
-
   // AMS
   ams: {
     title: "AMS",
@@ -5584,18 +5566,6 @@ export default {
   },
 
   // Rich Text Editor
-  richTextEditor: {
-    bold: "жирний",
-    italic: "Курсив",
-    underline: "Підкреслити",
-    bulletList: "Список маркерів",
-    numberedList: "Нумерований список",
-    alignLeft: "Вирівняти по лівому краю",
-    alignCenter: "Вирівняти по центру",
-    alignRight: "Вирівняти праворуч",
-    addLink: "Додати посилання",
-    removeLink: "Видалити посилання",
-  },
 
   // External Links
   externalLinks: {
@@ -5893,12 +5863,6 @@ export default {
     resetZoom: "Скинути масштаб",
     zoomIn: "Збільшити",
     dragToResize: "Перетягніть, щоб змінити розмір",
-  },
-
-  // Timelapse Viewer
-  timelapseViewer: {
-    skipBack5s: "Перейти на 5 секунд назад",
-    skipForward5s: "Перейти вперед на 5 с",
   },
 
   // Notification Providers
@@ -6354,46 +6318,6 @@ export default {
     },
   },
 
-  bugReport: {
-    title: "Повідомити про помилку",
-    description: "опис",
-    descriptionPlaceholder: "Що пішло не так? Будь ласка, опишіть проблему...",
-    email: "Електронна адреса (необов’язково)",
-    emailPlaceholder: "your@email.com",
-    emailPrivacy: "Якщо надано, вашу електронну адресу буде включено до згорнутого розділу проблеми GitHub, щоб спеціаліст із супроводу міг відслідковувати.",
-    screenshot: "Скріншот",
-    uploadOrPaste: "Вивантажити, вставити або перетягнути зображення",
-    dataCollectedSummary: "Які дані містяться у звіті?",
-    dataIncluded: "У комплекті:",
-    dataIncludedList: "Версія додатка, OS, архітектура, версія Python, статистика бази даних (лише для підрахунку), моделі принтерів, кількість сопел, версії прошивки, статус підключення, статус інтеграції (Spoolman, MQTT, HA), неконфіденційні налаштування, кількість мережевих інтерфейсів, Docker деталі, версії залежностей.",
-    dataNeverIncluded: "Ніколи не додаються:",
-    dataNeverIncludedList: "Назви принтерів, серійні номери, коди доступу, паролі, IP-адреси, адреси електронної пошти, ключі API, токени, URL вебхуків, імена хостів або користувачів.",
-    submit: "Надіслати",
-    startLogging: "Розпочати журнал налагодження",
-    stepEnableLogging: "Журнал налагодження ввімкнено",
-    stepReproduce: "Відтворіть проблему зараз",
-    stepStopLogging: "Зупинити та подати звіт",
-    stopAndSubmit: "Зупинити та надіслати",
-    maxDuration: "Автоматична зупинка через {{minutes}} хв",
-    stoppingLogs: "Збір журналів і надсилання...",
-    submitting: "Надсилання звіту про помилку...",
-    submittingStepConnection: "Запуск перевірки підключення принтера",
-    submittingStepVirtualPrinters: "Виконання перевірок налаштування віртуального принтера",
-    submittingStepLogScan: "Сканування останніх журналів на наявність відомих проблем",
-    submittingStepSubmit: "Надсилання звіту GitHub",
-    submitSuccess: "Звіт про помилку успішно надіслано!",
-    submitFailed: "Не вдалося надіслати звіт про помилку",
-    diagnosticChecking: "Перевірка підключень принтера...",
-    diagnosticHealthy: "Перевірку підключення пройдено — проблем із принтерами не виявлено.",
-    diagnosticSummary: "Проблеми з підключенням мають {{problems}} із {{total}} принтерів",
-    diagnosticIntro: "Один або кілька принтерів мають проблему з підключенням, яка може спричиняти описану несправність. Розгорніть запис принтера нижче, щоб переглянути спосіб виправлення. Усунення цієї проблеми може допомогти без створення звіту про помилку, але за потреби звіт усе одно можна надіслати нижче.",
-    logHealthSummary: "У ваших журналах знайдено відомі проблеми",
-    logHealthIntro: "Останні журнали відповідають відомим проблемам. Перегляньте наведені нижче виправлення — їх вирішення може вирішити вашу проблему без повідомлення про помилку. Ви все ще можете надіслати звіт нижче.",
-    thankYou: "дякую!",
-    submitted: "Ваш звіт про помилку надіслано.",
-    viewIssue: "Переглянути випуск",
-    unexpectedError: "Сталася неочікувана помилка",
-  },
   failureDetection: {
     title: "Виявлення помилок за допомогою ШІ",
     description: "Відстежуйте друк за допомогою самостійно розгорнутого Obico ML API та автоматично реагуйте на виявлені помилки.",

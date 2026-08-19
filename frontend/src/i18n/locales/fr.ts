@@ -26,8 +26,6 @@ export default {
     switchToSystem: 'Passer au mode système',
     smartSwitches: 'Interrupteurs intelligents',
     logout: 'Déconnexion',
-    installApp: "Installer l'application",
-    installAppSuccess: 'Bambuddy a été installé',
   },
 
   // Common
@@ -1322,7 +1320,6 @@ export default {
       flowCalibration: 'Calibration débit',
       vibrationCalibration: 'Vibration (Input Shaper)',
       layerInspection: 'Inspection 1ère couche',
-      timelapse: 'Time-lapse',
       useAms: 'Utiliser AMS',
       nozzleOffsetCali: 'Calibration du décalage des buses',
       applyChanges: 'Appliquer',
@@ -2055,8 +2052,6 @@ export default {
     defaultVibrationCaliDesc: 'Réduire les artefacts de ringing',
     defaultLayerInspect: 'Inspection première couche',
     defaultLayerInspectDesc: 'Inspection IA de la première couche',
-    defaultTimelapse: 'Time-lapse',
-    defaultTimelapseDesc: 'Enregistrer une vidéo timelapse',
     defaultNozzleOffsetCali: 'Calibration du décalage des buses',
     defaultNozzleOffsetCaliDesc: 'Calibrer les décalages entre les buses',
     tempFanPresetsTitle: 'Préréglages de température et de ventilateur',
@@ -4372,19 +4367,6 @@ export default {
     spoolmanCatalogLoadFailed: 'Impossible de charger le catalogue Spoolman',
   },
 
-  // Timelapse
-  timelapse: {
-    title: 'Time-lapse',
-    create: 'Créer Timelapse',
-    download: 'Télécharger',
-    delete: 'Supprimer',
-    preview: 'Aperçu',
-    frameRate: 'Images/sec',
-    quality: 'Qualité',
-    processing: 'Traitement...',
-    noTimelapses: 'Aucun timelapse',
-  },
-
   // AMS
   ams: {
     title: 'AMS',
@@ -5530,18 +5512,6 @@ export default {
   },
 
   // Rich Text Editor
-  richTextEditor: {
-    bold: 'Gras',
-    italic: 'Italique',
-    underline: 'Souligné',
-    bulletList: 'Liste à puces',
-    numberedList: 'Liste numérotée',
-    alignLeft: 'Aligner à gauche',
-    alignCenter: 'Centrer',
-    alignRight: 'Aligner à droite',
-    addLink: 'Ajouter lien',
-    removeLink: 'Retirer lien',
-  },
 
   // External Links
   externalLinks: {
@@ -5839,12 +5809,6 @@ export default {
     resetZoom: 'Réinitialiser le zoom',
     zoomIn: 'Zoom +',
     dragToResize: 'Glisser pour dimension',
-  },
-
-  // Timelapse Viewer
-  timelapseViewer: {
-    skipBack5s: '-5s',
-    skipForward5s: '+5s',
   },
 
   // Notification Providers
@@ -6300,46 +6264,6 @@ export default {
     },
   },
 
-  bugReport: {
-    logHealthSummary: 'Problèmes connus trouvés dans vos journaux',
-    logHealthIntro: 'Les journaux récents correspondent à des problèmes connus. Consultez les correctifs ci-dessous — les résoudre pourrait régler votre problème sans rapport de bogue. Vous pouvez tout de même envoyer un rapport ci-dessous.',
-    title: 'Signaler un bug',
-    description: 'Description',
-    descriptionPlaceholder: 'Qu\'est-ce qui n\'a pas fonctionné ? Veuillez décrire le problème...',
-    email: 'E-mail (optionnel)',
-    emailPlaceholder: 'votre@email.fr',
-    emailPrivacy: 'Si fourni, votre e-mail sera inclus dans une section repliée de l\'issue GitHub pour que le mainteneur puisse vous contacter.',
-    screenshot: 'Capture d\'écran',
-    uploadOrPaste: 'Télécharger, coller ou glisser une image',
-    dataCollectedSummary: 'Quelles données sont incluses dans le rapport ?',
-    dataIncluded: 'Inclus :',
-    dataIncludedList: 'Version de l\'app, OS, architecture, version Python, statistiques de base de données (compteurs uniquement), modèles d\'imprimantes, nombre de buses, versions firmware, état de connexion, état des intégrations (Spoolman, MQTT, HA), paramètres non sensibles, nombre d\'interfaces réseau, détails Docker, versions des dépendances.',
-    dataNeverIncluded: 'Jamais inclus :',
-    dataNeverIncludedList: 'Noms d\'imprimantes, numéros de série, codes d\'accès, mots de passe, adresses IP, adresses e-mail, clés API, tokens, URLs de webhook, noms d\'hôtes ou noms d\'utilisateurs.',
-    submit: 'Envoyer',
-    startLogging: 'Lancer la journalisation',
-    stepEnableLogging: 'Journalisation activée',
-    stepReproduce: 'Reproduisez le problème',
-    stepStopLogging: 'Arrêter & envoyer',
-    stopAndSubmit: 'Arrêter & Envoyer',
-    maxDuration: 'Arrêt auto après {{minutes}} min',
-    stoppingLogs: 'Collecte des journaux & envoi...',
-    submitting: 'Envoi du rapport de bug...',
-    submittingStepConnection: 'Vérification de la connectivité des imprimantes',
-    submittingStepVirtualPrinters: 'Vérification de la configuration des imprimantes virtuelles',
-    submittingStepLogScan: 'Analyse des journaux récents pour les problèmes connus',
-    submittingStepSubmit: 'Envoi du rapport vers GitHub',
-    submitSuccess: 'Rapport de bug envoyé avec succès !',
-    submitFailed: 'Échec de l\'envoi du rapport de bug',
-    diagnosticChecking: 'Vérification des connexions des imprimantes...',
-    diagnosticHealthy: 'Vérification de connexion réussie — aucun problème détecté sur vos imprimantes.',
-    diagnosticSummary: '{{problems}} imprimante(s) sur {{total}} ont des problèmes de connexion',
-    diagnosticIntro: 'Une ou plusieurs imprimantes ont un problème de connexion qui pourrait être à l\'origine de votre problème. Dépliez une imprimante ci-dessous pour voir la solution — la résoudre pourrait régler le problème sans rapport de bug. Vous pouvez tout de même envoyer un rapport ci-dessous.',
-    thankYou: 'Merci !',
-    submitted: 'Votre rapport de bug a été soumis.',
-    viewIssue: 'Voir l\'issue',
-    unexpectedError: 'Une erreur inattendue est survenue',
-  },
   failureDetection: {
     title: 'Détection d\'échec par IA',
     description: 'Surveille les impressions via une API ML Obico auto-hébergée et agit automatiquement sur les échecs détectés.',

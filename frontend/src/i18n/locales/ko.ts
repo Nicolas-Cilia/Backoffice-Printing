@@ -25,8 +25,6 @@ export default {
     switchToSystem: '기기 설정으로 전환',
     smartSwitches: '스마트 스위치',
     logout: '로그아웃',
-    installApp: '앱 설치',
-    installAppSuccess: 'Bambuddy가 설치되었습니다'
   },
   common: {
     save: '저장',
@@ -1250,7 +1248,6 @@ export default {
       flowCalibration: '유량 캘리브레이션',
       vibrationCalibration: '진동 캘리브레이션',
       layerInspection: '첫 번째 층 검사',
-      timelapse: '타임랩스',
       useAms: 'AMS 사용',
       nozzleOffsetCali: '노즐 오프셋 보정',
       applyChanges: '변경사항 적용',
@@ -1980,8 +1977,6 @@ export default {
     defaultVibrationCaliDesc: '링잉 아티팩트 감소',
     defaultLayerInspect: '첫 번째 층 검사',
     defaultLayerInspectDesc: '첫 번째 층 AI 검사',
-    defaultTimelapse: '타임랩스',
-    defaultTimelapseDesc: '타임랩스 영상 녹화',
     defaultNozzleOffsetCali: '노즐 오프셋 보정',
     defaultNozzleOffsetCaliDesc: '익스트루더 간 노즐 오프셋 보정',
     tempFanPresetsTitle: '온도 및 팬 프리셋',
@@ -4168,17 +4163,6 @@ export default {
     allConsumedCountersReset: '{{count}}개 스풀의 카운터가 초기화되었습니다',
     resetConsumedCounterFailed: '카운터 초기화 실패'
   },
-  timelapse: {
-    title: '타임랩스',
-    create: '타임랩스 만들기',
-    download: '다운로드',
-    delete: '삭제',
-    preview: '미리보기',
-    frameRate: '프레임 속도',
-    quality: '품질',
-    processing: '처리 중...',
-    noTimelapses: '사용 가능한 타임랩스 없음'
-  },
   ams: {
     title: 'AMS',
     slot: '슬롯',
@@ -5255,18 +5239,6 @@ export default {
       saveError: '알림 환경 설정 저장 실패.'
     }
   },
-  richTextEditor: {
-    bold: '굵게',
-    italic: '기울임',
-    underline: '밑줄',
-    bulletList: '글머리 기호 목록',
-    numberedList: '번호 목록',
-    alignLeft: '왼쪽 정렬',
-    alignCenter: '가운데 정렬',
-    alignRight: '오른쪽 정렬',
-    addLink: '링크 추가',
-    removeLink: '링크 제거'
-  },
   externalLinks: {
     title: '사이드바 링크',
     sidebarLayout: '사이드바',
@@ -5522,10 +5494,6 @@ export default {
     resetZoom: '배율 초기화',
     zoomIn: '확대',
     dragToResize: '드래그하여 크기 조정'
-  },
-  timelapseViewer: {
-    skipBack5s: '5초 뒤로',
-    skipForward5s: '5초 앞으로'
   },
   notificationProviders: {
     descriptions: {
@@ -5786,46 +5754,6 @@ export default {
       turnOn: '켜기',
       turnOff: '끄기'
     }
-  },
-  bugReport: {
-    title: '버그 신고',
-    description: '설명',
-    descriptionPlaceholder: '무엇이 잘못되었나요? 문제를 설명해 주세요...',
-    email: '이메일 (선택사항)',
-    emailPlaceholder: 'your@email.com',
-    emailPrivacy: '제공하면 이메일이 GitHub 이슈의 접힌 섹션에 포함되어 관리자가 후속 조치를 취할 수 있습니다.',
-    screenshot: '스크린샷',
-    uploadOrPaste: '이미지 업로드, 붙여넣기 또는 드래그',
-    dataCollectedSummary: '보고서에 포함되는 데이터는?',
-    dataIncluded: '포함됨:',
-    dataIncludedList: '앱 버전, OS, 아키텍처, Python 버전, 데이터베이스 통계(개수만), 프린터 모델, 노즐 개수, 펌웨어 버전, 연결 상태, 통합 상태(Spoolman, MQTT, HA), 비민감 설정, 네트워크 인터페이스 수, Docker 세부 정보, 의존성 버전.',
-    dataNeverIncluded: '절대 포함되지 않음:',
-    dataNeverIncludedList: '프린터 이름, 일련 번호, 액세스 코드, 비밀번호, IP 주소, 이메일 주소, API 키, 토큰, Webhook URL, 호스트 이름 또는 사용자 이름.',
-    submit: '제출',
-    startLogging: '디버그 로깅 시작',
-    stepEnableLogging: '디버그 로깅 활성화됨',
-    stepReproduce: '이제 문제를 재현하세요',
-    stepStopLogging: '중지 후 보고서 제출',
-    stopAndSubmit: '중지 후 제출',
-    maxDuration: '{{minutes}}분 후 자동 중지',
-    stoppingLogs: '로그 수집 및 제출 중...',
-    submitting: '버그 보고서 제출 중...',
-    submitSuccess: '버그 보고서가 성공적으로 제출되었습니다!',
-    submitFailed: '버그 보고서 제출 실패',
-    thankYou: '감사합니다!',
-    submitted: '버그 보고서가 제출되었습니다.',
-    viewIssue: '이슈 보기',
-    unexpectedError: '예상치 못한 오류가 발생했습니다',
-    submittingStepConnection: '프린터 연결 확인 실행 중',
-    submittingStepVirtualPrinters: '가상 프린터 설정 확인 실행 중',
-    submittingStepLogScan: '알려진 문제가 있는지 최근 로그 스캔 중',
-    submittingStepSubmit: 'GitHub에 보고서 제출 중',
-    diagnosticChecking: '프린터 연결 확인 중...',
-    diagnosticHealthy: '연결 확인 통과 — 프린터에서 문제가 발견되지 않았습니다.',
-    diagnosticSummary: '{{total}}개 프린터 중 {{problems}}개에서 연결 문제가 있습니다',
-    diagnosticIntro: '하나 이상의 프린터에 연결 문제가 있어 현재 문제의 원인일 수 있습니다. 아래에서 프린터를 펼쳐 수정 방법을 확인하세요 — 해결하면 버그 보고서 없이 문제가 해결될 수 있습니다. 아래에서 보고서를 제출할 수도 있습니다.',
-    logHealthSummary: '로그에서 알려진 문제가 발견되었습니다',
-    logHealthIntro: '최근 로그가 알려진 문제와 일치합니다. 아래 수정 방법을 확인하세요 — 해결하면 버그 보고서 없이 문제가 해결될 수 있습니다. 아래에서 보고서를 제출할 수도 있습니다.'
   },
   failureDetection: {
     title: 'AI 실패 감지',

@@ -13,8 +13,8 @@ Pick the section that matches how Bambuddy was installed.
 ```bash
 # 1. Make sure your compose file isn't pinned to an old version.
 #    The image line should read one of:
-#      image: ghcr.io/maziggy/bambuddy:latest
-#      image: ghcr.io/maziggy/bambuddy:0.2.3
+#      image: ghcr.io/nicolas-cilia/backoffice-printing:latest
+#      image: ghcr.io/nicolas-cilia/backoffice-printing:0.2.3
 #    If it pins an older tag (e.g. :0.2.2.2), edit it first.
 
 # 2. Pull and restart
@@ -27,7 +27,7 @@ repo — recent releases added `cap_add: NET_BIND_SERVICE`, extra virtual-printe
 ports for bridge mode, and an optional Postgres block:
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/maziggy/bambuddy/main/docker-compose.yml \
+curl -fsSL https://raw.githubusercontent.com/Nicolas-Cilia/Backoffice-Printing/main/docker-compose.yml \
   -o docker-compose.yml.new
 # Diff against yours, merge by hand, then:
 docker compose up -d
@@ -81,7 +81,7 @@ sudo tar czf ~/bambuddy-backup.tgz -C /opt/bambuddy \
 
 # 2. Remove the old install and reinstall via install.sh
 sudo rm -rf /opt/bambuddy
-curl -fsSL https://raw.githubusercontent.com/maziggy/bambuddy/main/install/install.sh \
+curl -fsSL https://raw.githubusercontent.com/Nicolas-Cilia/Backoffice-Printing/main/install/install.sh \
   -o /tmp/install.sh && sudo bash /tmp/install.sh --path /opt/bambuddy
 
 # 3. Restore your data

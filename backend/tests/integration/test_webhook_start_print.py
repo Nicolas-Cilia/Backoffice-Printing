@@ -5,7 +5,7 @@ with `queue_item.archive_id` (an int) as the filename arg and no print
 options, and used `await` on a non-async function. That route 500'd on
 every invocation. The fix mirrors `POST /print-queue/{item_id}/start`:
 clear the next pending item's `manual_start` so the scheduler picks it up
-with the queue's stored options (timelapse, bed_levelling, etc.) intact.
+with the queue's stored options (bed_levelling, etc.) intact.
 """
 
 import pytest
@@ -54,7 +54,6 @@ async def printer_with_queue(db_session):
         position=1,
         status="pending",
         manual_start=True,
-        timelapse=True,
         bed_levelling="on",
         flow_cali="off",
         vibration_cali=True,
@@ -93,7 +92,6 @@ class TestWebhookStartPrint:
         await db_session.refresh(item)
         assert item.manual_start is False, "manual_start must be cleared so scheduler dispatches"
         # Stored options must be untouched so the scheduler picks the user's choice.
-        assert item.timelapse is True
         assert item.bed_levelling == "on"
         assert item.vibration_cali is True
 

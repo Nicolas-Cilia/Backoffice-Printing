@@ -26,8 +26,6 @@ export default {
     switchToSystem: 'Sistem moduna geç',
     smartSwitches: 'Akıllı Anahtarlar',
     logout: 'Çıkış',
-    installApp: 'Uygulamayı yükle',
-    installAppSuccess: 'Bambuddy yüklendi',
   },
 
   // Ortak
@@ -1322,7 +1320,6 @@ export default {
       flowCalibration: 'Akış kalibrasyonu',
       vibrationCalibration: 'Titreşim kalibrasyonu',
       layerInspection: 'İlk katman denetimi',
-      timelapse: 'Zaman atlamalı video',
       useAms: "AMS Kullan",
       nozzleOffsetCali: 'Nozül ofset kalibrasyonu',
       applyChanges: 'Değişiklikleri Uygula',
@@ -2103,8 +2100,6 @@ export default {
     defaultVibrationCaliDesc: 'Çınlama artefaktlarını azalt',
     defaultLayerInspect: 'İlk Katman Denetimi',
     defaultLayerInspectDesc: 'İlk katmanın AI denetimi',
-    defaultTimelapse: 'Zaman Atlamalı Video',
-    defaultTimelapseDesc: 'Zaman atlamalı video kaydet',
     defaultNozzleOffsetCali: 'Nozül Ofset Kalibrasyonu',
     defaultNozzleOffsetCaliDesc: 'Ekstrüderler arasındaki nozül ofsetlerini kalibre et',
     tempFanPresetsTitle: 'Sıcaklık ve Fan Ön Ayarları',
@@ -4367,19 +4362,6 @@ export default {
     spoolmanCatalogLoadFailed: 'Spoolman filament kataloğu yüklenemedi',
   },
 
-  // Zaman Atlamalı Video
-  timelapse: {
-    title: 'Zaman Atlamalı Video',
-    create: 'Zaman Atlamalı Video Oluştur',
-    download: 'İndir',
-    delete: 'Sil',
-    preview: 'Önizleme',
-    frameRate: 'Kare Hızı',
-    quality: 'Kalite',
-    processing: 'İşleniyor...',
-    noTimelapses: 'Kullanılabilir zaman atlamalı video yok',
-  },
-
   // AMS
   ams: {
     title: 'AMS',
@@ -5491,18 +5473,6 @@ export default {
   },
 
   // Zengin Metin Düzenleyici
-  richTextEditor: {
-    bold: 'Kalın',
-    italic: 'İtalik',
-    underline: 'Altı Çizili',
-    bulletList: 'Madde İşaretli Liste',
-    numberedList: 'Numaralı Liste',
-    alignLeft: 'Sola Hizala',
-    alignCenter: 'Ortaya Hizala',
-    alignRight: 'Sağa Hizala',
-    addLink: 'Bağlantı Ekle',
-    removeLink: 'Bağlantıyı Kaldır',
-  },
 
   // Harici Bağlantılar
   externalLinks: {
@@ -5800,12 +5770,6 @@ export default {
     resetZoom: 'Yakınlaştırmayı sıfırla',
     zoomIn: 'Yakınlaştır',
     dragToResize: 'Yeniden boyutlandırmak için sürükleyin',
-  },
-
-  // Zaman Atlamalı Video Görüntüleyici
-  timelapseViewer: {
-    skipBack5s: '5 sn geri al',
-    skipForward5s: '5 sn ileri al',
   },
 
   // Bildirim Sağlayıcıları
@@ -6256,46 +6220,6 @@ export default {
     },
   },
 
-  bugReport: {
-    title: 'Hata Bildir',
-    description: 'Açıklama',
-    descriptionPlaceholder: 'Ne ters gitti? Lütfen sorunu tanımlayın...',
-    email: 'E-posta (isteğe bağlı)',
-    emailPlaceholder: 'sizin@email.com',
-    emailPrivacy: 'Sağlanırsa, e-postanız GitHub sorunundaki daraltılmış bir bölümde dahil edilecek, böylece bakımcı takip edebilir.',
-    screenshot: 'Ekran Görüntüsü',
-    uploadOrPaste: 'Bir görüntü yükleyin, yapıştırın veya sürükleyin',
-    dataCollectedSummary: 'Rapora hangi veriler dahil edilir?',
-    dataIncluded: 'Dahil:',
-    dataIncludedList: 'Uygulama sürümü, OS, mimari, Python sürümü, veritabanı istatistikleri (yalnızca sayılar), yazıcı modelleri, nozul sayıları, firmware sürümleri, bağlantı durumu, entegrasyon durumu (Spoolman, MQTT, HA), hassas olmayan ayarlar, ağ arayüzü sayısı, Docker ayrıntıları, bağımlılık sürümleri.',
-    dataNeverIncluded: 'Asla dahil edilmez:',
-    dataNeverIncludedList: 'Yazıcı adları, seri numaraları, erişim kodları, parolalar, IP adresleri, e-posta adresleri, API anahtarları, belirteçler, webhook URL\'leri, ana bilgisayar adları veya kullanıcı adları.',
-    submit: 'Gönder',
-    startLogging: 'Hata Ayıklama Kaydını Başlat',
-    stepEnableLogging: 'Hata ayıklama kaydı etkin',
-    stepReproduce: 'Sorunu şimdi yeniden oluşturun',
-    stepStopLogging: 'Durdur ve raporu gönder',
-    stopAndSubmit: 'Durdur ve Gönder',
-    maxDuration: '{{minutes}} dk sonra otomatik durur',
-    stoppingLogs: 'Günlükler toplanıyor ve gönderiliyor...',
-    submitting: 'Hata raporu gönderiliyor...',
-    submittingStepConnection: 'Yazıcı bağlantı kontrolleri çalıştırılıyor',
-    submittingStepVirtualPrinters: 'Sanal yazıcı kurulum kontrolleri çalıştırılıyor',
-    submittingStepLogScan: 'Son günlüklerde bilinen sorunlar taranıyor',
-    submittingStepSubmit: 'Rapor GitHub\'a gönderiliyor',
-    submitSuccess: 'Hata raporu başarıyla gönderildi!',
-    submitFailed: 'Hata raporu gönderilemedi',
-    diagnosticChecking: 'Yazıcı bağlantıları kontrol ediliyor...',
-    diagnosticHealthy: 'Bağlantı kontrolü başarılı — yazıcılarınızda sorun bulunamadı.',
-    diagnosticSummary: '{{total}} yazıcıdan {{problems}} tanesinde bağlantı sorunu var',
-    diagnosticIntro: 'Bir veya daha fazla yazıcının sorununuza neden olabilecek bir bağlantı sorunu var. Düzeltmeyi görmek için aşağıda bir yazıcıyı genişletin — bunu çözmek, hata raporu olmadan sorunu çözebilir. Yine de aşağıda bir rapor gönderebilirsiniz.',
-    logHealthSummary: 'Günlüklerinizde bilinen sorunlar bulundu',
-    logHealthIntro: 'Son günlükler bilinen sorunlarla eşleşiyor. Aşağıdaki düzeltmeleri kontrol edin — bunları çözmek, hata raporu olmadan sorununuzu çözebilir. Yine de aşağıda bir rapor gönderebilirsiniz.',
-    thankYou: 'Teşekkürler!',
-    submitted: 'Hata raporunuz gönderildi.',
-    viewIssue: 'Sorunu Görüntüle',
-    unexpectedError: 'Beklenmedik bir hata oluştu',
-  },
   failureDetection: {
     title: 'AI Başarısızlık Algılama',
     description: 'Baskıları kendi barındırılan bir Obico ML API ile izle ve algılanan başarısızlıklara otomatik olarak yanıt ver.',

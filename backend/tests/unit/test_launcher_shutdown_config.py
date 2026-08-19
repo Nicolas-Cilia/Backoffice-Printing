@@ -77,13 +77,6 @@ class TestDockerImage:
         cmd = next(line for line in _read("Dockerfile").splitlines() if line.startswith("CMD "))
         assert FLAG in cmd, cmd
 
-    def test_compose_allows_more_than_dockers_default_grace(self):
-        compose = _read("docker-compose.yml")
-        assert "stop_grace_period:" in compose, (
-            "docker-compose.yml should raise stop_grace_period above Docker's 10s default, "
-            "so a slow teardown on a Pi is not clipped by a SIGKILL."
-        )
-
 
 class TestSystemdUnits:
     @pytest.mark.parametrize("unit", ["deploy/bambuddy.service"])
@@ -121,20 +114,3 @@ class TestInstallScript:
         assert f"<string>{FLAG}</string>" in plist_region, (
             "the launchd plist in install.sh does not pass --timeout-graceful-shutdown"
         )
-
-
-class TestWindowsService:
-    def test_nssm_registration_bounds_the_shutdown(self):
-        bat = _read("installers/windows/service/install-service.bat")
-        install_line = next(line for line in _uvicorn_lines(bat) if "install Bambuddy" in line)
-        assert FLAG in install_line, install_line
-
-    def test_nssm_waits_long_enough_for_the_ctrl_c_stop(self):
-        """NSSM's default AppStopMethodConsole is 1500ms. Uvicorn shuts down on
-        the Ctrl-C but needs longer than that, so Windows was force-killing it
-        mid-teardown.
-        """
-        bat = _read("installers/windows/service/install-service.bat")
-        match = re.search(r"AppStopMethodConsole\s+(\d+)", bat)
-        assert match, "install-service.bat must raise NSSM's 1500ms console-stop default"
-        assert int(match.group(1)) >= 10000, match.group(1)

@@ -7,7 +7,7 @@
 #   2) SpoolBuddy + Bambuddy — both running natively on this Raspberry Pi
 #
 # Usage:
-#   Interactive:  curl -fsSL https://raw.githubusercontent.com/maziggy/bambuddy/main/spoolbuddy/install.sh -o install.sh && chmod +x install.sh && sudo ./install.sh
+#   Interactive:  curl -fsSL https://raw.githubusercontent.com/Nicolas-Cilia/Backoffice-Printing/main/spoolbuddy/install.sh -o install.sh && chmod +x install.sh && sudo ./install.sh
 #   Unattended:   sudo ./install.sh --mode spoolbuddy --bambuddy-url http://192.168.1.100:8000 --api-key bb_xxx --yes
 #
 # Options:
@@ -36,7 +36,7 @@ CYAN='\033[0;36m'
 BOLD='\033[1m'
 NC='\033[0m'
 
-GITHUB_REPO="https://github.com/maziggy/bambuddy.git"
+GITHUB_REPO="https://github.com/Nicolas-Cilia/Backoffice-Printing.git"
 SPOOLBUDDY_SERVICE_USER="spoolbuddy"
 BAMBUDDY_SERVICE_USER="bambuddy"
 
@@ -653,7 +653,7 @@ create_spoolbuddy_service() {
     cat > /etc/systemd/system/spoolbuddy.service << EOF
 [Unit]
 Description=SpoolBuddy - NFC Spool Management Daemon
-Documentation=https://github.com/maziggy/bambuddy
+Documentation=https://github.com/Nicolas-Cilia/Backoffice-Printing
 $after_line
 Wants=network-online.target
 
@@ -783,7 +783,7 @@ create_bambuddy_service() {
     cat > /etc/systemd/system/bambuddy.service << EOF
 [Unit]
 Description=Bambuddy - Bambu Lab Print Management
-Documentation=https://github.com/maziggy/bambuddy
+Documentation=https://github.com/Nicolas-Cilia/Backoffice-Printing
 After=network.target
 
 [Service]

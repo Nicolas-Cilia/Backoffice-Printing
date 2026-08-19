@@ -26,8 +26,8 @@ function StatusIcon({ status }: { status: DiagnosticStatus }) {
 
 /**
  * Presentational checklist — renders one row per diagnostic check plus an
- * overall banner. Shared by the modal and the bug-report panel. The title
- * and per-status detail text are localized via `diagnostic.check.<id>.*`.
+ * overall banner. The title and per-status detail text are localized via
+ * `diagnostic.check.<id>.*`.
  */
 export function DiagnosticChecklist({ result }: { result: PrinterDiagnosticResult }) {
   const { t } = useTranslation();

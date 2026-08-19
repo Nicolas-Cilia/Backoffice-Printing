@@ -8,8 +8,7 @@ from pydantic_settings import BaseSettings
 
 # Application version - single source of truth
 APP_VERSION = "1.2.5.2"
-GITHUB_REPO = "maziggy/bambuddy"
-BUG_REPORT_RELAY_URL = os.environ.get("BUG_REPORT_RELAY_URL", "https://bambuddy.cool/api/bug-report")
+GITHUB_REPO = "Nicolas-Cilia/Backoffice-Printing"
 
 # App directory - where the application is installed (for static files)
 _app_dir = Path(__file__).resolve().parent.parent.parent.parent
@@ -134,7 +133,6 @@ _INTENTIONAL_UNSETTINGS = {
     "DATABASE_URL",  # config.py (above)
     "LOG_DIR",  # config.py (above)
     "LOG_LEVEL",  # main.py logging setup
-    "BUG_REPORT_RELAY_URL",  # config.py (above)
     # #1589 — api/routes/auth.py reads this on the login path. Unregistered it
     # logged "possible typo" at every boot, telling an operator who is locked
     # out and following the documented recovery that the variable is not real.
