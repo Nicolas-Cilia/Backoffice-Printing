@@ -4,7 +4,7 @@
 # Supports: Debian/Ubuntu, RHEL/Fedora/CentOS, Arch Linux, macOS
 #
 # Usage:
-#   Interactive:  curl -fsSL https://raw.githubusercontent.com/maziggy/bambuddy/main/install/install.sh -o install.sh && chmod +x install.sh && ./install.sh
+#   Interactive:  curl -fsSL https://raw.githubusercontent.com/Nicolas-Cilia/Backoffice-Printing/main/install/install.sh -o install.sh && chmod +x install.sh && ./install.sh
 #   Unattended:   ./install.sh --path /opt/bambuddy --port 8000 --yes
 #
 # Options:
@@ -356,10 +356,10 @@ download_bambuddy() {
     log_info "Downloading BamBuddy..."
 
     # Validate branch exists on remote before proceeding
-    if ! git ls-remote --exit-code --heads https://github.com/maziggy/bambuddy.git "$BRANCH" &>/dev/null; then
+    if ! git ls-remote --exit-code --heads https://github.com/Nicolas-Cilia/Backoffice-Printing.git "$BRANCH" &>/dev/null; then
         log_error "Branch '$BRANCH' not found in the BamBuddy repository."
         log_info "Available branches:"
-        git ls-remote --heads https://github.com/maziggy/bambuddy.git | sed 's|.*refs/heads/|  - |'
+        git ls-remote --heads https://github.com/Nicolas-Cilia/Backoffice-Printing.git | sed 's|.*refs/heads/|  - |'
         exit 1
     fi
 
@@ -377,7 +377,7 @@ download_bambuddy() {
             git checkout "$BRANCH" 2>/dev/null || git checkout -b "$BRANCH" "origin/$BRANCH"
             git reset --hard "origin/$BRANCH"
         else
-            git clone --branch "$BRANCH" https://github.com/maziggy/bambuddy.git "$INSTALL_PATH"
+            git clone --branch "$BRANCH" https://github.com/Nicolas-Cilia/Backoffice-Printing.git "$INSTALL_PATH"
         fi
     elif [[ -d "$INSTALL_PATH/.git" ]]; then
         log_info "Existing installation found, updating..."
@@ -395,7 +395,7 @@ download_bambuddy() {
         # dir to the service user before the clone, which left the install-running
         # user (not root, not bambuddy) unable to write .git into it.
         sudo mkdir -p "$INSTALL_PATH"
-        sudo git clone --branch "$BRANCH" https://github.com/maziggy/bambuddy.git "$INSTALL_PATH"
+        sudo git clone --branch "$BRANCH" https://github.com/Nicolas-Cilia/Backoffice-Printing.git "$INSTALL_PATH"
         sudo chown -R "$SERVICE_USER:$SERVICE_USER" "$INSTALL_PATH" 2>/dev/null || true
     fi
 
@@ -601,7 +601,7 @@ create_systemd_service() {
     cat > /tmp/bambuddy.service << EOF
 [Unit]
 Description=BamBuddy - Bambu Lab Print Management
-Documentation=https://github.com/maziggy/bambuddy
+Documentation=https://github.com/Nicolas-Cilia/Backoffice-Printing
 After=network.target
 
 [Service]

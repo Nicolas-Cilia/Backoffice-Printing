@@ -8,12 +8,12 @@ Interactive installation scripts for BamBuddy with support for both native and D
 
 **Linux/macOS:**
 ```bash
-curl -fsSL https://raw.githubusercontent.com/maziggy/bambuddy/main/install/docker-install.sh -o docker-install.sh && chmod +x docker-install.sh && ./docker-install.sh
+curl -fsSL https://raw.githubusercontent.com/Nicolas-Cilia/Backoffice-Printing/main/install/docker-install.sh -o docker-install.sh && chmod +x docker-install.sh && ./docker-install.sh
 ```
 
 **Windows (Command Prompt or PowerShell):**
 ```cmd
-powershell -ExecutionPolicy Bypass -Command "iwr -useb https://raw.githubusercontent.com/maziggy/bambuddy/main/install/docker-install.ps1 -OutFile docker-install.ps1; .\docker-install.ps1"
+powershell -ExecutionPolicy Bypass -Command "iwr -useb https://raw.githubusercontent.com/Nicolas-Cilia/Backoffice-Printing/main/install/docker-install.ps1 -OutFile docker-install.ps1; .\docker-install.ps1"
 ```
 
 > Requires Docker Desktop running. Printer auto-discovery is unavailable in Docker Desktop — add printers manually by IP.
@@ -22,7 +22,7 @@ powershell -ExecutionPolicy Bypass -Command "iwr -useb https://raw.githubusercon
 
 **Linux/macOS:**
 ```bash
-curl -fsSL https://raw.githubusercontent.com/maziggy/bambuddy/main/install/install.sh -o install.sh && chmod +x install.sh && ./install.sh
+curl -fsSL https://raw.githubusercontent.com/Nicolas-Cilia/Backoffice-Printing/main/install/install.sh -o install.sh && chmod +x install.sh && ./install.sh
 ```
 
 ### Windows Native Installation
@@ -30,7 +30,7 @@ curl -fsSL https://raw.githubusercontent.com/maziggy/bambuddy/main/install/insta
 **Windows PowerShell:**
 
 ```powershell
-powershell -ExecutionPolicy Bypass -Command "iwr -useb https://raw.githubusercontent.com/maziggy/bambuddy/main/install/windows-installer.ps1 -OutFile windows-installer.ps1; .\windows-installer.ps1"
+powershell -ExecutionPolicy Bypass -Command "iwr -useb https://raw.githubusercontent.com/Nicolas-Cilia/Backoffice-Printing/main/install/windows-installer.ps1 -OutFile windows-installer.ps1; .\windows-installer.ps1"
 ```
 
 **Unattended:**
@@ -96,7 +96,7 @@ Installs BamBuddy with Python virtual environment and optional systemd/launchd s
 Windows PowerShell (run as Administrator — the installer self-elevates via UAC if not):
 
 ```powershell
-powershell -ExecutionPolicy Bypass -Command "iwr -useb https://raw.githubusercontent.com/maziggy/bambuddy/main/install/windows-installer.ps1 -OutFile windows-installer.ps1; .\windows-installer.ps1"
+powershell -ExecutionPolicy Bypass -Command "iwr -useb https://raw.githubusercontent.com/Nicolas-Cilia/Backoffice-Printing/main/install/windows-installer.ps1 -OutFile windows-installer.ps1; .\windows-installer.ps1"
 ```
 
 > Installs Bambuddy natively on Windows using Git, Python, a virtual environment, and optional NSSM Windows Service registration. See the [Windows Installer Guide](https://wiki.bambuddy.cool/getting-started/windows-installer/) for full parameter reference.
@@ -255,7 +255,7 @@ docker compose logs -f      # View logs
 
 **Native installation:**
 ```bash
-curl -fsSL https://raw.githubusercontent.com/maziggy/bambuddy/main/install/update.sh -o update.sh
+curl -fsSL https://raw.githubusercontent.com/Nicolas-Cilia/Backoffice-Printing/main/install/update.sh -o update.sh
 chmod +x update.sh
 sudo ./update.sh
 ```
@@ -370,4 +370,4 @@ Get-Content "C:\Bambuddy\bambuddy-runtime-error.log" -Tail 100
 
 - **Documentation:** https://wiki.bambuddy.cool
 - **Discord:** https://discord.gg/aFS3ZfScHM
-- **Issues:** https://github.com/maziggy/bambuddy/issues
+- **Issues:** https://github.com/Nicolas-Cilia/Backoffice-Printing/issues

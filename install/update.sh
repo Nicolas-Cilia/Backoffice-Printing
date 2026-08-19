@@ -138,7 +138,7 @@ downloading a ZIP or tarball from GitHub, reinstall from scratch:
 
   2. Remove the old install and reinstall via install.sh:
        sudo rm -rf $INSTALL_DIR
-       curl -fsSL https://raw.githubusercontent.com/maziggy/bambuddy/main/install/install.sh \\
+       curl -fsSL https://raw.githubusercontent.com/Nicolas-Cilia/Backoffice-Printing/main/install/install.sh \\
          -o /tmp/install.sh && sudo bash /tmp/install.sh --path $INSTALL_DIR
 
   3. Restore your data:
