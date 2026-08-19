@@ -542,16 +542,6 @@ async def _collect_library_info(db: AsyncSession) -> dict:
         await db.execute(select(func.count(LibraryFolder.id)).where(LibraryFolder.is_external.is_(True)))
     ).scalar() or 0
     info["external_links_total"] = (await db.execute(select(func.count(ExternalLink.id)))).scalar() or 0
-    # MakerWorld imports — counted here because they're LibraryFile rows with
-    # source_type='makerworld' (the import path doesn't have its own table).
-    info["makerworld_imports_total"] = (
-        await db.execute(
-            select(func.count(LibraryFile.id)).where(
-                LibraryFile.deleted_at.is_(None),
-                LibraryFile.source_type == "makerworld",
-            )
-        )
-    ).scalar() or 0
     return info
 
 
@@ -1056,7 +1046,7 @@ async def _collect_support_info() -> dict:
     except Exception:
         logger.debug("Failed to collect auth info", exc_info=True)
 
-    # Library + folder + makerworld import totals
+    # Library + folder totals
     try:
         async with async_session() as lib_db:
             info["library"] = await _collect_library_info(lib_db)

@@ -333,7 +333,6 @@ def archive_to_response(
         "started_at": archive.started_at,
         "completed_at": archive.completed_at,
         "extra_data": archive.extra_data,
-        "makerworld_url": archive.makerworld_url,
         "designer": archive.designer,
         "external_url": archive.external_url,
         "is_favorite": archive.is_favorite,
@@ -1494,12 +1493,10 @@ async def get_archive(
     archive = _ensure_archive_visible(await service.get_archive(archive_id), user, can_read_all)
 
     # Find duplicates
-    makerworld_id = archive.extra_data.get("makerworld_model_id") if archive.extra_data else None
     duplicates = await service.find_duplicates(
         archive_id=archive.id,
         content_hash=archive.content_hash,
         print_name=archive.print_name,
-        makerworld_model_id=makerworld_id,
     )
     run_aggregates = await _load_run_aggregates(db, [archive.id])
     return archive_to_response(archive, duplicates, run_aggregate=run_aggregates.get(archive.id))
@@ -1733,8 +1730,6 @@ async def rescan_archive(
         archive.bed_type = metadata["bed_type"]
     if metadata.get("nozzle_temperature"):
         archive.nozzle_temperature = metadata["nozzle_temperature"]
-    if metadata.get("makerworld_url"):
-        archive.makerworld_url = metadata["makerworld_url"]
     if metadata.get("designer"):
         archive.designer = metadata["designer"]
 
@@ -1892,8 +1887,6 @@ async def rescan_all_archives(
                 archive.layer_height = metadata["layer_height"]
             if metadata.get("nozzle_diameter"):
                 archive.nozzle_diameter = metadata["nozzle_diameter"]
-            if metadata.get("makerworld_url"):
-                archive.makerworld_url = metadata["makerworld_url"]
             if metadata.get("designer"):
                 archive.designer = metadata["designer"]
 
@@ -1922,12 +1915,10 @@ async def get_archive_duplicates(
     service = ArchiveService(db)
     archive = _ensure_archive_visible(await service.get_archive(archive_id), user, can_read_all)
 
-    makerworld_id = archive.extra_data.get("makerworld_model_id") if archive.extra_data else None
     duplicates = await service.find_duplicates(
         archive_id=archive.id,
         content_hash=archive.content_hash,
         print_name=archive.print_name,
-        makerworld_model_id=makerworld_id,
     )
     return {"duplicates": duplicates, "count": len(duplicates)}
 

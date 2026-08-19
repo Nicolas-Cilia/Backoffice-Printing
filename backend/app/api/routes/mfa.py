@@ -1537,9 +1537,8 @@ async def get_oidc_provider_icon(
     """Serve the cached icon for an enabled OIDC provider (public, no auth).
 
     Unauthenticated because ``<img>`` tags cannot send Authorization headers
-    and the login page renders these icons before the user is signed in — the
-    same justification as ``/api/v1/makerworld/thumbnail``. The SSRF guard
-    runs at admin-config time (create/update/refresh), not here.
+    and the login page renders these icons before the user is signed in. The
+    SSRF guard runs at admin-config time (create/update/refresh), not here.
 
     Disabled providers respond 404 to avoid leaking their existence to
     anonymous callers (mirrors ``GET /oidc/providers`` which filters on

@@ -280,9 +280,10 @@ Every entry heading carries a status marker, kept in step with its **Status:** l
     upstream project, not the Bambuddy repo. Leave it.
 - **Branch:** `fix/point-github-links-at-fork`
 
-### 7. Fork attribution and licensing notices in the docs 🔵
+### 7. Fork attribution and licensing notices in the docs ✅
 
-- **Status:** idea
+- **Status:** done 2026-08-19 — docs rewritten on `docs/fork-attribution` (not committed
+  in this unit)
 - **Area:** docs
 - **What:** Make the top-level docs say plainly what this repo is: a personal rework of
   Bambuddy, still AGPL-3.0, not affiliated with or endorsed by upstream.
@@ -290,41 +291,31 @@ Every entry heading carries a status marker, kept in step with its **Status:** l
     is, that it is based on [maziggy/bambuddy](https://github.com/maziggy/bambuddy),
     that it is modified, that it is for personal use and offered as-is, and that it
     remains AGPL-3.0. Then strip what belongs to upstream and would be wrong here:
-    GitHub Sponsors, Ko-fi and sponsors-portal badges (lines 21-23), the North Pole 3D
-    Printing "Backed by" block (line 28), the Discord invite (lines 20, 37), and the
-    `demo.bambuddy.cool` live-demo links (lines 32, 42-43, 356-357). Soliciting for
-    upstream's funding or pointing at their demo from a diverged fork is misleading in
-    both directions.
-  - **`CONTRIBUTING.md`** — currently routes contributors to upstream's process. Either
-    rewrite for this fork or state that contributions are not being taken.
-  - **`SECURITY.md`** — same: it points vulnerability reports at upstream. Must not
-    claim upstream handles security for this fork.
-  - **`BACKERS.md`** — upstream's backers. Not ours; remove or clearly attribute.
-  - **`CODE_OF_CONDUCT.md`** — harmless to keep, but check contact addresses.
-  - **`DOCKERHUB.md`, `UPDATING.md`** — describe upstream's published images and update
-    path, neither of which applies here. Overlaps with entry #6.
-  - **Change notices (AGPL §5(a))** — the license requires modified files to carry
-    prominent notice that they were changed and when. `FORK_CHANGELOG.md` already
-    records this per unit with dates; decide whether that satisfies it or whether we add
-    a short "modified from upstream" header to the files we touch.
+    GitHub Sponsors, Ko-fi and sponsors-portal badges, the North Pole 3D Printing
+    "Backed by" block, Discord, and `demo.bambuddy.cool`. Document the actual sidebar
+    and the native + Docker install paths.
+  - **`CONTRIBUTING.md`** — rewrite for how this checkout is developed; outside
+    contributions are not expected.
+  - **`SECURITY.md`** — private advisory on this repo; no fake SLAs or version support
+    table; keep the CI security-stance rules.
+  - **`CODE_OF_CONDUCT.md`** — this repository, GitHub reporting, no Discord.
   - **Keep `LICENSE` exactly as it is**, and keep upstream's copyright notices.
-- **Why:** The repo will be public (see #6), which is distribution under AGPL-3.0. The
-  obligations attach at that point regardless of it being a personal project, and the
-  docs currently read as though this *is* upstream Bambuddy.
-- **Acceptance:** README opens with the fork notice; no upstream funding, Discord or
-  demo links remain; `LICENSE` untouched; nothing claims upstream support or
-  endorsement.
-- **Open questions:**
-  - **Not legal advice.** This entry is written from reading the license text. If
-    anything here carries real risk for you, check it with someone qualified.
-  - Is the repo actually going public, or staying private? Private changes nothing
-    legally, but the docs are still worth fixing.
-  - How much of upstream's README do you want to keep? The feature documentation is
-    genuinely useful and mostly still accurate; it is the branding, funding and support
-    channels that need to go.
-  - Sequencing: this overlaps #4 (logo) and #6 (links). Suggest doing #7 last so the
-    README is rewritten once.
-- **Branch:** `docs/fork-attribution-and-licensing`
+- **Why:** The docs previously read as though this *is* upstream Bambuddy. Distribution
+  under AGPL-3.0 needs a clear fork notice and credit.
+- **Acceptance:** met in the files listed above. README opens with the fork notice;
+  funding / Discord / demo / wiki / screenshot gallery are gone; `LICENSE` untouched;
+  nothing claims upstream support or endorsement. Docker Compose `--build` is documented
+  as a first-class intended path, not a leftover.
+- **How it went / decisions taken:**
+  - Scope for this unit was the five GitHub community tabs plus `FORK_PLAN` /
+    `FORK_CHANGELOG`. `BACKERS.md`, `DOCKERHUB.md`, `UPDATING.md`, issue templates,
+    and in-app `GITHUB_REPO` / GitHub URLs were left alone (the last is entry #6).
+  - Native Mac (venv + uvicorn :8000, Vite :5173 in dev) is documented as what
+    currently works. Docker stays in the README because it is planned to work, with
+    `--build` from source so we do not promise unpublished GHCR/Docker Hub tags.
+  - `FORK_CHANGELOG.md` remains the dated change notice for modified files (AGPL
+    §5(a)); no per-file "modified from upstream" headers were added.
+- **Branch:** `docs/fork-attribution`
 
 ### 8. Change the green accent to Atos Blue ✅
 
@@ -676,3 +667,4 @@ _Things we've decided NOT to change, so they don't get re-litigated._
 | 8. Atos Blue accent (`#07bcec`) | `ui/atos-blue-accent` | 2026-08-17 | New default accent; semantic greens deliberately unchanged; white-on-accent contrast still below AA |
 | 3a-3c. Remove Projects | `feat/remove-projects` | 2026-08-17 | Code removed; `projects` / `project_bom_items` tables kept with rows intact |
 | 10. Remove in-app updating | `fix/disable-upstream-updates` | 2026-08-17 | Only `GET /updates/version` and the two version helpers SpoolBuddy needs survive |
+| 7. Fork attribution in GitHub docs | `docs/fork-attribution` | 2026-08-19 | README, CONTRIBUTING, CoC, SECURITY rewritten; LICENSE untouched; Docker kept as intended `--build` path |
