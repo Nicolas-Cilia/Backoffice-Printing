@@ -438,9 +438,7 @@ def _should_scan_member_for_paint(name: str, info: zipfile.ZipInfo) -> bool:
     lower = name.lower()
     if lower.endswith(_SKIP_PAINT_SCAN_SUFFIXES):
         return False
-    if info.file_size > _PAINT_SCAN_MAX_BYTES and not lower.endswith(".model"):
-        return False
-    return True
+    return info.file_size <= _PAINT_SCAN_MAX_BYTES or lower.endswith(".model")
 
 
 def _has_fuzzy_skin_paint(zf: zipfile.ZipFile) -> bool:
@@ -472,14 +470,14 @@ def _as_positive_float(value: Any, default: float) -> float:
 def _outer_wall_is_fuzzy(points: list[tuple[float, float]], point_distance: float) -> bool:
     if len(points) < _FUZZY_GCODE_MIN_POINTS:
         return False
-    dists = [math.hypot(b[0] - a[0], b[1] - a[1]) for a, b in zip(points, points[1:])]
+    dists = [math.hypot(b[0] - a[0], b[1] - a[1]) for a, b in zip(points, points[1:], strict=False)]
     if not dists:
         return False
     lo = 0.6 * point_distance
     hi = 1.5 * point_distance
     band = sum(1 for dist in dists if lo <= dist <= hi) / len(dists)
     turns: list[float] = []
-    for a, b, c in zip(points, points[1:], points[2:]):
+    for a, b, c in zip(points, points[1:], points[2:], strict=False):
         v1 = (b[0] - a[0], b[1] - a[1])
         v2 = (c[0] - b[0], c[1] - b[1])
         n1 = math.hypot(*v1)
@@ -522,13 +520,7 @@ def _gcode_member_looks_like_fuzzy_paint(
                 feature = raw.split(b":", 1)[1].strip()
                 points = []
                 continue
-            if (
-                feature == b"Outer wall"
-                and raw.startswith(b"G1 ")
-                and b"E" in raw
-                and b"X" in raw
-                and b"Y" in raw
-            ):
+            if feature == b"Outer wall" and raw.startswith(b"G1 ") and b"E" in raw and b"X" in raw and b"Y" in raw:
                 xy = _GCODE_XY_RE.search(raw)
                 if xy:
                     try:
@@ -549,9 +541,7 @@ def _gcode_looks_like_fuzzy_paint(zf: zipfile.ZipFile, contract: dict[str, Any])
         lower = name.lower()
         if not lower.endswith(".gcode") or lower.endswith(".md5"):
             continue
-        if _gcode_member_looks_like_fuzzy_paint(
-            zf, name, point_distance=point_distance, min_z=min_z
-        ):
+        if _gcode_member_looks_like_fuzzy_paint(zf, name, point_distance=point_distance, min_z=min_z):
             return True
     return False
 

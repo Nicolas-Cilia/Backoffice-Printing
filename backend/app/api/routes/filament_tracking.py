@@ -247,7 +247,9 @@ async def list_slot_assignments(
     )
     if printer_id is not None:
         query = query.where(FilamentSlotAssignment.printer_id == printer_id)
-    result = await db.execute(query.order_by(FilamentSlotAssignment.printer_id, FilamentSlotAssignment.ams_id, FilamentSlotAssignment.tray_id))
+    result = await db.execute(
+        query.order_by(FilamentSlotAssignment.printer_id, FilamentSlotAssignment.ams_id, FilamentSlotAssignment.tray_id)
+    )
     return [_assignment_response(assignment, bucket) for assignment, bucket in result.all()]
 
 

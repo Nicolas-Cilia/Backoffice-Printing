@@ -157,9 +157,7 @@ class TestProfilePartsAPI:
         )
         assert preview.status_code == 200, preview.text
         assert preview.json()["has_mismatches"] is False
-        layer_row = next(
-            row for row in preview.json()["parameter_diff"] if row["key"] == "layer_height"
-        )
+        layer_row = next(row for row in preview.json()["parameter_diff"] if row["key"] == "layer_height")
         assert layer_row["locked"] == 0.28
         assert layer_row["incoming"] == 0.24
         assert layer_row["match"] is True
@@ -308,9 +306,7 @@ class TestProfilePartSectionImport:
         section = (await async_client.post("/api/v1/profile-parts/sections", json={"name": "Top part"})).json()
         first = await _upload_process(async_client, section["id"], "0.20mm Standard @BBL X1C")
         assert first.status_code == 200, first.text
-        second = await _upload_process(
-            async_client, section["id"], "0.28mm Strength @BBL A1", layer_height="0.28"
-        )
+        second = await _upload_process(async_client, section["id"], "0.28mm Strength @BBL A1", layer_height="0.28")
         assert second.status_code == 200, second.text
         body = second.json()
         assert body["attached"] == []
@@ -344,9 +340,7 @@ class TestProfilePartSectionImport:
         assert first.status_code == 200, first.text
         slot_id = first.json()["section"]["slots"][0]["id"]
 
-        again = await _upload_process(
-            async_client, section["id"], "0.16mm Optimal @BBL X1C", layer_height="0.16"
-        )
+        again = await _upload_process(async_client, section["id"], "0.16mm Optimal @BBL X1C", layer_height="0.16")
         assert again.status_code == 200, again.text
         body = again.json()
         assert body["attached"] == []
@@ -407,15 +401,11 @@ class TestProfilePartSectionImport:
 
     async def test_upload_h2s_max_layer_attaches_as_match(self, async_client: AsyncClient):
         section = (await async_client.post("/api/v1/profile-parts/sections", json={"name": "Top part"})).json()
-        first = await _upload_process(
-            async_client, section["id"], "0.28mm Strength @BBL X1C", layer_height="0.28"
-        )
+        first = await _upload_process(async_client, section["id"], "0.28mm Strength @BBL X1C", layer_height="0.28")
         assert first.status_code == 200, first.text
         assert first.json()["section"]["locked_parameters"]["layer_height"] == 0.28
 
-        second = await _upload_process(
-            async_client, section["id"], "0.24mm Standard @BBL H2S", layer_height="0.24"
-        )
+        second = await _upload_process(async_client, section["id"], "0.24mm Standard @BBL H2S", layer_height="0.24")
         assert second.status_code == 200, second.text
         body = second.json()
         assert body["needs_confirm"] == []
@@ -433,14 +423,10 @@ class TestProfilePartSectionImport:
 
     async def test_upload_h2s_below_max_needs_confirm(self, async_client: AsyncClient):
         section = (await async_client.post("/api/v1/profile-parts/sections", json={"name": "Top part"})).json()
-        first = await _upload_process(
-            async_client, section["id"], "0.28mm Strength @BBL X1C", layer_height="0.28"
-        )
+        first = await _upload_process(async_client, section["id"], "0.28mm Strength @BBL X1C", layer_height="0.28")
         assert first.status_code == 200, first.text
 
-        second = await _upload_process(
-            async_client, section["id"], "0.16mm Optimal @BBL H2S", layer_height="0.16"
-        )
+        second = await _upload_process(async_client, section["id"], "0.16mm Optimal @BBL H2S", layer_height="0.16")
         assert second.status_code == 200, second.text
         body = second.json()
         assert body["attached"] == []
@@ -448,9 +434,7 @@ class TestProfilePartSectionImport:
         pending = body["needs_confirm"][0]
         assert pending["printer_model"] == "H2S"
         assert pending["preview"]["has_mismatches"] is True
-        layer_row = next(
-            row for row in pending["preview"]["parameter_diff"] if row["key"] == "layer_height"
-        )
+        layer_row = next(row for row in pending["preview"]["parameter_diff"] if row["key"] == "layer_height")
         assert layer_row["locked"] == 0.28
         assert layer_row["incoming"] == 0.16
         assert layer_row["match"] is False
@@ -493,9 +477,7 @@ class TestProfilePartSectionImport:
         assert first.json()["needs_confirm"] == []
         assert first.json()["section"]["locked_parameters"] is None
 
-        second = await _upload_process(
-            async_client, section["id"], "0.28mm Strength @BBL A1", layer_height="0.28"
-        )
+        second = await _upload_process(async_client, section["id"], "0.28mm Strength @BBL A1", layer_height="0.28")
         assert second.status_code == 200, second.text
         body = second.json()
         assert body["needs_confirm"] == []
@@ -519,9 +501,7 @@ class TestProfilePartSectionImport:
         first = await _upload_process(async_client, section["id"], "0.20mm Standard @BBL X1C")
         assert first.status_code == 200, first.text
 
-        second = await _upload_process(
-            async_client, section["id"], "0.28mm Strength @BBL A1", layer_height="0.28"
-        )
+        second = await _upload_process(async_client, section["id"], "0.28mm Strength @BBL A1", layer_height="0.28")
         assert second.status_code == 200, second.text
         body = second.json()
         assert body["attached"] == []
@@ -534,9 +514,7 @@ class TestProfilePartSectionImport:
     async def test_duplicate_name_updates_and_attaches(self, async_client: AsyncClient, db_session):
         existing = await _create_process(async_client, "0.20mm Standard @BBL X1C", layer_height="0.2")
         section = (await async_client.post("/api/v1/profile-parts/sections", json={"name": "Top part"})).json()
-        uploaded = await _upload_process(
-            async_client, section["id"], "0.20mm Standard @BBL X1C", layer_height="0.16"
-        )
+        uploaded = await _upload_process(async_client, section["id"], "0.20mm Standard @BBL X1C", layer_height="0.16")
         assert uploaded.status_code == 200, uploaded.text
         body = uploaded.json()
         assert body["imported"] == 1
@@ -545,9 +523,7 @@ class TestProfilePartSectionImport:
         assert body["section"]["locked_parameters"]["layer_height"] == 0.16
         assert body["attached"][0]["slot"]["preset"]["id"] == existing["id"]
 
-        stored = (
-            await db_session.execute(select(LocalPreset).where(LocalPreset.id == existing["id"]))
-        ).scalar_one()
+        stored = (await db_session.execute(select(LocalPreset).where(LocalPreset.id == existing["id"]))).scalar_one()
         await db_session.refresh(stored)
         setting = json.loads(stored.setting)
         assert setting["layer_height"] == "0.16"

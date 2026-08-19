@@ -1121,9 +1121,7 @@ async def _normalize_filament_bucket_identity(conn):
                 )
             )
             await conn.execute(text("DROP TABLE filament_color_buckets"))
-            await conn.execute(
-                text("ALTER TABLE filament_color_buckets_new RENAME TO filament_color_buckets")
-            )
+            await conn.execute(text("ALTER TABLE filament_color_buckets_new RENAME TO filament_color_buckets"))
         return
 
     uq_check = await conn.execute(
@@ -3985,13 +3983,9 @@ async def run_migrations(conn):
 
     # Migration: hide a production part on one printer without deleting the catalog row.
     if is_sqlite():
-        await _safe_execute(
-            conn, "ALTER TABLE production_part_instances ADD COLUMN hidden BOOLEAN DEFAULT 0"
-        )
+        await _safe_execute(conn, "ALTER TABLE production_part_instances ADD COLUMN hidden BOOLEAN DEFAULT 0")
     else:
-        await _safe_execute(
-            conn, "ALTER TABLE production_part_instances ADD COLUMN hidden BOOLEAN DEFAULT false"
-        )
+        await _safe_execute(conn, "ALTER TABLE production_part_instances ADD COLUMN hidden BOOLEAN DEFAULT false")
 
     # Migration: section kind on library_folder_sections (normal vs production /
     # parameter-tracking). Default remains normal so existing user-created
@@ -4021,13 +4015,9 @@ async def run_migrations(conn):
     # ProductionFolderView) independent of production_printer_model. Backfill
     # existing Production printer folders so they keep slot UI and 409 guards.
     if is_sqlite():
-        await _safe_execute(
-            conn, "ALTER TABLE library_folders ADD COLUMN parameter_tracking BOOLEAN DEFAULT 0"
-        )
+        await _safe_execute(conn, "ALTER TABLE library_folders ADD COLUMN parameter_tracking BOOLEAN DEFAULT 0")
     else:
-        await _safe_execute(
-            conn, "ALTER TABLE library_folders ADD COLUMN parameter_tracking BOOLEAN DEFAULT false"
-        )
+        await _safe_execute(conn, "ALTER TABLE library_folders ADD COLUMN parameter_tracking BOOLEAN DEFAULT false")
     async with conn.begin_nested():
         await conn.execute(
             _sql_text(
@@ -4048,9 +4038,7 @@ async def run_migrations(conn):
     # Migration: part-section parameter tracking. Existing sections keep the
     # shared print-settings contract (default true). Create may opt out.
     if is_sqlite():
-        await _safe_execute(
-            conn, "ALTER TABLE profile_part_sections ADD COLUMN parameter_tracking BOOLEAN DEFAULT 1"
-        )
+        await _safe_execute(conn, "ALTER TABLE profile_part_sections ADD COLUMN parameter_tracking BOOLEAN DEFAULT 1")
     else:
         await _safe_execute(
             conn,

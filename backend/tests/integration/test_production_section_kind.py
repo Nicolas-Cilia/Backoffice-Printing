@@ -110,9 +110,7 @@ class TestPerFolderParameterTracking:
         assert by_id[fun.json()["id"]]["section_id"] == section["id"]
         assert by_id[tracking.json()["id"]]["section_id"] == section["id"]
 
-    async def test_add_part_then_upload_filename_printer_without_folder_printer(
-        self, async_client: AsyncClient
-    ):
+    async def test_add_part_then_upload_filename_printer_without_folder_printer(self, async_client: AsyncClient):
         section = (await async_client.post("/api/v1/library/sections", json={"name": "Testing"})).json()
         created = await async_client.post(
             "/api/v1/library/folders",

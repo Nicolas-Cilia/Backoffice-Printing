@@ -388,9 +388,7 @@ def compute_purchase_plan(
     for bucket in buckets:
         bucket_events = events_by_bucket.get(bucket.id, [])
         print_events = [e for e in bucket_events if e.kind in PRINT_USAGE_KINDS]
-        bucket_start = bucket.tracking_started_at or (
-            min((e.occurred_at for e in print_events), default=None)
-        )
+        bucket_start = bucket.tracking_started_at or (min((e.occurred_at for e in print_events), default=None))
         bucket_elapsed = 0.0
         if bucket_start:
             bucket_elapsed = max(0.0, (now - _as_utc(bucket_start)).total_seconds() / 86400)
@@ -401,11 +399,7 @@ def compute_purchase_plan(
         else:
             window_start = now - timedelta(days=window_days)
 
-        window_events = [
-            e
-            for e in print_events
-            if window_start <= _as_utc(e.occurred_at) <= now
-        ]
+        window_events = [e for e in print_events if window_start <= _as_utc(e.occurred_at) <= now]
         observed = sum(e.grams for e in window_events)
         if stage == "collecting":
             divisor = 0.0
@@ -605,9 +599,7 @@ async def record_slot_usage(
             occurred_at=occurred_at,
         )
         source_key = f"{source_prefix}:{bucket.color_name}:{bucket.material}"
-        existing = await db.execute(
-            select(FilamentColorUsage).where(FilamentColorUsage.source_key == source_key)
-        )
+        existing = await db.execute(select(FilamentColorUsage).where(FilamentColorUsage.source_key == source_key))
         if existing.scalar_one_or_none():
             continue
         event = FilamentColorUsage(
@@ -665,9 +657,7 @@ async def record_assigned_usage(
     print_name: str | None,
     source_key: str,
 ) -> FilamentColorUsage | None:
-    existing = await db.execute(
-        select(FilamentColorUsage).where(FilamentColorUsage.source_key == source_key)
-    )
+    existing = await db.execute(select(FilamentColorUsage).where(FilamentColorUsage.source_key == source_key))
     if existing.scalar_one_or_none():
         return None
     kind = status if status in PRINT_USAGE_KINDS else "completed"
@@ -728,9 +718,7 @@ async def record_print_usage(
         if mapped is None:
             continue
         ams_id, tray_id = global_tray_to_slot(mapped)
-        bucket = await assigned_bucket_for_slot(
-            db, printer_id=printer_id, ams_id=ams_id, tray_id=tray_id
-        )
+        bucket = await assigned_bucket_for_slot(db, printer_id=printer_id, ams_id=ams_id, tray_id=tray_id)
         if not bucket:
             continue
         event = await record_assigned_usage(

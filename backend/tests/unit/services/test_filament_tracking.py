@@ -103,10 +103,7 @@ def test_plan_collecting_hides_monthly_estimate():
 def test_plan_week_stage_extrapolates_and_recommends_spools():
     now = datetime(2026, 8, 18, tzinfo=timezone.utc)
     started = now - timedelta(days=10)
-    events = [
-        PlanEvent(1, 1000, started + timedelta(days=day), "completed")
-        for day in range(3, 10)
-    ]
+    events = [PlanEvent(1, 1000, started + timedelta(days=day), "completed") for day in range(3, 10)]
     plan = compute_purchase_plan(
         [
             PlanBucket(
@@ -138,10 +135,7 @@ def test_plan_week_stage_extrapolates_and_recommends_spools():
 def test_plan_orders_when_stock_only_lasts_through_shipping():
     now = datetime(2026, 8, 18, tzinfo=timezone.utc)
     started = now - timedelta(days=10)
-    events = [
-        PlanEvent(1, 1000, started + timedelta(days=day), "completed")
-        for day in range(3, 10)
-    ]
+    events = [PlanEvent(1, 1000, started + timedelta(days=day), "completed") for day in range(3, 10)]
     plan = compute_purchase_plan(
         [
             PlanBucket(
@@ -164,12 +158,8 @@ def test_plan_orders_when_stock_only_lasts_through_shipping():
 def test_plan_uses_per_product_lead_times():
     now = datetime(2026, 8, 18, tzinfo=timezone.utc)
     started = now - timedelta(days=10)
-    events = [
-        PlanEvent(1, 1000, started + timedelta(days=day), "completed")
-        for day in range(3, 10)
-    ] + [
-        PlanEvent(2, 1000, started + timedelta(days=day), "completed")
-        for day in range(3, 10)
+    events = [PlanEvent(1, 1000, started + timedelta(days=day), "completed") for day in range(3, 10)] + [
+        PlanEvent(2, 1000, started + timedelta(days=day), "completed") for day in range(3, 10)
     ]
     plan = compute_purchase_plan(
         [
@@ -216,10 +206,7 @@ def test_plan_uses_per_product_lead_times():
 def test_plan_includes_stock_value_from_cost():
     now = datetime(2026, 8, 18, tzinfo=timezone.utc)
     started = now - timedelta(days=10)
-    events = [
-        PlanEvent(1, 1000, started + timedelta(days=day), "completed")
-        for day in range(3, 10)
-    ]
+    events = [PlanEvent(1, 1000, started + timedelta(days=day), "completed") for day in range(3, 10)]
     plan = compute_purchase_plan(
         [
             PlanBucket(

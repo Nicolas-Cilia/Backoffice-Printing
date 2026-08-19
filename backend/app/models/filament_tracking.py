@@ -68,9 +68,7 @@ class FilamentSlotAssignment(Base):
     """Which tracking product is loaded in a printer AMS/external slot."""
 
     __tablename__ = "filament_slot_assignments"
-    __table_args__ = (
-        UniqueConstraint("printer_id", "ams_id", "tray_id", name="uq_filament_slot_assignment"),
-    )
+    __table_args__ = (UniqueConstraint("printer_id", "ams_id", "tray_id", name="uq_filament_slot_assignment"),)
 
     id: Mapped[int] = mapped_column(primary_key=True)
     printer_id: Mapped[int] = mapped_column(ForeignKey("printers.id", ondelete="CASCADE"))

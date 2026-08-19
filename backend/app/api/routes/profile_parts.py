@@ -40,8 +40,7 @@ router = APIRouter(prefix="/profile-parts", tags=["Profile Parts"])
 _VALID_RESOLUTIONS = frozenset({"proceed", "accept_baseline"})
 _SLOT_EXISTS_DETAIL = "Use replace for an existing printer slot"
 _MISMATCH_CONFIRM_DETAIL = (
-    "This process does not match the section print-settings contract. "
-    "Pass resolution 'proceed' to attach anyway."
+    "This process does not match the section print-settings contract. Pass resolution 'proceed' to attach anyway."
 )
 _CONTRACT_RESOLUTION_DETAIL = (
     "This section already has a print-settings contract. Pass resolution 'proceed' or 'accept_baseline'."
@@ -233,9 +232,7 @@ async def _refresh_section_mismatches(section: ProfilePartSection) -> None:
             slot.last_mismatch = False
             continue
         incoming = _process_parameters(slot.active_preset)
-        slot.last_mismatch = _has_mismatches(
-            _slot_diff(section, incoming, printer_model=slot.printer_model)
-        )
+        slot.last_mismatch = _has_mismatches(_slot_diff(section, incoming, printer_model=slot.printer_model))
 
 
 def _printers_compatible(slot_printer: str, incoming_printer: str) -> bool:
@@ -248,9 +245,7 @@ def _printers_compatible(slot_printer: str, incoming_printer: str) -> bool:
 def _replace_preview(section: ProfilePartSection, preset: LocalPreset) -> ProfilePartReplacePreview:
     incoming = _process_parameters(preset)
     printer_model = _preset_printer_model(preset)
-    rows = (
-        _slot_diff(section, incoming, printer_model=printer_model) if section.locked_parameters else []
-    )
+    rows = _slot_diff(section, incoming, printer_model=printer_model) if section.locked_parameters else []
     return ProfilePartReplacePreview(
         parameter_diff=[ProductionParameterDiff(**row) for row in rows],
         has_mismatches=_has_mismatches(rows),
@@ -426,9 +421,7 @@ async def import_into_section(
                 )
             )
             continue
-        if _tracks_parameters(section) and _mismatches_contract(
-            section, incoming, printer_model=printer_model
-        ):
+        if _tracks_parameters(section) and _mismatches_contract(section, incoming, printer_model=printer_model):
             needs_confirm.append(
                 ProfilePartImportNeedsConfirm(
                     printer_model=printer_model,

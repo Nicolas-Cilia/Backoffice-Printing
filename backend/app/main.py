@@ -5430,20 +5430,12 @@ async def on_print_complete(printer_id: int, data: dict):
                     tracking_status = _run_status
                     tracking_progress = data.get("progress")
                     if _est_full_path is not None and _est_full_path.exists():
-                        tracking_slots = extract_filament_usage_from_3mf(
-                            _est_full_path, archive.plate_id
-                        )
+                        tracking_slots = extract_filament_usage_from_3mf(_est_full_path, archive.plate_id)
                     if not tracking_slots and _run_grams:
                         types = [
-                            part.strip()
-                            for part in (archive.filament_type or "UNKNOWN").split(",")
-                            if part.strip()
+                            part.strip() for part in (archive.filament_type or "UNKNOWN").split(",") if part.strip()
                         ]
-                        colors = [
-                            part.strip()
-                            for part in (archive.filament_color or "").split(",")
-                            if part.strip()
-                        ]
+                        colors = [part.strip() for part in (archive.filament_color or "").split(",") if part.strip()]
                         count = max(len(types), len(colors), 1)
                         each = round(float(_run_grams) / count, 1)
                         tracking_slots = [

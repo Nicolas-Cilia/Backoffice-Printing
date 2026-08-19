@@ -250,9 +250,7 @@ class TestExtractProductionSettings:
     def test_sliced_customized_fuzzy_settings_stay_none_without_mesh_paint(self):
         config = _config(
             fuzzy_skin="none",
-            different_settings_to_system=[
-                "brim_type;fuzzy_skin_point_distance;fuzzy_skin_thickness;wall_loops"
-            ],
+            different_settings_to_system=["brim_type;fuzzy_skin_point_distance;fuzzy_skin_thickness;wall_loops"],
         )
         contract = extract_production_settings(
             _3mf(config, extra_files={"Metadata/plate_1.gcode": "; fuzzy_skin = none\n"})
@@ -273,15 +271,13 @@ class TestExtractProductionSettings:
             fuzzy_skin="disabled_fuzzy",
             different_settings_to_system=["fuzzy_skin_thickness;fuzzy_skin_point_distance"],
         )
-        contract = extract_production_settings(
-            _3mf(config, extra_files={"Metadata/plate_1.gcode": "G1 X0 Y0\n"})
-        )
+        contract = extract_production_settings(_3mf(config, extra_files={"Metadata/plate_1.gcode": "G1 X0 Y0\n"}))
         assert contract["fuzzy_skin"] == "disabled_fuzzy"
 
     def test_fuzzy_skin_paint_from_utf16_model(self):
         xml = (
             '<?xml version="1.0"?>'
-            '<model><triangles>'
+            "<model><triangles>"
             '<triangle v1="0" v2="1" v3="2" paint_fuzzy_skin="8"/>'
             "</triangles></model>"
         )
@@ -443,65 +439,43 @@ class TestDiffParameters:
         fallback = extract_production_settings(_3mf(fallback_config))
         assert fallback["support_style"] == "tree_hybrid"
 
-        preferred = extract_production_settings(
-            _3mf(_config(support_style="tree_slim", tree_support_style="organic"))
-        )
+        preferred = extract_production_settings(_3mf(_config(support_style="tree_slim", tree_support_style="organic")))
         assert preferred["support_style"] == "tree_slim"
 
     def test_support_style_not_compared_when_supports_off(self):
-        locked = extract_production_settings(
-            _3mf(_config(enable_support="0", support_style="tree_slim"))
-        )
-        incoming = extract_production_settings(
-            _3mf(_config(enable_support="0", support_style="tree_hybrid"))
-        )
+        locked = extract_production_settings(_3mf(_config(enable_support="0", support_style="tree_slim")))
+        incoming = extract_production_settings(_3mf(_config(enable_support="0", support_style="tree_hybrid")))
         by_key = _diff_by_key(locked, incoming)
         assert "support_style" not in by_key
         assert "support_type" not in by_key
 
     def test_support_style_compared_when_supports_on(self):
-        locked = extract_production_settings(
-            _3mf(_config(enable_support="1", support_style="tree_slim"))
-        )
-        incoming = extract_production_settings(
-            _3mf(_config(enable_support=True, support_style="tree_hybrid"))
-        )
+        locked = extract_production_settings(_3mf(_config(enable_support="1", support_style="tree_slim")))
+        incoming = extract_production_settings(_3mf(_config(enable_support=True, support_style="tree_hybrid")))
         by_key = _diff_by_key(locked, incoming)
         assert by_key["support_style"]["match"] is False
         assert by_key["support_style"]["locked"] == "tree_slim"
         assert by_key["support_style"]["incoming"] == "tree_hybrid"
 
-        matching = extract_production_settings(
-            _3mf(_config(enable_support="1", support_style="tree_slim"))
-        )
+        matching = extract_production_settings(_3mf(_config(enable_support="1", support_style="tree_slim")))
         assert _diff_by_key(locked, matching)["support_style"]["match"] is True
 
     def test_brim_object_gap_not_compared_when_brim_off(self):
-        locked = extract_production_settings(
-            _3mf(_config(brim_type="no_brim", brim_object_gap="0.1"))
-        )
-        incoming = extract_production_settings(
-            _3mf(_config(brim_type="no_brim", brim_object_gap="0.5"))
-        )
+        locked = extract_production_settings(_3mf(_config(brim_type="no_brim", brim_object_gap="0.1")))
+        incoming = extract_production_settings(_3mf(_config(brim_type="no_brim", brim_object_gap="0.5")))
         by_key = _diff_by_key(locked, incoming)
         assert "brim_object_gap" not in by_key
         assert by_key["brim_type"]["match"] is True
 
     def test_brim_object_gap_compared_when_brim_on(self):
-        locked = extract_production_settings(
-            _3mf(_config(brim_type="auto_brim", brim_object_gap="0.1"))
-        )
-        incoming = extract_production_settings(
-            _3mf(_config(brim_type="auto_brim", brim_object_gap="0.5"))
-        )
+        locked = extract_production_settings(_3mf(_config(brim_type="auto_brim", brim_object_gap="0.1")))
+        incoming = extract_production_settings(_3mf(_config(brim_type="auto_brim", brim_object_gap="0.5")))
         row = _diff_by_key(locked, incoming)["brim_object_gap"]
         assert row["match"] is False
         assert row["locked"] == 0.1
         assert row["incoming"] == 0.5
 
-        matching = extract_production_settings(
-            _3mf(_config(brim_type="outer_only", brim_object_gap="0.1"))
-        )
+        matching = extract_production_settings(_3mf(_config(brim_type="outer_only", brim_object_gap="0.1")))
         assert _diff_by_key(locked, matching)["brim_object_gap"]["match"] is True
 
     def test_missing_key_is_mismatch(self):
@@ -564,19 +538,14 @@ class TestDiffParameters:
         locked = {"layer_height": 0.28}
         incoming = {"layer_height": 0.24}
         for model in ("H2S", "H2D", "H2D Pro"):
-            row = {
-                r["key"]: r for r in diff_parameters(locked, incoming, printer_model=model)
-            }["layer_height"]
+            row = {r["key"]: r for r in diff_parameters(locked, incoming, printer_model=model)}["layer_height"]
             assert row["match"] is True, model
             assert row["locked"] == 0.28
             assert row["incoming"] == 0.24
 
     def test_capped_printer_below_max_mismatches_thicker_spec(self):
         row = {
-            r["key"]: r
-            for r in diff_parameters(
-                {"layer_height": 0.28}, {"layer_height": 0.16}, printer_model="H2S"
-            )
+            r["key"]: r for r in diff_parameters({"layer_height": 0.28}, {"layer_height": 0.16}, printer_model="H2S")
         }["layer_height"]
         assert row["match"] is False
         assert row["locked"] == 0.28
@@ -586,17 +555,12 @@ class TestDiffParameters:
         locked = {"layer_height": 0.28}
         incoming = {"layer_height": 0.24}
         for model in (None, "X1C", "A1", "P1S"):
-            row = {
-                r["key"]: r for r in diff_parameters(locked, incoming, printer_model=model)
-            }["layer_height"]
+            row = {r["key"]: r for r in diff_parameters(locked, incoming, printer_model=model)}["layer_height"]
             assert row["match"] is False, model
 
     def test_capped_printer_max_thicker_than_thinner_spec_mismatches(self):
         row = {
-            r["key"]: r
-            for r in diff_parameters(
-                {"layer_height": 0.20}, {"layer_height": 0.24}, printer_model="H2S"
-            )
+            r["key"]: r for r in diff_parameters({"layer_height": 0.20}, {"layer_height": 0.24}, printer_model="H2S")
         }["layer_height"]
         assert row["match"] is False
         assert row["locked"] == 0.20
@@ -604,9 +568,6 @@ class TestDiffParameters:
 
     def test_capped_printer_equal_layer_still_matches(self):
         row = {
-            r["key"]: r
-            for r in diff_parameters(
-                {"layer_height": 0.24}, {"layer_height": 0.24}, printer_model="H2S"
-            )
+            r["key"]: r for r in diff_parameters({"layer_height": 0.24}, {"layer_height": 0.24}, printer_model="H2S")
         }["layer_height"]
         assert row["match"] is True

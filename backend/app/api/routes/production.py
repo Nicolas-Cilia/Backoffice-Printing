@@ -578,7 +578,6 @@ def _settings_preview(
     content: bytes,
 ) -> ProductionReplacePreview:
     parsed = parse_production_filename(filename)
-    folder_printer = _folder_printer(folder) or ""
     printer_matches = _printer_matches_folder(folder, parsed.printer if parsed else None)
     incoming_settings = extract_production_settings(content)
     if _instance_has_contract(instance):

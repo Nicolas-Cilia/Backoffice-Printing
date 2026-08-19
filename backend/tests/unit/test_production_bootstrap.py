@@ -134,11 +134,7 @@ async def test_bootstrap_seeds_visible_instances_per_printer(db_session: AsyncSe
     await db_session.commit()
 
     instances = (
-        (
-            await db_session.execute(
-                select(ProductionPartInstance).options(selectinload(ProductionPartInstance.part))
-            )
-        )
+        (await db_session.execute(select(ProductionPartInstance).options(selectinload(ProductionPartInstance.part))))
         .scalars()
         .all()
     )
