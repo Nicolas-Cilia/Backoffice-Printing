@@ -258,7 +258,7 @@ export interface PrinterDiagnosticResult {
   checks: DiagnosticCheck[];
 }
 
-// --- Log-health scan: self-service triage on the System page + bug reporter.
+// --- Log-health scan: self-service triage on the System page.
 // The backend matches recent logs against a curated known-issue catalog;
 // human-readable cause/fix text is rendered from i18n keys keyed by signature_id.
 export type LogFindingSeverity = 'error' | 'warning';
@@ -7261,37 +7261,6 @@ export const spoolbuddyApi = {
       `/spoolbuddy/diagnostics/${deviceId}/result?diagnostic=${type}`,
       { method: 'GET' }
     ),
-};
-
-export interface BugReportRequest {
-  description: string;
-  email?: string;
-  screenshot_base64?: string;
-  include_support_info?: boolean;
-  debug_logs?: string;
-}
-
-export interface BugReportResponse {
-  success: boolean;
-  message: string;
-  issue_url?: string;
-  issue_number?: number;
-}
-
-export const bugReportApi = {
-  submit: (data: BugReportRequest) =>
-    request<BugReportResponse>('/bug-report/submit', {
-      method: 'POST',
-      body: JSON.stringify(data),
-    }),
-  startLogging: () =>
-    request<{ started: boolean; was_debug: boolean }>('/bug-report/start-logging', {
-      method: 'POST',
-    }),
-  stopLogging: (wasDebug: boolean) =>
-    request<{ logs: string }>(`/bug-report/stop-logging?was_debug=${wasDebug}`, {
-      method: 'POST',
-    }),
 };
 
 export interface SponsorPromptCheckResponse {

@@ -19,7 +19,6 @@ import { useToast } from '../contexts/ToastContext';
 import { Card, CardHeader, CardContent } from './Card';
 import { parseUTCDate } from '../utils/date';
 import { Button } from './Button';
-import { BugReportBubble } from './BugReportBubble';
 import {
   getHiddenSidebarSystemItemIds,
   getSidebarOrder,
@@ -1017,7 +1016,6 @@ export function Layout() {
           </Card>
         </div>
       )}
-      <BugReportBubble />
     </div>
   );
 }
