@@ -55,6 +55,8 @@ from backend.app.api.routes import (
     print_queue,
     printer_sensor_history,
     printers,
+    production,
+    profile_parts,
     settings as settings_routes,
     slice_jobs,
     slicer_pipelines,
@@ -7629,21 +7631,27 @@ async def auth_middleware(request, call_next):
     # probe — GHSA-6mf4-q26m-47pv: the previous fail-open path here let
     # an attacker who could force a DB exception (e.g. file-descriptor
     # exhaustion via login flood) bypass auth on every protected endpoint.
+    #
+    # ``call_next`` MUST stay outside this try. When auth is disabled the
+    # probe succeeds and the route runs; wrapping dispatch here turned
+    # every handler exception (SQLite lock, 404 HTTPException that
+    # BaseHTTPMiddleware re-raises, …) into a fake "Authentication
+    # service temporarily unavailable" 503.
     try:
         async with async_session() as db:
             from backend.app.core.auth import is_auth_enabled
 
             auth_enabled = await is_auth_enabled(db)
-
-        if not auth_enabled:
-            # Auth disabled, allow all requests
-            return await call_next(request)
     except Exception:
         logging.getLogger(__name__).exception("auth_middleware: failing closed on auth-probe error from %s", path)
         return JSONResponse(
             status_code=503,
             content={"detail": "Authentication service temporarily unavailable"},
         )
+
+    if not auth_enabled:
+        # Auth disabled, allow all requests
+        return await call_next(request)
 
     # Auth is enabled - require valid token
     auth_header = request.headers.get("Authorization")
@@ -7807,6 +7815,8 @@ app.include_router(library.router, prefix=app_settings.api_prefix)
 app.include_router(library_sections.router, prefix=app_settings.api_prefix)
 app.include_router(library_tags.router, prefix=app_settings.api_prefix)
 app.include_router(library_trash.router, prefix=app_settings.api_prefix)
+app.include_router(production.router, prefix=app_settings.api_prefix)
+app.include_router(profile_parts.router, prefix=app_settings.api_prefix)
 app.include_router(slice_jobs.router, prefix=app_settings.api_prefix)
 app.include_router(slicer_pipelines.router, prefix=app_settings.api_prefix)
 app.include_router(pipeline_runs.pipeline_run_create_router, prefix=app_settings.api_prefix)

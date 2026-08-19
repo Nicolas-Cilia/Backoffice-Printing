@@ -16,7 +16,7 @@ from pathlib import Path
 
 from fastapi import APIRouter, Depends, File, HTTPException, Query, Response, UploadFile
 from fastapi.responses import FileResponse as FastAPIFileResponse
-from sqlalchemy import distinct, func, select
+from sqlalchemy import and_, distinct, func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
@@ -31,8 +31,15 @@ from backend.app.core.database import async_session, get_db
 from backend.app.core.permissions import Permission
 from backend.app.core.tasks import spawn_background_task
 from backend.app.models.archive import PrintArchive
-from backend.app.models.library import LibraryFile, LibraryFileTag, LibraryFolder, LibraryFolderSection
+from backend.app.models.library import (
+    SECTION_KIND_PRODUCTION,
+    LibraryFile,
+    LibraryFileTag,
+    LibraryFolder,
+    LibraryFolderSection,
+)
 from backend.app.models.print_queue import PrintQueueItem
+from backend.app.models.production import ProductionPartInstance, ProductionSlot
 from backend.app.models.user import User
 from backend.app.schemas.library import (
     AddToQueueError,
@@ -70,6 +77,8 @@ from backend.app.services.design_settings import (
     overrides_from_config,
 )
 from backend.app.services.plate_thumbnail import inject_plate_thumbnails_if_missing
+from backend.app.services.production_bootstrap import bootstrap_production
+from backend.app.services.production_filename import normalize_production_printer_code
 from backend.app.services.stl_thumbnail import MIN_USABLE_STL_BYTES, generate_stl_thumbnail
 from backend.app.utils.filename import InvalidFilenameError, validate_print_filename
 from backend.app.utils.threemf_tools import (
@@ -724,6 +733,88 @@ async def _backfill_external_stl_thumbnails(folder_ids: list[int]) -> None:
                 await db.commit()
 
 
+PRODUCTION_FOLDER_BLOCK_DETAIL = (
+    "This folder is managed by Production. Use the production add/replace endpoints instead of a generic upload."
+)
+PRODUCTION_ACTIVE_FILE_DELETE_DETAIL = (
+    "This file is an active production slot. Use the production slot delete endpoint instead."
+)
+
+
+async def _apply_production_slot_file_counts(
+    db: AsyncSession, file_counts: dict[int, int], production_folder_ids: list[int]
+) -> None:
+    """Count active production slots instead of every library file in the folder.
+
+    Replace keeps superseded history files in the same folder, so a raw
+    ``LibraryFile`` count would show 2 after a single-slot replace.
+    """
+    if not production_folder_ids:
+        return
+    for folder_id in production_folder_ids:
+        file_counts[folder_id] = 0
+    result = await db.execute(
+        select(ProductionPartInstance.folder_id, func.count(ProductionSlot.id))
+        .join(ProductionSlot, ProductionSlot.instance_id == ProductionPartInstance.id)
+        .where(
+            ProductionPartInstance.folder_id.in_(production_folder_ids),
+            ProductionSlot.active_file_id.isnot(None),
+        )
+        .group_by(ProductionPartInstance.folder_id)
+    )
+    for folder_id, count in result.all():
+        file_counts[folder_id] = count
+
+
+async def _production_display_file_count(db: AsyncSession, folder: LibraryFolder, raw_count: int) -> int:
+    """Return the folder-card count: active slots for production folders."""
+    if not folder.is_tracking():
+        return raw_count
+    overlay: dict[int, int] = {}
+    await _apply_production_slot_file_counts(db, overlay, [folder.id])
+    return overlay.get(folder.id, 0)
+
+
+def _not_superseded_production_file():
+    """Exclude replace-history files that remain in production folders.
+
+    Those rows stay in the folder with ``deleted_at`` null but are not any
+    slot's ``active_file_id``. Folder cards overlay ``file_count`` the same
+    way; library stats must match so Files/Size agree with what users see.
+    Non-production folders (and root) still count every non-trashed file.
+    """
+    production_folder_ids = select(LibraryFolder.id).where(
+        or_(LibraryFolder.parameter_tracking.is_(True), LibraryFolder.production_printer_model.isnot(None))
+    )
+    active_file_ids = select(ProductionSlot.active_file_id).where(ProductionSlot.active_file_id.isnot(None))
+    return ~and_(
+        LibraryFile.folder_id.isnot(None),
+        LibraryFile.folder_id.in_(production_folder_ids),
+        LibraryFile.id.notin_(active_file_ids),
+    )
+
+
+async def _production_folder_block(db: AsyncSession, folder: LibraryFolder | None) -> None:
+    """Raise 409 when *folder* or an ancestor is a production printer folder.
+
+    Production slots are added and replaced through ``/production/*`` so a
+    generic library upload/move cannot land files in those trees.
+    """
+    current = folder
+    seen: set[int] = set()
+    while current is not None:
+        if current.id in seen:
+            break
+        seen.add(current.id)
+        if current.is_tracking():
+            raise HTTPException(status_code=409, detail=PRODUCTION_FOLDER_BLOCK_DETAIL)
+        if current.parent_id is None:
+            break
+        current = (
+            await db.execute(select(LibraryFolder).where(LibraryFolder.id == current.parent_id))
+        ).scalar_one_or_none()
+
+
 # ============ Folder Endpoints ============
 
 
@@ -743,6 +834,10 @@ async def list_folders(
     # Prevent browser caching of folder list
     response.headers["Cache-Control"] = "no-cache, no-store, must-revalidate"
 
+    # Idempotent: creates the Production section + printer folders on first
+    # File Manager load so the landing grid shows them without a dedicated UI call.
+    await bootstrap_production(db)
+
     # Get all folders with the archive join
     result = await db.execute(
         select(LibraryFolder, PrintArchive.print_name)
@@ -758,6 +853,8 @@ async def list_folders(
         .group_by(LibraryFile.folder_id)
     )
     file_counts = dict(file_counts_result.all())
+    production_folder_ids = [folder.id for folder, _ in rows if folder.is_tracking()]
+    await _apply_production_slot_file_counts(db, file_counts, production_folder_ids)
 
     # Latest immediate-child file activity per folder (#1770/#2680). Real on-disk
     # mtime when we have it (external scans populate ``fs_modified_at``), else the
@@ -797,6 +894,8 @@ async def list_folders(
             external_path=folder.external_path,
             external_readonly=folder.external_readonly,
             section_id=folder.section_id,
+            production_printer_model=folder.production_printer_model,
+        parameter_tracking=folder.is_tracking(),
             file_count=file_counts.get(folder.id, 0),
             latest_activity_at=own_activity,
             children=[],
@@ -870,7 +969,7 @@ async def get_folders_by_archive(
             )
         )
         file_count, latest_file = agg_result.one()
-        file_count = file_count or 0
+        file_count = await _production_display_file_count(db, folder, file_count or 0)
         own_activity = folder.fs_modified_at or folder.updated_at
         latest_activity_at = max(own_activity, latest_file) if latest_file is not None else own_activity
 
@@ -886,6 +985,8 @@ async def get_folders_by_archive(
                 external_readonly=folder.external_readonly,
                 external_show_hidden=folder.external_show_hidden,
                 section_id=folder.section_id,
+                production_printer_model=folder.production_printer_model,
+        parameter_tracking=folder.is_tracking(),
                 file_count=file_count,
                 latest_activity_at=latest_activity_at,
                 created_at=folder.created_at,
@@ -903,7 +1004,17 @@ async def create_folder(
     db: AsyncSession = Depends(get_db),
     _: User | None = Depends(require_permission_if_auth_enabled(Permission.LIBRARY_UPLOAD)),
 ):
-    """Create a new folder."""
+    """Create a new folder.
+
+    Root folders may be created already in a section (``section_id``) so the
+    landing grid does not require a follow-up "Move to section". Nested
+    folders ignore ``section_id``. Production-kind sections force
+    ``parameter_tracking`` on every root folder (the client cannot opt
+    out). In a normal section, ``parameter_tracking`` is per-folder.
+    Tracking folders start empty — no printer model and no seeded catalog
+    parts. Optional ``production_printer_model`` still tags bootstrap-style
+    printer folders.
+    """
     # Verify parent exists if specified
     if data.parent_id is not None:
         parent_result = await db.execute(select(LibraryFolder).where(LibraryFolder.id == data.parent_id))
@@ -919,12 +1030,37 @@ async def create_folder(
             raise HTTPException(status_code=404, detail="Archive not found")
         archive_name = archive.print_name
 
+    # Nested folders stay under their parent; section membership is a landing-grid concern.
+    section = None
+    section_id = data.section_id if data.parent_id is None else None
+    if section_id is not None:
+        section = (
+            await db.execute(select(LibraryFolderSection).where(LibraryFolderSection.id == section_id))
+        ).scalar_one_or_none()
+        if section is None:
+            raise HTTPException(status_code=404, detail="Section not found")
+
+    printer_model: str | None = None
+    tracking = False
+    if data.parent_id is None:
+        if data.production_printer_model:
+            printer_model = normalize_production_printer_code(data.production_printer_model) or None
+            if printer_model is None:
+                raise HTTPException(status_code=400, detail="Invalid printer model")
+        tracking = bool(data.parameter_tracking or printer_model)
+        if section is not None and section.kind == SECTION_KIND_PRODUCTION:
+            tracking = True
+
     folder = LibraryFolder(
         name=data.name,
         parent_id=data.parent_id,
         archive_id=data.archive_id,
+        section_id=section.id if section is not None else None,
+        production_printer_model=printer_model,
+        parameter_tracking=tracking,
     )
     db.add(folder)
+    await db.flush()
     await db.commit()
     await db.refresh(folder)
 
@@ -939,6 +1075,8 @@ async def create_folder(
         external_readonly=folder.external_readonly,
         external_show_hidden=folder.external_show_hidden,
         section_id=folder.section_id,
+        production_printer_model=folder.production_printer_model,
+        parameter_tracking=folder.is_tracking(),
         file_count=0,
         # New folder has no files yet — fall back to the folder's own
         # updated_at so this matches the list-route semantics (#1770).
@@ -983,7 +1121,7 @@ async def get_folder(
         )
     )
     file_count, latest_file = agg_result.one()
-    file_count = file_count or 0
+    file_count = await _production_display_file_count(db, folder, file_count or 0)
     latest_activity_at = max(folder.updated_at, latest_file) if latest_file is not None else folder.updated_at
 
     return FolderResponse(
@@ -997,6 +1135,8 @@ async def get_folder(
         external_readonly=folder.external_readonly,
         external_show_hidden=folder.external_show_hidden,
         section_id=folder.section_id,
+        production_printer_model=folder.production_printer_model,
+        parameter_tracking=folder.is_tracking(),
         file_count=file_count,
         latest_activity_at=latest_activity_at,
         created_at=folder.created_at,
@@ -1134,7 +1274,7 @@ async def update_folder(
         )
     )
     file_count, latest_file = agg_result.one()
-    file_count = file_count or 0
+    file_count = await _production_display_file_count(db, folder, file_count or 0)
     latest_activity_at = max(folder.updated_at, latest_file) if latest_file is not None else folder.updated_at
 
     # Get archive name
@@ -1154,6 +1294,8 @@ async def update_folder(
         external_readonly=folder.external_readonly,
         external_show_hidden=folder.external_show_hidden,
         section_id=folder.section_id,
+        production_printer_model=folder.production_printer_model,
+        parameter_tracking=folder.is_tracking(),
         file_count=file_count,
         latest_activity_at=latest_activity_at,
         created_at=folder.created_at,
@@ -1184,6 +1326,8 @@ async def assign_folder_section(
         ).scalar_one_or_none()
         if section is None:
             raise HTTPException(status_code=404, detail="Section not found")
+        if section.kind == SECTION_KIND_PRODUCTION:
+            folder.parameter_tracking = True
 
     folder.section_id = data.section_id
     await db.commit()
@@ -1199,7 +1343,7 @@ async def assign_folder_section(
         )
     )
     file_count, latest_file = agg_result.one()
-    file_count = file_count or 0
+    file_count = await _production_display_file_count(db, folder, file_count or 0)
     latest_activity_at = max(folder.updated_at, latest_file) if latest_file is not None else folder.updated_at
 
     archive_name = None
@@ -1218,6 +1362,8 @@ async def assign_folder_section(
         external_readonly=folder.external_readonly,
         external_show_hidden=folder.external_show_hidden,
         section_id=folder.section_id,
+        production_printer_model=folder.production_printer_model,
+        parameter_tracking=folder.is_tracking(),
         file_count=file_count,
         latest_activity_at=latest_activity_at,
         created_at=folder.created_at,
@@ -2063,6 +2209,7 @@ async def upload_file(
             target_folder = folder_result.scalar_one_or_none()
             if not target_folder:
                 raise HTTPException(status_code=404, detail="Folder not found")
+        await _production_folder_block(db, target_folder)
 
         # Writable external folders write through to the mount so the file is
         # visible outside Bambuddy (#1112); everything else lands under the
@@ -2243,6 +2390,7 @@ async def extract_zip_file(
                     "Extract the ZIP on the external mount and run 'Scan External Folder' instead."
                 ),
             )
+        await _production_folder_block(db, target_folder)
 
     # Save ZIP to temp file
     try:
@@ -4567,8 +4715,10 @@ async def update_file(
         else:
             # Verify folder exists
             folder_result = await db.execute(select(LibraryFolder).where(LibraryFolder.id == data.folder_id))
-            if not folder_result.scalar_one_or_none():
+            target_folder = folder_result.scalar_one_or_none()
+            if not target_folder:
                 raise HTTPException(status_code=404, detail="Folder not found")
+            await _production_folder_block(db, target_folder)
             file.folder_id = data.folder_id
 
     if data.notes is not None:
@@ -4615,6 +4765,12 @@ async def delete_file(
     if not can_modify_all:
         if file.created_by_id != user.id:
             raise HTTPException(status_code=403, detail="You can only delete your own files")
+
+    active_slot = (
+        await db.execute(select(ProductionSlot.id).where(ProductionSlot.active_file_id == file_id).limit(1))
+    ).scalar_one_or_none()
+    if active_slot is not None:
+        raise HTTPException(status_code=409, detail=PRODUCTION_ACTIVE_FILE_DELETE_DETAIL)
 
     if file.is_external:
         # External files bypass the trash — just drop the DB row + our thumbnail.
@@ -4833,6 +4989,7 @@ async def move_files(
         target_folder = folder_result.scalar_one_or_none()
         if not target_folder:
             raise HTTPException(status_code=404, detail="Folder not found")
+        await _production_folder_block(db, target_folder)
         if target_folder.is_external and target_folder.external_readonly:
             raise HTTPException(status_code=403, detail="Cannot move files to a read-only external folder")
 
@@ -4996,7 +5153,9 @@ async def get_library_stats(
     # Stats exclude trashed files — users see counts/sizes for what's actually in the library.
     # Without LIBRARY_READ_ALL the stats reflect only the caller's own files —
     # match what the file list endpoint shows so the numbers stay consistent.
-    file_filters = [LibraryFile.deleted_at.is_(None)]
+    # Superseded production history stays in the folder after replace; omit it
+    # so Files/Size match the active-slot counts on production folder cards.
+    file_filters = [LibraryFile.deleted_at.is_(None), _not_superseded_production_file()]
     if user is not None and not can_read_all:
         file_filters.append(LibraryFile.created_by_id == user.id)
 

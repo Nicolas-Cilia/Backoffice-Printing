@@ -2,7 +2,7 @@ import { useEffect, useMemo, useState } from 'react';
 import { Link, useNavigate } from 'react-router-dom';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { useTranslation } from 'react-i18next';
-import { ArrowLeft, RotateCcw, Save, Trash2, Loader2 } from 'lucide-react';
+import { ChevronLeft, RotateCcw, Save, Trash2, Loader2 } from 'lucide-react';
 
 import { api } from '../api/client';
 import { Button } from '../components/Button';
@@ -94,6 +94,7 @@ export function LibraryTrashPage() {
     mutationFn: (id: number) => api.hardDeleteLibraryTrash(id),
     onSuccess: () => {
       showToast(t('libraryTrash.toast.purged'), 'success');
+      setPending(null);
       queryClient.invalidateQueries({ queryKey: ['library-trash'] });
       queryClient.invalidateQueries({ queryKey: ['library-trash-count'] });
     },
@@ -104,6 +105,7 @@ export function LibraryTrashPage() {
     mutationFn: () => api.emptyLibraryTrash(),
     onSuccess: (result) => {
       showToast(t('libraryTrash.toast.emptied', { count: result.deleted }), 'success');
+      setPending(null);
       queryClient.invalidateQueries({ queryKey: ['library-trash'] });
       queryClient.invalidateQueries({ queryKey: ['library-trash-count'] });
     },
@@ -132,6 +134,7 @@ export function LibraryTrashPage() {
     onSuccess: (_, ids) => {
       showToast(t('libraryTrash.toast.bulkPurged', { count: ids.length }), 'success');
       setSelected(new Set());
+      setPending(null);
       queryClient.invalidateQueries({ queryKey: ['library-trash'] });
       queryClient.invalidateQueries({ queryKey: ['library-trash-count'] });
     },
@@ -143,6 +146,7 @@ export function LibraryTrashPage() {
   const totalBytes = useMemo(() => items.reduce((sum, i) => sum + i.file_size, 0), [items]);
   const allSelected = items.length > 0 && items.every((i) => selected.has(i.id));
   const someSelected = selected.size > 0 && !allSelected;
+  const confirmBusy = deleteMutation.isPending || emptyMutation.isPending || bulkDeleteMutation.isPending;
 
   const toggleOne = (id: number) => {
     setSelected((prev) => {
@@ -166,46 +170,46 @@ export function LibraryTrashPage() {
     } else {
       emptyMutation.mutate();
     }
-    setPending(null);
   };
 
-  return (
-    <div className="p-6 max-w-screen-2xl mx-auto">
-      <div className="flex items-center gap-3 mb-4">
-        <Link
-          to="/files"
-          className="inline-flex items-center gap-1 text-sm text-gray-600 dark:text-gray-400 hover:text-gray-900 dark:hover:text-gray-200"
-        >
-          <ArrowLeft className="w-4 h-4" /> {t('libraryTrash.backToFiles')}
-        </Link>
-      </div>
+  const checkboxClass =
+    'rounded border-bambu-dark-tertiary bg-bambu-dark text-bambu-green focus:ring-bambu-green cursor-pointer';
 
-      <div className="flex items-start justify-between mb-6 gap-4 flex-wrap">
-        <div>
-          <h1 className="text-2xl font-bold text-gray-900 dark:text-gray-100">
-            {t('libraryTrash.title')}
-          </h1>
-          <p className="text-sm text-gray-600 dark:text-gray-400 mt-1">
-            {isAdmin
-              ? t('libraryTrash.subtitleAdmin', { days: retentionDays })
-              : t('libraryTrash.subtitleUser', { days: retentionDays })}
-          </p>
+  return (
+    <div className="p-4 md:p-8 min-h-[calc(100vh-64px)] flex flex-col">
+      <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 mb-6">
+        <div className="flex items-center gap-3">
+          <Link
+            to="/files"
+            className="text-bambu-gray hover:text-white hover:bg-bambu-dark p-1 rounded transition-colors"
+            title={t('libraryTrash.backToFiles')}
+            aria-label={t('libraryTrash.backToFiles')}
+          >
+            <ChevronLeft className="w-5 h-5" />
+          </Link>
+          <div>
+            <h1 className="text-2xl font-bold text-white flex items-center gap-3">
+              <Trash2 className="w-7 h-7 text-bambu-green" />
+              {t('libraryTrash.title')}
+            </h1>
+            <p className="text-bambu-gray mt-1">
+              {isAdmin
+                ? t('libraryTrash.subtitleAdmin', { days: retentionDays })
+                : t('libraryTrash.subtitleUser', { days: retentionDays })}
+            </p>
+          </div>
         </div>
         {items.length > 0 && (
-          <Button
-            variant="secondary"
-            onClick={() => setPending({ type: 'empty' })}
-            className="text-red-600 dark:text-red-400"
-          >
-            <Trash2 className="w-4 h-4 mr-1" />
+          <Button variant="danger" onClick={() => setPending({ type: 'empty' })}>
+            <Trash2 className="w-4 h-4 mr-2" />
             {t('libraryTrash.emptyTrash')}
           </Button>
         )}
       </div>
 
       {isAdmin && settingsQuery.data && (
-        <div className="mb-4 border border-gray-200 dark:border-gray-700 rounded-lg p-3 flex items-center gap-3 bg-gray-50 dark:bg-gray-800/40">
-          <label htmlFor="retention-days" className="text-sm font-medium text-gray-700 dark:text-gray-300">
+        <div className="flex flex-wrap items-center gap-3 mb-6 p-3 bg-bambu-dark-secondary rounded-lg border border-bambu-dark-tertiary">
+          <label htmlFor="retention-days" className="text-sm font-medium text-white">
             {t('libraryTrash.retentionLabel')}
           </label>
           <input
@@ -217,9 +221,9 @@ export function LibraryTrashPage() {
             onChange={(e) =>
               setRetentionDraft(Math.max(1, Math.min(365, parseInt(e.target.value || '0', 10) || 0)))
             }
-            className="w-20 rounded border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-800 text-sm px-2 py-1 text-gray-900 dark:text-gray-100"
+            className="w-20 bg-bambu-dark border border-bambu-dark-tertiary rounded px-3 py-2 text-sm text-white focus:outline-none focus:border-bambu-green"
           />
-          <span className="text-sm text-gray-600 dark:text-gray-400">{t('libraryTrash.days')}</span>
+          <span className="text-sm text-bambu-gray">{t('libraryTrash.days')}</span>
           <Button
             variant="secondary"
             onClick={() => retentionDraft != null && updateRetentionMutation.mutate(retentionDraft)}
@@ -230,56 +234,74 @@ export function LibraryTrashPage() {
             }
             className="ml-auto"
           >
-            <Save className="w-4 h-4 mr-1" />
+            {updateRetentionMutation.isPending ? (
+              <Loader2 className="w-4 h-4 mr-2 animate-spin" />
+            ) : (
+              <Save className="w-4 h-4 mr-2" />
+            )}
             {t('common.save')}
           </Button>
         </div>
       )}
 
       {trashQuery.isLoading ? (
-        <div className="flex items-center gap-2 text-gray-500 dark:text-gray-400">
-          <Loader2 className="w-4 h-4 animate-spin" /> {t('libraryTrash.loading')}
+        <div className="flex-1 flex items-center justify-center">
+          <div className="flex flex-col items-center gap-3">
+            <Loader2 className="w-8 h-8 animate-spin text-bambu-green" />
+            <p className="text-sm text-bambu-gray">{t('libraryTrash.loading')}</p>
+          </div>
         </div>
       ) : items.length === 0 ? (
-        <div className="border border-dashed border-gray-300 dark:border-gray-700 rounded-lg p-12 text-center">
-          <p className="text-gray-500 dark:text-gray-400">{t('libraryTrash.empty')}</p>
+        <div className="flex-1 flex flex-col items-center justify-center py-16">
+          <div className="p-4 bg-bambu-dark rounded-2xl mb-4">
+            <Trash2 className="w-12 h-12 text-bambu-gray/50" />
+          </div>
+          <h3 className="text-lg font-medium text-white mb-2">{t('libraryTrash.empty')}</h3>
         </div>
       ) : (
         <>
-          <div className="flex items-center justify-between mb-2">
-            <div className="text-xs text-gray-500 dark:text-gray-400">
+          <div className="flex flex-wrap items-center gap-2 mb-4 p-2 bg-bambu-dark-secondary rounded-lg border border-bambu-dark-tertiary">
+            <span className="text-sm text-bambu-gray px-2">
               {t('libraryTrash.summary', { count: items.length, size: formatFileSize(totalBytes) })}
-            </div>
+            </span>
             {selected.size > 0 && (
-              <div className="flex items-center gap-2 text-sm">
-                <span className="text-gray-600 dark:text-gray-400">
+              <>
+                <span className="text-sm text-bambu-gray">
                   {t('libraryTrash.selectionCount', { count: selected.size })}
                 </span>
-                <Button
-                  variant="secondary"
-                  onClick={() => bulkRestoreMutation.mutate(Array.from(selected))}
-                  disabled={bulkRestoreMutation.isPending}
-                >
-                  <RotateCcw className="w-4 h-4 mr-1" />
-                  {t('libraryTrash.bulkRestore')}
-                </Button>
-                <Button
-                  variant="secondary"
-                  onClick={() => setPending({ type: 'bulkDelete', count: selected.size })}
-                  disabled={bulkDeleteMutation.isPending}
-                  className="text-red-600 dark:text-red-400"
-                >
-                  <Trash2 className="w-4 h-4 mr-1" />
-                  {t('libraryTrash.bulkPurge')}
-                </Button>
-              </div>
+                <div className="hidden sm:block flex-1" />
+                <div className="w-full sm:w-auto flex flex-wrap items-center gap-2 mt-2 sm:mt-0">
+                  <Button
+                    variant="secondary"
+                    size="sm"
+                    onClick={() => bulkRestoreMutation.mutate(Array.from(selected))}
+                    disabled={bulkRestoreMutation.isPending}
+                  >
+                    {bulkRestoreMutation.isPending ? (
+                      <Loader2 className="w-4 h-4 mr-1 animate-spin" />
+                    ) : (
+                      <RotateCcw className="w-4 h-4 mr-1" />
+                    )}
+                    {t('libraryTrash.bulkRestore')}
+                  </Button>
+                  <Button
+                    variant="danger"
+                    size="sm"
+                    onClick={() => setPending({ type: 'bulkDelete', count: selected.size })}
+                    disabled={bulkDeleteMutation.isPending}
+                  >
+                    <Trash2 className="w-4 h-4 mr-1" />
+                    {t('libraryTrash.bulkPurge')}
+                  </Button>
+                </div>
+              </>
             )}
           </div>
-          <div className="border border-gray-200 dark:border-gray-700 rounded-lg overflow-x-auto">
+          <div className="bg-bambu-dark-secondary rounded-lg border border-bambu-dark-tertiary overflow-x-auto">
             <table className="w-full text-sm">
-              <thead className="bg-gray-50 dark:bg-gray-800 text-left text-gray-600 dark:text-gray-300">
+              <thead className="text-left text-xs text-bambu-gray font-medium border-b border-bambu-dark-tertiary">
                 <tr>
-                  <th className="px-3 py-2 w-10">
+                  <th className="px-4 py-2 w-10">
                     <input
                       type="checkbox"
                       checked={allSelected}
@@ -288,70 +310,74 @@ export function LibraryTrashPage() {
                       }}
                       onChange={toggleAll}
                       aria-label={t('libraryTrash.selectAll')}
-                      className="rounded border-gray-300 cursor-pointer"
+                      className={checkboxClass}
                     />
                   </th>
-                  <th className="px-3 py-2 font-medium">{t('libraryTrash.col.filename')}</th>
-                  <th className="px-3 py-2 font-medium">{t('libraryTrash.col.folder')}</th>
-                  <th className="px-3 py-2 font-medium text-right">{t('libraryTrash.col.size')}</th>
-                  <th className="px-3 py-2 font-medium whitespace-nowrap">{t('libraryTrash.col.deleted')}</th>
-                  <th className="px-3 py-2 font-medium whitespace-nowrap">{t('libraryTrash.col.autoPurge')}</th>
-                  {isAdmin && <th className="px-3 py-2 font-medium">{t('libraryTrash.col.owner')}</th>}
-                  <th className="px-3 py-2 font-medium text-right">{t('libraryTrash.col.actions')}</th>
+                  <th className="px-4 py-2">{t('libraryTrash.col.filename')}</th>
+                  <th className="px-4 py-2">{t('libraryTrash.col.folder')}</th>
+                  <th className="px-4 py-2 text-right">{t('libraryTrash.col.size')}</th>
+                  <th className="px-4 py-2 whitespace-nowrap">{t('libraryTrash.col.deleted')}</th>
+                  <th className="px-4 py-2 whitespace-nowrap">{t('libraryTrash.col.autoPurge')}</th>
+                  {isAdmin && <th className="px-4 py-2">{t('libraryTrash.col.owner')}</th>}
+                  <th className="px-4 py-2 text-right">{t('libraryTrash.col.actions')}</th>
                 </tr>
               </thead>
-              <tbody className="divide-y divide-gray-100 dark:divide-gray-800">
+              <tbody className="divide-y divide-bambu-dark-tertiary">
                 {items.map((item) => (
-                  <tr key={item.id} className="hover:bg-gray-50 dark:hover:bg-gray-800/50">
-                    <td className="px-3 py-2">
+                  <tr key={item.id} className="hover:bg-bambu-dark-tertiary/50 transition-colors">
+                    <td className="px-4 py-3">
                       <input
                         type="checkbox"
                         checked={selected.has(item.id)}
                         onChange={() => toggleOne(item.id)}
                         aria-label={t('libraryTrash.selectOne', { filename: item.filename })}
-                        className="rounded border-gray-300 cursor-pointer"
+                        className={checkboxClass}
                       />
                     </td>
                     <td
-                      className="px-3 py-2 text-gray-900 dark:text-gray-100 truncate max-w-md"
+                      className="px-4 py-3 text-white truncate max-w-md"
                       title={item.filename}
                     >
                       {item.filename}
                     </td>
-                    <td className="px-3 py-2 text-gray-600 dark:text-gray-400">{item.folder_name ?? '—'}</td>
-                    <td className="px-3 py-2 text-right text-gray-600 dark:text-gray-400 tabular-nums whitespace-nowrap">
+                    <td className="px-4 py-3 text-bambu-gray">{item.folder_name ?? '—'}</td>
+                    <td className="px-4 py-3 text-right text-bambu-gray tabular-nums whitespace-nowrap">
                       {formatFileSize(item.file_size)}
                     </td>
-                    <td className="px-3 py-2 text-gray-600 dark:text-gray-400 whitespace-nowrap">
+                    <td className="px-4 py-3 text-bambu-gray whitespace-nowrap">
                       {formatDeletedAt(item.deleted_at)}
                     </td>
-                    <td className="px-3 py-2 text-gray-600 dark:text-gray-400 whitespace-nowrap">
+                    <td className="px-4 py-3 text-bambu-gray whitespace-nowrap">
                       <span title={formatDeletedAt(item.auto_purge_at)}>
                         {t('libraryTrash.autoPurgeIn', { when: formatRelativeDays(item.auto_purge_at) })}
                       </span>
                     </td>
                     {isAdmin && (
-                      <td className="px-3 py-2 text-gray-600 dark:text-gray-400">
+                      <td className="px-4 py-3 text-bambu-gray">
                         {item.created_by_username ?? '—'}
                       </td>
                     )}
-                    <td className="px-3 py-2 text-right whitespace-nowrap">
-                      <button
-                        onClick={() => restoreMutation.mutate(item.id)}
-                        disabled={restoreMutation.isPending}
-                        className="inline-flex items-center gap-1 px-2 py-1 text-xs text-blue-600 hover:text-blue-800 dark:text-blue-400 dark:hover:text-blue-300"
-                      >
-                        <RotateCcw className="w-3.5 h-3.5" />
-                        {t('libraryTrash.restore')}
-                      </button>
-                      <button
-                        onClick={() => setPending({ type: 'delete', id: item.id, filename: item.filename })}
-                        disabled={deleteMutation.isPending}
-                        className="inline-flex items-center gap-1 px-2 py-1 text-xs text-red-600 hover:text-red-800 dark:text-red-400 dark:hover:text-red-300 ml-2"
-                      >
-                        <Trash2 className="w-3.5 h-3.5" />
-                        {t('libraryTrash.purgeNow')}
-                      </button>
+                    <td className="px-4 py-3 text-right whitespace-nowrap">
+                      <div className="inline-flex items-center gap-2">
+                        <Button
+                          variant="secondary"
+                          size="sm"
+                          onClick={() => restoreMutation.mutate(item.id)}
+                          disabled={restoreMutation.isPending}
+                        >
+                          <RotateCcw className="w-4 h-4 mr-1" />
+                          {t('libraryTrash.restore')}
+                        </Button>
+                        <Button
+                          variant="danger"
+                          size="sm"
+                          onClick={() => setPending({ type: 'delete', id: item.id, filename: item.filename })}
+                          disabled={deleteMutation.isPending}
+                        >
+                          <Trash2 className="w-4 h-4 mr-1" />
+                          {t('libraryTrash.purgeNow')}
+                        </Button>
+                      </div>
                     </td>
                   </tr>
                 ))}
@@ -363,7 +389,9 @@ export function LibraryTrashPage() {
 
       {pending && (
         <ConfirmModal
-          onCancel={() => setPending(null)}
+          onCancel={() => {
+            if (!confirmBusy) setPending(null);
+          }}
           onConfirm={handleConfirm}
           title={
             pending.type === 'delete'
@@ -381,14 +409,14 @@ export function LibraryTrashPage() {
           }
           confirmText={t('libraryTrash.confirm.cta')}
           variant="danger"
+          isLoading={confirmBusy}
         />
       )}
 
-      {/* Small escape hatch in case the user navigated here without auth */}
       {trashQuery.isError && (
-        <div className="mt-4 text-sm text-red-600 dark:text-red-400">
+        <div className="mt-4 text-sm text-red-400 flex items-center gap-3">
           {(trashQuery.error as Error | null)?.message ?? t('libraryTrash.loadError')}
-          <Button variant="secondary" onClick={() => navigate('/files')} className="ml-3">
+          <Button variant="secondary" onClick={() => navigate('/files')}>
             {t('libraryTrash.backToFiles')}
           </Button>
         </div>

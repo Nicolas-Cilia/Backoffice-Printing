@@ -37,6 +37,7 @@ class TestFolderSectionCRUD:
         assert body["name"] == "Production"
         assert body["folder_count"] == 0
         assert body["sort_order"] == 1
+        assert body["kind"] == "normal"
 
         r = await async_client.get("/api/v1/library/sections")
         assert r.status_code == 200
@@ -189,3 +190,66 @@ class TestFolderSectionAssignment:
         sections = {s["id"]: s for s in (await async_client.get("/api/v1/library/sections")).json()}
         assert sections[prod["id"]]["folder_count"] == 0
         assert sections[testing["id"]]["folder_count"] == 1
+
+
+class TestFolderCreateIntoSection:
+    """POST /library/folders with section_id — create already assigned to a section."""
+
+    @pytest.mark.asyncio
+    @pytest.mark.integration
+    async def test_create_folder_with_section_id_lands_in_that_section(self, async_client: AsyncClient):
+        section = (await async_client.post("/api/v1/library/sections", json={"name": "Tests"})).json()
+        assert section["kind"] == "normal"
+
+        response = await async_client.post(
+            "/api/v1/library/folders",
+            json={"name": "Widgets", "section_id": section["id"]},
+        )
+        assert response.status_code == 200
+        body = response.json()
+        assert body["name"] == "Widgets"
+        assert body["section_id"] == section["id"]
+        assert body["production_printer_model"] is None
+
+        tree = (await async_client.get("/api/v1/library/folders")).json()
+        created = next(item for item in tree if item["id"] == body["id"])
+        assert created["section_id"] == section["id"]
+
+        sections = (await async_client.get("/api/v1/library/sections")).json()
+        assert next(s["folder_count"] for s in sections if s["id"] == section["id"]) == 1
+
+    @pytest.mark.asyncio
+    @pytest.mark.integration
+    async def test_create_folder_unknown_section_404(self, async_client: AsyncClient):
+        response = await async_client.post(
+            "/api/v1/library/folders",
+            json={"name": "Widgets", "section_id": 999999},
+        )
+        assert response.status_code == 404
+
+    @pytest.mark.asyncio
+    @pytest.mark.integration
+    async def test_nested_folder_ignores_section_id(self, async_client: AsyncClient, folder_factory):
+        parent = await folder_factory(name="Parent")
+        section = (await async_client.post("/api/v1/library/sections", json={"name": "Tests"})).json()
+        response = await async_client.post(
+            "/api/v1/library/folders",
+            json={"name": "Child", "parent_id": parent.id, "section_id": section["id"]},
+        )
+        assert response.status_code == 200
+        assert response.json()["parent_id"] == parent.id
+        assert response.json()["section_id"] is None
+
+    @pytest.mark.asyncio
+    @pytest.mark.integration
+    async def test_create_production_kind_section(self, async_client: AsyncClient):
+        response = await async_client.post(
+            "/api/v1/library/sections",
+            json={"name": "QA Tracking", "kind": "production"},
+        )
+        assert response.status_code == 201
+        assert response.json()["kind"] == "production"
+        assert response.json()["name"] == "QA Tracking"
+
+        listed = (await async_client.get("/api/v1/library/sections")).json()
+        assert next(s["kind"] for s in listed if s["id"] == response.json()["id"]) == "production"

@@ -16,7 +16,7 @@ class LocalPreset(Base):
     id: Mapped[int] = mapped_column(primary_key=True)
     name: Mapped[str] = mapped_column(String(300))
     preset_type: Mapped[str] = mapped_column(String(20))  # filament, printer, process
-    source: Mapped[str] = mapped_column(String(50), default="orcaslicer")  # orcaslicer, manual
+    source: Mapped[str] = mapped_column(String(50), default="orcaslicer")  # bambu, orcaslicer, manual
 
     # Core fields extracted for filtering / AMS config
     filament_type: Mapped[str | None] = mapped_column(String(50))

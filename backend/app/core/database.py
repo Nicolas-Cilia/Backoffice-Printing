@@ -279,6 +279,7 @@ async def init_db():
         print_queue,
         printer,
         printer_sensor_history,
+        profile_part,
         settings,
         shopping_list,
         slicer_pipeline,
@@ -3838,6 +3839,178 @@ async def run_migrations(conn):
         conn,
         "ALTER TABLE library_folders ADD COLUMN section_id INTEGER"
         " REFERENCES library_folder_sections(id) ON DELETE SET NULL",
+    )
+
+    # Migration: Add production_printer_model to library_folders (production
+    # file-slots). Tags a root folder as the library home for a printer model
+    # (X1C, A1M, A1, H2D, H2S). Nullable, no default — identical DDL on
+    # SQLite and Postgres (mirrors the `section_id` migration above).
+    await _safe_execute(
+        conn,
+        "ALTER TABLE library_folders ADD COLUMN production_printer_model VARCHAR(32)",
+    )
+
+    # Migration: hide a production part on one printer without deleting the catalog row.
+    if is_sqlite():
+        await _safe_execute(
+            conn, "ALTER TABLE production_part_instances ADD COLUMN hidden BOOLEAN DEFAULT 0"
+        )
+    else:
+        await _safe_execute(
+            conn, "ALTER TABLE production_part_instances ADD COLUMN hidden BOOLEAN DEFAULT false"
+        )
+
+    # Migration: section kind on library_folder_sections (normal vs production /
+    # parameter-tracking). Default remains normal so existing user-created
+    # sections keep generic-upload behavior. Backfill the bootstrapped
+    # Production section and any section that already has printer folders.
+    await _safe_execute(
+        conn,
+        "ALTER TABLE library_folder_sections ADD COLUMN kind VARCHAR(32) DEFAULT 'normal'",
+    )
+    from sqlalchemy import text as _sql_text
+
+    async with conn.begin_nested():
+        await conn.execute(
+            _sql_text("UPDATE library_folder_sections SET kind = 'normal' WHERE kind IS NULL OR kind = ''")
+        )
+        await conn.execute(
+            _sql_text(
+                "UPDATE library_folder_sections SET kind = 'production' "
+                "WHERE name_key = 'production' OR id IN ("
+                "  SELECT DISTINCT section_id FROM library_folders "
+                "  WHERE production_printer_model IS NOT NULL AND section_id IS NOT NULL"
+                ")"
+            )
+        )
+
+    # Migration: folder-level parameter tracking (replace-only uploads /
+    # ProductionFolderView) independent of production_printer_model. Backfill
+    # existing Production printer folders so they keep slot UI and 409 guards.
+    if is_sqlite():
+        await _safe_execute(
+            conn, "ALTER TABLE library_folders ADD COLUMN parameter_tracking BOOLEAN DEFAULT 0"
+        )
+    else:
+        await _safe_execute(
+            conn, "ALTER TABLE library_folders ADD COLUMN parameter_tracking BOOLEAN DEFAULT false"
+        )
+    async with conn.begin_nested():
+        await conn.execute(
+            _sql_text(
+                "UPDATE library_folders SET parameter_tracking = "
+                + ("1" if is_sqlite() else "true")
+                + " WHERE production_printer_model IS NOT NULL AND production_printer_model != ''"
+                " OR section_id IN (SELECT id FROM library_folder_sections WHERE kind = 'production')"
+            )
+        )
+        await conn.execute(
+            _sql_text(
+                "UPDATE library_folders SET parameter_tracking = "
+                + ("0" if is_sqlite() else "false")
+                + " WHERE parameter_tracking IS NULL"
+            )
+        )
+
+    # Migration: part-section parameter tracking. Existing sections keep the
+    # shared print-settings contract (default true). Create may opt out.
+    if is_sqlite():
+        await _safe_execute(
+            conn, "ALTER TABLE profile_part_sections ADD COLUMN parameter_tracking BOOLEAN DEFAULT 1"
+        )
+    else:
+        await _safe_execute(
+            conn,
+            "ALTER TABLE profile_part_sections ADD COLUMN parameter_tracking BOOLEAN DEFAULT true",
+        )
+    async with conn.begin_nested():
+        await conn.execute(
+            _sql_text(
+                "UPDATE profile_part_sections SET parameter_tracking = "
+                + ("1" if is_sqlite() else "true")
+                + " WHERE parameter_tracking IS NULL"
+            )
+        )
+
+    await _migrate_production_instance_folder_uniqueness(conn)
+
+
+async def _migrate_production_instance_folder_uniqueness(conn) -> None:
+    """Widen part-instance uniqueness from (part, printer) to (part, printer, folder).
+
+    A second parameter-tracking section can then have its own A1/X1C folder
+    without colliding with the bootstrapped Production instances.
+    """
+    from sqlalchemy import text
+
+    if is_sqlite():
+        exists = (
+            await conn.execute(
+                text("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'production_part_instances'")
+            )
+        ).scalar_one_or_none()
+        if exists is None:
+            return
+        await _safe_execute(conn, "DROP INDEX IF EXISTS uq_production_part_instance_part_printer")
+        needs_rebuild = False
+        index_rows = (await conn.execute(text("PRAGMA index_list('production_part_instances')"))).all()
+        for row in index_rows:
+            unique = row[2]
+            name = row[1]
+            if not unique:
+                continue
+            cols = [info[2] for info in (await conn.execute(text(f'PRAGMA index_info("{name}")'))).all()]
+            if cols == ["part_id", "printer_model"]:
+                needs_rebuild = True
+                break
+        if needs_rebuild:
+            async with conn.begin_nested():
+                await conn.execute(
+                    text(
+                        """
+                        CREATE TABLE production_part_instances__new (
+                            id INTEGER PRIMARY KEY,
+                            part_id INTEGER NOT NULL,
+                            printer_model VARCHAR(32) NOT NULL,
+                            folder_id INTEGER NOT NULL,
+                            locked_parameters JSON,
+                            hidden BOOLEAN DEFAULT 0,
+                            created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+                            updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+                            CONSTRAINT uq_production_part_instance_part_printer_folder
+                                UNIQUE (part_id, printer_model, folder_id)
+                        )
+                        """
+                    )
+                )
+                await conn.execute(
+                    text(
+                        "INSERT INTO production_part_instances__new "
+                        "(id, part_id, printer_model, folder_id, locked_parameters, hidden, created_at, updated_at) "
+                        "SELECT id, part_id, printer_model, folder_id, locked_parameters, hidden, created_at, updated_at "
+                        "FROM production_part_instances"
+                    )
+                )
+                await conn.execute(text("DROP TABLE production_part_instances"))
+                await conn.execute(
+                    text("ALTER TABLE production_part_instances__new RENAME TO production_part_instances")
+                )
+        await _safe_execute(
+            conn,
+            "CREATE UNIQUE INDEX IF NOT EXISTS uq_production_part_instance_part_printer_folder "
+            "ON production_part_instances (part_id, printer_model, folder_id)",
+        )
+        return
+
+    await _safe_execute(
+        conn,
+        "ALTER TABLE production_part_instances DROP CONSTRAINT IF EXISTS uq_production_part_instance_part_printer",
+    )
+    await _safe_execute(
+        conn,
+        "ALTER TABLE production_part_instances "
+        "ADD CONSTRAINT uq_production_part_instance_part_printer_folder "
+        "UNIQUE (part_id, printer_model, folder_id)",
     )
 
 

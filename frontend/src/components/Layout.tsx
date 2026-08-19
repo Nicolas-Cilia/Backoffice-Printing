@@ -26,6 +26,7 @@ import {
   saveSidebarOrder,
   SIDEBAR_LAYOUT_CHANGED_EVENT,
 } from '../utils/sidebarLayout';
+import { FILE_MANAGER_HOME_EVENT } from '../utils/fileManagerNav';
 
 
 interface NavItem {
@@ -410,7 +411,14 @@ export function Layout() {
           // Internal nav item
           const navItem = navItemsMap.get(id);
           if (navItem) {
-            navigate(navItem.to);
+            if (navItem.id === 'files' && location.pathname === '/files') {
+              window.dispatchEvent(new Event(FILE_MANAGER_HOME_EVENT));
+              if (location.search) {
+                navigate('/files', { replace: true });
+              }
+            } else {
+              navigate(navItem.to);
+            }
           }
         }
         return;
@@ -426,7 +434,7 @@ export function Layout() {
           break;
       }
     }
-  }, [navigate, orderedSidebarIds, navItemsMap, extLinksMap]);
+  }, [navigate, orderedSidebarIds, navItemsMap, extLinksMap, location.pathname, location.search]);
 
   useEffect(() => {
     document.addEventListener('keydown', handleKeyDown);
@@ -434,7 +442,7 @@ export function Layout() {
   }, [handleKeyDown]);
 
   return (
-    <div className="flex min-h-screen">
+    <div className="flex h-dvh overflow-hidden">
       {/* Compact Header */}
       {isSidebarCompact && (
         <header className="fixed top-0 left-0 right-0 z-40 h-14 bg-bambu-dark-secondary border-b border-bambu-dark-tertiary flex items-center px-4">
@@ -552,6 +560,14 @@ export function Layout() {
                   <li key={id}>
                     <NavLink
                       to={to}
+                      onClick={(e) => {
+                        if (id !== 'files' || location.pathname !== '/files') return;
+                        e.preventDefault();
+                        window.dispatchEvent(new Event(FILE_MANAGER_HOME_EVENT));
+                        if (location.search) {
+                          navigate('/files', { replace: true });
+                        }
+                      }}
                       className={({ isActive }) =>
                         `flex items-center ${isSidebarCompact || sidebarExpanded ? 'gap-3 px-4' : 'justify-center px-2'} py-3 rounded-lg transition-colors group ${
                           isActive
@@ -770,8 +786,8 @@ export function Layout() {
       </aside>
 
       {/* Main content */}
-      <main className={`flex-1 bg-bambu-dark overflow-auto transition-all duration-300 ${
-        isSidebarCompact ? 'mt-14' : sidebarExpanded ? 'ml-64' : 'ml-16'
+      <main className={`flex-1 min-h-0 flex flex-col bg-bambu-dark overflow-auto transition-all duration-300 ${
+        isSidebarCompact ? 'mt-14 h-[calc(100dvh-3.5rem)]' : sidebarExpanded ? 'ml-64' : 'ml-16'
       }`}>
         {/* Debug logging indicator */}
         {debugLoggingState?.enabled && (
