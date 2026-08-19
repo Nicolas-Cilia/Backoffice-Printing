@@ -26,8 +26,6 @@ export default {
     switchToSystem: 'Mudar para modo do sistema',
     smartSwitches: 'Interruptores inteligentes',
     logout: 'Sair',
-    installApp: 'Instalar app',
-    installAppSuccess: 'Bambuddy foi instalado',
   },
 
   // Common

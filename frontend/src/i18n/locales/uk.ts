@@ -26,8 +26,6 @@ export default {
     switchToSystem: "Перейти в системний режим",
     smartSwitches: "Розумні перемикачі",
     logout: "Вийти",
-    installApp: "Встановити додаток",
-    installAppSuccess: "Bambuddy встановлено",
   },
 
   // Common

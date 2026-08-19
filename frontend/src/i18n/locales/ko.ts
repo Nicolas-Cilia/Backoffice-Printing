@@ -25,8 +25,6 @@ export default {
     switchToSystem: '기기 설정으로 전환',
     smartSwitches: '스마트 스위치',
     logout: '로그아웃',
-    installApp: '앱 설치',
-    installAppSuccess: 'Bambuddy가 설치되었습니다'
   },
   common: {
     save: '저장',

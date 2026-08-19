@@ -25,8 +25,6 @@ export default {
     switchToSystem: "Использовать системную тему",
     smartSwitches: "Умные выключатели",
     logout: "Выйти",
-    installApp: "Установить приложение",
-    installAppSuccess: "Bambuddy установлен",
   },
   common: {
     save: "Сохранить",

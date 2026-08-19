@@ -26,8 +26,6 @@ export default {
     switchToSystem: '切換到系統模式',
     smartSwitches: '智慧開關',
     logout: '登出',
-    installApp: '安裝應用程式',
-    installAppSuccess: 'Bambuddy 已安裝',
   },
 
   // Common

@@ -26,8 +26,6 @@ export default {
     switchToSystem: 'Sistem moduna geç',
     smartSwitches: 'Akıllı Anahtarlar',
     logout: 'Çıkış',
-    installApp: 'Uygulamayı yükle',
-    installAppSuccess: 'Bambuddy yüklendi',
   },
 
   // Ortak
