@@ -202,10 +202,12 @@ describe('InventoryPage — forecast tab button permission', () => {
   it('disables forecast tab when user lacks inventory:forecast_read', async () => {
     mockNoReadAccess();
     inventoryApis();
+    const user = userEvent.setup();
     render(<InventoryPageRouter />);
 
-    // Wait for auth to settle (page content appears)
-    await screen.findByText(/spool inventory/i);
+    // The router now lands on the Tracking tab by default; the Forecast
+    // button lives on the Spools tab.
+    await user.click(await screen.findByRole('button', { name: /spools/i }));
 
     // Button should be disabled once auth is resolved
     await waitFor(() => {
@@ -217,9 +219,10 @@ describe('InventoryPage — forecast tab button permission', () => {
   it('enables forecast tab when user has inventory:forecast_read', async () => {
     mockReadOnlyAccess();
     inventoryApis();
+    const user = userEvent.setup();
     render(<InventoryPageRouter />);
 
-    await screen.findByText(/spool inventory/i);
+    await user.click(await screen.findByRole('button', { name: /spools/i }));
 
     await waitFor(() => {
       const btn = screen.getByRole('button', { name: /forecast/i });
@@ -233,7 +236,7 @@ describe('InventoryPage — forecast tab button permission', () => {
     const user = userEvent.setup();
     render(<InventoryPageRouter />);
 
-    await screen.findByText(/spool inventory/i);
+    await user.click(await screen.findByRole('button', { name: /spools/i }));
 
     // Wait until button is disabled (auth settled)
     const forecastBtn = await screen.findByRole('button', { name: /forecast/i });

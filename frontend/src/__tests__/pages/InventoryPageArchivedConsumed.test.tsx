@@ -157,6 +157,7 @@ const mockSpools = [
 
 describe('InventoryPage — Total Consumed includes archived (#1390 follow-up)', () => {
   beforeEach(() => {
+    window.history.pushState({}, '', '/inventory?tab=spools');
     server.use(
       http.get('/api/v1/settings/', () => HttpResponse.json(baseSettings)),
       http.get('/api/v1/inventory/spools', () => HttpResponse.json(mockSpools)),

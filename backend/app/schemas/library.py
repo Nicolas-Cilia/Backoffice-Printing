@@ -1,8 +1,13 @@
 """Pydantic schemas for library (File Manager) functionality."""
 
 from datetime import datetime
+from typing import Literal
 
 from pydantic import BaseModel, Field
+
+from backend.app.models.library import SECTION_KIND_NORMAL
+
+SectionKind = Literal["normal", "production"]
 
 # ============ Folder Schemas ============
 
@@ -13,6 +18,14 @@ class FolderCreate(BaseModel):
     name: str = Field(..., min_length=1, max_length=255)
     parent_id: int | None = None
     archive_id: int | None = None
+    # Root-folder landing section. Ignored when parent_id is set (nested folders).
+    section_id: int | None = None
+    # Optional printer tag (bootstrap Production folders). Not required to
+    # enable tracking — use ``parameter_tracking`` instead.
+    production_printer_model: str | None = Field(None, max_length=32)
+    # Root-folder parameter tracking (replace-only uploads / production slots).
+    # Independent of section kind and of ``production_printer_model``.
+    parameter_tracking: bool = False
 
 
 class ExternalFolderCreate(BaseModel):
@@ -49,6 +62,10 @@ class FolderResponse(BaseModel):
     # meaningful for root-level folders (parent_id is None) — see
     # LibraryFolderSection.
     section_id: int | None = None
+    # Production file-slots printer model this folder represents (X1C, A1M, ...).
+    # Null for ordinary library folders and for tracking folders not bound to a printer.
+    production_printer_model: str | None = None
+    parameter_tracking: bool = False
     file_count: int = 0  # Computed field
     # max(folder.updated_at, max(immediate-child file.updated_at)). Used by the
     # File Manager folder tree's "sort by recent activity" mode (#1770) so that
@@ -89,6 +106,9 @@ class FolderTreeItem(BaseModel):
     external_readonly: bool = False
     # See FolderResponse.section_id — folder-sections feature.
     section_id: int | None = None
+    # See FolderResponse.production_printer_model — production file-slots.
+    production_printer_model: str | None = None
+    parameter_tracking: bool = False
     file_count: int = 0
     # See FolderResponse.latest_activity_at — #1770 folder sort source.
     latest_activity_at: datetime | None = None
@@ -105,6 +125,7 @@ class FolderSectionCreate(BaseModel):
     """Schema for creating a new folder-picker section."""
 
     name: str = Field(..., min_length=1, max_length=255)
+    kind: SectionKind = SECTION_KIND_NORMAL
 
 
 class FolderSectionUpdate(BaseModel):
@@ -120,6 +141,7 @@ class FolderSectionResponse(BaseModel):
     name: str
     sort_order: int
     folder_count: int = 0
+    kind: SectionKind = SECTION_KIND_NORMAL
     created_at: datetime
     updated_at: datetime
 

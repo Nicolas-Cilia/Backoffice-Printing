@@ -111,6 +111,7 @@ import type { HeaterSensorKind } from '../api/client';
 import { FilamentHoverCard, EmptySlotHoverCard } from '../components/FilamentHoverCard';
 import { LinkSpoolModal } from '../components/LinkSpoolModal';
 import { AssignSpoolModal } from '../components/AssignSpoolModal';
+import { AssignTrackingColorModal } from '../components/AssignTrackingColorModal';
 import { ConfigureAmsSlotModal } from '../components/ConfigureAmsSlotModal';
 import { useToast } from '../contexts/ToastContext';
 import { ChamberLight } from '../components/icons/ChamberLight';
@@ -1901,6 +1902,10 @@ function PrinterCard({
     trayId: number;
     trayInfo: { type: string; color: string; location: string; material?: string; profile?: string };
   } | null>(null);
+  const [assignTrackingModal, setAssignTrackingModal] = useState<{
+    amsId: number;
+    trayId: number;
+  } | null>(null);
   const [configureSlotModal, setConfigureSlotModal] = useState<{
     amsId: number;
     trayId: number;
@@ -2049,6 +2054,37 @@ function PrinterCard({
     queryFn: () => api.getSlotPresets(printer.id),
     staleTime: 2 * 60 * 1000, // 2 minutes
   });
+
+  const { data: trackingAssignments = [] } = useQuery({
+    queryKey: ['filament-tracking-assignments', printer.id],
+    queryFn: () => api.getFilamentTrackingAssignments(printer.id),
+  });
+  const unassignTrackingMutation = useMutation({
+    mutationFn: ({ amsId, trayId }: { amsId: number; trayId: number }) =>
+      api.unassignFilamentTrackingSlot(printer.id, amsId, trayId),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['filament-tracking-assignments', printer.id] });
+    },
+  });
+  const trackingForSlot = (amsId: number, trayId: number) => {
+    const assigned = trackingAssignments.find((row) => row.ams_id === amsId && row.tray_id === trayId) ?? null;
+    return {
+      assigned: assigned
+        ? {
+            bucket_id: assigned.bucket_id,
+            color_name: assigned.color_name,
+            material: assigned.material,
+            brand: assigned.brand,
+            subtype: assigned.subtype,
+            color_hex: assigned.color_hex,
+          }
+        : null,
+      onAssign: () => setAssignTrackingModal({ amsId, trayId }),
+      onUnassign: assigned
+        ? () => unassignTrackingMutation.mutate({ amsId, trayId })
+        : undefined,
+    };
+  };
 
   // Fetch plate list for the archive linked to the active print (#881 follow-up).
   // Only queried when there's a running print backed by an archive; shared
@@ -5046,6 +5082,7 @@ function PrinterCard({
                                             isAssigned: !!assignment || isBambuLabSpool(tray),
                                           };
                                         })()}
+                                        tracking={trackingForSlot(ams.id, slotIdx)}
                                         configureSlot={{
                                           enabled: hasPermission('printers:control'),
                                           onConfigure: () => setConfigureSlotModal({
@@ -5426,6 +5463,7 @@ function PrinterCard({
                                         isAssigned: !!assignment || isBambuLabSpool(tray),
                                       };
                                     })()}
+                                    tracking={trackingForSlot(ams.id, htSlotId)}
                                     configureSlot={{
                                       enabled: hasPermission('printers:control'),
                                       onConfigure: () => setConfigureSlotModal({
@@ -5698,6 +5736,7 @@ function PrinterCard({
                                           isAssigned: !!assignment || isBambuLabSpool(extTray),
                                         };
                                       })()}
+                                      tracking={trackingForSlot(255, slotTrayId)}
                                       configureSlot={{
                                         enabled: hasPermission('printers:control'),
                                         onConfigure: () => setConfigureSlotModal({
@@ -6491,6 +6530,15 @@ function PrinterCard({
           trayId={assignSpoolModal.trayId}
           trayInfo={assignSpoolModal.trayInfo}
           spoolmanEnabled={!!spoolmanEnabled}
+        />
+      )}
+
+      {assignTrackingModal && (
+        <AssignTrackingColorModal
+          printerId={printer.id}
+          amsId={assignTrackingModal.amsId}
+          trayId={assignTrackingModal.trayId}
+          onClose={() => setAssignTrackingModal(null)}
         />
       )}
 

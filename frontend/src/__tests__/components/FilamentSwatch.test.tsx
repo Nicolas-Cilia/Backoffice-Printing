@@ -283,6 +283,49 @@ describe('Sparkle prominence + checkerboard density (#1154 follow-up cosmetic)',
     expect(Number(tableR[1])).toBeLessThan(Number(barR[1]));
     expect(Number(tableR[2])).toBeLessThan(Number(barR[2]));
   });
+
+  it('paints the main color as the field and extra colors as sparkle flecks', () => {
+    // Reporter: hex #FFFFFF + extra 000000 + Sparkle rendered as a black
+    // field with white dots because extra stops replaced the colour layer
+    // and flecks stayed cream. Main fill + extra flecks is the correct map.
+    const bg = buildFilamentBackground({
+      rgba: 'ffffffff',
+      extraColors: '000000',
+      effectType: 'sparkle',
+      effectSize: 'table',
+    });
+    const css = bg.backgroundImage;
+
+    expect(css.toLowerCase()).toMatch(/linear-gradient\(\s*#ffffffff\s*,\s*#ffffffff\s*\)/);
+    expect(css).not.toMatch(/linear-gradient\([^)]*#000000/i);
+    expect((css.match(/radial-gradient/g) ?? []).length).toBe(5);
+    expect(css).toMatch(/radial-gradient[^;]*rgba\(\s*0\s*,\s*0\s*,\s*0\s*,/);
+    expect(css).not.toMatch(/rgba\(\s*255\s*,\s*248\s*,\s*220/);
+  });
+
+  it('keeps cream flecks when sparkle has no extra colors', () => {
+    const bg = buildFilamentBackground({
+      rgba: 'ff0000ff',
+      effectType: 'sparkle',
+      effectSize: 'table',
+    });
+    expect(bg.backgroundImage.toLowerCase()).toContain('#ff0000ff');
+    expect(bg.backgroundImage).toMatch(/rgba\(\s*255\s*,\s*248\s*,\s*220/);
+  });
+
+  it('does not steal extra-color gradient stops when the effect is not sparkle', () => {
+    const bg = buildFilamentBackground({
+      rgba: 'ffffffff',
+      extraColors: '000000,ff0000',
+      effectType: 'gradient',
+      effectSize: 'table',
+    });
+    const lower = bg.backgroundImage.toLowerCase();
+    expect(lower).toContain('135deg');
+    expect(lower).toContain('#000000');
+    expect(lower).toContain('#ff0000');
+    expect(lower).not.toMatch(/radial-gradient/);
+  });
 });
 
 describe('buildFilamentBackground', () => {

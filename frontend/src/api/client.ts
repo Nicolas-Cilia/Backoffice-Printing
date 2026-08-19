@@ -209,6 +209,42 @@ async function uploadSpoolsCsv<T>(file: File, dryRun: boolean): Promise<T> {
   return response.json();
 }
 
+/** Multipart POST that does not set Content-Type (browser sets the boundary).
+ *  Parses FastAPI `detail` as a string, validation array, or `{message}` object. */
+async function postFormData<T>(endpoint: string, formData: FormData): Promise<T> {
+  const headers: Record<string, string> = {};
+  if (authToken) {
+    headers.Authorization = `Bearer ${authToken}`;
+  }
+  const response = await fetch(`${API_BASE}${endpoint}`, {
+    method: 'POST',
+    headers,
+    body: formData,
+    credentials: 'include',
+    cache: 'no-store',
+  });
+  if (!response.ok) {
+    const error = await response.json().catch(() => ({}));
+    const detail = (error as { detail?: unknown }).detail;
+    let message: string;
+    if (typeof detail === 'string') {
+      message = detail;
+    } else if (Array.isArray(detail)) {
+      const joined = detail
+        .map((e: { msg?: string }) => (e.msg ?? '').replace(/^Value error,\s*/i, ''))
+        .filter(Boolean)
+        .join('; ');
+      message = joined || `HTTP ${response.status}`;
+    } else if (detail && typeof detail === 'object' && typeof (detail as { message?: unknown }).message === 'string') {
+      message = (detail as { message: string }).message;
+    } else {
+      message = `HTTP ${response.status}`;
+    }
+    throw new ApiError(message, response.status);
+  }
+  return response.json();
+}
+
 // Camera diagnostic result (#1395 follow-up). Returned by
 // POST /printers/{id}/camera/diagnose; the frontend modal renders one
 // row per stage and looks up the summary code in i18n for the user-
@@ -1578,6 +1614,7 @@ export interface LocalPreset {
   version: string | null;
   created_at: string;
   updated_at: string;
+  locked_parameters?: Record<string, unknown> | null;
 }
 
 export interface LocalPresetDetail extends LocalPreset {
@@ -1595,6 +1632,72 @@ export interface ImportResponse {
   imported: number;
   skipped: number;
   errors: string[];
+}
+
+export interface ProfilePartPresetSummary {
+  id: number;
+  name: string;
+  printer_model: string;
+  locked_parameters?: Record<string, unknown> | null;
+}
+
+export interface ProfilePartSlotView {
+  id: number;
+  printer_model: string;
+  last_mismatch: boolean;
+  spec_status: 'mismatch' | 'match';
+  parameter_diff: ProductionParameterDiff[];
+  parameter_overrides?: Record<string, unknown> | null;
+  preset: ProfilePartPresetSummary | null;
+}
+
+export interface ProfilePartSectionView {
+  id: number;
+  name: string;
+  locked_parameters: Record<string, unknown> | null;
+  parameter_tracking: boolean;
+  created_at: string;
+  updated_at: string;
+  slots: ProfilePartSlotView[];
+}
+
+export interface ProfilePartReplacePreview {
+  parameter_diff: ProductionParameterDiff[];
+  has_mismatches: boolean;
+  incoming_parameters: Record<string, unknown>;
+  printer_model: string;
+}
+
+export interface ProfilePartImportAttached {
+  slot: ProfilePartSlotView;
+  spec_status: 'mismatch' | 'match';
+  parameter_diff: ProductionParameterDiff[];
+}
+
+export interface ProfilePartImportNeedsReplace {
+  printer_model: string;
+  preset_id: number;
+  preset_name: string;
+  existing_slot_id: number;
+  preview: ProfilePartReplacePreview;
+}
+
+export interface ProfilePartImportNeedsConfirm {
+  printer_model: string;
+  preset_id: number;
+  preset_name: string;
+  preview: ProfilePartReplacePreview;
+}
+
+export interface ProfilePartImportResponse {
+  success: boolean;
+  imported: number;
+  skipped: number;
+  errors: string[];
+  attached: ProfilePartImportAttached[];
+  needs_replace: ProfilePartImportNeedsReplace[];
+  needs_confirm: ProfilePartImportNeedsConfirm[];
+  section: ProfilePartSectionView;
 }
 
 export interface FieldOption {
@@ -2889,6 +2992,105 @@ export interface ShoppingListItemCreate {
   color_name: string | null;
   quantity_spools: number;
   note?: string | null;
+}
+
+export type FilamentTrackingStage = 'collecting' | 'day' | 'week' | 'month';
+
+export interface FilamentTrackingMaterial {
+  bucket_id: number;
+  color_name: string;
+  material: string;
+  brand?: string | null;
+  subtype?: string | null;
+  extra_colors?: string | null;
+  effect_type?: string | null;
+  color_hex: string | null;
+  on_hand_grams: number;
+  stock_initialized: boolean;
+  spool_weight_grams: number;
+  spool_equivalent: number;
+  observed_usage_grams: number;
+  daily_rate_grams: number;
+  monthly_estimate_grams: number;
+  projected_remaining_grams: number;
+  recommended_spools: number;
+  days_of_cover: number | null;
+  days_until_order?: number | null;
+  lead_time_days?: number;
+  reorder_grams?: number | null;
+  stage: FilamentTrackingStage;
+  cost_per_kg?: number | null;
+  on_hand_value?: number | null;
+  monthly_cost_estimate?: number | null;
+}
+
+export interface FilamentTrackingPlan {
+  stage: FilamentTrackingStage;
+  days_observed: number;
+  window_label: string;
+  materials: FilamentTrackingMaterial[];
+  total_on_hand_grams: number;
+  total_observed_usage_grams: number;
+  total_monthly_estimate_grams: number;
+  total_on_hand_value?: number | null;
+  total_monthly_cost_estimate?: number | null;
+  total_recommended_spools: number;
+  soonest_days_until_order?: number | null;
+  tracking_started_at: string | null;
+}
+
+export interface FilamentTrackingEvent {
+  id: number;
+  bucket_id: number;
+  color_name: string;
+  material: string;
+  brand?: string | null;
+  subtype?: string | null;
+  extra_colors?: string | null;
+  effect_type?: string | null;
+  color_hex: string | null;
+  grams: number;
+  occurred_at: string;
+  kind: string;
+  progress: number | null;
+  archive_id: number | null;
+  printer_id: number | null;
+  print_name: string | null;
+}
+
+export interface FilamentTrackingBucketCreate {
+  color_name: string;
+  material: string;
+  brand?: string | null;
+  subtype?: string | null;
+  extra_colors?: string | null;
+  effect_type?: string | null;
+  color_hex?: string | null;
+  on_hand_grams?: number;
+  spool_weight_grams?: number;
+  cost_per_kg?: number | null;
+  lead_time_days?: number;
+}
+
+export interface FilamentTrackingPrinterConsumption {
+  printer_id: number;
+  name: string;
+  grams: number;
+}
+
+export interface FilamentTrackingAssignment {
+  id: number;
+  printer_id: number;
+  ams_id: number;
+  tray_id: number;
+  bucket_id: number;
+  color_name: string;
+  material: string;
+  brand?: string | null;
+  subtype?: string | null;
+  extra_colors?: string | null;
+  effect_type?: string | null;
+  color_hex: string | null;
 }
 
 // Update types
@@ -5231,6 +5433,60 @@ export const api = {
     request<{ status: string }>(`/inventory/spools/${spoolId}/usage`, { method: 'DELETE' }),
   syncWeightsFromAms: () =>
     request<{ synced: number; skipped: number }>('/inventory/sync-ams-weights', { method: 'POST' }),
+  getFilamentTrackingPlan: () =>
+    request<FilamentTrackingPlan>('/filament-tracking/plan'),
+  getFilamentTrackingEvents: (limit = 40) =>
+    request<FilamentTrackingEvent[]>(`/filament-tracking/events?limit=${limit}`),
+  getFilamentTrackingPrinterConsumption: () =>
+    request<FilamentTrackingPrinterConsumption[]>('/filament-tracking/printer-consumption'),
+  createFilamentTrackingBucket: (data: FilamentTrackingBucketCreate) =>
+    request<FilamentTrackingMaterial>('/filament-tracking/buckets', {
+      method: 'POST',
+      body: JSON.stringify(data),
+    }),
+  updateFilamentTrackingBucket: (
+    id: number,
+    data: {
+      color_name?: string;
+      material?: string;
+      brand?: string | null;
+      subtype?: string | null;
+      extra_colors?: string | null;
+      effect_type?: string | null;
+      on_hand_grams?: number;
+      add_grams?: number;
+      color_hex?: string | null;
+      spool_weight_grams?: number;
+      cost_per_kg?: number | null;
+      lead_time_days?: number;
+    },
+  ) =>
+    request<FilamentTrackingMaterial>(`/filament-tracking/buckets/${id}`, {
+      method: 'PATCH',
+      body: JSON.stringify(data),
+    }),
+  deleteFilamentTrackingBucket: (id: number) =>
+    request<{ status: string }>(`/filament-tracking/buckets/${id}`, { method: 'DELETE' }),
+  getFilamentTrackingAssignments: (printerId?: number) =>
+    request<FilamentTrackingAssignment[]>(
+      printerId != null
+        ? `/filament-tracking/assignments?printer_id=${printerId}`
+        : '/filament-tracking/assignments',
+    ),
+  assignFilamentTrackingSlot: (data: {
+    printer_id: number;
+    ams_id: number;
+    tray_id: number;
+    bucket_id: number;
+  }) =>
+    request<FilamentTrackingAssignment>('/filament-tracking/assignments', {
+      method: 'POST',
+      body: JSON.stringify(data),
+    }),
+  unassignFilamentTrackingSlot: (printerId: number, amsId: number, trayId: number) =>
+    request<{ status: string }>(`/filament-tracking/assignments/${printerId}/${amsId}/${trayId}`, {
+      method: 'DELETE',
+    }),
   getSkuSettings: () =>
     request<FilamentSkuSettings[]>('/inventory/sku-settings'),
   upsertSkuSettings: (data: Omit<FilamentSkuSettings, 'id'>) =>
@@ -5641,10 +5897,10 @@ export const api = {
   getLibraryFoldersByArchive: (archiveId: number) =>
     request<LibraryFolder[]>(`/library/folders/by-archive/${archiveId}`),
   getLibraryFolderSections: () => request<LibraryFolderSection[]>('/library/sections'),
-  createLibraryFolderSection: (name: string) =>
+  createLibraryFolderSection: (data: { name: string; kind?: 'normal' | 'production' }) =>
     request<LibraryFolderSection>('/library/sections', {
       method: 'POST',
-      body: JSON.stringify({ name }),
+      body: JSON.stringify(data),
     }),
   renameLibraryFolderSection: (id: number, name: string) =>
     request<LibraryFolderSection>(`/library/sections/${id}`, {
@@ -5690,6 +5946,104 @@ export const api = {
     request<{ filename: string; content: string; truncated: boolean }>(
       `/library/folders/${folderId}/readme`,
     ),
+
+  getProductionFolder: (folderId: number) =>
+    request<ProductionFolderView>(`/production/folders/${folderId}`),
+  addProductionPart: (folderId: number, body: { code: string; name: string }) =>
+    request<ProductionPartView>(`/production/folders/${folderId}/parts`, {
+      method: 'POST',
+      body: JSON.stringify(body),
+    }),
+  removeProductionPart: (folderId: number, partId: number) =>
+    request<{ removed: boolean; files_trashed: number }>(
+      `/production/folders/${folderId}/parts/${partId}`,
+      { method: 'DELETE' },
+    ),
+  createProductionSlot: async (
+    file: File,
+    fields: {
+      folder_id?: number | null;
+      code?: string | null;
+      quantity?: number | null;
+      major?: number | null;
+      revision?: number | null;
+      minor?: number | null;
+      printer?: string | null;
+      resolution?: 'proceed' | 'accept_baseline' | null;
+      reason?: string | null;
+    } = {},
+  ): Promise<ProductionSlotResponse> => {
+    const formData = new FormData();
+    formData.append('file', file);
+    if (fields.folder_id != null) formData.append('folder_id', String(fields.folder_id));
+    if (fields.code) formData.append('code', fields.code);
+    if (fields.quantity != null) formData.append('quantity', String(fields.quantity));
+    if (fields.major != null) formData.append('major', String(fields.major));
+    if (fields.revision != null) formData.append('revision', String(fields.revision));
+    if (fields.minor != null) formData.append('minor', String(fields.minor));
+    if (fields.printer) formData.append('printer', fields.printer);
+    if (fields.resolution) formData.append('resolution', fields.resolution);
+    if (fields.reason) formData.append('reason', fields.reason);
+    return postFormData<ProductionSlotResponse>('/production/slots', formData);
+  },
+  previewCreateProductionSlot: async (
+    file: File,
+    fields: {
+      folder_id?: number | null;
+      code?: string | null;
+      quantity?: number | null;
+      major?: number | null;
+      revision?: number | null;
+      minor?: number | null;
+      printer?: string | null;
+    } = {},
+  ): Promise<ProductionReplacePreview> => {
+    const formData = new FormData();
+    formData.append('file', file);
+    if (fields.folder_id != null) formData.append('folder_id', String(fields.folder_id));
+    if (fields.code) formData.append('code', fields.code);
+    if (fields.quantity != null) formData.append('quantity', String(fields.quantity));
+    if (fields.major != null) formData.append('major', String(fields.major));
+    if (fields.revision != null) formData.append('revision', String(fields.revision));
+    if (fields.minor != null) formData.append('minor', String(fields.minor));
+    if (fields.printer) formData.append('printer', fields.printer);
+    return postFormData<ProductionReplacePreview>('/production/slots/preview', formData);
+  },
+  previewReplaceProductionSlot: async (slotId: number, file: File): Promise<ProductionReplacePreview> => {
+    const formData = new FormData();
+    formData.append('file', file);
+    return postFormData<ProductionReplacePreview>(`/production/slots/${slotId}/preview-replace`, formData);
+  },
+  replaceProductionSlot: async (
+    slotId: number,
+    file: File,
+    fields: {
+      resolution: 'proceed' | 'accept_baseline';
+      reason?: string | null;
+      code?: string | null;
+      quantity?: number | null;
+      major?: number | null;
+      revision?: number | null;
+      minor?: number | null;
+      printer?: string | null;
+    },
+  ): Promise<ProductionSlotResponse> => {
+    const formData = new FormData();
+    formData.append('file', file);
+    formData.append('resolution', fields.resolution);
+    if (fields.reason) formData.append('reason', fields.reason);
+    if (fields.code) formData.append('code', fields.code);
+    if (fields.quantity != null) formData.append('quantity', String(fields.quantity));
+    if (fields.major != null) formData.append('major', String(fields.major));
+    if (fields.revision != null) formData.append('revision', String(fields.revision));
+    if (fields.minor != null) formData.append('minor', String(fields.minor));
+    if (fields.printer) formData.append('printer', fields.printer);
+    return postFormData<ProductionSlotResponse>(`/production/slots/${slotId}/replace`, formData);
+  },
+  getProductionSlotHistory: (slotId: number) =>
+    request<ProductionRevisionResponse[]>(`/production/slots/${slotId}/history`),
+  deleteProductionSlot: (slotId: number) =>
+    request<{ deleted: boolean }>(`/production/slots/${slotId}`, { method: 'DELETE' }),
 
   // ============ Library tag catalog (#1268) ============
   getLibraryTags: () =>
@@ -6134,8 +6488,70 @@ export const api = {
     }),
   deleteLocalPreset: (id: number) =>
     request<{ success: boolean }>(`/local-presets/${id}`, { method: 'DELETE' }),
+  downloadLocalPreset: async (id: number): Promise<void> => {
+    const headers: Record<string, string> = {};
+    if (authToken) {
+      headers['Authorization'] = `Bearer ${authToken}`;
+    }
+    const response = await fetch(`${API_BASE}/local-presets/${id}/download`, { headers });
+    if (!response.ok) {
+      const error = await response.json().catch(() => ({}));
+      throw new Error(error.detail || `HTTP ${response.status}`);
+    }
+    const disposition = response.headers.get('Content-Disposition');
+    const filename = parseContentDispositionFilename(disposition) || `preset_${id}.json`;
+    const blob = await response.blob();
+    const url = window.URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = filename;
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    window.URL.revokeObjectURL(url);
+  },
   refreshBaseProfileCache: () =>
     request<{ refreshed: number; failed: number; total: number }>('/local-presets/base-cache/refresh', { method: 'POST' }),
+  getProfilePartSections: () =>
+    request<ProfilePartSectionView[]>('/profile-parts/sections'),
+  createProfilePartSection: (name: string, options?: { parameter_tracking?: boolean }) =>
+    request<ProfilePartSectionView>('/profile-parts/sections', {
+      method: 'POST',
+      body: JSON.stringify({ name, parameter_tracking: options?.parameter_tracking ?? true }),
+    }),
+  deleteProfilePartSection: (sectionId: number) =>
+    request<{ success: boolean }>(`/profile-parts/sections/${sectionId}`, { method: 'DELETE' }),
+  addProfilePartSlot: (sectionId: number, presetId: number, resolution?: 'proceed') =>
+    request<ProfilePartSectionView>('/profile-parts/slots', {
+      method: 'POST',
+      body: JSON.stringify({ section_id: sectionId, preset_id: presetId, resolution }),
+    }),
+  previewAddProfilePartSlot: (sectionId: number, presetId: number) =>
+    request<ProfilePartReplacePreview>(`/profile-parts/sections/${sectionId}/preview-add`, {
+      method: 'POST',
+      body: JSON.stringify({ preset_id: presetId }),
+    }),
+  previewReplaceProfilePartSlot: (slotId: number, presetId: number) =>
+    request<ProfilePartReplacePreview>(`/profile-parts/slots/${slotId}/preview-replace`, {
+      method: 'POST',
+      body: JSON.stringify({ preset_id: presetId }),
+    }),
+  replaceProfilePartSlot: (
+    slotId: number,
+    data: { preset_id: number; resolution: 'proceed' | 'accept_baseline'; reason?: string | null },
+  ) =>
+    request<ProfilePartSectionView>(`/profile-parts/slots/${slotId}/replace`, {
+      method: 'POST',
+      body: JSON.stringify(data),
+    }),
+  deleteProfilePartSlot: (slotId: number) =>
+    request<ProfilePartSectionView>(`/profile-parts/slots/${slotId}`, { method: 'DELETE' }),
+  importProfilePartSectionProcess: (sectionId: number, file: File, slotId?: number) => {
+    const formData = new FormData();
+    formData.append('file', file);
+    const qs = slotId != null ? `?slot_id=${slotId}` : '';
+    return postFormData<ProfilePartImportResponse>(`/profile-parts/sections/${sectionId}/import${qs}`, formData);
+  },
 };
 
 // AMS History types
@@ -6295,6 +6711,8 @@ export interface LibraryFolderTree {
   external_path: string | null;
   external_readonly: boolean;
   section_id: number | null;
+  production_printer_model: string | null;
+  parameter_tracking: boolean;
   file_count: number;
   // max(folder.updated_at, max(immediate-child file.updated_at)). Used by
   // the File Manager folder tree's "sort by recent activity" mode (#1770).
@@ -6307,6 +6725,7 @@ export interface LibraryFolderSection {
   name: string;
   sort_order: number;
   folder_count: number;
+  kind: 'normal' | 'production';
   created_at: string;
   updated_at: string;
 }
@@ -6322,16 +6741,117 @@ export interface LibraryFolder {
   external_readonly: boolean;
   external_show_hidden: boolean;
   section_id: number | null;
+  production_printer_model: string | null;
+  parameter_tracking: boolean;
   file_count: number;
   latest_activity_at: string | null;
   created_at: string;
   updated_at: string;
 }
 
+export interface ProductionActiveFile {
+  id: number;
+  filename: string;
+  thumbnail_path: string | null;
+  file_size: number;
+  print_time_seconds: number | null;
+  sliced_for_model: string | null;
+  tags?: LibraryTagSummary[];
+}
+
+export interface ProductionSlotNested {
+  id: number;
+  quantity: number;
+  major: number;
+  revision: number;
+  minor: number;
+  version: string;
+  active_file: ProductionActiveFile | null;
+  has_overrides: boolean;
+  last_mismatch: boolean | null;
+  parameter_overrides?: Record<string, unknown> | null;
+}
+
+export interface ProductionPartView {
+  id: number;
+  code: string;
+  name: string;
+  instance_id: number | null;
+  locked_parameters: Record<string, unknown> | null;
+  slots: ProductionSlotNested[];
+}
+
+export interface ProductionFolderView {
+  folder_id: number;
+  printer_model: string;
+  section_id: number | null;
+  parts: ProductionPartView[];
+}
+
+export interface ProductionSlotResponse {
+  id: number;
+  instance_id: number;
+  part_id: number;
+  code: string;
+  name: string;
+  quantity: number;
+  major: number;
+  revision: number;
+  minor: number;
+  version: string;
+  active_file: ProductionActiveFile | null;
+  has_overrides: boolean;
+  last_mismatch: boolean | null;
+  folder_id: number;
+  printer_model: string;
+  locked_parameters: Record<string, unknown> | null;
+}
+
+export interface ParsedProductionFilenameOut {
+  code: string;
+  quantity: number;
+  major: number;
+  revision: number;
+  minor: number;
+  printer: string;
+  version: string;
+}
+
+export interface ProductionParameterDiff {
+  key: string;
+  locked: unknown;
+  incoming: unknown;
+  match: boolean;
+}
+
+export interface ProductionReplacePreview {
+  parsed_filename: ParsedProductionFilenameOut | null;
+  current_version: string;
+  incoming_version: string | null;
+  version_is_newer: boolean;
+  suggested_next_version: string;
+  parameter_diff: ProductionParameterDiff[];
+  has_mismatches: boolean;
+  printer_matches_folder: boolean;
+}
+
+export interface ProductionRevisionResponse {
+  version: string;
+  filename: string | null;
+  mismatch: boolean;
+  accepted_new_baseline: boolean;
+  reason: string | null;
+  created_at: string;
+  file_id: number | null;
+}
+
 export interface LibraryFolderCreate {
   name: string;
   parent_id?: number | null;
   archive_id?: number | null;
+  section_id?: number | null;
+  production_printer_model?: string | null;
+  parameter_tracking?: boolean;
 }
 
 export interface ExternalFolderCreate {

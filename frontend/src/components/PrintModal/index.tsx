@@ -18,6 +18,7 @@ import {
 import { useMultiPrinterFilamentMapping, type PerPrinterConfig } from '../../hooks/useMultiPrinterFilamentMapping';
 import { getColorName } from '../../utils/colors';
 import { isGcodeCompatible } from '../../utils/printer';
+import { printerModelsMatch, resolvePrintTargetModel } from '../../utils/productionFilename';
 import { getCurrencySymbol } from '../../utils/currency';
 import { getBedTypeInfo } from '../../utils/bedType';
 import { toDateTimeLocalValue, parseUTCDate } from '../../utils/date';
@@ -52,6 +53,7 @@ export function PrintModal({
   archiveId,
   libraryFileId,
   archiveName,
+  slicedForModel: slicedForModelProp,
   queueItem,
   initialSelectedPrinterIds,
   onClose,
@@ -320,8 +322,11 @@ export function PrintModal({
     enabled: isLibraryFile && !!libraryFileId,
   });
 
-  // Get sliced_for_model from archive or library file
-  const slicedForModel = archiveDetails?.sliced_for_model || libraryFileDetails?.sliced_for_model || null;
+  // Slice metadata first, then a known list-item value, then a production filename suffix.
+  const slicedForModel = resolvePrintTargetModel(
+    archiveDetails?.sliced_for_model || libraryFileDetails?.sliced_for_model || slicedForModelProp,
+    archiveName,
+  );
 
   // The archive's own saved AMS-slot pick from the slicer (see the "Save AMS
   // mapping" virtual-printer setting) — undefined for library files or
@@ -546,11 +551,13 @@ export function PrintModal({
   useEffect(() => {
     // Skip auto-select for edit mode (already initialized from queueItem)
     if (mode === 'edit-queue-item') return;
-    const activePrinters = printers?.filter(p => p.is_active) || [];
-    if (activePrinters.length === 1 && selectedPrinters.length === 0) {
-      setSelectedPrinters([activePrinters[0].id]);
+    const matching = (printers || []).filter(
+      (p) => p.is_active && (!slicedForModel || printerModelsMatch(p.model, slicedForModel)),
+    );
+    if (matching.length === 1 && selectedPrinters.length === 0) {
+      setSelectedPrinters([matching[0].id]);
     }
-  }, [mode, printers, selectedPrinters.length]);
+  }, [mode, printers, selectedPrinters.length, slicedForModel]);
 
   // Clear manual mappings and per-printer configs when printer or plate changes.
   // The per-plate mappings go with them: a manual override holds a global tray id,
@@ -594,8 +601,9 @@ export function PrintModal({
   // provided an active printer of that model exists.
   useEffect(() => {
     if (assignmentMode !== 'model' || targetModel || !slicedForModel) return;
-    if (printers?.some((p) => p.is_active && p.model === slicedForModel)) {
-      setTargetModel(slicedForModel);
+    const match = printers?.find((p) => p.is_active && printerModelsMatch(p.model, slicedForModel));
+    if (match?.model) {
+      setTargetModel(match.model);
     }
   }, [assignmentMode, targetModel, slicedForModel, printers]);
 
@@ -1300,7 +1308,7 @@ export function PrintModal({
                 isLoading={loadingPrinters}
                 allowMultiple={true}
                 showInactive={mode === 'edit-queue-item'}
-                disableBusy={false}
+                disableBusy={mode !== 'edit-queue-item'}
                 printerMappingResults={multiPrinterMapping.printerResults}
                 // The per-printer tray editor inside the selector maps one filament
                 // list onto each printer. Several plates have several lists, and a
@@ -1365,7 +1373,7 @@ export function PrintModal({
             {/* Compatibility warning when sliced model doesn't match selected printer */}
             {slicedForModel && assignmentMode === 'printer' && selectedPrinters.length === 1 && (() => {
               const selectedPrinter = printers?.find(p => p.id === selectedPrinters[0]);
-              if (selectedPrinter && selectedPrinter.model && slicedForModel !== selectedPrinter.model) {
+              if (selectedPrinter?.model && !printerModelsMatch(slicedForModel, selectedPrinter.model) && slicedForModel !== selectedPrinter.model) {
                 return (
                   <div className="p-3 mb-2 bg-yellow-50 dark:bg-yellow-500/10 border border-yellow-300 dark:border-yellow-500/30 rounded-lg flex items-center gap-2">
                     <AlertTriangle className="w-4 h-4 text-yellow-600 dark:text-yellow-400 flex-shrink-0" />

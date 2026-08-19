@@ -130,6 +130,8 @@ export interface FilamentSectionProps extends SectionProps {
   detailsRequired: boolean;
   quantity: number;
   onQuantityChange: (value: number) => void;
+  // Tracking reuses Material / Brand / Subtype without slicer preset, weight, or qty.
+  identityOnly?: boolean;
   errors?: Partial<Record<keyof SpoolFormData, string>>;
 }
 
@@ -137,6 +139,8 @@ export interface FilamentSectionProps extends SectionProps {
 export interface ColorSectionProps extends SectionProps {
   recentColors: ColorPreset[];
   onColorUsed: (color: ColorPreset) => void;
+  // Extra-colors / effect. Tracking products store these as SKU identity.
+  showAdvanced?: boolean;
   catalogColors: {
     manufacturer: string;
     color_name: string;

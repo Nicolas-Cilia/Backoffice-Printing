@@ -1,6 +1,7 @@
 """Pydantic schemas for local preset API."""
 
 from datetime import datetime
+from typing import Any
 
 from pydantic import BaseModel
 
@@ -25,6 +26,7 @@ class LocalPresetResponse(BaseModel):
     version: str | None = None
     created_at: datetime
     updated_at: datetime
+    locked_parameters: dict[str, Any] | None = None
 
     model_config = {"from_attributes": True}
 

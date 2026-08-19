@@ -86,4 +86,27 @@ describe('PurgeOldFilesModal', () => {
     await waitFor(() => expect(onClose).toHaveBeenCalled());
     expect(purgeBody).toEqual({ older_than_days: 90, include_never_printed: true });
   });
+
+  it('uses File Manager modal chrome rather than a native confirm or light overlay', async () => {
+    server.use(
+      http.get('*/library/purge/preview', () =>
+        HttpResponse.json({
+          count: 1,
+          total_bytes: 1024,
+          sample_filenames: ['a.3mf'],
+          older_than_days: 90,
+          include_never_printed: true,
+        }),
+      ),
+    );
+
+    render(<PurgeOldFilesModal onClose={vi.fn()} />);
+
+    const heading = await screen.findByRole('heading', { name: /purge old files/i });
+    const panel = heading.closest('.bg-bambu-dark-secondary');
+    expect(panel).toBeTruthy();
+    expect(panel).toHaveClass('border-bambu-dark-tertiary');
+    expect(screen.getByRole('button', { name: /cancel/i })).toBeInTheDocument();
+    expect(document.querySelector('.bg-white')).toBeNull();
+  });
 });

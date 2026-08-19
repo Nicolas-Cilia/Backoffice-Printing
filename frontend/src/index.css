@@ -302,9 +302,21 @@ body {
   min-height: 100vh;
 }
 
-/* Override text-white to be theme-aware */
-.text-white {
+/* Override text-white to be theme-aware.
+   Tailwind's .text-white is remapped, but hover/focus/active variants compile
+   to a different selector (literal #fff). In light mode that paints white
+   labels onto pale bambu-* hover backgrounds and the text vanishes. */
+.text-white,
+.hover\:text-white:hover,
+.focus\:text-white:focus,
+.active\:text-white:active {
   color: var(--text-primary);
+}
+
+@media (hover: hover) {
+  .hover\:text-white:hover {
+    color: var(--text-primary);
+  }
 }
 
 /* Smooth transitions for theme changes */
@@ -395,6 +407,68 @@ body {
 
 .safe-area-top {
   padding-top: env(safe-area-inset-top, 0);
+}
+
+/* Always-visible pill scrollbar. Unstyled Chromium overlay scrollbars
+   paint a light/white rectangular track (gutter) on hover — especially
+   obvious in light mode. Customizing ::-webkit-scrollbar switches to a
+   classic scrollbar; a transparent track leaves only the rounded thumb. */
+* {
+  scrollbar-width: thin;
+  scrollbar-color: color-mix(in srgb, var(--text-muted) 55%, transparent) transparent;
+}
+
+*::-webkit-scrollbar {
+  -webkit-appearance: none;
+  width: 8px;
+  height: 8px;
+  background: transparent;
+}
+
+*::-webkit-scrollbar-track,
+*::-webkit-scrollbar-track-piece,
+*::-webkit-scrollbar-corner {
+  background: transparent;
+  border: none;
+  box-shadow: none;
+}
+
+*::-webkit-scrollbar-thumb {
+  background-color: color-mix(in srgb, var(--text-muted) 55%, transparent);
+  border-radius: 999px;
+  border: none;
+}
+
+*::-webkit-scrollbar-thumb:hover {
+  background-color: color-mix(in srgb, var(--text-muted) 80%, transparent);
+}
+
+*::-webkit-scrollbar-button {
+  display: none;
+  width: 0;
+  height: 0;
+}
+
+/* Folder / file panes that clip content. Force a classic gutter so macOS
+   overlay scrollbars cannot hide the thumb until hover. */
+.scroll-fade-pane {
+  overflow-y: scroll;
+  scrollbar-gutter: stable;
+  scrollbar-width: thin;
+  scrollbar-color: color-mix(in srgb, var(--text-muted) 55%, transparent) transparent;
+  overscroll-behavior: contain;
+}
+
+.scroll-fade-pane::-webkit-scrollbar {
+  -webkit-appearance: none;
+  width: 8px;
+  background: transparent;
+}
+
+.scroll-fade-pane::-webkit-scrollbar-track,
+.scroll-fade-pane::-webkit-scrollbar-track-piece,
+.scroll-fade-pane::-webkit-scrollbar-corner {
+  background: transparent;
 }
 
 /* Hide scrollbar but keep functionality */
@@ -508,33 +582,14 @@ body {
   max-height: none;
 }
 
-/* Calendar selected-day list scrollbar theming */
-.calendar-scroll {
-  scrollbar-width: thin;
-  scrollbar-color: color-mix(in srgb, var(--text-muted) 60%, transparent) transparent;
-}
-
-.calendar-scroll::-webkit-scrollbar {
-  width: 8px;
-}
-
-.calendar-scroll::-webkit-scrollbar-track {
-  background: transparent;
-}
-
-.calendar-scroll::-webkit-scrollbar-thumb {
-  background-color: color-mix(in srgb, var(--text-muted) 60%, transparent);
-  border-radius: 999px;
-  border: 2px solid color-mix(in srgb, var(--bg-secondary) 70%, transparent);
-}
-
-.calendar-scroll::-webkit-scrollbar-thumb:hover {
-  background-color: color-mix(in srgb, var(--text-muted) 80%, transparent);
-}
-
 /* History row thumbnail hover-to-enlarge — desktop only (no hover on touch). */
 @media (hover: hover) and (pointer: fine) {
   .history-thumb-hover:hover .history-thumb-preview {
     opacity: 1;
   }
+}
+
+/* Printer share donut: Recharts tooltip otherwise slides in from the left. */
+.printer-share-chart .recharts-tooltip-wrapper {
+  transition: none !important;
 }

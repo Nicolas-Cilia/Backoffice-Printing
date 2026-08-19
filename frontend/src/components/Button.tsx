@@ -19,10 +19,10 @@ export function Button({
   const variants = {
     primary: 'bg-bambu-green hover:bg-bambu-green-light text-white focus:ring-bambu-green',
     secondary:
-      'bg-bambu-dark-tertiary hover:bg-bambu-gray-dark text-white focus:ring-bambu-gray',
+      'bg-bambu-dark-tertiary hover:bg-[color-mix(in_srgb,var(--bg-tertiary)_70%,var(--text-primary)_30%)] text-white hover:text-[color:var(--text-primary)] focus:ring-bambu-gray',
     danger: 'bg-red-600 hover:bg-red-700 text-white focus:ring-red-500',
     ghost:
-      'bg-transparent hover:bg-bambu-dark-tertiary text-bambu-gray-light hover:text-white',
+      'bg-transparent hover:bg-bambu-dark-tertiary text-bambu-gray-light hover:text-[color:var(--text-primary)]',
   };
 
   const sizes = {
