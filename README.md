@@ -456,6 +456,135 @@ Optional but recommended — drop the [`slicer-api/` Compose stack](slicer-api/R
 
 ### Installation
 
+#### Docker (Linux / macOS / Windows via Docker Desktop)
+
+**Option A: Pre-built image (fastest)**
+```bash
+mkdir bambuddy && cd bambuddy
+curl -O https://raw.githubusercontent.com/Nicolas-Cilia/Backoffice-Printing/main/docker-compose.yml
+docker compose up -d
+```
+
+**Option B: Build from source**
+```bash
+git clone https://github.com/Nicolas-Cilia/Backoffice-Printing.git
+cd bambuddy
+docker compose up -d --build
+```
+
+Open **http://localhost:8000** in your browser.
+
+> **Multi-architecture support:** Pre-built images are available for `linux/amd64` and `linux/arm64` (Raspberry Pi 4/5).
+
+> **macOS/Windows users:** Docker Desktop doesn't support `network_mode: host`. Edit docker-compose.yml: comment out `network_mode: host` and uncomment the `ports:` section. Printer discovery won't work - add printers manually by IP.
+
+> **Linux users:** If you get "permission denied" errors, either prefix commands with `sudo` (e.g., `sudo docker compose up -d`) or [add your user to the docker group](https://docs.docker.com/engine/install/linux-postinstall/).
+
+<details>
+<summary><strong>Docker Configuration & Commands</strong></summary>
+
+**Environment Variables:**
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `TZ` | `UTC` | Your timezone (e.g., `America/New_York`, `Europe/Berlin`) |
+| `PORT` | `8000` | Port BamBuddy runs on (with host networking mode) |
+| `DEBUG` | `false` | Enable debug logging |
+| `LOG_LEVEL` | `INFO` | Log level: `DEBUG`, `INFO`, `WARNING`, `ERROR` |
+
+**Data Persistence:**
+
+| Volume | Purpose |
+|--------|---------|
+| `bambuddy.db` | SQLite database with all your print data (not used with PostgreSQL) |
+| `archive/` | Archived 3MF files and thumbnails |
+| `logs/` | Application logs |
+
+**Updating:**
+
+```bash
+# Pre-built image: just pull the latest
+docker compose pull && docker compose up -d
+
+# From source: rebuild after pulling changes
+cd bambuddy && git pull && docker compose up -d --build
+```
+
+**Daily Beta Builds:**
+
+Beta builds with the latest fixes are pushed regularly to the same beta version tag:
+
+```bash
+# Pull the current beta
+docker pull ghcr.io/nicolas-cilia/backoffice-printing:0.2.2b1
+# or from Docker Hub
+docker pull nicolas-cilia/backoffice-printing:0.2.2b1
+```
+
+Use [Watchtower](https://containrrr.dev/watchtower/) to automatically update when new daily builds are pushed.
+
+> **Note:** Beta builds use version tags like `0.2.2b1` — they are never tagged as `latest`. Your stable installation won't auto-update to a beta unless you explicitly pull a beta tag.
+
+**Useful Commands:**
+
+```bash
+# View logs
+docker compose logs -f
+
+# Stop/Start
+docker compose down
+docker compose up -d
+
+# Shell access
+docker compose exec bambuddy /bin/bash
+```
+
+**Custom Port:**
+
+```yaml
+ports:
+  - "3000:8000"  # Access on port 3000
+```
+
+**Reverse Proxy (Nginx):**
+
+```nginx
+server {
+    listen 443 ssl http2;
+    server_name bambuddy.yourdomain.com;
+
+    ssl_certificate /path/to/cert.pem;
+    ssl_certificate_key /path/to/key.pem;
+
+    location / {
+        proxy_pass http://localhost:8000;
+        proxy_http_version 1.1;
+        proxy_set_header Upgrade $http_upgrade;
+        proxy_set_header Connection "upgrade";
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+        proxy_read_timeout 86400;
+    }
+}
+```
+
+> **Note:** WebSocket support is required for real-time printer updates.
+
+**Network Mode Host** (required for printer discovery and camera streaming):
+
+```yaml
+services:
+  bambuddy:
+    build: .
+    network_mode: host
+```
+
+> **Note:** Docker's default bridge networking cannot receive SSDP multicast packets for automatic printer discovery. When using `network_mode: host`, Bambuddy auto-detects your network subnet and can discover printers via subnet scanning in the Add Printer dialog.
+
+</details>
+
 #### Manual Installation (Linux/macOS)
 
 ```bash

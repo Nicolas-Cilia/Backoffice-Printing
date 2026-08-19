@@ -136,9 +136,13 @@ npm run dev
 
 The frontend will be available at `http://localhost:5173` and will proxy API requests to the backend.
 
-### Running tests in Docker (mirrors CI)
+### Running with Docker
 
 ```bash
+# Run the full application
+docker compose up -d --build
+
+# Run tests in Docker (mirrors CI)
 docker compose -f docker-compose.test.yml run --rm backend-test
 docker compose -f docker-compose.test.yml run --rm frontend-test
 ```
