@@ -26,8 +26,6 @@ export default {
     switchToSystem: '切换到系统模式',
     smartSwitches: '智能开关',
     logout: '退出登录',
-    installApp: '安装应用',
-    installAppSuccess: 'Bambuddy 已安装',
   },
 
   // Common
@@ -1322,7 +1320,6 @@ export default {
       flowCalibration: '流量校准',
       vibrationCalibration: '振动校准',
       layerInspection: '首层检查',
-      timelapse: '延时摄影',
       useAms: '使用 AMS',
       nozzleOffsetCali: '喷嘴偏移校准',
       applyChanges: '应用更改',
@@ -2100,8 +2097,6 @@ export default {
     defaultVibrationCaliDesc: '减少振纹伪影',
     defaultLayerInspect: '首层检测',
     defaultLayerInspectDesc: 'AI首层检测',
-    defaultTimelapse: '延时摄影',
-    defaultTimelapseDesc: '录制延时摄影视频',
     defaultNozzleOffsetCali: '喷嘴偏移校准',
     defaultNozzleOffsetCaliDesc: '校准两个挤出机之间的喷嘴偏移',
     tempFanPresetsTitle: '温度与风扇预设',
@@ -4579,19 +4574,6 @@ export default {
     spoolmanCatalogLoadFailed: '无法加载 Spoolman 耗材目录',
   },
 
-  // Timelapse
-  timelapse: {
-    title: '延时摄影',
-    create: '创建延时摄影',
-    download: '下载',
-    delete: '删除',
-    preview: '预览',
-    frameRate: '帧率',
-    quality: '质量',
-    processing: '处理中...',
-    noTimelapses: '无可用延时摄影',
-  },
-
   // AMS
   ams: {
     title: 'AMS',
@@ -5736,18 +5718,6 @@ export default {
   },
 
   // Rich Text Editor
-  richTextEditor: {
-    bold: '粗体',
-    italic: '斜体',
-    underline: '下划线',
-    bulletList: '无序列表',
-    numberedList: '有序列表',
-    alignLeft: '左对齐',
-    alignCenter: '居中对齐',
-    alignRight: '右对齐',
-    addLink: '添加链接',
-    removeLink: '移除链接',
-  },
 
   // External Links
   externalLinks: {
@@ -6045,12 +6015,6 @@ export default {
     resetZoom: '重置缩放',
     zoomIn: '放大',
     dragToResize: '拖动调整大小',
-  },
-
-  // Timelapse Viewer
-  timelapseViewer: {
-    skipBack5s: '后退 5 秒',
-    skipForward5s: '前进 5 秒',
   },
 
   // Notification Providers
@@ -6506,46 +6470,6 @@ export default {
     },
   },
 
-  bugReport: {
-    logHealthSummary: '在你的日志中发现了已知问题',
-    logHealthIntro: '最近的日志与已知问题相符。请查看下方的解决方法——解决它们可能无需提交错误报告即可解决你的问题。你仍然可以在下方提交报告。',
-    title: '报告错误',
-    description: '描述',
-    descriptionPlaceholder: '出了什么问题？请描述问题...',
-    email: '邮箱（可选）',
-    emailPlaceholder: 'your@email.com',
-    emailPrivacy: '如果提供，您的邮箱将包含在GitHub Issue的折叠部分中，以便维护者后续跟进。',
-    screenshot: '截图',
-    uploadOrPaste: '上传、粘贴或拖拽图片',
-    dataCollectedSummary: '报告中包含哪些数据？',
-    dataIncluded: '包含：',
-    dataIncludedList: '应用版本、操作系统、架构、Python版本、数据库统计（仅计数）、打印机型号、喷嘴数量、固件版本、连接状态、集成状态（Spoolman、MQTT、HA）、非敏感设置、网络接口数量、Docker详情、依赖版本。',
-    dataNeverIncluded: '绝不包含：',
-    dataNeverIncludedList: '打印机名称、序列号、访问代码、密码、IP地址、邮箱地址、API密钥、令牌、Webhook URL、主机名或用户名。',
-    submit: '提交',
-    startLogging: '开始调试日志',
-    stepEnableLogging: '调试日志已启用',
-    stepReproduce: '请现在重现问题',
-    stepStopLogging: '停止并提交报告',
-    stopAndSubmit: '停止并提交',
-    maxDuration: '{{minutes}}分钟后自动停止',
-    stoppingLogs: '正在收集日志并提交...',
-    submitting: '正在提交错误报告...',
-    submittingStepConnection: '正在执行打印机连接性检查',
-    submittingStepVirtualPrinters: '正在执行虚拟打印机设置检查',
-    submittingStepLogScan: '正在扫描最近的日志以查找已知问题',
-    submittingStepSubmit: '正在将报告提交至 GitHub',
-    submitSuccess: '错误报告提交成功！',
-    submitFailed: '提交错误报告失败',
-    diagnosticChecking: '正在检查打印机连接...',
-    diagnosticHealthy: '连接检查通过 — 未在您的打印机上发现问题。',
-    diagnosticSummary: '{{total}} 台打印机中有 {{problems}} 台存在连接问题',
-    diagnosticIntro: '一台或多台打印机存在连接问题，可能正是您遇到问题的原因。请展开下方的打印机查看解决方法 — 解决它也许无需提交错误报告即可解决问题。您仍然可以在下方提交报告。',
-    thankYou: '谢谢！',
-    submitted: '您的错误报告已提交。',
-    viewIssue: '查看Issue',
-    unexpectedError: '发生了意外错误',
-  },
   failureDetection: {
     title: 'AI 故障检测',
     description: '通过自托管的 Obico ML API 监控打印,并对检测到的故障自动采取行动。',

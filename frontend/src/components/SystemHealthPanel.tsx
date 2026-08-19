@@ -74,8 +74,7 @@ function FindingCard({ finding }: { finding: LogFinding }) {
 }
 
 /**
- * Presentational panel for a log-health scan result. Shared by the System page
- * section and the bug-report bubble so both surfaces look identical.
+ * Presentational panel for a log-health scan result, used on the System page.
  */
 export function SystemHealthPanel({ result }: { result: SystemHealthResult }) {
   const { t } = useTranslation();

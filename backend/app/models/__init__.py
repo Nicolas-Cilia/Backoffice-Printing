@@ -62,7 +62,6 @@ __all__ = [
     "KProfileNote",
     "NotificationTemplate",
     "NotificationLog",
-    "Project",
     "APIKey",
     "AMSSensorHistory",
     "PrinterSensorHistory",

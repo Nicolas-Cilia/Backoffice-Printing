@@ -68,12 +68,11 @@ class PrintQueueItemCreate(BaseModel):
     plate_id: int | None = None
     # Print options. bed_levelling / flow_cali / nozzle_offset_cali are tri-state
     # (off/on/auto), defaulting to "auto" to match BambuStudio. vibration_cali /
-    # layer_inspect / timelapse stay on/off (BambuStudio exposes no auto for them).
+    # layer_inspect stay on/off (BambuStudio exposes no auto for them).
     bed_levelling: TriState = "auto"
     flow_cali: TriState = "auto"
     vibration_cali: bool = True
     layer_inspect: bool = False
-    timelapse: bool = False
     use_ams: bool = True
     # Nozzle offset calibration — dual-nozzle printers only (#1682). The MQTT
     # layer ignores the value on single-nozzle printers so the wire stays "skip".
@@ -114,7 +113,6 @@ class PrintQueueItemUpdate(BaseModel):
     flow_cali: TriState | None = None
     vibration_cali: bool | None = None
     layer_inspect: bool | None = None
-    timelapse: bool | None = None
     use_ams: bool | None = None
     nozzle_offset_cali: TriState | None = None
     preheat_override: Literal["inherit", "on", "off"] | None = None
@@ -157,7 +155,6 @@ class PrintQueueItemResponse(BaseModel):
     flow_cali: TriState = "auto"
     vibration_cali: bool = True
     layer_inspect: bool = False
-    timelapse: bool = False
     use_ams: bool = True
     nozzle_offset_cali: TriState = "auto"
     preheat_override: Literal["inherit", "on", "off"] = "inherit"
@@ -272,7 +269,6 @@ class PrintQueueBulkUpdate(BaseModel):
     flow_cali: TriState | None = None
     vibration_cali: bool | None = None
     layer_inspect: bool | None = None
-    timelapse: bool | None = None
     use_ams: bool | None = None
     nozzle_offset_cali: TriState | None = None
     preheat_override: Literal["inherit", "on", "off"] | None = None

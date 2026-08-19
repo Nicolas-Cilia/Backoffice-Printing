@@ -153,7 +153,7 @@ class FirmwareCheckService:
         self._client = httpx.AsyncClient(
             timeout=30.0,
             headers={
-                "User-Agent": "Bambuddy/1.0 (+https://github.com/maziggy/bambuddy)",
+                "User-Agent": "Bambuddy/1.0 (+https://github.com/Nicolas-Cilia/Backoffice-Printing)",
                 "Accept": "text/html,application/json,*/*;q=0.8",
                 "Accept-Language": "en-US,en;q=0.9",
             },
@@ -184,7 +184,7 @@ class FirmwareCheckService:
             self._bambulab_client = _CurlCffiAsyncSession(
                 impersonate="chrome",
                 headers={
-                    "User-Agent": "Bambuddy/1.0 (+https://github.com/maziggy/bambuddy)",
+                    "User-Agent": "Bambuddy/1.0 (+https://github.com/Nicolas-Cilia/Backoffice-Printing)",
                     "Accept": "text/html,application/json,*/*;q=0.8",
                     "Accept-Language": "en-US,en;q=0.9",
                 },

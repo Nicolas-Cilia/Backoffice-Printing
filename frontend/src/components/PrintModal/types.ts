@@ -50,7 +50,6 @@ export interface PrintOptions {
   flow_cali: CalibrationMode;
   vibration_cali: boolean;
   layer_inspect: boolean;
-  timelapse: boolean;
   nozzle_offset_cali: CalibrationMode;
   // Per-item preheat / heat-soak override (#1468). 'inherit' uses the global
   // Settings → Workflow toggle; 'on' / 'off' force the per-print decision.
@@ -68,7 +67,6 @@ export const DEFAULT_PRINT_OPTIONS: PrintOptions = {
   flow_cali: 'auto',
   vibration_cali: true,
   layer_inspect: false,
-  timelapse: false,
   nozzle_offset_cali: 'auto',
   preheat_override: 'inherit',
   preheat_chamber_target_override: null,

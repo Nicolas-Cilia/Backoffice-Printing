@@ -26,8 +26,6 @@ export default {
     switchToSystem: 'システムモードに切替',
     smartSwitches: 'スマートスイッチ',
     logout: 'ログアウト',
-    installApp: 'アプリをインストール',
-    installAppSuccess: 'Bambuddyをインストールしました',
   },
 
   // Common
@@ -1321,7 +1319,6 @@ export default {
       flowCalibration: 'フローキャリブレーション',
       vibrationCalibration: '振動キャリブレーション',
       layerInspection: '第一層検査',
-      timelapse: 'タイムラプス',
       useAms: 'AMS使用',
       nozzleOffsetCali: 'ノズルオフセットキャリブレーション',
       applyChanges: '変更を適用',
@@ -2098,8 +2095,6 @@ export default {
     defaultVibrationCaliDesc: 'リンギングアーティファクトを低減',
     defaultLayerInspect: '第1層検査',
     defaultLayerInspectDesc: 'AIによる第1層の検査',
-    defaultTimelapse: 'タイムラプス',
-    defaultTimelapseDesc: 'タイムラプス動画を記録',
     defaultNozzleOffsetCali: 'ノズルオフセットキャリブレーション',
     defaultNozzleOffsetCaliDesc: 'エクストルーダー間のノズルオフセットを校正',
     tempFanPresetsTitle: '温度・ファンプリセット',
@@ -4591,19 +4586,6 @@ export default {
     spoolmanCatalogLoadFailed: 'Spoolmanのフィラメントカタログを読み込めませんでした',
   },
 
-  // Timelapse
-  timelapse: {
-    title: 'タイムラプス',
-    create: 'タイムラプスを作成',
-    download: 'ダウンロード',
-    delete: '削除',
-    preview: 'プレビュー',
-    frameRate: 'フレームレート',
-    quality: '品質',
-    processing: 'バックアップファイルを処理中...',
-    noTimelapses: '利用可能なタイムラプスがありません',
-  },
-
   // AMS
   ams: {
     title: 'AMS',
@@ -5749,18 +5731,6 @@ export default {
   },
 
   // Rich Text Editor
-  richTextEditor: {
-    bold: '太字',
-    italic: '斜体',
-    underline: '下線',
-    bulletList: '箇条書きリスト',
-    numberedList: '番号付きリスト',
-    alignLeft: '左揃え',
-    alignCenter: '中央揃え',
-    alignRight: '右揃え',
-    addLink: 'リンクを追加',
-    removeLink: 'リンクを削除',
-  },
 
   // External Links
   externalLinks: {
@@ -6058,12 +6028,6 @@ export default {
     resetZoom: 'ズームをリセット',
     zoomIn: 'ズームイン',
     dragToResize: 'ドラッグしてサイズ変更',
-  },
-
-  // Timelapse Viewer
-  timelapseViewer: {
-    skipBack5s: '5秒戻る',
-    skipForward5s: '5秒進む',
   },
 
   // Notification Providers
@@ -6519,46 +6483,6 @@ export default {
     },
   },
 
-  bugReport: {
-    logHealthSummary: 'ログから既知の問題が見つかりました',
-    logHealthIntro: '最近のログが既知の問題と一致しています。下記の対処方法をご確認ください。解決すればバグ報告なしで問題が解消する可能性があります。下からバグ報告を送ることもできます。',
-    title: 'バグを報告',
-    description: '説明',
-    descriptionPlaceholder: '何が問題でしたか？問題を説明してください...',
-    email: 'メールアドレス（任意）',
-    emailPlaceholder: 'your@email.com',
-    emailPrivacy: '入力された場合、メールアドレスはGitHub Issueの折りたたみセクションに含まれ、メンテナーがフォローアップできるようになります。',
-    screenshot: 'スクリーンショット',
-    uploadOrPaste: '画像をアップロード、貼り付け、またはドラッグ',
-    dataCollectedSummary: 'レポートに含まれるデータは？',
-    dataIncluded: '含まれるもの:',
-    dataIncludedList: 'アプリバージョン、OS、アーキテクチャ、Pythonバージョン、データベース統計（件数のみ）、プリンターモデル、ノズル数、ファームウェアバージョン、接続状態、統合状態（Spoolman、MQTT、HA）、非機密設定、ネットワークインターフェース数、Docker詳細、依存関係バージョン。',
-    dataNeverIncluded: '含まれないもの:',
-    dataNeverIncludedList: 'プリンター名、シリアル番号、アクセスコード、パスワード、IPアドレス、メールアドレス、APIキー、トークン、Webhook URL、ホスト名、ユーザー名。',
-    submit: '送信',
-    startLogging: 'デバッグログ開始',
-    stepEnableLogging: 'デバッグログ有効',
-    stepReproduce: '問題を再現してください',
-    stepStopLogging: '停止してレポート送信',
-    stopAndSubmit: '停止して送信',
-    maxDuration: '{{minutes}}分後に自動停止',
-    stoppingLogs: 'ログ収集・送信中...',
-    submitting: 'バグレポートを送信中...',
-    submittingStepConnection: 'プリンターの接続確認を実行中',
-    submittingStepVirtualPrinters: '仮想プリンターのセットアップ確認を実行中',
-    submittingStepLogScan: '最近のログから既知の問題をスキャン中',
-    submittingStepSubmit: 'GitHub にレポートを送信中',
-    submitSuccess: 'バグレポートが正常に送信されました！',
-    submitFailed: 'バグレポートの送信に失敗しました',
-    diagnosticChecking: 'プリンター接続を確認中...',
-    diagnosticHealthy: '接続チェックに合格しました — プリンターに問題は見つかりませんでした。',
-    diagnosticSummary: '{{total}} 台中 {{problems}} 台のプリンターに接続の問題があります',
-    diagnosticIntro: '1 台以上のプリンターに接続の問題があり、それが今回の問題の原因である可能性があります。下記のプリンターを展開して対処法を確認してください — それを解決すれば、バグ報告なしで問題が解決するかもしれません。下記から報告を送信することもできます。',
-    thankYou: 'ありがとうございます！',
-    submitted: 'バグレポートが送信されました。',
-    viewIssue: 'Issueを表示',
-    unexpectedError: '予期しないエラーが発生しました',
-  },
   failureDetection: {
     title: 'AI 失敗検出',
     description: 'セルフホストされた Obico ML API で印刷を監視し、検出された失敗に自動的に対応します。',

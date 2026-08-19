@@ -23,7 +23,6 @@ from backend.app.api.routes import (
     archive_purge,
     archives,
     auth,
-    bug_report,
     camera,
     camwall,
     cloud,
@@ -1042,32 +1041,6 @@ def _extract_filament_data_from_mqtt(data: dict, ams_mapping: list[int] | None =
     if colors_joined:
         result["filament_color"] = colors_joined[:200]
     return result
-
-
-def _maybe_start_layer_timelapse(printer, printer_id: int, archive_id: int) -> bool:
-    """Start a layer-timelapse session for *archive_id* when the printer has
-    an external camera configured. Returns True if a session was started.
-
-    Three call sites in on_print_start (expected-archive promotion, fallback
-    archive creation, fresh-archive creation) used to inline this same
-    if-block; the inline copies kept drifting (#1353 fixed only one of them
-    on the first pass). Centralising the conditional + call here makes the
-    contract testable in isolation and keeps the three sites locked in step.
-    """
-    if not (printer.external_camera_enabled and printer.external_camera_url):
-        return False
-    from backend.app.services.layer_timelapse import start_session
-
-    start_session(
-        printer_id,
-        archive_id,
-        printer.external_camera_url,
-        printer.external_camera_type or "mjpeg",
-        snapshot_url=printer.external_camera_snapshot_url,
-        rotation=getattr(printer, "camera_rotation", 0),
-    )
-    logging.getLogger(__name__).info("Started layer timelapse for printer %s, archive %s", printer_id, archive_id)
-    return True
 
 
 def _format_hms_error_summary(hms_errors: list[dict]) -> str | None:
@@ -2830,12 +2803,6 @@ async def on_print_start(printer_id: int, data: dict):
                 if subtask_name:
                     _active_prints[(printer_id, f"{subtask_name}.3mf")] = archive.id
 
-                # Start timelapse session if external camera is enabled (#1353).
-                # Queue / VP-dispatched prints land here in the expected-archive
-                # branch and used to skip start_session entirely — frames were
-                # never captured and the post-print stitch silently returned None.
-                _maybe_start_layer_timelapse(printer, printer_id, archive.id)
-
                 # Inject ams_mapping into usage tracker session — the session was created
                 # before expected-print promotion, so it may have ams_mapping=None when
                 # the MQTT request topic subscription failed (common on P1S/A1).
@@ -3402,8 +3369,6 @@ async def on_print_start(printer_id: int, data: dict):
 
                 logger.info("Created fallback archive %s for %s (no 3MF available)", fallback_archive.id, print_name)
 
-                _maybe_start_layer_timelapse(printer, printer_id, fallback_archive.id)
-
                 # Track as active print
                 _active_prints[(printer_id, fallback_archive.filename)] = fallback_archive.id
                 if filename:
@@ -3481,8 +3446,6 @@ async def on_print_start(printer_id: int, data: dict):
                     _active_prints[(printer_id, f"{subtask_name}.3mf")] = archive.id
 
                 logger.info("Created archive %s for %s", archive.id, downloaded_filename)
-
-                _maybe_start_layer_timelapse(printer, printer_id, archive.id)
 
                 # Record starting energy from smart plug if available (#941: persisted column)
                 await _record_energy_start(archive, printer_id, db, context="auto-archive")
@@ -6042,45 +6005,6 @@ async def on_print_complete(printer_id: int, data: dict):
 
     spawn_background_task(_photo_then_notify(), name="photo-then-notify")
 
-    # Stitch external camera layer timelapse if session was active
-    print_status = data.get("status", "completed")
-
-    async def _background_layer_timelapse():
-        """Stitch layer timelapse and attach to archive."""
-        from backend.app.services.layer_timelapse import cancel_session, on_print_complete as tl_complete
-
-        try:
-            if print_status == "completed":
-                logger.info("[LAYER-TL] Stitching layer timelapse for printer %s", printer_id)
-                timelapse_path = await tl_complete(printer_id)
-                if timelapse_path and archive_id:
-                    logger.info("[LAYER-TL] Attaching timelapse %s to archive %s", timelapse_path, archive_id)
-                    async with async_session() as db:
-                        service = ArchiveService(db)
-                        timelapse_data = await asyncio.to_thread(timelapse_path.read_bytes)
-                        await service.attach_timelapse(archive_id, timelapse_data, "layer_timelapse.mp4")
-                        # Clean up the temp file
-                        await asyncio.to_thread(timelapse_path.unlink, missing_ok=True)
-                        logger.info("[LAYER-TL] Layer timelapse attached successfully")
-                elif timelapse_path:
-                    # Timelapse created but no archive - just clean up
-                    await asyncio.to_thread(timelapse_path.unlink, missing_ok=True)
-            else:
-                # Print failed or cancelled - cancel timelapse session
-                cancel_session(printer_id)
-                logger.info(
-                    "[LAYER-TL] Cancelled layer timelapse for printer %s (status: %s)", printer_id, print_status
-                )
-        except Exception as e:
-            logger.warning("[LAYER-TL] Failed: %s", e)
-            # Try to cancel session on error
-            try:
-                cancel_session(printer_id)
-            except Exception:
-                pass  # Best-effort timelapse session cancellation on error
-
-    spawn_background_task(_background_layer_timelapse(), name="background-layer-timelapse")
-
     log_timing("All background tasks scheduled")
 
     # Auto-scan for timelapse if recording was active during the print
@@ -7062,13 +6986,9 @@ async def lifespan(app: FastAPI):
     # Rehydrate persisted awaiting-plate-clear gate (#961) so prompts survive restarts
     await printer_manager.load_awaiting_plate_clear_from_db()
 
-    # Layer change callback for external camera timelapse
+    # Layer change callback for finish-photo frame banking + first layer notification
     async def on_layer_change(printer_id: int, layer_num: int):
-        """Capture timelapse frame on layer change + first layer notification."""
-        from backend.app.services.layer_timelapse import on_layer_change as tl_layer_change
-
-        await tl_layer_change(printer_id, layer_num)
-
+        """Bank an in-print frame on layer change + send first layer notification."""
         # #1867: bank a recent in-print frame so the finish-photo path has a
         # pre-End-G-code image to use instead of a live grab of a swapped plate.
         # #2547 added `on_print_progress` as a second driver — this one alone
@@ -7354,18 +7274,6 @@ async def lifespan(app: FastAPI):
 
     # Start the backstop for MQTT sessions paho has stopped recovering (#2732)
     start_connection_watchdog()
-
-    # One-shot sweep for timelapse session directories orphaned by a crash
-    # or restart that happened mid-print (in-memory session tracking can't
-    # survive that, and nothing else reaps the leftover frames/output file)
-    try:
-        from backend.app.services.layer_timelapse import cleanup_orphaned_timelapse_sessions
-
-        removed = cleanup_orphaned_timelapse_sessions()
-        if removed:
-            logging.getLogger(__name__).info("Removed %d orphaned timelapse session artifact(s)", removed)
-    except Exception as e:
-        logging.getLogger(__name__).warning("Orphaned timelapse session cleanup failed: %s", e)
 
     # Start expected-print TTL eviction (prevents memory leak when prints are
     # registered but on_print_start never fires)
@@ -7877,7 +7785,6 @@ async def trace_id_middleware(request, call_next):
 # API routes
 app.include_router(auth.router, prefix=app_settings.api_prefix)
 app.include_router(mfa.router, prefix=app_settings.api_prefix)
-app.include_router(bug_report.router, prefix=app_settings.api_prefix)
 app.include_router(users.router, prefix=app_settings.api_prefix)
 app.include_router(groups.router, prefix=app_settings.api_prefix)
 app.include_router(printers.router, prefix=app_settings.api_prefix)

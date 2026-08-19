@@ -26,8 +26,6 @@ export default {
     switchToSystem: 'Passa a tema di sistema',
     smartSwitches: 'Interruttori Smart',
     logout: 'Esci',
-    installApp: 'Installa app',
-    installAppSuccess: 'Bambuddy è stato installato',
   },
 
   // Common
@@ -1322,7 +1320,6 @@ export default {
       flowCalibration: 'Calibrazione flusso',
       vibrationCalibration: 'Calibrazione vibrazioni',
       layerInspection: 'Controllo primo layer',
-      timelapse: 'Timelapse',
       useAms: 'Usa AMS',
       nozzleOffsetCali: 'Calibrazione offset ugelli',
       applyChanges: 'Applica modifiche',
@@ -2055,8 +2052,6 @@ export default {
     defaultVibrationCaliDesc: 'Riduce gli artefatti di ringing',
     defaultLayerInspect: 'Ispezione primo strato',
     defaultLayerInspectDesc: 'Ispezione IA del primo strato',
-    defaultTimelapse: 'Timelapse',
-    defaultTimelapseDesc: 'Registra un video timelapse',
     defaultNozzleOffsetCali: 'Calibrazione offset ugelli',
     defaultNozzleOffsetCaliDesc: 'Calibra gli offset tra gli ugelli',
     tempFanPresetsTitle: 'Preset di temperatura e ventola',
@@ -4579,19 +4574,6 @@ export default {
     spoolmanCatalogLoadFailed: 'Impossibile caricare il catalogo Spoolman',
   },
 
-  // Timelapse
-  timelapse: {
-    title: 'Timelapse',
-    create: 'Crea timelapse',
-    download: 'Scarica',
-    delete: 'Elimina',
-    preview: 'Anteprima',
-    frameRate: 'Frame rate',
-    quality: 'Qualità',
-    processing: 'Elaborazione...',
-    noTimelapses: 'Nessun timelapse disponibile',
-  },
-
   // AMS
   ams: {
     title: 'AMS',
@@ -5737,18 +5719,6 @@ export default {
   },
 
   // Rich Text Editor
-  richTextEditor: {
-    bold: 'Grassetto',
-    italic: 'Corsivo',
-    underline: 'Sottolineato',
-    bulletList: 'Elenco puntato',
-    numberedList: 'Elenco numerato',
-    alignLeft: 'Allinea a sinistra',
-    alignCenter: 'Allinea al centro',
-    alignRight: 'Allinea a destra',
-    addLink: 'Aggiungi link',
-    removeLink: 'Rimuovi link',
-  },
 
   // External Links
   externalLinks: {
@@ -6046,12 +6016,6 @@ export default {
     resetZoom: 'Reimposta zoom',
     zoomIn: 'Ingrandisci',
     dragToResize: 'Trascina per ridimensionare',
-  },
-
-  // Timelapse Viewer
-  timelapseViewer: {
-    skipBack5s: 'Indietro 5s',
-    skipForward5s: 'Avanti 5s',
   },
 
   // Notification Providers
@@ -6507,46 +6471,6 @@ export default {
     },
   },
 
-  bugReport: {
-    logHealthSummary: 'Trovati problemi noti nei tuoi log',
-    logHealthIntro: 'I log recenti corrispondono a problemi noti. Controlla le soluzioni qui sotto: risolverle potrebbe sistemare il problema senza una segnalazione di bug. Puoi comunque inviare una segnalazione qui sotto.',
-    title: 'Segnala un bug',
-    description: 'Descrizione',
-    descriptionPlaceholder: 'Cosa è andato storto? Descrivi il problema...',
-    email: 'Email (opzionale)',
-    emailPlaceholder: 'tua@email.it',
-    emailPrivacy: 'Se fornita, la tua email sarà inclusa in una sezione compressa dell\'issue GitHub per permettere al manutentore di contattarti.',
-    screenshot: 'Schermata',
-    uploadOrPaste: 'Carica, incolla o trascina un\'immagine',
-    dataCollectedSummary: 'Quali dati sono inclusi nel report?',
-    dataIncluded: 'Inclusi:',
-    dataIncludedList: 'Versione app, OS, architettura, versione Python, statistiche database (solo conteggi), modelli stampante, numero ugelli, versioni firmware, stato connessione, stato integrazioni (Spoolman, MQTT, HA), impostazioni non sensibili, conteggio interfacce di rete, dettagli Docker, versioni dipendenze.',
-    dataNeverIncluded: 'Mai inclusi:',
-    dataNeverIncludedList: 'Nomi stampanti, numeri di serie, codici di accesso, password, indirizzi IP, indirizzi email, chiavi API, token, URL webhook, nomi host o nomi utente.',
-    submit: 'Invia',
-    startLogging: 'Avvia registrazione debug',
-    stepEnableLogging: 'Registrazione debug attivata',
-    stepReproduce: 'Riproduci il problema ora',
-    stepStopLogging: 'Ferma & invia rapporto',
-    stopAndSubmit: 'Ferma & Invia',
-    maxDuration: 'Arresto automatico dopo {{minutes}} min',
-    stoppingLogs: 'Raccolta log & invio...',
-    submitting: 'Invio segnalazione bug...',
-    submittingStepConnection: 'Controlli di connettività delle stampanti in corso',
-    submittingStepVirtualPrinters: 'Controlli di configurazione delle stampanti virtuali in corso',
-    submittingStepLogScan: 'Analisi dei log recenti per problemi noti',
-    submittingStepSubmit: 'Invio del report a GitHub',
-    submitSuccess: 'Segnalazione bug inviata con successo!',
-    submitFailed: 'Impossibile inviare la segnalazione bug',
-    diagnosticChecking: 'Verifica delle connessioni delle stampanti...',
-    diagnosticHealthy: 'Verifica della connessione superata — nessun problema rilevato sulle tue stampanti.',
-    diagnosticSummary: '{{problems}} stampanti su {{total}} hanno problemi di connessione',
-    diagnosticIntro: 'Una o più stampanti hanno un problema di connessione che potrebbe essere la causa del tuo problema. Espandi una stampante qui sotto per vedere la soluzione — risolverla potrebbe sistemare il problema senza una segnalazione di bug. Puoi comunque inviare una segnalazione qui sotto.',
-    thankYou: 'Grazie!',
-    submitted: 'La tua segnalazione bug è stata inviata.',
-    viewIssue: 'Vedi issue',
-    unexpectedError: 'Si è verificato un errore imprevisto',
-  },
   failureDetection: {
     title: 'Rilevamento guasti con IA',
     description: 'Monitora le stampe tramite un\'API ML Obico auto-ospitata e agisce automaticamente sui guasti rilevati.',

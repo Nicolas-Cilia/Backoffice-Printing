@@ -294,7 +294,7 @@ export interface PrinterDiagnosticResult {
   checks: DiagnosticCheck[];
 }
 
-// --- Log-health scan: self-service triage on the System page + bug reporter.
+// --- Log-health scan: self-service triage on the System page.
 // The backend matches recent logs against a curated known-issue catalog;
 // human-readable cause/fix text is rendered from i18n keys keyed by signature_id.
 export type LogFindingSeverity = 'error' | 'warning';
@@ -1095,7 +1095,6 @@ export interface AppSettings {
   default_flow_cali: CalibrationMode;
   default_vibration_cali: boolean;
   default_layer_inspect: boolean;
-  default_timelapse: boolean;
   default_nozzle_offset_cali: CalibrationMode;
   // Staggered batch start defaults
   stagger_group_size: number;
@@ -2092,7 +2091,6 @@ export interface PrintQueueItem {
   flow_cali: CalibrationMode;
   vibration_cali: boolean;
   layer_inspect: boolean;
-  timelapse: boolean;
   use_ams: boolean;
   nozzle_offset_cali: CalibrationMode;
   preheat_override: 'inherit' | 'on' | 'off';
@@ -2169,7 +2167,6 @@ export interface PrintQueueItemCreate {
   flow_cali?: CalibrationMode;
   vibration_cali?: boolean;
   layer_inspect?: boolean;
-  timelapse?: boolean;
   use_ams?: boolean;
   nozzle_offset_cali?: CalibrationMode;
   preheat_override?: 'inherit' | 'on' | 'off';
@@ -2211,7 +2208,6 @@ export interface PrintQueueItemUpdate {
   flow_cali?: CalibrationMode;
   vibration_cali?: boolean;
   layer_inspect?: boolean;
-  timelapse?: boolean;
   use_ams?: boolean;
   nozzle_offset_cali?: CalibrationMode;
   preheat_override?: 'inherit' | 'on' | 'off';
@@ -2232,7 +2228,6 @@ export interface PrintQueueBulkUpdate {
   flow_cali?: CalibrationMode;
   vibration_cali?: boolean;
   layer_inspect?: boolean;
-  timelapse?: boolean;
   use_ams?: boolean;
   nozzle_offset_cali?: CalibrationMode;
   preheat_override?: 'inherit' | 'on' | 'off';
@@ -4289,61 +4284,6 @@ export const api = {
       headers['Authorization'] = `Bearer ${authToken}`;
     }
     const response = await fetch(`${API_BASE}/archives/${archiveId}/timelapse/upload`, {
-      method: 'POST',
-      headers,
-      body: formData,
-    });
-    if (!response.ok) {
-      const error = await response.json().catch(() => ({}));
-      throw new Error(error.detail || `HTTP ${response.status}`);
-    }
-    return response.json();
-  },
-  // Timelapse Editor
-  getTimelapseInfo: (archiveId: number) =>
-    request<{
-      duration: number;
-      width: number;
-      height: number;
-      fps: number;
-      codec: string;
-      file_size: number;
-      has_audio: boolean;
-    }>(`/archives/${archiveId}/timelapse/info`),
-  getTimelapseThumbnails: (archiveId: number, count: number = 10) =>
-    request<{
-      thumbnails: string[];
-      timestamps: number[];
-    }>(`/archives/${archiveId}/timelapse/thumbnails?count=${count}`),
-  processTimelapse: async (
-    archiveId: number,
-    params: {
-      trimStart?: number;
-      trimEnd?: number;
-      speed?: number;
-      saveMode: 'replace' | 'new';
-      outputFilename?: string;
-    },
-    audioFile?: File
-  ): Promise<{ status: string; output_path: string | null; message: string }> => {
-    const formData = new FormData();
-    formData.append('trim_start', String(params.trimStart ?? 0));
-    if (params.trimEnd !== undefined) {
-      formData.append('trim_end', String(params.trimEnd));
-    }
-    formData.append('speed', String(params.speed ?? 1));
-    formData.append('save_mode', params.saveMode);
-    if (params.outputFilename) {
-      formData.append('output_filename', params.outputFilename);
-    }
-    if (audioFile) {
-      formData.append('audio', audioFile);
-    }
-    const headers: Record<string, string> = {};
-    if (authToken) {
-      headers['Authorization'] = `Bearer ${authToken}`;
-    }
-    const response = await fetch(`${API_BASE}/archives/${archiveId}/timelapse/process`, {
       method: 'POST',
       headers,
       body: formData,
@@ -7628,37 +7568,6 @@ export const spoolbuddyApi = {
       `/spoolbuddy/diagnostics/${deviceId}/result?diagnostic=${type}`,
       { method: 'GET' }
     ),
-};
-
-export interface BugReportRequest {
-  description: string;
-  email?: string;
-  screenshot_base64?: string;
-  include_support_info?: boolean;
-  debug_logs?: string;
-}
-
-export interface BugReportResponse {
-  success: boolean;
-  message: string;
-  issue_url?: string;
-  issue_number?: number;
-}
-
-export const bugReportApi = {
-  submit: (data: BugReportRequest) =>
-    request<BugReportResponse>('/bug-report/submit', {
-      method: 'POST',
-      body: JSON.stringify(data),
-    }),
-  startLogging: () =>
-    request<{ started: boolean; was_debug: boolean }>('/bug-report/start-logging', {
-      method: 'POST',
-    }),
-  stopLogging: (wasDebug: boolean) =>
-    request<{ logs: string }>(`/bug-report/stop-logging?was_debug=${wasDebug}`, {
-      method: 'POST',
-    }),
 };
 
 export interface SponsorPromptCheckResponse {

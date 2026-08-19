@@ -26,8 +26,6 @@ export default {
     switchToSystem: 'Switch to system mode',
     smartSwitches: 'Smart Switches',
     logout: 'Logout',
-    installApp: 'Install app',
-    installAppSuccess: 'Bambuddy was installed',
   },
 
   // Common
@@ -1337,7 +1335,6 @@ export default {
       flowCalibration: 'Flow calibration',
       vibrationCalibration: 'Vibration calibration',
       layerInspection: 'First layer inspection',
-      timelapse: 'Timelapse',
       useAms: 'Use AMS',
       nozzleOffsetCali: 'Nozzle offset calibration',
       applyChanges: 'Apply Changes',
@@ -2118,8 +2115,6 @@ export default {
     defaultVibrationCaliDesc: 'Reduce ringing artifacts',
     defaultLayerInspect: 'First Layer Inspection',
     defaultLayerInspectDesc: 'AI inspection of first layer',
-    defaultTimelapse: 'Timelapse',
-    defaultTimelapseDesc: 'Record timelapse video',
     defaultNozzleOffsetCali: 'Nozzle Offset Calibration',
     defaultNozzleOffsetCaliDesc: 'Calibrate nozzle offsets between extruders',
     tempFanPresetsTitle: 'Temperature & Fan Presets',
@@ -2470,7 +2465,7 @@ export default {
     autoArchivePrints: 'Auto-archive prints',
     autoArchiveDescription: 'Automatically save 3MF files when prints complete',
     saveThumbnailsDescription: 'Extract and save preview images from 3MF files',
-    captureFinishPhotoDescription: 'Take a photo from printer camera when print completes. Bambuddy records a brief timelapse during the print so the photo can be sourced from the moment before the bed drops; the timelapse file is kept if you enabled timelapse for this print, otherwise it is deleted automatically after the photo is captured.',
+    captureFinishPhotoDescription: 'Take a photo from printer camera when print completes. Bambuddy banks a frame from the live camera feed just before the bed drops, so the photo reflects the finished print rather than an empty plate.',
     finishPhotoRestorePlate: 'Restore plate for finish photo',
     finishPhotoRestorePlateDescription: 'The printer drops the build plate about 100 mm when a print ends, leaving the finished print below the camera\'s framing. Bambuddy raises it back to just above the last printed layer, takes the photo, then lowers it again. Skipped when the print height is unknown or another job is queued.',
     ffmpegNotInstalled: 'ffmpeg not installed',
@@ -2489,7 +2484,7 @@ export default {
     cameraTypeUsb: 'USB Camera (V4L2)',
     cameraSnapshotUrl: 'Snapshot URL (optional)',
     cameraSnapshotUrlPlaceholder: 'http://192.168.1.61:1984/api/frame.jpeg?src=printer',
-    cameraSnapshotUrlHelp: 'Single-frame URL used for notification thumbnails, finish photos, layer-timelapse frames, and plate detection. Timelapse and plate detection each require their own per-printer toggle — this URL is just the image source they pull from when active. Leave blank to capture from the live stream above. Useful for go2rtc (/api/frame.jpeg) and IP cameras with a dedicated snapshot endpoint.',
+    cameraSnapshotUrlHelp: 'Single-frame URL used for notification thumbnails, finish photos, and plate detection. Plate detection requires its own per-printer toggle — this URL is just the image source it pulls from when active. Leave blank to capture from the live stream above. Useful for go2rtc (/api/frame.jpeg) and IP cameras with a dedicated snapshot endpoint.',
     cameraRotation: 'Rotation',
     test: 'Test',
     connected: 'Connected',
@@ -4634,19 +4629,6 @@ export default {
     spoolmanCatalogLoadFailed: 'Failed to load Spoolman filament catalog',
   },
 
-  // Timelapse
-  timelapse: {
-    title: 'Timelapse',
-    create: 'Create Timelapse',
-    download: 'Download',
-    delete: 'Delete',
-    preview: 'Preview',
-    frameRate: 'Frame Rate',
-    quality: 'Quality',
-    processing: 'Processing...',
-    noTimelapses: 'No timelapses available',
-  },
-
   // AMS
   ams: {
     title: 'AMS',
@@ -5792,18 +5774,6 @@ export default {
   },
 
   // Rich Text Editor
-  richTextEditor: {
-    bold: 'Bold',
-    italic: 'Italic',
-    underline: 'Underline',
-    bulletList: 'Bullet List',
-    numberedList: 'Numbered List',
-    alignLeft: 'Align Left',
-    alignCenter: 'Align Center',
-    alignRight: 'Align Right',
-    addLink: 'Add Link',
-    removeLink: 'Remove Link',
-  },
 
   // External Links
   externalLinks: {
@@ -6101,12 +6071,6 @@ export default {
     resetZoom: 'Reset zoom',
     zoomIn: 'Zoom in',
     dragToResize: 'Drag to resize',
-  },
-
-  // Timelapse Viewer
-  timelapseViewer: {
-    skipBack5s: 'Skip back 5s',
-    skipForward5s: 'Skip forward 5s',
   },
 
   // Notification Providers
@@ -6562,46 +6526,6 @@ export default {
     },
   },
 
-  bugReport: {
-    title: 'Report a Bug',
-    description: 'Description',
-    descriptionPlaceholder: 'What went wrong? Please describe the issue...',
-    email: 'Email (optional)',
-    emailPlaceholder: 'your@email.com',
-    emailPrivacy: 'If provided, your email will be included in a collapsed section of the GitHub issue so the maintainer can follow up.',
-    screenshot: 'Screenshot',
-    uploadOrPaste: 'Upload, paste, or drag an image',
-    dataCollectedSummary: 'What data is included in the report?',
-    dataIncluded: 'Included:',
-    dataIncludedList: 'App version, OS, architecture, Python version, database stats (counts only), printer models, nozzle counts, firmware versions, connectivity status, integration status (Spoolman, MQTT, HA), non-sensitive settings, network interface count, Docker details, dependency versions.',
-    dataNeverIncluded: 'Never included:',
-    dataNeverIncludedList: 'Printer names, serial numbers, access codes, passwords, IP addresses, email addresses, API keys, tokens, webhook URLs, hostnames, or usernames.',
-    submit: 'Submit',
-    startLogging: 'Start Debug Logging',
-    stepEnableLogging: 'Debug logging enabled',
-    stepReproduce: 'Reproduce the issue now',
-    stepStopLogging: 'Stop & submit report',
-    stopAndSubmit: 'Stop & Submit',
-    maxDuration: 'Auto-stops after {{minutes}} min',
-    stoppingLogs: 'Collecting logs & submitting...',
-    submitting: 'Submitting bug report...',
-    submittingStepConnection: 'Running printer connectivity checks',
-    submittingStepVirtualPrinters: 'Running virtual-printer setup checks',
-    submittingStepLogScan: 'Scanning recent logs for known issues',
-    submittingStepSubmit: 'Submitting report to GitHub',
-    submitSuccess: 'Bug report submitted successfully!',
-    submitFailed: 'Failed to submit bug report',
-    diagnosticChecking: 'Checking printer connections...',
-    diagnosticHealthy: 'Connection check passed — no problems found on your printers.',
-    diagnosticSummary: '{{problems}} of {{total}} printers have connection issues',
-    diagnosticIntro: 'One or more printers have a connection problem that may be causing your issue. Expand a printer below to see the fix — resolving it could solve the problem without a bug report. You can still submit a report below.',
-    logHealthSummary: 'Known issues found in your logs',
-    logHealthIntro: 'Recent logs match known problems. Check the fixes below — resolving them could solve your issue without a bug report. You can still submit a report below.',
-    thankYou: 'Thank you!',
-    submitted: 'Your bug report has been submitted.',
-    viewIssue: 'View Issue',
-    unexpectedError: 'An unexpected error occurred',
-  },
   failureDetection: {
     title: 'AI Failure Detection',
     description: 'Monitor prints with a self-hosted Obico ML API and act on detected failures automatically.',
