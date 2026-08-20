@@ -90,7 +90,7 @@ Installs BamBuddy using Docker containers.
 **Options:**
 ```
 --path PATH        Installation directory (default: ~/bambuddy)
---port PORT        Port to expose (default: 8000)
+--port PORT        Host port to expose (default: 8484)
 --tz TIMEZONE      Timezone (default: system timezone)
 --build            Build from source instead of using pre-built image
 --yes, -y          Non-interactive mode, accept defaults
@@ -102,7 +102,7 @@ Installs BamBuddy using Docker containers.
 ./docker-install.sh
 
 # Unattended with custom settings
-./docker-install.sh --path /srv/bambuddy --port 3000 --tz Europe/Berlin --yes
+./docker-install.sh --path /srv/bambuddy --port 8484 --tz Europe/Berlin --yes
 
 # Build from source
 ./docker-install.sh --build --yes
@@ -122,7 +122,7 @@ networking), and starts the container.
 **Parameters:**
 ```
 -InstallPath PATH    Installation directory (default: %USERPROFILE%\bambuddy)
--Port PORT           Port to expose (default: 8000)
+-Port PORT           Host port to expose (default: 8484)
 -TimeZone TZ         IANA timezone (default: derived from Get-TimeZone or UTC)
 -Build               Build from source instead of pulling pre-built image
 -Yes                 Non-interactive mode, accept defaults
@@ -135,7 +135,7 @@ networking), and starts the container.
 .\docker-install.ps1
 
 # Unattended
-.\docker-install.ps1 -InstallPath C:\bambuddy -Port 8080 -TimeZone Europe/Berlin -Yes
+.\docker-install.ps1 -InstallPath C:\bambuddy -Port 8484 -TimeZone Europe/Berlin -Yes
 
 # Build from source
 .\docker-install.ps1 -Build -Yes
@@ -156,7 +156,7 @@ All scripts support these configuration options:
 | Option | Description | Default |
 |--------|-------------|---------|
 | Install Path | Where BamBuddy is installed | `/opt/bambuddy` (Linux/Docker) |
-| Port | HTTP port for web interface | `8000` |
+| Port | HTTP port for web interface | `8000` native / `8484` Docker host (`HOST_PORT`) |
 | Timezone | Server timezone | System timezone or `UTC` |
 | Data Directory | Database and archives | `INSTALL_PATH/data` |
 | Log Directory | Application logs | `INSTALL_PATH/logs` |
@@ -170,11 +170,11 @@ All scripts support these configuration options:
 ### Accessing BamBuddy
 
 After installation, open your browser to:
-```
-http://localhost:8000
-```
 
-Or use the port you specified during installation.
+- Native (`install.sh`): `http://localhost:8000`
+- Docker (`docker-install.sh` / Compose): `http://localhost:8484`
+
+Or use the host port you specified during installation (`HOST_PORT` for Docker).
 
 ### Service Management
 
