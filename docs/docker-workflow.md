@@ -43,6 +43,8 @@ Then open `http://localhost:8484` (or that PC’s LAN IP on that port). Old book
 
 If compose on that machine is still the old `"${PORT:-8000}:8000"` line, either `git pull origin main` first, or edit the left-hand number in `ports:` to `"8484:8000"` and run `docker compose up -d`. Do not set `PORT=8484` in `.env` with that old mapping — it would make the app listen on 8484 inside while Docker still forwards to container 8000.
 
+If `.env` already has `PORT=` set to anything **other than 8000** (an old installer `--port` used to write the browser port there), set `PORT=8000` and put the browser port in `HOST_PORT` only. After this compose change, a leftover custom `PORT` is the in-container listen port, so the UI will not come up on 8484 until you reset it.
+
 When a new image has been published:
 
 ```bash

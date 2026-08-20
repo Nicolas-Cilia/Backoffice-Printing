@@ -15,7 +15,7 @@ curl -O https://raw.githubusercontent.com/Nicolas-Cilia/Backoffice-Printing/main
 docker compose up -d
 ```
 
-Open **http://localhost:8000** and add your printer.
+Open **http://localhost:8484** and add your printer.
 
 > **Requirements:** Bambu Lab printer with Developer Mode enabled, on the same local network.
 
@@ -45,7 +45,8 @@ Open **http://localhost:8000** and add your printer.
 | Variable | Default | Description |
 |---|---|---|
 | `TZ` | `UTC` | Timezone (e.g. `America/New_York`, `Europe/Berlin`) |
-| `PORT` | `8000` | Web UI port |
+| `HOST_PORT` | `8484` | Host port for the web UI (Docker Desktop / published ports) |
+| `PORT` | `8000` | Listen port *inside* the container. Leave at 8000 unless you also change the right-hand side of the compose `ports:` mapping. |
 | `PUID` | `1000` | User ID for file permissions |
 | `PGID` | `1000` | Group ID for file permissions |
 | `DEBUG` | `false` | Enable debug logging |
@@ -79,7 +80,7 @@ volumes:
   bambuddy_logs:
 ```
 
-> **macOS/Windows:** Docker Desktop doesn't support `network_mode: host`. Replace it with `ports: ["8000:8000"]` and add printers manually by IP.
+> **macOS/Windows:** Docker Desktop doesn't support `network_mode: host`. Replace it with `ports: ["8484:8000"]` (or set `HOST_PORT`) and add printers manually by IP.
 
 ## Updating
 
