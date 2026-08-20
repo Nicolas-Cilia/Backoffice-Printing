@@ -7,7 +7,12 @@ from dataclasses import dataclass, field
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from backend.app.models.library import SECTION_KIND_PRODUCTION, LibraryFolder, LibraryFolderSection
+from backend.app.models.library import (
+    SECTION_KIND_PRODUCTION,
+    LibraryFolder,
+    LibraryFolderSection,
+    LibrarySectionPart,
+)
 from backend.app.models.production import (
     DEFAULT_PARTS,
     PRODUCTION_PRINTER_MODELS,
@@ -64,6 +69,7 @@ async def bootstrap_production(db: AsyncSession) -> ProductionBootstrapResult:
             parts_created += 1
         else:
             parts_existing += 1
+        await get_or_create_section_part(db, section.id, part.code, part.name)
 
     for model, folder_id in folder_ids.items():
         for code in default_part_codes_for_printer(model):
@@ -162,6 +168,48 @@ async def _ensure_part(db: AsyncSession, code: str, name: str) -> tuple[bool, Pr
     db.add(part)
     await db.flush()
     return True, part
+
+
+async def get_or_create_part(db: AsyncSession, code: str, name: str | None = None) -> ProductionPart:
+    """Return the global catalog part for ``code``, creating it if needed."""
+    stored = code.strip().upper()
+    display = (name or "").strip() or dict(DEFAULT_PARTS).get(stored, stored.title())
+    _, part = await _ensure_part(db, stored, display)
+    return part
+
+
+async def next_section_part_sort_order(db: AsyncSession, section_id: int) -> int:
+    """Append after the current last part in this section."""
+    max_order = (
+        await db.execute(
+            select(func.max(LibrarySectionPart.sort_order)).where(LibrarySectionPart.section_id == section_id)
+        )
+    ).scalar_one()
+    return int(max_order or 0) + 1
+
+
+async def get_or_create_section_part(db: AsyncSession, section_id: int, code: str, name: str) -> LibrarySectionPart:
+    """Return the section-level part template for ``code``, creating it if needed."""
+    existing = (
+        await db.execute(
+            select(LibrarySectionPart).where(
+                LibrarySectionPart.section_id == section_id,
+                LibrarySectionPart.code == code,
+            )
+        )
+    ).scalar_one_or_none()
+    if existing is not None:
+        return existing
+    part = LibrarySectionPart(
+        section_id=section_id,
+        code=code,
+        name=name,
+        locked_parameters=None,
+        sort_order=await next_section_part_sort_order(db, section_id),
+    )
+    db.add(part)
+    await db.flush()
+    return part
 
 
 async def _ensure_default_instance(db: AsyncSession, part: ProductionPart, folder_id: int, printer_model: str) -> None:

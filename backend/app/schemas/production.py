@@ -52,6 +52,7 @@ class ProductionSlotNested(BaseModel):
     has_overrides: bool = False
     last_mismatch: bool | None = None
     parameter_overrides: dict[str, Any] | None = None
+    parameter_notes: dict[str, str] | None = None
 
 
 class ProductionPartView(BaseModel):
@@ -93,6 +94,7 @@ class ProductionSlotResponse(BaseModel):
     folder_id: int
     printer_model: str
     locked_parameters: dict[str, Any] | None = None
+    parameter_notes: dict[str, str] | None = None
 
 
 class ParsedProductionFilenameOut(BaseModel):
@@ -114,6 +116,7 @@ class ProductionParameterDiff(BaseModel):
     locked: Any = None
     incoming: Any = None
     match: bool
+    note: str | None = None
 
 
 class ProductionReplacePreview(BaseModel):
@@ -127,6 +130,14 @@ class ProductionReplacePreview(BaseModel):
     parameter_diff: list[ProductionParameterDiff]
     has_mismatches: bool
     printer_matches_folder: bool
+
+
+class SectionPartParameterPreview(BaseModel):
+    """Dry-run compare of an incoming 3MF against a section-part contract."""
+
+    parameter_diff: list[ProductionParameterDiff]
+    has_mismatches: bool
+    has_existing_contract: bool
 
 
 class ProductionPartCreate(BaseModel):

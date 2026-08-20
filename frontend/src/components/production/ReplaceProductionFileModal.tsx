@@ -4,7 +4,11 @@ import { Loader2, Upload, X } from 'lucide-react';
 import { api } from '../../api/client';
 import type { ProductionReplacePreview } from '../../api/client';
 import { Button } from '../Button';
-import { ProductionParameterDiffTable } from './ProductionParameterDiffTable';
+import {
+  collectParameterNotes,
+  mismatchNotesComplete,
+  ProductionParameterDiffTable,
+} from './ProductionParameterDiffTable';
 import { parseProductionFilename, storedProductionFilename } from '../../utils/productionFilename';
 
 interface ReplaceProductionFileModalProps {
@@ -46,6 +50,7 @@ export function ReplaceProductionFileModal({
   const [previewing, setPreviewing] = useState(false);
   const [submitting, setSubmitting] = useState(false);
   const [reason, setReason] = useState('');
+  const [parameterNotes, setParameterNotes] = useState<Record<string, string>>({});
   const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
@@ -105,6 +110,7 @@ export function ReplaceProductionFileModal({
     applyIdentityFromFile(next);
     setPreview(null);
     setError(null);
+    setParameterNotes({});
     setPreviewing(true);
     try {
       const result = await api.previewReplaceProductionSlot(slotId, next);
@@ -119,12 +125,23 @@ export function ReplaceProductionFileModal({
 
   const submit = async (resolution: 'proceed' | 'accept_baseline') => {
     if (!file || !identityComplete) return;
+    if (
+      resolution === 'proceed'
+      && preview?.has_mismatches
+      && !mismatchNotesComplete(preview.parameter_diff, parameterNotes)
+    ) {
+      return;
+    }
     setSubmitting(true);
     setError(null);
     try {
+      const notes = preview?.has_mismatches && resolution === 'proceed'
+        ? collectParameterNotes(preview.parameter_diff, parameterNotes)
+        : undefined;
       await api.replaceProductionSlot(slotId, file, {
         resolution,
         reason: reason.trim() || null,
+        parameter_notes: notes && Object.keys(notes).length > 0 ? notes : undefined,
         code: code.trim().toUpperCase(),
         quantity: qtyNumber,
         major: Number(major),
@@ -142,6 +159,9 @@ export function ReplaceProductionFileModal({
   };
 
   const mismatchCount = preview?.parameter_diff.filter((row) => !row.match).length ?? 0;
+  const proceedNotesReady = Boolean(
+    preview && (!preview.has_mismatches || mismatchNotesComplete(preview.parameter_diff, parameterNotes)),
+  );
 
   return (
     <div className="fixed inset-0 bg-black/70 flex items-center justify-center z-50 p-4">
@@ -295,7 +315,15 @@ export function ReplaceProductionFileModal({
                 </p>
               )}
 
-              <ProductionParameterDiffTable rows={preview.parameter_diff} />
+              <ProductionParameterDiffTable
+                rows={preview.parameter_diff}
+                notes={parameterNotes}
+                onNoteChange={(key, value) => setParameterNotes((prev) => ({ ...prev, [key]: value }))}
+              />
+
+              {preview.has_mismatches && !proceedNotesReady && (
+                <p className="text-sm text-amber-500">{t('fileManager.production.notesRequired')}</p>
+              )}
 
               <label className="block text-sm">
                 <span className="text-bambu-gray">{t('fileManager.production.reason')}</span>
@@ -320,7 +348,7 @@ export function ReplaceProductionFileModal({
               type="button"
               variant="secondary"
               onClick={() => void submit('proceed')}
-              disabled={!preview || !identityComplete || submitting}
+              disabled={!preview || !identityComplete || submitting || !proceedNotesReady}
             >
               {submitting ? <Loader2 className="w-4 h-4 animate-spin" /> : null}
               {t('fileManager.production.proceedAnyway')}
