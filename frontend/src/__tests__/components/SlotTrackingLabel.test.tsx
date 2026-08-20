@@ -6,7 +6,7 @@
 import { describe, it, expect } from 'vitest';
 import { screen } from '@testing-library/react';
 import { render } from '../utils';
-import { SlotTrackingLabel } from '../../components/SlotTrackingLabel';
+import { SlotTrackingLabel, amsSlotHighlightClass } from '../../components/SlotTrackingLabel';
 
 const assigned = {
   color_name: 'White',
@@ -23,8 +23,10 @@ describe('SlotTrackingLabel', () => {
     render(<SlotTrackingLabel assigned={assigned} />);
 
     expect(screen.getByTestId('slot-tracking-label')).toHaveTextContent('White · EasyRock · PLA');
+    expect(screen.getByTestId('slot-tracking-label').className).toContain('mt-1.5');
     expect(screen.getByTestId('filament-swatch').className).toContain('w-[14px]');
     expect(screen.getByTestId('filament-swatch').className).toContain('h-[14px]');
+    expect(screen.getByText('White · EasyRock · PLA').className).toContain('text-bambu-gray-light');
   });
 
   it('renders nothing when the slot has no tracking assignment', () => {
@@ -68,5 +70,28 @@ describe('SlotTrackingLabel', () => {
     expect(label).not.toHaveTextContent('FFD700,C0C0C0');
     expect(label).not.toHaveTextContent('sparkle');
     expect(screen.getByTestId('filament-swatch')).toBeInTheDocument();
+  });
+});
+
+describe('amsSlotHighlightClass', () => {
+  it('insets the active ring so it does not collide with SlotTrackingLabel', () => {
+    const cls = amsSlotHighlightClass({ isActive: true });
+    expect(cls).toContain('ring-bambu-green');
+    expect(cls).toContain('ring-inset');
+    expect(cls).toContain('ring-1');
+    expect(cls).not.toContain('ring-offset');
+    expect(cls).not.toContain('ring-2');
+  });
+
+  it('insets expected and ran-out rings the same way', () => {
+    expect(amsSlotHighlightClass({ isExpected: true })).toContain('ring-inset');
+    expect(amsSlotHighlightClass({ isRanOut: true })).toContain('ring-inset');
+    expect(amsSlotHighlightClass({ isExpected: true })).not.toContain('ring-offset');
+  });
+
+  it('gives idle slots a hairline inset ring instead of a flush tile', () => {
+    const cls = amsSlotHighlightClass();
+    expect(cls).toContain('ring-inset');
+    expect(cls).toContain('ring-black/10');
   });
 });
