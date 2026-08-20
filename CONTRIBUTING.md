@@ -39,10 +39,10 @@ pip install -r requirements-dev.txt  # pytest, ruff, bandit, etc.
 pip install pre-commit
 pre-commit install
 
-DEBUG=true uvicorn backend.app.main:app --reload --host 0.0.0.0 --port 8000 --loop asyncio
+DEBUG=true uvicorn backend.app.main:app --reload --host 0.0.0.0 --port 7474 --loop asyncio
 ```
 
-The API is at **http://localhost:8000**.
+The API is at **http://localhost:7474**.
 
 ### Frontend
 
@@ -53,7 +53,7 @@ npm run dev
 ```
 
 Vite serves the UI at **http://localhost:5173** and proxies API requests to the
-backend.
+backend on port 7474.
 
 ### Docker (alternate run path)
 

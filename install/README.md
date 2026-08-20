@@ -54,7 +54,7 @@ Installs BamBuddy with Python virtual environment and optional systemd/launchd s
 **Options:**
 ```
 --path PATH        Installation directory (default: /opt/bambuddy)
---port PORT        Port to listen on (default: 8000)
+--port PORT        Port to listen on (default: 7474)
 --tz TIMEZONE      Timezone (default: system timezone)
 --data-dir PATH    Data directory (default: INSTALL_PATH/data)
 --log-dir PATH     Log directory (default: INSTALL_PATH/logs)
@@ -156,7 +156,7 @@ All scripts support these configuration options:
 | Option | Description | Default |
 |--------|-------------|---------|
 | Install Path | Where BamBuddy is installed | `/opt/bambuddy` (Linux/Docker) |
-| Port | HTTP port for web interface | `8000` |
+| Port | HTTP port for web interface | `7474` native / `8484` Docker host |
 | Timezone | Server timezone | System timezone or `UTC` |
 | Data Directory | Database and archives | `INSTALL_PATH/data` |
 | Log Directory | Application logs | `INSTALL_PATH/logs` |
@@ -170,9 +170,9 @@ All scripts support these configuration options:
 ### Accessing BamBuddy
 
 After installation, open your browser to:
-```
-http://localhost:8000
-```
+
+- Native (`install.sh`): `http://localhost:7474`
+- Docker (`docker-install.sh` / Compose): `http://localhost:8484`
 
 Or use the port you specified during installation.
 
@@ -275,8 +275,8 @@ docker compose logs bambuddy
 ### Port Already in Use
 Choose a different port during installation or stop the conflicting service:
 ```bash
-# Find what's using port 8000
-sudo lsof -i :8000  # Linux/macOS
+# Find what's using the native listen port (default 7474)
+sudo lsof -i :7474  # Linux/macOS
 ```
 
 ---

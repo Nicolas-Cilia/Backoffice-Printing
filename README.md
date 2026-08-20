@@ -25,12 +25,12 @@ Backoffice Printing is a self-hosted app for a shop-floor Bambu Lab setup: live
 printer control, filament inventory, production files, and local print profiles.
 
 **Native Mac is what currently works.** The backend is a Python virtualenv plus
-**uvicorn on port 8000**. In development the frontend is **Vite on port 5173**.
+**uvicorn on port 7474**. In development the frontend is **Vite on port 5173**.
 
 **Docker Compose is a first-class install path.** Images are on GHCR as
 `ghcr.io/nicolas-cilia/backoffice-printing`. Other machines `docker compose pull`
 then `up -d`. This Mac can `--build` from git while developing. Native
-(venv + uvicorn :8000, Vite :5173) still works. Details:
+(venv + uvicorn :7474, Vite :5173) still works. Details:
 [docs/docker-workflow.md](docs/docker-workflow.md).
 
 ## Tools
@@ -89,8 +89,8 @@ python3 -m venv venv
 source venv/bin/activate
 pip install -r requirements.txt
 
-# Backend — http://localhost:8000
-uvicorn backend.app.main:app --host 0.0.0.0 --port 8000 --loop asyncio
+# Backend — http://localhost:7474
+uvicorn backend.app.main:app --host 0.0.0.0 --port 7474 --loop asyncio
 ```
 
 In a second terminal, for frontend development:
@@ -103,7 +103,7 @@ npm run dev
 
 Vite serves the UI at **http://localhost:5173** and proxies API calls to uvicorn.
 If the frontend has already been built (`cd frontend && npm run build`), uvicorn
-on port 8000 also serves the UI from `static/`.
+on port 7474 also serves the UI from `static/`.
 
 ### Docker (intended)
 

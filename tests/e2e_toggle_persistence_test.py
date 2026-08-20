@@ -10,7 +10,7 @@ import time
 
 from playwright.sync_api import sync_playwright
 
-BASE_URL = os.environ.get("BAMBUDDY_URL", "http://localhost:8000")
+BASE_URL = os.environ.get("BAMBUDDY_URL", "http://localhost:7474")
 
 
 def test_smart_plug_auto_off_toggle_persistence(page):
