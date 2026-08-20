@@ -138,10 +138,11 @@ def _mock_db_sequential(responses):
         idx = call_count[0]
         call_count[0] += 1
         result = MagicMock()
-        if idx < len(responses):
-            result.scalar_one_or_none.return_value = responses[idx]
-        else:
-            result.scalar_one_or_none.return_value = None
+        val = responses[idx] if idx < len(responses) else None
+        result.scalar_one_or_none.return_value = val
+        result.scalar.return_value = None
+        if val is None:
+            result.scalars.return_value.all.return_value = []
         return result
 
     db.execute = mock_execute
@@ -405,9 +406,9 @@ class TestCostCalculation:
             last_loaded_tray=-1,
         )
 
-        # Pad 2 Nones for _find_3mf_by_filename DB queries (library + archive search),
+        # Pad 3 Nones for find_exact_named_3mf (library + named archive + leftover archive),
         # then assignment and spool for the AMS fallback path
-        db = _mock_db_sequential([None, None, assignment, spool])
+        db = _mock_db_sequential([None, None, None, assignment, spool])
 
         with patch("backend.app.api.routes.settings.get_setting", return_value="15.0"):
             results = await on_print_complete(
@@ -922,9 +923,9 @@ class TestCostAggregation:
             tray_now=0,
         )
 
-        # Pad 2 Nones for _find_3mf_by_filename DB queries (library + archive search),
+        # Pad 3 Nones for find_exact_named_3mf (library + named archive + leftover archive),
         # then assignment and spool for the AMS fallback path
-        db = _mock_db_sequential([None, None, assignment_old, spool_old])
+        db = _mock_db_sequential([None, None, None, assignment_old, spool_old])
 
         with (
             patch("backend.app.core.config.settings") as mock_settings,
