@@ -68,6 +68,7 @@ import { ProductionFolderView } from '../components/production/ProductionFolderV
 import { ScrollFadeContainer } from '../components/ScrollFadeContainer';
 import { LibraryTagsModal } from '../components/LibraryTagsModal';
 import { PurgeOldFilesModal } from '../components/PurgeOldFilesModal';
+import { SectionPartsPanel } from '../components/SectionPartsPanel';
 import { useToast } from '../contexts/ToastContext';
 import { useIsMobile } from '../hooks/useIsMobile';
 import { usePageFileDrop } from '../hooks/usePageFileDrop';
@@ -1282,6 +1283,7 @@ export function FileManagerPage() {
   const [showSectionModal, setShowSectionModal] = useState<'create' | { id: number; name: string } | null>(null);
   const [sectionMenuId, setSectionMenuId] = useState<number | null>(null);
   const [deleteSectionId, setDeleteSectionId] = useState<number | null>(null);
+  const [openAddPartSectionId, setOpenAddPartSectionId] = useState<number | null>(null);
   const [showExternalFolderModal, setShowExternalFolderModal] = useState(false);
   const [showMoveModal, setShowMoveModal] = useState(false);
   const [showUploadModal, setShowUploadModal] = useState(false);
@@ -2221,6 +2223,14 @@ export function FileManagerPage() {
                           <FolderPlus className="w-4 h-4" />
                         </button>
                       )}
+                      {section.kind === 'production' && (
+                        <SectionPartsPanel
+                          sectionId={section.id}
+                          canManage={hasAnyPermission('library:upload', 'library:update_all')}
+                          openAdd={openAddPartSectionId === section.id}
+                          onOpenAddHandled={() => setOpenAddPartSectionId(null)}
+                        />
+                      )}
                       <button
                         onClick={() => setSectionMenuId(sectionMenuId === section.id ? null : section.id)}
                         className="p-1 rounded hover:bg-bambu-dark-secondary text-bambu-gray hover:text-white"
@@ -2243,6 +2253,18 @@ export function FileManagerPage() {
                               <Pencil className="w-3.5 h-3.5" />
                               {t('fileManager.renameSection')}
                             </button>
+                            {section.kind === 'production' && hasAnyPermission('library:upload', 'library:update_all') && (
+                              <button
+                                className="w-full px-3 py-1.5 text-left text-sm text-white hover:bg-bambu-dark flex items-center gap-2"
+                                onClick={() => {
+                                  setOpenAddPartSectionId(section.id);
+                                  setSectionMenuId(null);
+                                }}
+                              >
+                                <Plus className="w-3.5 h-3.5" />
+                                {t('fileManager.sectionParts.manage')}
+                              </button>
+                            )}
                             <button
                               className="w-full px-3 py-1.5 text-left text-sm text-red-700 dark:text-red-400 hover:bg-bambu-dark flex items-center gap-2"
                               onClick={() => {

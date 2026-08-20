@@ -471,6 +471,7 @@ export const handlers = [
   http.get('/api/v1/inventory/spools', () => HttpResponse.json([])),
   http.get('/api/v1/library/folders', () => HttpResponse.json([])),
   http.get('/api/v1/library/folders/by-archive/:id', () => HttpResponse.json([])),
+  http.get('/api/v1/library/sections/:id/parts', () => HttpResponse.json([])),
   http.get('/api/v1/maintenance/overview', () => HttpResponse.json([])),
   http.get('/api/v1/notification-templates', () => HttpResponse.json([])),
   http.get('/api/v1/pending-uploads/', () => HttpResponse.json([])),

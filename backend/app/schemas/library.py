@@ -155,6 +155,43 @@ class FolderSectionAssignRequest(BaseModel):
     section_id: int | None = None
 
 
+class SectionPartCreate(BaseModel):
+    """Create a section-level part template (not printable)."""
+
+    code: str = Field(..., min_length=1, max_length=32)
+    name: str = ""
+
+
+class SectionPartUpdate(BaseModel):
+    """Rename a section-level part template."""
+
+    name: str = Field(..., min_length=1, max_length=255)
+
+
+class SectionPartReorder(BaseModel):
+    """New display order for every part template in a section."""
+
+    ids: list[int] = Field(..., min_length=1, description="Part IDs in desired order")
+
+
+class SectionPartResponse(BaseModel):
+    """Section-level part template with its shared print-settings contract."""
+
+    id: int
+    section_id: int
+    code: str
+    name: str
+    locked_parameters: dict | None = None
+    has_thumbnail: bool = False
+    instance_count: int = 0
+    sort_order: int = 0
+    created_at: datetime
+    updated_at: datetime
+
+    class Config:
+        from_attributes = True
+
+
 # ============ File Schemas ============
 
 

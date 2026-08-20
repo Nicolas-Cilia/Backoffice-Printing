@@ -98,6 +98,8 @@ class ProductionSlot(Base):
     revision: Mapped[int] = mapped_column(Integer)
     minor: Mapped[int] = mapped_column(Integer)
     parameter_overrides: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+    # Per-contract-key explanations for the latest mismatch (key → note).
+    parameter_notes: Mapped[dict | None] = mapped_column(JSON, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
     updated_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now(), onupdate=func.now())
 
@@ -126,6 +128,8 @@ class ProductionRevision(Base):
     mismatch: Mapped[bool] = mapped_column(Boolean, default=False)
     accepted_new_baseline: Mapped[bool] = mapped_column(Boolean, default=False)
     reason: Mapped[str | None] = mapped_column(Text, nullable=True)
+    # Per-contract-key explanations required when proceeding with mismatches.
+    parameter_notes: Mapped[dict | None] = mapped_column(JSON, nullable=True)
     created_by_id: Mapped[int | None] = mapped_column(ForeignKey("users.id", ondelete="SET NULL"), nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
     superseded_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import logging
 import os
 import re
@@ -29,7 +30,7 @@ from backend.app.api.routes.library import (
 from backend.app.core.auth import require_ownership_permission, require_permission_if_auth_enabled
 from backend.app.core.database import get_db
 from backend.app.core.permissions import Permission
-from backend.app.models.library import LibraryFile, LibraryFolder
+from backend.app.models.library import LibraryFile, LibraryFolder, LibrarySectionPart
 from backend.app.models.production import (
     DEFAULT_PARTS,
     ProductionPart,
@@ -55,7 +56,11 @@ from backend.app.schemas.production import (
     ProductionSlotResponse,
 )
 from backend.app.services.archive import ThreeMFParser
-from backend.app.services.production_bootstrap import bootstrap_production
+from backend.app.services.production_bootstrap import (
+    bootstrap_production,
+    get_or_create_part,
+    get_or_create_section_part,
+)
 from backend.app.services.production_filename import (
     ParsedProductionFilename,
     is_newer,
@@ -79,6 +84,7 @@ _OWN_FILES_ONLY_DETAIL = "You can only delete your own files"
 _CONTRACT_RESOLUTION_DETAIL = (
     "This part already has a print-settings contract. Pass resolution 'proceed' or 'accept_baseline'."
 )
+_NOTES_REQUIRED_DETAIL = "Explain every mismatched parameter"
 _ACTIVE_FILE_WITH_TAGS = selectinload(ProductionSlot.active_file).selectinload(LibraryFile.tags)
 _PART_ALREADY_VISIBLE = "This part is already on this printer"
 _PART_CODE_RE = re.compile(r"^[A-Z]{1,32}$")
@@ -141,6 +147,7 @@ def _slot_nested(slot: ProductionSlot) -> ProductionSlotNested:
         has_overrides=bool(slot.parameter_overrides),
         last_mismatch=None if latest is None else latest.mismatch,
         parameter_overrides=slot.parameter_overrides,
+        parameter_notes=slot.parameter_notes,
     )
 
 
@@ -211,6 +218,7 @@ def _slot_response(
         folder_id=instance.folder_id,
         printer_model=instance.printer_model,
         locked_parameters=instance.locked_parameters,
+        parameter_notes=slot.parameter_notes,
     )
 
 
@@ -419,13 +427,7 @@ async def _save_library_file(
 
 
 async def _get_or_create_part(db: AsyncSession, code: str, name: str | None = None) -> ProductionPart:
-    part = (await db.execute(select(ProductionPart).where(ProductionPart.code == code))).scalar_one_or_none()
-    if part is not None:
-        return part
-    part = ProductionPart(code=code, name=name or _DEFAULT_PART_NAMES.get(code, code.title()))
-    db.add(part)
-    await db.flush()
-    return part
+    return await get_or_create_part(db, code, name)
 
 
 async def _get_part_by_code(db: AsyncSession, code: str) -> ProductionPart | None:
@@ -542,48 +544,192 @@ async def _trash_library_files(db: AsyncSession, files: list[LibraryFile]) -> No
             library_file.deleted_at = now
 
 
-def _instance_has_contract(instance: ProductionPartInstance | None) -> bool:
-    return bool(instance is not None and instance.locked_parameters)
+def _contract_printer_model(folder: LibraryFolder, instance: ProductionPartInstance | None = None) -> str | None:
+    return _folder_printer(folder) or ((instance.printer_model or "").strip() or None if instance else None)
+
+
+def _parse_parameter_notes(raw: str | None) -> dict[str, str] | None:
+    if raw is None:
+        return None
+    stripped = raw.strip()
+    if not stripped:
+        return None
+    try:
+        parsed = json.loads(stripped)
+    except json.JSONDecodeError:
+        raise HTTPException(status_code=400, detail="parameter_notes must be valid JSON") from None
+    if not isinstance(parsed, dict):
+        raise HTTPException(status_code=400, detail="parameter_notes must be a JSON object")
+    return {str(key): value for key, value in parsed.items()}
+
+
+def _notes_for_mismatches(
+    diff: list[dict[str, Any]],
+    parsed_notes: dict[str, str] | None,
+) -> dict[str, str] | None:
+    mismatched_keys = [row["key"] for row in diff if not row.get("match", False)]
+    if not mismatched_keys:
+        return None
+    notes = parsed_notes or {}
+    covered: dict[str, str] = {}
+    for key in mismatched_keys:
+        value = notes.get(key)
+        if not isinstance(value, str) or not value.strip():
+            raise HTTPException(status_code=400, detail=_NOTES_REQUIRED_DETAIL)
+        covered[key] = value.strip()
+    return covered
+
+
+def _diff_models(
+    diff: list[dict[str, Any]],
+    notes: dict[str, str] | None = None,
+) -> list[ProductionParameterDiff]:
+    stored = notes or {}
+    rows: list[ProductionParameterDiff] = []
+    for row in diff:
+        note = None
+        if not row.get("match", False):
+            raw = stored.get(row["key"])
+            if isinstance(raw, str) and raw.strip():
+                note = raw.strip()
+        rows.append(ProductionParameterDiff(note=note, **{k: v for k, v in row.items() if k != "note"}))
+    return rows
 
 
 def _apply_shared_contract(
     instance: ProductionPartInstance,
     incoming: dict[str, Any],
     resolution: str | None,
-) -> tuple[bool, bool]:
+    printer_model: str | None = None,
+) -> tuple[bool, bool, list[dict[str, Any]]]:
     """Compare incoming settings to the shared part-instance contract.
 
-    Returns ``(mismatch, accepted_new_baseline)``. The first file sets the
+    Returns ``(mismatch, accepted_new_baseline, diff)``. The first file sets the
     baseline. Later quantity slots (x2, x4, …) must match or pass resolution.
     """
     if not instance.locked_parameters:
         instance.locked_parameters = incoming
-        return False, True
-    diff = diff_parameters(instance.locked_parameters, incoming)
+        return False, True, []
+    diff = diff_parameters(instance.locked_parameters, incoming, printer_model=printer_model)
     if not _has_mismatches(diff):
-        return False, False
+        return False, False, diff
     if resolution not in _VALID_RESOLUTIONS:
         raise HTTPException(status_code=400, detail=_CONTRACT_RESOLUTION_DETAIL)
     if resolution == "accept_baseline":
         instance.locked_parameters = incoming
-        return False, True
-    return True, False
+        return False, True, diff
+    return True, False, diff
 
 
-def _settings_preview(
+async def _resolve_locked_parameters(
+    db: AsyncSession,
+    folder: LibraryFolder,
+    instance: ProductionPartInstance | None,
+    part_code: str,
+) -> dict[str, Any] | None:
+    """Return the current contract dict, or None if none is set yet. Does not seed."""
+    if folder.section_id:
+        section_part = (
+            await db.execute(
+                select(LibrarySectionPart).where(
+                    LibrarySectionPart.section_id == folder.section_id,
+                    LibrarySectionPart.code == part_code,
+                )
+            )
+        ).scalar_one_or_none()
+        if section_part is not None and section_part.locked_parameters:
+            return section_part.locked_parameters
+        return None
+    if instance is not None and instance.locked_parameters:
+        return instance.locked_parameters
+    return None
+
+
+async def _refresh_section_part_mismatches(db: AsyncSession, section_part: LibrarySectionPart) -> None:
+    """Recompute latest-revision mismatch for every visible instance of this part code."""
+    baseline = section_part.locked_parameters or {}
+    instances = (
+        (
+            await db.execute(
+                select(ProductionPartInstance)
+                .join(ProductionPart, ProductionPartInstance.part_id == ProductionPart.id)
+                .join(LibraryFolder, ProductionPartInstance.folder_id == LibraryFolder.id)
+                .where(
+                    LibraryFolder.section_id == section_part.section_id,
+                    ProductionPart.code == section_part.code,
+                    ProductionPartInstance.hidden.is_(False),
+                )
+                .options(
+                    selectinload(ProductionPartInstance.slots).selectinload(ProductionSlot.revisions),
+                    selectinload(ProductionPartInstance.folder),
+                )
+            )
+        )
+        .scalars()
+        .unique()
+        .all()
+    )
+    for instance in instances:
+        instance.locked_parameters = dict(baseline) if baseline else None
+        printer_model = _contract_printer_model(instance.folder, instance)
+        for slot in instance.slots:
+            latest = _latest_revision(slot)
+            if latest is None:
+                continue
+            diff = diff_parameters(baseline, latest.parameters or {}, printer_model=printer_model)
+            latest.mismatch = _has_mismatches(diff)
+
+
+async def _apply_contract(
+    db: AsyncSession,
+    *,
+    folder: LibraryFolder,
+    instance: ProductionPartInstance,
+    part: ProductionPart,
+    incoming: dict[str, Any],
+    resolution: str | None,
+) -> tuple[bool, bool, list[dict[str, Any]]]:
+    """Resolve the section or instance contract, then apply incoming settings."""
+    printer_model = _contract_printer_model(folder, instance)
+    if not folder.section_id:
+        return _apply_shared_contract(instance, incoming, resolution, printer_model)
+
+    section_part = await get_or_create_section_part(db, folder.section_id, part.code, part.name)
+    if not section_part.locked_parameters:
+        section_part.locked_parameters = incoming
+        instance.locked_parameters = incoming
+        return False, True, []
+    instance.locked_parameters = dict(section_part.locked_parameters)
+    diff = diff_parameters(section_part.locked_parameters, incoming, printer_model=printer_model)
+    if not _has_mismatches(diff):
+        return False, False, diff
+    if resolution not in _VALID_RESOLUTIONS:
+        raise HTTPException(status_code=400, detail=_CONTRACT_RESOLUTION_DETAIL)
+    if resolution == "accept_baseline":
+        section_part.locked_parameters = incoming
+        instance.locked_parameters = incoming
+        await _refresh_section_part_mismatches(db, section_part)
+        return False, True, diff
+    return True, False, diff
+
+
+async def _settings_preview(
+    db: AsyncSession,
     *,
     instance: ProductionPartInstance | None,
     folder: LibraryFolder,
     filename: str,
     content: bytes,
+    part_code: str | None = None,
+    notes: dict[str, str] | None = None,
 ) -> ProductionReplacePreview:
     parsed = parse_production_filename(filename)
     printer_matches = _printer_matches_folder(folder, parsed.printer if parsed else None)
     incoming_settings = extract_production_settings(content)
-    if _instance_has_contract(instance):
-        diff = diff_parameters(instance.locked_parameters or {}, incoming_settings)
-    else:
-        diff = []
+    code = part_code or (instance.part.code if instance is not None else (parsed.code if parsed else None))
+    contract = await _resolve_locked_parameters(db, folder, instance, code) if code else None
+    printer_model = _contract_printer_model(folder, instance)
+    diff = diff_parameters(contract, incoming_settings, printer_model=printer_model) if contract else []
 
     current_version = ""
     suggested_next = "1.0.0"
@@ -602,7 +748,7 @@ def _settings_preview(
         incoming_version=incoming_version,
         version_is_newer=version_is_newer,
         suggested_next_version=suggested_next,
-        parameter_diff=[ProductionParameterDiff(**row) for row in diff],
+        parameter_diff=_diff_models(diff, notes),
         has_mismatches=_has_mismatches(diff),
         printer_matches_folder=printer_matches,
     )
@@ -689,14 +835,36 @@ async def get_production_folder(
         .scalars()
         .all()
     )
+    section_parts_by_code: dict[str, LibrarySectionPart] = {}
+    if folder.section_id:
+        section_parts_by_code = {
+            part.code: part
+            for part in (
+                await db.execute(select(LibrarySectionPart).where(LibrarySectionPart.section_id == folder.section_id))
+            )
+            .scalars()
+            .all()
+        }
+
     instances = sorted(
         instances,
-        key=lambda inst: (_DEFAULT_CODE_ORDER.get(inst.part.code, 1000), inst.part.code),
+        key=lambda inst: (
+            section_parts_by_code[inst.part.code].sort_order
+            if inst.part.code in section_parts_by_code
+            else _DEFAULT_CODE_ORDER.get(inst.part.code, 1000),
+            inst.part.code,
+        ),
     )
 
     refreshed = False
     part_views: list[ProductionPartView] = []
     for inst in instances:
+        section_part = section_parts_by_code.get(inst.part.code)
+        if section_part is not None and section_part.locked_parameters:
+            copied = dict(section_part.locked_parameters)
+            if inst.locked_parameters != copied:
+                inst.locked_parameters = copied
+                refreshed = True
         slots = _unique_slots(inst.slots)
         if _refresh_locked_fuzzy_from_active_file(inst, slots):
             refreshed = True
@@ -724,6 +892,7 @@ async def create_slot(
     printer: str | None = Form(None),
     resolution: str | None = Form(None),
     reason: str | None = Form(None),
+    parameter_notes: str | None = Form(None),
     db: AsyncSession = Depends(get_db),
     current_user: User | None = Depends(require_permission_if_auth_enabled(Permission.LIBRARY_UPLOAD)),
 ):
@@ -740,6 +909,7 @@ async def create_slot(
         printer=printer,
     )
     folder = await _resolve_printer_folder(db, folder_id=folder_id, printer=merged_printer, parsed=parsed)
+    parsed_notes = _parse_parameter_notes(parameter_notes)
 
     part = await _get_or_create_part(db, merged_code)
     instance = await _find_part_instance(
@@ -766,16 +936,23 @@ async def create_slot(
             part_id=part.id,
             printer_model=_instance_printer_model(folder, merged_printer),
             folder_id=folder.id,
-            locked_parameters=incoming_settings,
+            locked_parameters=None,
             hidden=False,
         )
         db.add(instance)
         await db.flush()
-        mismatch = False
-        accepted_new_baseline = True
     else:
         instance.hidden = False
-        mismatch, accepted_new_baseline = _apply_shared_contract(instance, incoming_settings, resolution)
+
+    mismatch, accepted_new_baseline, diff = await _apply_contract(
+        db,
+        folder=folder,
+        instance=instance,
+        part=part,
+        incoming=incoming_settings,
+        resolution=resolution,
+    )
+    notes = _notes_for_mismatches(diff, parsed_notes) if mismatch else None
 
     stored_name = _stored_upload_filename(
         filename,
@@ -801,6 +978,7 @@ async def create_slot(
         major=merged_major,
         revision=merged_revision,
         minor=merged_minor,
+        parameter_notes=notes,
     )
     db.add(slot)
     await db.flush()
@@ -815,6 +993,7 @@ async def create_slot(
         mismatch=mismatch,
         accepted_new_baseline=accepted_new_baseline,
         reason=reason,
+        parameter_notes=notes,
         created_by_id=current_user.id if current_user else None,
         created_at=datetime.now(timezone.utc),
     )
@@ -863,7 +1042,14 @@ async def preview_create_slot(
             folder=folder,
             load_slots=True,
         )
-    return _settings_preview(instance=instance, folder=folder, filename=filename, content=content)
+    return await _settings_preview(
+        db,
+        instance=instance,
+        folder=folder,
+        filename=filename,
+        content=content,
+        part_code=merged_code,
+    )
 
 
 @router.post("/folders/{folder_id}/parts", response_model=ProductionPartView)
@@ -878,6 +1064,10 @@ async def add_folder_part(
     folder = await _load_production_folder(db, folder_id)
     code, name = _normalize_part_identity(body.code, body.name)
     part = await _get_or_create_part(db, code, name)
+    locked = None
+    if folder.section_id:
+        section_part = await get_or_create_section_part(db, folder.section_id, code, name)
+        locked = dict(section_part.locked_parameters) if section_part.locked_parameters else None
     instance = await _find_part_instance(
         db,
         part_id=part.id,
@@ -891,7 +1081,7 @@ async def add_folder_part(
             part_id=part.id,
             printer_model=_instance_printer_model(folder),
             folder_id=folder.id,
-            locked_parameters=None,
+            locked_parameters=locked,
             hidden=False,
         )
         db.add(instance)
@@ -901,7 +1091,7 @@ async def add_folder_part(
             code=part.code,
             name=part.name,
             instance_id=instance.id,
-            locked_parameters=None,
+            locked_parameters=instance.locked_parameters,
             slots=[],
         )
     instance.hidden = False
@@ -998,7 +1188,9 @@ async def preview_replace(
     )
 
     incoming_settings = extract_production_settings(content)
-    diff = diff_parameters(instance.locked_parameters or {}, incoming_settings)
+    contract = await _resolve_locked_parameters(db, folder, instance, instance.part.code)
+    printer_model = _contract_printer_model(folder, instance)
+    diff = diff_parameters(contract, incoming_settings, printer_model=printer_model) if contract else []
 
     return ProductionReplacePreview(
         parsed_filename=_parsed_out(parsed) if parsed else None,
@@ -1006,7 +1198,7 @@ async def preview_replace(
         incoming_version=incoming_version,
         version_is_newer=version_is_newer,
         suggested_next_version=_format_version(*suggested),
-        parameter_diff=[ProductionParameterDiff(**row) for row in diff],
+        parameter_diff=_diff_models(diff, slot.parameter_notes),
         has_mismatches=_has_mismatches(diff),
         printer_matches_folder=printer_matches,
     )
@@ -1024,6 +1216,7 @@ async def replace_slot(
     revision: int | None = Form(None),
     minor: int | None = Form(None),
     printer: str | None = Form(None),
+    parameter_notes: str | None = Form(None),
     db: AsyncSession = Depends(get_db),
     current_user: User | None = Depends(require_permission_if_auth_enabled(Permission.LIBRARY_UPLOAD)),
 ):
@@ -1062,9 +1255,16 @@ async def replace_slot(
         raise HTTPException(status_code=400, detail="quantity must be at least 1")
 
     incoming_settings = extract_production_settings(content)
-    diff = diff_parameters(instance.locked_parameters or {}, incoming_settings)
-    mismatches = _has_mismatches(diff)
-    accept_baseline = resolution == "accept_baseline"
+    parsed_notes = _parse_parameter_notes(parameter_notes)
+    mismatch, accepted_new_baseline, diff = await _apply_contract(
+        db,
+        folder=folder,
+        instance=instance,
+        part=part,
+        incoming=incoming_settings,
+        resolution=resolution,
+    )
+    notes = None if accepted_new_baseline or not mismatch else _notes_for_mismatches(diff, parsed_notes)
 
     stored_name = _stored_upload_filename(
         filename,
@@ -1088,17 +1288,12 @@ async def replace_slot(
         if previous.superseded_at is None:
             previous.superseded_at = now
 
-    if accept_baseline:
-        instance.locked_parameters = incoming_settings
-        mismatch = False
-    else:
-        mismatch = mismatches
-
     slot.active_file_id = library_file.id
     slot.major = merged_major
     slot.revision = merged_revision
     slot.minor = merged_minor
     slot.active_file = library_file
+    slot.parameter_notes = notes
 
     revision_row = ProductionRevision(
         slot_id=slot.id,
@@ -1108,8 +1303,9 @@ async def replace_slot(
         minor=merged_minor,
         parameters=incoming_settings,
         mismatch=mismatch,
-        accepted_new_baseline=accept_baseline,
+        accepted_new_baseline=accepted_new_baseline,
         reason=reason,
+        parameter_notes=notes,
         created_by_id=current_user.id if current_user else None,
         created_at=datetime.now(timezone.utc),
     )

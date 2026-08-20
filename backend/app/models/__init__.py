@@ -13,7 +13,7 @@ from backend.app.models.filament_tracking import (
 from backend.app.models.github_backup import GitHubBackupConfig, GitHubBackupLog
 from backend.app.models.group import Group, user_groups
 from backend.app.models.kprofile_note import KProfileNote
-from backend.app.models.library import LibraryFile, LibraryFolder, LibraryFolderSection
+from backend.app.models.library import LibraryFile, LibraryFolder, LibraryFolderSection, LibrarySectionPart
 from backend.app.models.local_preset import LocalPreset
 from backend.app.models.location import Location
 from backend.app.models.long_lived_token import LongLivedToken
@@ -78,6 +78,7 @@ __all__ = [
     "PrintBatch",
     "LibraryFolder",
     "LibraryFolderSection",
+    "LibrarySectionPart",
     "LibraryFile",
     "ProductionPart",
     "ProductionPartInstance",

@@ -13,13 +13,11 @@ import { useToast } from '../../contexts/ToastContext';
 import { AddProductionFileModal } from './AddProductionFileModal';
 import { AddProductionPartModal } from './AddProductionPartModal';
 import { ReplaceProductionFileModal } from './ReplaceProductionFileModal';
+import { ProductionSpecsModal } from './ProductionSpecsModal';
 import {
   compactSpecItems,
-  formatSpecValue,
-  formatSupportsValue,
   hasViewableSpecs,
   mergeProductionSpecs,
-  orderedSpecEntries,
   specLabelKey,
 } from '../../utils/productionSpecs';
 
@@ -39,64 +37,6 @@ function specStatus(slot: ProductionSlotNested): 'mismatch' | 'overrides' | 'mat
   if (slot.last_mismatch) return 'mismatch';
   if (slot.has_overrides) return 'overrides';
   return 'match';
-}
-
-function SlotSpecsModal({
-  title,
-  specs,
-  onClose,
-}: {
-  title: string;
-  specs: Record<string, unknown>;
-  onClose: () => void;
-}) {
-  const { t } = useTranslation();
-  const rows = orderedSpecEntries(specs);
-  return (
-    <div
-      className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-4"
-      onClick={onClose}
-      role="presentation"
-    >
-      <div
-        className="bg-bambu-dark-secondary border border-bambu-dark-tertiary rounded-lg shadow-xl w-full max-w-md max-h-[80vh] flex flex-col"
-        onClick={(e) => e.stopPropagation()}
-        role="dialog"
-        aria-labelledby="production-specs-title"
-      >
-        <div className="flex items-center justify-between gap-3 p-4 border-b border-bambu-dark-tertiary">
-          <h2 id="production-specs-title" className="text-sm font-semibold text-white truncate">
-            {t('fileManager.production.specs.title')}
-            {title ? <span className="text-bambu-gray font-normal"> · {title}</span> : null}
-          </h2>
-          <button
-            type="button"
-            onClick={onClose}
-            className="p-1 rounded hover:bg-bambu-dark-tertiary text-bambu-gray hover:text-white"
-            aria-label={t('common.close')}
-          >
-            <X className="w-4 h-4" />
-          </button>
-        </div>
-        <dl className="overflow-y-auto p-4 space-y-0">
-          {rows.map(([key, value]) => {
-            const labelKey = specLabelKey(key);
-            return (
-              <div
-                key={key}
-                className="flex items-baseline justify-between gap-4 py-1.5 border-b border-bambu-dark-tertiary last:border-0"
-              >
-                <dt className="text-xs text-bambu-gray">{labelKey ? t(labelKey) : key}</dt>
-                <dd className="text-xs text-white text-right font-medium">
-                  {key === 'enable_support' ? formatSupportsValue(specs, t) : formatSpecValue(key, value, t)}
-                </dd>
-              </div>
-            );
-          })}
-        </dl>
-      </div>
-    </div>
-  );
 }
 
 function SlotCard({
@@ -143,6 +83,10 @@ function SlotCard({
   const canViewSpecs = Boolean(file && hasViewableSpecs(specs));
   const summary = canViewSpecs ? compactSpecItems(specs, t) : [];
   const statusChipClass = `text-xs px-1.5 py-0.5 rounded ${statusClass}`;
+  const parameterNotes = slot.parameter_notes ?? null;
+  const noteEntries = parameterNotes
+    ? Object.entries(parameterNotes).filter(([, note]) => note.trim().length > 0)
+    : [];
 
   return (
     <div className="bg-bambu-dark-secondary rounded-lg border border-bambu-dark-tertiary overflow-hidden flex flex-col">
@@ -201,6 +145,18 @@ function SlotCard({
             {summary.join(' · ')}
           </p>
         )}
+        {noteEntries.length > 0 && (
+          <div className="space-y-0.5" data-testid="production-parameter-notes">
+            {noteEntries.map(([key, note]) => {
+              const labelKey = specLabelKey(key);
+              return (
+                <p key={key} className="text-[11px] text-amber-400 leading-snug">
+                  {labelKey ? t(labelKey) : key}: {note}
+                </p>
+              );
+            })}
+          </div>
+        )}
         {file && (attachedTags.length > 0 || canEditTags) && (
           <div className="flex flex-wrap gap-1">
             {attachedTags.map((tg: LibraryTagSummary) => (
@@ -256,9 +212,10 @@ function SlotCard({
         </div>
       </div>
       {showSpecs && (
-        <SlotSpecsModal
+        <ProductionSpecsModal
           title={file?.filename ?? slot.version}
           specs={specs}
+          notes={parameterNotes}
           onClose={() => setShowSpecs(false)}
         />
       )}
@@ -302,6 +259,12 @@ export function ProductionFolderView({
     queryFn: () => api.getProductionFolder(folderId),
   });
 
+  useQuery({
+    queryKey: ['library-section-parts', data?.section_id],
+    queryFn: () => api.getLibrarySectionParts(data!.section_id!),
+    enabled: data?.section_id != null,
+  });
+
   const parts = data?.parts ?? [];
   const hasAnySlots = useMemo(() => parts.some((part) => part.slots.length > 0), [parts]);
 
@@ -309,6 +272,7 @@ export function ProductionFolderView({
     void queryClient.invalidateQueries({ queryKey: ['production-folder', folderId] });
     void queryClient.invalidateQueries({ queryKey: ['library-files'] });
     void queryClient.invalidateQueries({ queryKey: ['library-folders'] });
+    void queryClient.invalidateQueries({ queryKey: ['library-section-parts'] });
   };
 
   const openFileTagPicker = (file: ProductionActiveFile) => {
@@ -536,6 +500,8 @@ export function ProductionFolderView({
       {showAddPart && (
         <AddProductionPartModal
           folderId={folderId}
+          sectionId={data.section_id}
+          existingCodes={parts.map((part) => part.code)}
           onClose={() => setShowAddPart(false)}
           onCreated={() => {
             setShowAddPart(false);

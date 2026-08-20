@@ -5,7 +5,7 @@ from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
-from backend.app.models.library import LibraryFolder, LibraryFolderSection
+from backend.app.models.library import LibraryFolder, LibraryFolderSection, LibrarySectionPart
 from backend.app.models.production import (
     DEFAULT_PARTS,
     PRODUCTION_PRINTER_MODELS,
@@ -48,6 +48,11 @@ async def test_bootstrap_creates_section_folders_and_parts(db_session: AsyncSess
     assert {(p.code, p.name) for p in parts} == set(DEFAULT_PARTS)
     assert all(p.code == p.code.upper() for p in parts)
 
+    section_parts = (await db_session.execute(select(LibrarySectionPart))).scalars().all()
+    assert {(p.code, p.name) for p in section_parts} == set(DEFAULT_PARTS)
+    assert all(p.section_id == result.section_id for p in section_parts)
+    assert all(p.locked_parameters is None for p in section_parts)
+
 
 @pytest.mark.asyncio
 async def test_bootstrap_is_idempotent(db_session: AsyncSession):
@@ -68,9 +73,11 @@ async def test_bootstrap_is_idempotent(db_session: AsyncSession):
     section_count = (await db_session.execute(select(func.count()).select_from(LibraryFolderSection))).scalar_one()
     folder_count = (await db_session.execute(select(func.count()).select_from(LibraryFolder))).scalar_one()
     part_count = (await db_session.execute(select(func.count()).select_from(ProductionPart))).scalar_one()
+    section_part_count = (await db_session.execute(select(func.count()).select_from(LibrarySectionPart))).scalar_one()
     assert section_count == 1
     assert folder_count == len(PRODUCTION_PRINTER_MODELS)
     assert part_count == len(DEFAULT_PARTS)
+    assert section_part_count == len(DEFAULT_PARTS)
 
 
 @pytest.mark.asyncio
