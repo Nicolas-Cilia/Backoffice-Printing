@@ -109,9 +109,28 @@ export default defineConfig({
     dedupe: ['react', 'react-dom'],
     alias: {
       '@': path.resolve(__dirname, './src'),
+      // Pin to this package's React so prebundled deps cannot pick up a
+      // second copy (useTranslation → null dispatcher / useContext crash).
+      react: path.resolve(__dirname, 'node_modules/react'),
+      'react-dom': path.resolve(__dirname, 'node_modules/react-dom'),
     },
   },
   optimizeDeps: {
-    include: ['react', 'react-dom', 'react-i18next', 'i18next'],
+    include: [
+      'react',
+      'react-dom',
+      'react/jsx-runtime',
+      'react/jsx-dev-runtime',
+      // CJS deps of react-i18next — needed because that package is excluded
+      // from the prebundle (see exclude below).
+      'html-parse-stringify',
+      'void-elements',
+      'use-sync-external-store/shim',
+    ],
+    // Do not prebundle react-i18next. Including it (PR #43) made Rolldown
+    // CJS-interop its `useContext` import against a second React instance,
+    // so ToastProvider crashed with:
+    // TypeError: Cannot read properties of null (reading 'useContext').
+    exclude: ['react-i18next'],
   },
 })
