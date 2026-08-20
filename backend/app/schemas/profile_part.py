@@ -48,6 +48,12 @@ class ProfilePartSectionCreate(BaseModel):
     parameter_tracking: bool = True
 
 
+class ProfilePartSectionUpdate(BaseModel):
+    """Rename a user-named part section."""
+
+    name: str
+
+
 class ProfilePartSlotCreate(BaseModel):
     """Attach an existing process preset to a section."""
 

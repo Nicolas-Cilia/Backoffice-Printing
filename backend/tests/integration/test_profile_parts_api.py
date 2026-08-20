@@ -234,6 +234,40 @@ class TestProfilePartsAPI:
         listed = await async_client.get("/api/v1/profile-parts/sections")
         assert listed.json() == []
 
+    async def test_rename_section(self, async_client: AsyncClient):
+        created = await async_client.post("/api/v1/profile-parts/sections", json={"name": "Top part"})
+        assert created.status_code == 200, created.text
+        section_id = created.json()["id"]
+
+        renamed = await async_client.patch(
+            f"/api/v1/profile-parts/sections/{section_id}",
+            json={"name": "  Bottom housing  "},
+        )
+        assert renamed.status_code == 200, renamed.text
+        assert renamed.json()["name"] == "Bottom housing"
+        assert renamed.json()["parameter_tracking"] is True
+        assert renamed.json()["slots"] == []
+
+        listed = await async_client.get("/api/v1/profile-parts/sections")
+        names = [item["name"] for item in listed.json() if item["id"] == section_id]
+        assert names == ["Bottom housing"]
+
+    async def test_rename_section_empty_400_and_unknown_404(self, async_client: AsyncClient):
+        created = await async_client.post("/api/v1/profile-parts/sections", json={"name": "Top part"})
+        section_id = created.json()["id"]
+
+        empty = await async_client.patch(
+            f"/api/v1/profile-parts/sections/{section_id}",
+            json={"name": "   "},
+        )
+        assert empty.status_code == 400
+
+        missing = await async_client.patch(
+            "/api/v1/profile-parts/sections/999999",
+            json={"name": "X"},
+        )
+        assert missing.status_code == 404
+
     async def test_add_slot_skips_mismatch_when_tracking_off(self, async_client: AsyncClient):
         created = await async_client.post(
             "/api/v1/profile-parts/sections",
