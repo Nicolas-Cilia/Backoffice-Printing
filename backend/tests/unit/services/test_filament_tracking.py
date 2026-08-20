@@ -12,6 +12,7 @@ from backend.app.services.filament_tracking import (
     SlotUsage,
     align_mapping_to_used_slots,
     calibration_stage,
+    collapse_duplicate_live_usage,
     compute_live_usage_rate,
     compute_purchase_plan,
     decode_mqtt_slot_mapping,
@@ -24,6 +25,7 @@ from backend.app.services.filament_tracking import (
     load_live_usage_rate,
     load_printer_consumption,
     mapping_tray_id,
+    mqtt_skipped_object_ids,
     normalize_color_name,
     normalize_effect_type,
     normalize_extra_colors,
@@ -35,7 +37,6 @@ from backend.app.services.filament_tracking import (
     print_job_stem,
     printer_tracking_lock,
     record_print_usage,
-    mqtt_skipped_object_ids,
     remain_delta_grams,
     remain_has_coverage,
     resolve_ams_mapping,
@@ -45,7 +46,6 @@ from backend.app.services.filament_tracking import (
     slot_to_global_tray,
     slots_from_3mf_file,
     slots_from_remain_deltas,
-    collapse_duplicate_live_usage,
     tracking_run_id,
     tracking_slots_from_usage_results,
     usage_kind_for,
@@ -1076,15 +1076,15 @@ async def test_live_progress_regression_does_not_credit_stock(db_session, printe
     printer, bucket = await _white_on_slot0(db_session, printer_factory)
     started = datetime(2026, 8, 20, 23, 0, 0, tzinfo=timezone.utc)
     slots = [{"slot_id": 1, "used_g": 500, "type": "PLA", "color": "#FFFFFF"}]
-    kwargs = dict(
-        slots=slots,
-        archive_id=40,
-        printer_id=printer.id,
-        print_name="Regress",
-        started_at=started,
-        occurred_at=started,
-        ams_mapping=[0],
-    )
+    kwargs = {
+        "slots": slots,
+        "archive_id": 40,
+        "printer_id": printer.id,
+        "print_name": "Regress",
+        "started_at": started,
+        "occurred_at": started,
+        "ams_mapping": [0],
+    }
     await record_print_usage(db_session, status="printing", progress=80, **kwargs)
     await db_session.commit()
     await db_session.refresh(bucket)
@@ -1104,15 +1104,15 @@ async def test_live_upsert_does_not_overwrite_settled_row(db_session, printer_fa
     printer, bucket = await _white_on_slot0(db_session, printer_factory)
     started = datetime(2026, 8, 21, 1, 0, 0, tzinfo=timezone.utc)
     slots = [{"slot_id": 1, "used_g": 500, "type": "PLA", "color": "#FFFFFF"}]
-    kwargs = dict(
-        slots=slots,
-        archive_id=41,
-        printer_id=printer.id,
-        print_name="Settled",
-        started_at=started,
-        occurred_at=started,
-        ams_mapping=[0],
-    )
+    kwargs = {
+        "slots": slots,
+        "archive_id": 41,
+        "printer_id": printer.id,
+        "print_name": "Settled",
+        "started_at": started,
+        "occurred_at": started,
+        "ams_mapping": [0],
+    }
     await record_print_usage(db_session, status="completed", progress=100, **kwargs)
     await db_session.commit()
     await record_print_usage(db_session, status="printing", progress=90, **kwargs)
@@ -1686,15 +1686,15 @@ async def test_zero_progress_settle_closes_live_printing_rows(db_session, printe
     printer, bucket = await _white_on_slot0(db_session, printer_factory)
     started = datetime(2026, 8, 20, 16, 0, 0, tzinfo=timezone.utc)
     slots = [{"slot_id": 1, "used_g": 500, "type": "PLA", "color": "#FFFFFF"}]
-    kwargs = dict(
-        slots=slots,
-        archive_id=60,
-        printer_id=printer.id,
-        print_name="ZeroSettle",
-        started_at=started,
-        occurred_at=started,
-        ams_mapping=[0],
-    )
+    kwargs = {
+        "slots": slots,
+        "archive_id": 60,
+        "printer_id": printer.id,
+        "print_name": "ZeroSettle",
+        "started_at": started,
+        "occurred_at": started,
+        "ams_mapping": [0],
+    }
     await record_print_usage(db_session, status="printing", progress=50, **kwargs)
     await db_session.commit()
     live = await load_live_usage_rate(db_session, as_of=started + timedelta(minutes=10))

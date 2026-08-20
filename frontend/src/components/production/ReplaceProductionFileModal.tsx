@@ -4,11 +4,8 @@ import { Loader2, Upload, X } from 'lucide-react';
 import { api } from '../../api/client';
 import type { ProductionReplacePreview } from '../../api/client';
 import { Button } from '../Button';
-import {
-  collectParameterNotes,
-  mismatchNotesComplete,
-  ProductionParameterDiffTable,
-} from './ProductionParameterDiffTable';
+import { ProductionParameterDiffTable } from './ProductionParameterDiffTable';
+import { collectParameterNotes, mismatchNotesComplete } from './productionParameterNotes';
 import { parseProductionFilename, storedProductionFilename } from '../../utils/productionFilename';
 
 interface ReplaceProductionFileModalProps {

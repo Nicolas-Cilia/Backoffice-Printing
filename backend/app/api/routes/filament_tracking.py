@@ -30,9 +30,9 @@ from backend.app.schemas.filament_tracking import (
 )
 from backend.app.services.filament_tracking import (
     clamp_lead_time_days,
+    collapse_duplicate_live_usage,
     get_or_create_bucket,
     identity_or_none,
-    collapse_duplicate_live_usage,
     load_live_usage_rate,
     load_plan,
     load_printer_consumption,

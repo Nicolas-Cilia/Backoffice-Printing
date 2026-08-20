@@ -125,7 +125,8 @@ import { getAmsLabel, getGlobalTrayId, getFillBarColor, getSpoolmanFillLevel, ge
 import { getPrinterImage, getWifiStrength, filterCompatibleQueueItems } from '../utils/printer';
 import { getPrinterCardChromeClass, PRINTER_CARD_DISABLED_CONTROL } from '../utils/printerCardChrome';
 import { FilamentSlotCircle } from '../components/FilamentSlotCircle';
-import { SlotTrackingLabel, amsSlotHighlightClass } from '../components/SlotTrackingLabel';
+import { SlotTrackingLabel } from '../components/SlotTrackingLabel';
+import { amsSlotHighlightClass } from '../components/slotTrackingHelpers';
 import { ArrangePrintersModal } from '../components/ArrangePrintersModal';
 import {
   applyPrinterCustomOrder,

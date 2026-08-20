@@ -1119,9 +1119,7 @@ def same_live_tracking_job(
         return int(live.archive_id) == int(archive_id)
     live_stem = job_identity_stem(live.print_name)
     incoming_stem = job_identity_stem(print_name)
-    if live_stem and incoming_stem and live_stem != incoming_stem:
-        return False
-    return True
+    return not live_stem or not incoming_stem or live_stem == incoming_stem
 
 
 def begin_tracking_settle(printer_id: int) -> None:
@@ -1198,9 +1196,7 @@ def should_skip_live_upsert(
     incoming_stem = job_identity_stem(print_name)
     if settled_stem and incoming_stem:
         return settled_stem == incoming_stem
-    if incoming_stem:
-        return False
-    return True
+    return not incoming_stem
 
 
 def should_broadcast_live_progress(run: LiveTrackingRun, progress: float | int | None, *, settle: bool) -> bool:
@@ -2106,9 +2102,7 @@ def compute_live_usage_rate(
             if elapsed >= LIVE_RATE_WARMUP_SECONDS and rate > 0:
                 grams_per_hour += rate
                 any_reliable = True
-            elif sample.grams > 0 and elapsed < LIVE_RATE_WARMUP_SECONDS:
-                any_warming = True
-            elif sample.grams > 0 and rate <= 0:
+            elif sample.grams > 0 and (elapsed < LIVE_RATE_WARMUP_SECONDS or rate <= 0):
                 any_warming = True
         products.append(
             LiveUsageProduct(
