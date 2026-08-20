@@ -39,10 +39,10 @@ interface BulkPrinterToolbarProps {
 const STATE_OPTIONS: { key: PrinterState; dot: string }[] = [
   { key: 'printing', dot: 'bg-bambu-green' },
   { key: 'paused', dot: 'bg-status-warning' },
-  { key: 'finished', dot: 'bg-blue-400' },
+  { key: 'finished', dot: 'bg-status-ok' },
   { key: 'idle', dot: 'bg-bambu-green' },
   { key: 'error', dot: 'bg-status-error' },
-  { key: 'offline', dot: 'bg-gray-400' },
+  { key: 'offline', dot: 'bg-status-error' },
 ];
 
 export function BulkPrinterToolbar({
