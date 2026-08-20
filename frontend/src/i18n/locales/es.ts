@@ -4035,8 +4035,6 @@ export default {
 
   // Sponsor surface (System page)
   sponsors: {
-    sectionTitle: 'Independiente y financiado por la comunidad',
-    tagline: 'Bambuddy es gratuito y seguirá siéndolo porque hay quien decide apoyarlo. Sin VC, sin dependencia de la nube.',
     viewSupporters: 'Ver patrocinadores',
     toastPrints: 'Has completado {{count}} impresiones con Bambuddy. Bambuddy sigue siendo gratuito gracias a quienes lo apoyan.',
     toastCost: 'Has rastreado {{total}} de filamento con Bambuddy. Mira quién mantiene el proyecto independiente.',
@@ -4045,8 +4043,6 @@ export default {
     toastVersionUpdate: 'Actualizado a v{{version}}. Bambuddy sigue siendo gratuito gracias a quienes lo apoyan.',
     toastBusiness: '¿Usas Bambuddy en {{count}} impresoras? Existe un plan de soporte para equipos: correcciones prioritarias, facturación y contacto directo con el responsable del proyecto.',
     businessCta: 'Bambuddy para empresas',
-    businessTitle: 'Bambuddy para empresas',
-    businessTagline: 'Estás gestionando {{count}} impresoras. Hay soporte prioritario, licencias comerciales y facturación disponibles para equipos y granjas de impresión.',
   },
 
   // Library (K Profiles)

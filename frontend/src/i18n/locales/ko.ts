@@ -3837,8 +3837,6 @@ export default {
     architecture: '아키텍처'
   },
   sponsors: {
-    sectionTitle: '독립적·커뮤니티 후원',
-    tagline: 'Bambuddy는 무료이며, 자발적으로 후원하는 사용자 덕분에 계속 무료로 유지됩니다. VC도 없고, 클라우드 종속도 없습니다.',
     viewSupporters: '후원자 보기',
     toastPrints: 'Bambuddy로 {{count}}회 인쇄를 완료했습니다. Bambuddy는 후원자 덕분에 무료로 유지됩니다.',
     toastCost: 'Bambuddy로 {{total}}만큼의 필라멘트를 추적했습니다. 프로젝트를 독립적으로 유지하는 사람들을 만나보세요.',
@@ -3847,8 +3845,6 @@ export default {
     toastVersionUpdate: 'v{{version}}로 업데이트되었습니다. Bambuddy는 후원자 덕분에 무료로 유지됩니다.',
     toastBusiness: '프린터 {{count}}대에서 Bambuddy를 운영 중이신가요? 팀을 위한 지원 플랜이 있습니다. 우선 수정, 인보이스 발행, 메인테이너와의 직접 소통을 제공합니다.',
     businessCta: '비즈니스용 Bambuddy',
-    businessTitle: '비즈니스용 Bambuddy',
-    businessTagline: '프린터 {{count}}대를 운영 중입니다. 팀과 프린트 팜을 위한 우선 지원, 상용 라이선스, 인보이스 발행을 제공합니다.',
   },
   library: {
     title: '필라멘트 라이브러리',

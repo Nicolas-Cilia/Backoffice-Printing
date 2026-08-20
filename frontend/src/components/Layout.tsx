@@ -1,6 +1,6 @@
 import { useState, useEffect, useCallback, useRef, useMemo } from 'react';
 import { NavLink, Outlet, useNavigate, useLocation } from 'react-router-dom';
-import { Printer, ListOrdered, BarChart3, Cloud, Settings, Sun, Moon, Monitor, ChevronLeft, ChevronRight, Keyboard, Github, Wrench, FolderOpen, X, Menu, Info, Plug, Bug, LogOut, Key, Loader2, Disc3, ShieldAlert, Bell, type LucideIcon } from 'lucide-react';
+import { Printer, ListOrdered, BarChart3, Cloud, Settings, Sun, Moon, Monitor, ChevronLeft, ChevronRight, Keyboard, Github, ArrowUpCircle, Wrench, FolderOpen, X, Menu, Info, Plug, Bug, LogOut, Key, Loader2, Disc3, ShieldAlert, Bell, type LucideIcon } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
 import { useTheme } from '../contexts/ThemeContext';
 import { KeyboardShortcutsModal } from './KeyboardShortcutsModal';
@@ -94,6 +94,9 @@ export function Layout() {
   const [sidebarOrder, setSidebarOrder] = useState<string[]>(() => getSidebarOrder(defaultNavItems.map(i => i.id)));
   const [hiddenSystemItemIds, setHiddenSystemItemIds] = useState<string[]>(getHiddenSidebarSystemItemIds);
   const hasRedirected = useRef(false);
+  const [dismissedUpdateVersion, setDismissedUpdateVersion] = useState<string | null>(() =>
+    sessionStorage.getItem('dismissedUpdateVersion')
+  );
   const [plateDetectionAlert, setPlateDetectionAlert] = useState<{
     printer_id: number;
     printer_name: string;
@@ -166,6 +169,14 @@ export function Layout() {
     queryFn: api.getAdvancedAuthStatus,
     staleTime: 5 * 60 * 1000, // 5 minutes
     enabled: authEnabled,
+  });
+
+  const { data: updateCheck } = useQuery({
+    queryKey: ['updateCheck'],
+    queryFn: api.checkForUpdates,
+    enabled: settings?.check_updates !== false,
+    staleTime: 60 * 60 * 1000, // 1 hour
+    refetchInterval: 60 * 60 * 1000, // Check every hour
   });
 
   // Fetch external links for sidebar
@@ -329,6 +340,21 @@ export function Layout() {
   })();
 
   // Show update banner if update available and not dismissed for this version.
+  // Suppressed when running as a Home Assistant addon — HA Supervisor surfaces
+  // its own update notification in the HA UI, so the in-app banner is duplicate
+  // noise that links to a page that just says "update via HA."
+  const showUpdateBanner = updateCheck?.update_available &&
+    updateCheck.latest_version &&
+    updateCheck.latest_version !== dismissedUpdateVersion &&
+    !updateCheck.is_ha_addon;
+
+  const dismissUpdateBanner = () => {
+    if (updateCheck?.latest_version) {
+      sessionStorage.setItem('dismissedUpdateVersion', updateCheck.latest_version);
+      setDismissedUpdateVersion(updateCheck.latest_version);
+    }
+  };
+
   // Redirect to default view on initial load
   useEffect(() => {
     if (!hasRedirected.current && location.pathname === '/') {
@@ -699,10 +725,29 @@ export function Layout() {
               {/* Bottom row: version */}
               <div className="flex items-center justify-center gap-2">
                 <span className="text-sm text-bambu-gray">v{versionInfo?.version || '...'}</span>
+                {updateCheck?.update_available && (
+                  <button
+                    onClick={() => navigate('/settings')}
+                    className="flex items-center gap-1 text-xs text-bambu-green hover:text-bambu-green/80 transition-colors"
+                    title={t('nav.updateAvailable', { version: updateCheck.latest_version })}
+                  >
+                    <ArrowUpCircle className="w-4 h-4" />
+                    <span>{t('nav.update')}</span>
+                  </button>
+                )}
               </div>
             </div>
           ) : (
             <div className="flex flex-col items-center gap-1 overflow-y-auto max-h-[50vh]">
+              {updateCheck?.update_available && (
+                <button
+                  onClick={() => navigate('/settings')}
+                  className="p-2 rounded-lg hover:bg-bambu-dark-tertiary transition-colors text-bambu-green hover:text-bambu-green/80"
+                  title={t('nav.updateAvailable', { version: updateCheck.latest_version })}
+                >
+                  <ArrowUpCircle className="w-5 h-5" />
+                </button>
+              )}
               {hasSwitchbarPlugs && (
                 <div className="relative">
                   <button
@@ -827,6 +872,33 @@ export function Layout() {
                 {t('printers.howToEnable', { defaultValue: 'How to enable' })}
               </a>
             </div>
+          </div>
+        )}
+        {/* Persistent update banner */}
+        {showUpdateBanner && (
+          <div className="bg-bambu-green/20 border-b border-bambu-green/30 px-4 py-2 flex items-center justify-between">
+            <div className="flex items-center gap-2 text-sm">
+              <ArrowUpCircle className="w-4 h-4 text-bambu-green" />
+              <span>
+                {t('nav.updateAvailableBanner', {
+                  version: updateCheck?.latest_version,
+                  defaultValue: `Version ${updateCheck?.latest_version} is available!`
+                })}
+              </span>
+              <button
+                onClick={() => navigate('/settings')}
+                className="text-bambu-green hover:text-bambu-green/80 font-medium underline"
+              >
+                {t('nav.viewUpdate', { defaultValue: 'View update' })}
+              </button>
+            </div>
+            <button
+              onClick={dismissUpdateBanner}
+              className="p-1 hover:bg-bambu-dark-tertiary rounded transition-colors"
+              title={t('common.dismiss', { defaultValue: 'Dismiss' })}
+            >
+              <X className="w-4 h-4" />
+            </button>
           </div>
         )}
         <Outlet />
