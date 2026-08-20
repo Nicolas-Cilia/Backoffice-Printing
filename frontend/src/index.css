@@ -327,6 +327,30 @@ body {
   transition: background-color 0.2s ease, border-color 0.2s ease;
 }
 
+/* Printer-state wash: keep the scan-from-across-the-room color, but mix it
+   with the opaque card fill so STATUS / CONTROLS / FILAMENTS widgets, muted
+   labels, progress tracks, and disabled Pause/Stop stay readable. */
+.printer-card-tinted {
+  --text-muted: var(--text-secondary);
+  --bg-tertiary: color-mix(in srgb, var(--text-primary) 22%, var(--bg-primary));
+}
+
+.printer-card-chrome-ok {
+  background-color: color-mix(in srgb, var(--status-ok) 16%, var(--bg-secondary)) !important;
+}
+
+.printer-card-chrome-warning {
+  background-color: color-mix(in srgb, var(--status-warning) 16%, var(--bg-secondary)) !important;
+}
+
+.printer-card-chrome-error {
+  background-color: color-mix(in srgb, var(--status-error) 16%, var(--bg-secondary)) !important;
+}
+
+.printer-card-tinted .bg-bambu-dark {
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--text-primary) 14%, transparent);
+}
+
 /* Toast slide-in animation */
 @keyframes slide-in {
   from {

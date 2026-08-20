@@ -9,7 +9,11 @@ import { describe, it, expect } from 'vitest';
 import { screen } from '@testing-library/react';
 import { render } from '../utils';
 import { FilamentSwatch } from '../../components/FilamentSwatch';
-import { buildFilamentBackground } from '../../components/filamentSwatchHelpers';
+import {
+  buildFilamentBackground,
+  hexLuminance,
+  isDarkSwatchFill,
+} from '../../components/filamentSwatchHelpers';
 
 describe('FilamentSwatch', () => {
   it('renders a solid swatch when only rgba is set', () => {
@@ -116,6 +120,31 @@ describe('FilamentSwatch', () => {
     // Tooltip should show the comma-joined hex stops, not the (unset) rgba.
     expect(el.title.toLowerCase()).toContain('#ff0000');
     expect(el.title.toLowerCase()).toContain('#00ff00');
+  });
+
+  it('adds a faint light ring so near-black fills stay visible on dark UI', () => {
+    render(<FilamentSwatch rgba="000000ff" effectSize="table" />);
+    const el = screen.getByTestId('filament-swatch');
+    expect(el.className).toContain('ring-1');
+    expect(el.className).toContain('ring-white/15');
+  });
+
+  it('does not ring light fills — white already contrasts on dark', () => {
+    render(<FilamentSwatch rgba="ffffffff" effectSize="table" />);
+    const el = screen.getByTestId('filament-swatch');
+    expect(el.className).not.toContain('ring-white/15');
+  });
+
+  it('rings sparkle from the main fill, not the fleck extras', () => {
+    const { rerender } = render(
+      <FilamentSwatch rgba="ffffffff" extraColors="000000" effectType="sparkle" effectSize="table" />,
+    );
+    expect(screen.getByTestId('filament-swatch').className).not.toContain('ring-white/15');
+
+    rerender(
+      <FilamentSwatch rgba="000000ff" extraColors="ffffff" effectType="sparkle" effectSize="table" />,
+    );
+    expect(screen.getByTestId('filament-swatch').className).toContain('ring-white/15');
   });
 });
 
@@ -325,6 +354,38 @@ describe('Sparkle prominence + checkerboard density (#1154 follow-up cosmetic)',
     expect(lower).toContain('#000000');
     expect(lower).toContain('#ff0000');
     expect(lower).not.toMatch(/radial-gradient/);
+  });
+});
+
+describe('dark-swatch contrast ring', () => {
+  it('treats black and charcoal as dark, white and mid-grey as not', () => {
+    expect(hexLuminance('000000')).toBe(0);
+    expect(hexLuminance('1a1a1a')!).toBeLessThan(0.2);
+    expect(hexLuminance('ffffff')).toBe(1);
+    expect(hexLuminance('808080')!).toBeGreaterThan(0.2);
+  });
+
+  it('ignores fully-transparent tokens (checkerboard, not a dark disc)', () => {
+    expect(hexLuminance('00000000')).toBeNull();
+    expect(isDarkSwatchFill({ rgba: '00000000' })).toBe(false);
+  });
+
+  it('uses extra-color stops as the field for non-sparkle gradients', () => {
+    expect(isDarkSwatchFill({ rgba: 'ffffffff', extraColors: '000000,111111' })).toBe(true);
+    expect(isDarkSwatchFill({ rgba: '000000ff', extraColors: 'ffffff,eeeeee' })).toBe(false);
+  });
+
+  it('uses the main rgba as the field for sparkle', () => {
+    expect(isDarkSwatchFill({
+      rgba: 'ffffffff',
+      extraColors: '000000',
+      effectType: 'sparkle',
+    })).toBe(false);
+    expect(isDarkSwatchFill({
+      rgba: '000000ff',
+      extraColors: 'ffffff',
+      effectType: 'sparkle',
+    })).toBe(true);
   });
 });
 

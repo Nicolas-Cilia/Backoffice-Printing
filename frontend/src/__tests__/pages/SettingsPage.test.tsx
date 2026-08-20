@@ -39,6 +39,7 @@ const mockSettings = {
   ha_token: '',
   check_updates: false,
   check_printer_firmware: false,
+  include_beta_updates: false,
   bed_cooled_threshold: 35,
 };
 
@@ -239,15 +240,13 @@ describe('SettingsPage', () => {
       });
     });
 
-    it('shows the updates section with the firmware toggle', async () => {
-      // In-app updating was removed in this fork, so the section keeps only
-      // the printer-firmware check and the current version.
+    it('shows updates section with firmware toggle', async () => {
       render(<SettingsPage />);
 
       await waitFor(() => {
         expect(screen.getByText('Updates')).toBeInTheDocument();
+        expect(screen.getByText('Check for updates')).toBeInTheDocument();
         expect(screen.getByText('Check printer firmware')).toBeInTheDocument();
-        expect(screen.queryByText('Check for updates')).not.toBeInTheDocument();
       });
     });
 
@@ -485,6 +484,113 @@ describe('SettingsPage', () => {
         ],
         hiddenSystemItemIds: ['stats'],
       });
+    });
+  });
+
+  describe('update CTA per deployment shape', () => {
+    // The update card branches on the deployment shape returned by
+    // /updates/check. Each branch is mutually exclusive — verify the right
+    // one wins so HA addon users never see the docker-compose snippet
+    // (which they can't run from inside an HA addon container) and Docker
+    // users never see the in-app Install button (which would no-op).
+    const renderWithUpdateCheck = async (
+      checkBody: Record<string, unknown>,
+    ) => {
+      server.use(
+        http.get('/api/v1/settings/', () =>
+          HttpResponse.json({ ...mockSettings, check_updates: true }),
+        ),
+        http.get('/api/v1/updates/check', () => HttpResponse.json(checkBody)),
+      );
+      render(<SettingsPage />);
+      await waitFor(() => {
+        expect(screen.getByText('Updates')).toBeInTheDocument();
+      });
+    };
+
+    it('shows the HA Supervisor message when running as an HA addon', async () => {
+      await renderWithUpdateCheck({
+        update_available: true,
+        current_version: '0.2.4',
+        latest_version: '0.2.5',
+        release_name: '0.2.5',
+        release_notes: '',
+        release_url: 'https://example.invalid/r',
+        published_at: '2099-01-01T00:00:00Z',
+        is_docker: true,
+        is_ha_addon: true,
+        update_method: 'ha_addon',
+      });
+
+      await waitFor(() => {
+        expect(
+          screen.getByText(/Home Assistant Supervisor/i),
+        ).toBeInTheDocument();
+      });
+      expect(screen.queryByText('docker compose pull && docker compose up -d')).not.toBeInTheDocument();
+      expect(screen.queryByRole('button', { name: /install update/i })).not.toBeInTheDocument();
+    });
+
+    it('shows the docker-compose snippet for Docker (non-HA) deployments', async () => {
+      await renderWithUpdateCheck({
+        update_available: true,
+        current_version: '0.2.4',
+        latest_version: '0.2.5',
+        release_name: '0.2.5',
+        release_notes: '',
+        release_url: 'https://example.invalid/r',
+        published_at: '2099-01-01T00:00:00Z',
+        is_docker: true,
+        is_ha_addon: false,
+        update_method: 'docker',
+      });
+
+      await waitFor(() => {
+        expect(screen.getByText('docker compose pull && docker compose up -d')).toBeInTheDocument();
+      });
+      expect(screen.queryByText(/Home Assistant Supervisor/i)).not.toBeInTheDocument();
+      expect(screen.queryByRole('button', { name: /install update/i })).not.toBeInTheDocument();
+    });
+
+    it('shows the installer-download link for Windows installer installs', async () => {
+      const downloadUrl =
+        'https://github.com/Nicolas-Cilia/Backoffice-Printing/releases/download/v0.2.5/bambuddy-0.2.5-windows-x64-setup.exe';
+      await renderWithUpdateCheck({
+        update_available: true,
+        current_version: '0.2.4',
+        latest_version: '0.2.5',
+        release_name: '0.2.5',
+        release_notes: '',
+        release_url: 'https://github.com/Nicolas-Cilia/Backoffice-Printing/releases/tag/v0.2.5',
+        published_at: '2099-01-01T00:00:00Z',
+        is_docker: false,
+        is_ha_addon: false,
+        is_windows_installer: true,
+        update_method: 'windows_installer',
+        installer_download_url: downloadUrl,
+      });
+
+      const link = await screen.findByRole('link', { name: /download installer for v0\.2\.5/i });
+      expect(link).toHaveAttribute('href', downloadUrl);
+      expect(link).toHaveAttribute('target', '_blank');
+      expect(link).toHaveAttribute('rel', expect.stringContaining('noopener'));
+      expect(screen.queryByRole('button', { name: /install update/i })).not.toBeInTheDocument();
+      expect(screen.queryByText(/Home Assistant Supervisor/i)).not.toBeInTheDocument();
+      expect(screen.queryByText('docker compose pull && docker compose up -d')).not.toBeInTheDocument();
+    });
+
+    it('says no releases found when GitHub has neither releases nor tags', async () => {
+      await renderWithUpdateCheck({
+        update_available: false,
+        current_version: '1.0.0',
+        latest_version: null,
+        message: 'No releases found',
+      });
+
+      expect(
+        await screen.findByText('No GitHub releases or tags found yet'),
+      ).toBeInTheDocument();
+      expect(screen.queryByText("You're running the latest version")).not.toBeInTheDocument();
     });
   });
 
@@ -1308,60 +1414,6 @@ describe('SettingsPage', () => {
         expect(window.location.search).toContain('sub=pipelines');
       });
     });
-  });
-});
-
-/**
- * Sponsor banner on Settings -> General.
- *
- * Below the fleet threshold it makes the community/donation ask; at or above it
- * the same slot makes the commercial ask and points at business.html. A print
- * farm asked to chip in $5 is a wasted impression, and a hobbyist pitched a
- * support contract is an annoyed user — so both directions are pinned.
- */
-describe('SettingsPage — sponsor banner audience', () => {
-  beforeEach(() => {
-    // BrowserRouter shares window.location across tests and the banner only
-    // renders on the General tab — without this reset a prior test's ?tab=queue
-    // leaks in and the banner never mounts.
-    window.history.replaceState({}, '', '/');
-  });
-
-  const fleet = (count: number) =>
-    server.use(
-      http.get('/api/v1/printers/', () =>
-        HttpResponse.json(
-          Array.from({ length: count }, (_, i) => ({
-            id: i + 1,
-            name: `Printer ${i + 1}`,
-            serial_number: `SN${i + 1}`,
-            ip_address: '192.168.1.10',
-            model: 'X1C',
-            is_active: true,
-          })),
-        ),
-      ),
-    );
-
-  it('shows the community ask for a small fleet', async () => {
-    fleet(2);
-    render(<SettingsPage />);
-
-    const banner = await screen.findByRole('link', { name: /Independent & community-funded/i });
-    expect(banner).toHaveAttribute('href', 'https://bambuddy.cool/sponsors.html?from=app-settings');
-    expect(screen.queryByText(/Bambuddy for business/i)).not.toBeInTheDocument();
-  });
-
-  it('shows the commercial ask for a business-sized fleet', async () => {
-    fleet(6);
-    render(<SettingsPage />);
-
-    const banner = await screen.findByRole('link', { name: /Bambuddy for business/i });
-    expect(banner).toHaveAttribute('href', 'https://bambuddy.cool/business.html?from=app-settings');
-    // The donation copy is replaced, not merely supplemented.
-    expect(screen.queryByText(/Independent & community-funded/i)).not.toBeInTheDocument();
-    // The ask names the fleet back to them.
-    expect(screen.getByText(/6 printers/i)).toBeInTheDocument();
   });
 });
 

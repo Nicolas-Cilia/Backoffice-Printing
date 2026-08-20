@@ -988,7 +988,9 @@ export interface AppSettings {
   currency: string;
   energy_cost_per_kwh: number;
   energy_tracking_mode: 'print' | 'total';
+  check_updates: boolean;
   check_printer_firmware: boolean;
+  include_beta_updates: boolean;
   // #1589: false hides the local username/password form on the login page;
   // BAMBUDDY_LOCAL_LOGIN=true on the server flips the reported value back to
   // true so the env-var recovery path is visible to the SPA.
@@ -3056,6 +3058,7 @@ export interface FilamentTrackingEvent {
   archive_id: number | null;
   printer_id: number | null;
   print_name: string | null;
+  estimated?: boolean;
 }
 
 export interface FilamentTrackingBucketCreate {
@@ -3076,6 +3079,29 @@ export interface FilamentTrackingPrinterConsumption {
   printer_id: number;
   name: string;
   grams: number;
+}
+
+export interface FilamentTrackingLiveUsageProduct {
+  bucket_id: number;
+  color_name: string;
+  material: string;
+  brand?: string | null;
+  subtype?: string | null;
+  extra_colors?: string | null;
+  effect_type?: string | null;
+  color_hex: string | null;
+  grams_so_far: number;
+  grams_last_hour: number;
+  grams_per_hour: number;
+}
+
+export interface FilamentTrackingLiveRate {
+  grams_per_hour: number;
+  grams_last_hour: number;
+  grams_so_far: number;
+  active_jobs: number;
+  warming_up?: boolean;
+  products: FilamentTrackingLiveUsageProduct[];
 }
 
 export interface FilamentTrackingAssignment {
@@ -3099,6 +3125,30 @@ export interface VersionInfo {
   repo: string;
 }
 
+export interface UpdateCheckResult {
+  update_available: boolean;
+  current_version: string;
+  latest_version: string | null;
+  release_name?: string;
+  release_notes?: string;
+  release_url?: string;
+  published_at?: string;
+  error?: string;
+  message?: string;
+  is_docker?: boolean;
+  is_ha_addon?: boolean;
+  is_windows_installer?: boolean;
+  update_method?: 'docker' | 'git' | 'ha_addon' | 'windows_installer';
+  installer_download_url?: string | null;
+}
+
+export interface UpdateStatus {
+  status: 'idle' | 'checking' | 'downloading' | 'installing' | 'complete' | 'error';
+  progress: number;
+  message: string;
+  error: string | null;
+}
+
 // Maintenance types
 export interface MaintenanceType {
   id: number;
@@ -3109,6 +3159,7 @@ export interface MaintenanceType {
   icon: string | null;
   wiki_url: string | null;  // Documentation link
   is_system: boolean;
+  is_deleted?: boolean;
   created_at: string;
 }
 
@@ -3151,14 +3202,21 @@ export interface PrinterMaintenanceOverview {
   maintenance_items: MaintenanceStatus[];
   due_count: number;
   warning_count: number;
+  total_maintenance_cost?: number;
 }
 
 export interface MaintenanceHistory {
   id: number;
   printer_maintenance_id: number;
+  printer_id: number | null;
   performed_at: string;
   hours_at_maintenance: number;
   notes: string | null;
+  title: string | null;
+  part_url: string | null;
+  cost: number | null;
+  job_name: string;
+  is_custom?: boolean;
 }
 
 export interface MaintenanceSummary {
@@ -5439,6 +5497,8 @@ export const api = {
     request<FilamentTrackingEvent[]>(`/filament-tracking/events?limit=${limit}`),
   getFilamentTrackingPrinterConsumption: () =>
     request<FilamentTrackingPrinterConsumption[]>('/filament-tracking/printer-consumption'),
+  getFilamentTrackingLiveRate: () =>
+    request<FilamentTrackingLiveRate>('/filament-tracking/live-rate'),
   createFilamentTrackingBucket: (data: FilamentTrackingBucketCreate) =>
     request<FilamentTrackingMaterial>('/filament-tracking/buckets', {
       method: 'POST',
@@ -5620,9 +5680,16 @@ export const api = {
 
   // Updates
   getVersion: () => request<VersionInfo>('/updates/version'),
+  checkForUpdates: () => request<UpdateCheckResult>('/updates/check'),
+  applyUpdate: () =>
+    request<{ success: boolean; message: string; status?: UpdateStatus; is_docker?: boolean; is_ha_addon?: boolean; is_windows_installer?: boolean }>('/updates/apply', {
+      method: 'POST',
+    }),
+  getUpdateStatus: () => request<UpdateStatus>('/updates/status'),
 
   // Maintenance
-  getMaintenanceTypes: () => request<MaintenanceType[]>('/maintenance/types'),
+  getMaintenanceTypes: (includeHidden = false) =>
+    request<MaintenanceType[]>(`/maintenance/types${includeHidden ? '?include_hidden=true' : ''}`),
   createMaintenanceType: (data: MaintenanceTypeCreate) =>
     request<MaintenanceType>('/maintenance/types', {
       method: 'POST',
@@ -5637,6 +5704,8 @@ export const api = {
     request<{ status: string }>(`/maintenance/types/${id}`, { method: 'DELETE' }),
   restoreDefaultMaintenanceTypes: () =>
     request<{ restored: number }>(`/maintenance/types/restore-defaults`, { method: 'POST' }),
+  restoreMaintenanceType: (id: number) =>
+    request<MaintenanceType>(`/maintenance/types/${id}/restore`, { method: 'POST' }),
   getMaintenanceOverview: () => request<PrinterMaintenanceOverview[]>('/maintenance/overview'),
   getPrinterMaintenance: (printerId: number) =>
     request<PrinterMaintenanceOverview>(`/maintenance/printers/${printerId}`),
@@ -5645,13 +5714,33 @@ export const api = {
       method: 'PATCH',
       body: JSON.stringify(data),
     }),
-  performMaintenance: (itemId: number, notes?: string) =>
+  performMaintenance: (itemId: number, data?: { notes?: string; part_url?: string; cost?: number }) =>
     request<MaintenanceStatus>(`/maintenance/items/${itemId}/perform`, {
       method: 'POST',
-      body: JSON.stringify({ notes }),
+      body: JSON.stringify(data ?? {}),
     }),
   getMaintenanceHistory: (itemId: number) =>
     request<MaintenanceHistory[]>(`/maintenance/items/${itemId}/history`),
+  getPrinterMaintenanceHistory: (printerId: number) =>
+    request<MaintenanceHistory[]>(`/maintenance/printers/${printerId}/history`),
+  logCustomMaintenanceJob: (
+    printerId: number,
+    data: { title: string; notes?: string; part_url?: string; cost?: number },
+  ) =>
+    request<MaintenanceHistory>(`/maintenance/printers/${printerId}/jobs`, {
+      method: 'POST',
+      body: JSON.stringify(data),
+    }),
+  updateMaintenanceHistory: (
+    historyId: number,
+    data: { notes?: string | null; part_url?: string | null; cost?: number | null; title?: string },
+  ) =>
+    request<MaintenanceHistory>(`/maintenance/history/${historyId}`, {
+      method: 'PATCH',
+      body: JSON.stringify(data),
+    }),
+  deleteMaintenanceHistory: (historyId: number) =>
+    request<{ status: string }>(`/maintenance/history/${historyId}`, { method: 'DELETE' }),
   getMaintenanceSummary: () => request<MaintenanceSummary>('/maintenance/summary'),
   setPrinterHours: (printerId: number, totalHours: number) =>
     request<{ printer_id: number; total_hours: number; archive_hours: number; offset_hours: number }>(
@@ -5914,6 +6003,47 @@ export const api = {
       method: 'PUT',
       body: JSON.stringify({ section_id: sectionId }),
     }),
+  getLibrarySectionParts: (sectionId: number) =>
+    request<LibrarySectionPart[]>(`/library/sections/${sectionId}/parts`),
+  createLibrarySectionPart: (sectionId: number, body: { code: string; name?: string }) =>
+    request<LibrarySectionPart>(`/library/sections/${sectionId}/parts`, {
+      method: 'POST',
+      body: JSON.stringify({ code: body.code, name: body.name ?? '' }),
+    }),
+  renameLibrarySectionPart: (sectionId: number, partId: number, name: string) =>
+    request<LibrarySectionPart>(`/library/sections/${sectionId}/parts/${partId}`, {
+      method: 'PATCH',
+      body: JSON.stringify({ name }),
+    }),
+  deleteLibrarySectionPart: (sectionId: number, partId: number) =>
+    request<void>(`/library/sections/${sectionId}/parts/${partId}`, { method: 'DELETE' }),
+  reorderLibrarySectionParts: (sectionId: number, ids: number[]) =>
+    request<LibrarySectionPart[]>(`/library/sections/${sectionId}/parts/reorder`, {
+      method: 'PUT',
+      body: JSON.stringify({ ids }),
+    }),
+  seedLibrarySectionPartParameters: async (
+    sectionId: number,
+    partId: number,
+    file: File,
+    fields: { resolution?: 'accept_baseline' } = {},
+  ) => {
+    const formData = new FormData();
+    formData.append('file', file);
+    if (fields.resolution) formData.append('resolution', fields.resolution);
+    return postFormData<LibrarySectionPart>(
+      `/library/sections/${sectionId}/parts/${partId}/parameters`,
+      formData,
+    );
+  },
+  previewLibrarySectionPartParameters: async (sectionId: number, partId: number, file: File) => {
+    const formData = new FormData();
+    formData.append('file', file);
+    return postFormData<SectionPartParameterPreview>(
+      `/library/sections/${sectionId}/parts/${partId}/parameters/preview`,
+      formData,
+    );
+  },
 
   getLibraryFiles: (
     folderId?: number | null,
@@ -5971,6 +6101,7 @@ export const api = {
       printer?: string | null;
       resolution?: 'proceed' | 'accept_baseline' | null;
       reason?: string | null;
+      parameter_notes?: Record<string, string> | null;
     } = {},
   ): Promise<ProductionSlotResponse> => {
     const formData = new FormData();
@@ -5984,6 +6115,9 @@ export const api = {
     if (fields.printer) formData.append('printer', fields.printer);
     if (fields.resolution) formData.append('resolution', fields.resolution);
     if (fields.reason) formData.append('reason', fields.reason);
+    if (fields.parameter_notes) {
+      formData.append('parameter_notes', JSON.stringify(fields.parameter_notes));
+    }
     return postFormData<ProductionSlotResponse>('/production/slots', formData);
   },
   previewCreateProductionSlot: async (
@@ -6020,6 +6154,7 @@ export const api = {
     fields: {
       resolution: 'proceed' | 'accept_baseline';
       reason?: string | null;
+      parameter_notes?: Record<string, string> | null;
       code?: string | null;
       quantity?: number | null;
       major?: number | null;
@@ -6032,6 +6167,9 @@ export const api = {
     formData.append('file', file);
     formData.append('resolution', fields.resolution);
     if (fields.reason) formData.append('reason', fields.reason);
+    if (fields.parameter_notes) {
+      formData.append('parameter_notes', JSON.stringify(fields.parameter_notes));
+    }
     if (fields.code) formData.append('code', fields.code);
     if (fields.quantity != null) formData.append('quantity', String(fields.quantity));
     if (fields.major != null) formData.append('major', String(fields.major));
@@ -6184,6 +6322,12 @@ export const api = {
     window.URL.revokeObjectURL(url);
   },
   getLibraryFileThumbnailUrl: (id: number) => withStreamToken(`${API_BASE}/library/files/${id}/thumbnail`),
+  getLibrarySectionPartThumbnailUrl: (sectionId: number, partId: number, cacheBust?: string | null) => {
+    const url = withStreamToken(`${API_BASE}/library/sections/${sectionId}/parts/${partId}/thumbnail`);
+    if (!cacheBust) return url;
+    const sep = url.includes('?') ? '&' : '?';
+    return `${url}${sep}v=${encodeURIComponent(cacheBust)}`;
+  },
   getLibraryFilePlateThumbnail: (id: number, plateIndex: number) =>
     withStreamToken(`${API_BASE}/library/files/${id}/plate-thumbnail/${plateIndex}`),
   getLibraryFileGcodeUrl: (id: number) => `${API_BASE}/library/files/${id}/gcode`,
@@ -6519,6 +6663,11 @@ export const api = {
       method: 'POST',
       body: JSON.stringify({ name, parameter_tracking: options?.parameter_tracking ?? true }),
     }),
+  renameProfilePartSection: (sectionId: number, name: string) =>
+    request<ProfilePartSectionView>(`/profile-parts/sections/${sectionId}`, {
+      method: 'PATCH',
+      body: JSON.stringify({ name }),
+    }),
   deleteProfilePartSection: (sectionId: number) =>
     request<{ success: boolean }>(`/profile-parts/sections/${sectionId}`, { method: 'DELETE' }),
   addProfilePartSlot: (sectionId: number, presetId: number, resolution?: 'proceed') =>
@@ -6730,6 +6879,25 @@ export interface LibraryFolderSection {
   updated_at: string;
 }
 
+export interface LibrarySectionPart {
+  id: number;
+  section_id: number;
+  code: string;
+  name: string;
+  locked_parameters: Record<string, unknown> | null;
+  has_thumbnail: boolean;
+  instance_count: number;
+  sort_order: number;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface SectionPartParameterPreview {
+  parameter_diff: ProductionParameterDiff[];
+  has_mismatches: boolean;
+  has_existing_contract: boolean;
+}
+
 export interface LibraryFolder {
   id: number;
   name: string;
@@ -6770,6 +6938,7 @@ export interface ProductionSlotNested {
   has_overrides: boolean;
   last_mismatch: boolean | null;
   parameter_overrides?: Record<string, unknown> | null;
+  parameter_notes?: Record<string, string> | null;
 }
 
 export interface ProductionPartView {
@@ -6805,6 +6974,7 @@ export interface ProductionSlotResponse {
   folder_id: number;
   printer_model: string;
   locked_parameters: Record<string, unknown> | null;
+  parameter_notes?: Record<string, string> | null;
 }
 
 export interface ParsedProductionFilenameOut {
@@ -6822,6 +6992,7 @@ export interface ProductionParameterDiff {
   locked: unknown;
   incoming: unknown;
   match: boolean;
+  note?: string | null;
 }
 
 export interface ProductionReplacePreview {

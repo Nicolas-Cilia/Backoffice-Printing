@@ -240,6 +240,20 @@ class TestSettingsAPI:
 
     @pytest.mark.asyncio
     @pytest.mark.integration
+    async def test_update_check_updates_setting(self, async_client: AsyncClient):
+        """Verify the in-app update-check toggle persists."""
+        response = await async_client.get("/api/v1/settings/")
+        assert response.json()["check_updates"] is True
+
+        response = await async_client.put("/api/v1/settings/", json={"check_updates": False})
+        assert response.status_code == 200
+        assert response.json()["check_updates"] is False
+
+        response = await async_client.get("/api/v1/settings/")
+        assert response.json()["check_updates"] is False
+
+    @pytest.mark.asyncio
+    @pytest.mark.integration
     async def test_update_check_printer_firmware(self, async_client: AsyncClient):
         """Verify check_printer_firmware can be updated."""
         # Default should be True

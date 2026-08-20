@@ -20,6 +20,14 @@ from backend.app.services.usage_tracker import (
 )
 
 
+def _empty_3mf_search():
+    """find_exact_named_3mf uses scalars().all(), not scalar_one_or_none()."""
+    result = MagicMock()
+    result.scalars.return_value.all.return_value = []
+    result.scalar_one_or_none.return_value = None
+    return result
+
+
 def _make_spool(*, id=1, label_weight=1000, weight_used=0, tag_uid=None, tray_uuid=None, rgba=None):
     """Create a mock Spool object."""
     spool = MagicMock()
@@ -146,12 +154,13 @@ class TestOnPrintCompleteAMSDelta:
         assignment = _make_assignment()
 
         db = AsyncMock()
-        # First 2 executes → _find_3mf_by_filename (library + archive search, uses scalars().all()),
+        # First 3 executes → find_exact_named_3mf (library + named archive + leftover archive),
         # then assignment, then spool for the AMS fallback path
         db.execute = AsyncMock(
             side_effect=[
-                MagicMock(),  # _find_3mf_by_filename: library search
-                MagicMock(),  # _find_3mf_by_filename: archive search
+                _empty_3mf_search(),
+                _empty_3mf_search(),
+                _empty_3mf_search(),
                 MagicMock(scalar_one_or_none=MagicMock(return_value=assignment)),
                 MagicMock(scalar_one_or_none=MagicMock(return_value=spool)),
             ]
@@ -239,8 +248,9 @@ class TestOnPrintCompleteAMSDelta:
         db = AsyncMock()
         db.execute = AsyncMock(
             side_effect=[
-                MagicMock(),  # _find_3mf_by_filename: library search
-                MagicMock(),  # _find_3mf_by_filename: archive search
+                _empty_3mf_search(),
+                _empty_3mf_search(),
+                _empty_3mf_search(),
                 MagicMock(scalar_one_or_none=MagicMock(return_value=t3_assignment)),
                 MagicMock(scalar_one_or_none=MagicMock(return_value=t3_spool)),
             ]
@@ -635,13 +645,14 @@ class TestSpoolAssignmentSnapshot:
         ams_data = [{"id": 0, "tray": [{"id": 0, "remain": 70}]}]
         pm = _make_printer_manager(_make_printer_state(ams_data))
 
-        # First 2 executes → _find_3mf_by_filename (library + archive search),
+        # First 3 executes → find_exact_named_3mf (library + named archive + leftover archive),
         # then live assignment check (returns None), then spool lookup by snapshot spool_id
         db = AsyncMock()
         db.execute = AsyncMock(
             side_effect=[
-                MagicMock(),  # _find_3mf_by_filename: library search
-                MagicMock(),  # _find_3mf_by_filename: archive search
+                _empty_3mf_search(),
+                _empty_3mf_search(),
+                _empty_3mf_search(),
                 MagicMock(scalar_one_or_none=MagicMock(return_value=None)),  # live assignment
                 MagicMock(scalar_one_or_none=MagicMock(return_value=spool)),
             ]
@@ -676,13 +687,14 @@ class TestSpoolAssignmentSnapshot:
         ams_data = [{"id": 0, "tray": [{"id": 0, "remain": 70}]}]
         pm = _make_printer_manager(_make_printer_state(ams_data))
 
-        # First 2 executes → _find_3mf_by_filename (library + archive search),
+        # First 3 executes → find_exact_named_3mf (library + named archive + leftover archive),
         # then assignment and spool for the AMS fallback path
         db = AsyncMock()
         db.execute = AsyncMock(
             side_effect=[
-                MagicMock(),  # _find_3mf_by_filename: library search
-                MagicMock(),  # _find_3mf_by_filename: archive search
+                _empty_3mf_search(),
+                _empty_3mf_search(),
+                _empty_3mf_search(),
                 MagicMock(scalar_one_or_none=MagicMock(return_value=assignment)),
                 MagicMock(scalar_one_or_none=MagicMock(return_value=spool)),
             ]

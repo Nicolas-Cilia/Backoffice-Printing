@@ -160,7 +160,10 @@ describe('FileManagerPage', () => {
       }),
       http.get('/api/v1/library/sections', () => {
         return HttpResponse.json([]);
-      })
+      }),
+      http.get('/api/v1/library/sections/:id/parts', () => {
+        return HttpResponse.json([]);
+      }),
     );
   });
 
@@ -408,6 +411,57 @@ describe('FileManagerPage', () => {
         expect(screen.getByText('Functional Parts')).toBeInTheDocument();
         expect(screen.getByText('Art Projects')).toBeInTheDocument();
         expect(screen.getByText('Ungrouped')).toBeInTheDocument();
+      });
+    });
+
+    it('shows Parts UI on a production-kind section and creates a part', async () => {
+      const user = userEvent.setup();
+      let posted: { code?: string; name?: string } = {};
+      server.use(
+        http.get('/api/v1/library/sections', () =>
+          HttpResponse.json([
+            { id: 1, name: 'Production', sort_order: 1, folder_count: 1, kind: 'production', created_at: '', updated_at: '' },
+          ]),
+        ),
+        http.get('/api/v1/library/sections/:id/parts', () => HttpResponse.json([])),
+        http.post('/api/v1/library/sections/:id/parts', async ({ request }) => {
+          posted = await request.json() as { code?: string; name?: string };
+          return HttpResponse.json({
+            id: 10,
+            section_id: 1,
+            code: posted.code,
+            name: posted.name ?? '',
+            locked_parameters: null,
+            has_thumbnail: false,
+            instance_count: 0,
+            sort_order: 1,
+            created_at: '',
+            updated_at: '',
+          }, { status: 201 });
+        }),
+      );
+      render(<FileManagerPage />);
+
+      await waitFor(() => {
+        expect(screen.getByTestId('section-parts-panel')).toBeInTheDocument();
+        expect(screen.getByRole('button', { name: 'Parts' })).toBeInTheDocument();
+      });
+
+      await user.click(screen.getByRole('button', { name: 'Parts' }));
+      await waitFor(() => {
+        expect(screen.getByText(/no part templates yet/i)).toBeInTheDocument();
+      });
+
+      await user.click(screen.getByRole('button', { name: 'Add part' }));
+      await waitFor(() => {
+        expect(screen.getByText('Add section part')).toBeInTheDocument();
+      });
+      await user.type(screen.getByLabelText('Part code'), 'TOP');
+      await user.type(screen.getByLabelText('Name'), 'Housing');
+      const submitButtons = screen.getAllByRole('button', { name: 'Add part' });
+      await user.click(submitButtons[submitButtons.length - 1]);
+      await waitFor(() => {
+        expect(posted).toEqual({ code: 'TOP', name: 'Housing' });
       });
     });
 

@@ -1,5 +1,5 @@
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
-import { Loader2, Plus, Plug, AlertTriangle, RotateCcw, Bell, RefreshCw, ExternalLink, Globe, Droplets, Thermometer, FileText, Edit2, Send, CheckCircle, XCircle, History, Trash2, Zap, TrendingUp, Calendar, DollarSign, Power, PowerOff, Key, Copy, Database, X, Shield, Printer, Cylinder, Wifi, Home, Video, Users, Lock, Unlock, ChevronDown, Save, Mail, Flame, Layers, ListOrdered, Code, Search, Scale, Settings as SettingsIcon, ScanEye, Cog, QrCode, Heart, Briefcase, Workflow, UploadCloud } from 'lucide-react';
+import { Loader2, Plus, Plug, AlertTriangle, RotateCcw, Bell, RefreshCw, ExternalLink, Globe, Droplets, Thermometer, FileText, Edit2, Send, CheckCircle, XCircle, History, Trash2, Zap, TrendingUp, Calendar, DollarSign, Power, PowerOff, Key, Copy, Database, X, Shield, Printer, Cylinder, Wifi, Home, Video, Users, Lock, Unlock, ChevronDown, Save, Mail, Flame, Layers, ListOrdered, Code, Search, Scale, Settings as SettingsIcon, ScanEye, Cog, QrCode, Workflow, UploadCloud, Download } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
 import { useNavigate, useSearchParams } from 'react-router-dom';
 import { api } from '../api/client';
@@ -7,11 +7,10 @@ import { useAuth } from '../contexts/AuthContext';
 import { formatDateOnly } from '../utils/date';
 import { getCurrencySymbol, SUPPORTED_CURRENCIES } from '../utils/currency';
 import { checkPasswordComplexity } from '../utils/password';
-import { fleetAudience, sponsorHref } from '../utils/fleetAudience';
 import { PRESET_CATEGORIES, parsePresetTriple } from '../utils/temperatureFanPresets';
 import { CALIBRATION_MODES, CALIBRATION_MODE_ACTIVE, CALIBRATION_MODE_INACTIVE } from '../utils/calibrationMode';
 import { PreheatFilamentTargetsEditor } from '../components/PreheatFilamentTargetsEditor';
-import type { APIKey, AppSettings, AppSettingsUpdate, SmartPlug, SmartPlugStatus, NotificationProvider, NotificationTemplate, GitHubBackupStatus, CloudAuthStatus, UserCreate, UserUpdate, UserResponse, StorageUsageResponse, CalibrationMode } from '../api/client';
+import type { APIKey, AppSettings, AppSettingsUpdate, SmartPlug, SmartPlugStatus, NotificationProvider, NotificationTemplate, UpdateStatus, GitHubBackupStatus, CloudAuthStatus, UserCreate, UserUpdate, UserResponse, StorageUsageResponse, CalibrationMode } from '../api/client';
 import { Card, CardContent, CardDensityProvider, CardHeader } from '../components/Card';
 import { SlicerBundlesPanel } from '../components/SlicerBundlesPanel';
 import { SlicerPipelinesPanel } from '../components/SlicerPipelinesPanel';
@@ -252,6 +251,7 @@ export function SettingsPage() {
   const [showClearLogsConfirm, setShowClearLogsConfirm] = useState(false);
   const [showClearStorageConfirm, setShowClearStorageConfirm] = useState(false);
   const [showBulkPlugConfirm, setShowBulkPlugConfirm] = useState<'on' | 'off' | null>(null);
+  const [showReleaseNotes, setShowReleaseNotes] = useState(false);
   const [showDisableAuthConfirm, setShowDisableAuthConfirm] = useState(false);
   const [showChangePasswordModal, setShowChangePasswordModal] = useState(false);
   const [changePasswordData, setChangePasswordData] = useState({ currentPassword: '', newPassword: '', confirmPassword: '' });
@@ -430,9 +430,6 @@ export function SettingsPage() {
     queryFn: api.getPrinters,
   });
 
-  // A business-sized fleet gets the commercial ask instead of the donation ask.
-  const sponsorAudience = fleetAudience(printers?.length ?? 0);
-
   const { data: notificationTemplates, isLoading: templatesLoading } = useQuery({
     queryKey: ['notification-templates'],
     queryFn: api.getNotificationTemplates,
@@ -471,6 +468,25 @@ export function SettingsPage() {
   const { data: versionInfo } = useQuery({
     queryKey: ['version'],
     queryFn: api.getVersion,
+  });
+
+  const { data: updateCheck, refetch: refetchUpdateCheck, isRefetching: isCheckingUpdate } = useQuery({
+    queryKey: ['updateCheck'],
+    queryFn: api.checkForUpdates,
+    enabled: settings?.check_updates !== false,
+    staleTime: 5 * 60 * 1000,
+  });
+
+  const { data: updateStatus, refetch: refetchUpdateStatus } = useQuery({
+    queryKey: ['updateStatus'],
+    queryFn: api.getUpdateStatus,
+    refetchInterval: (query) => {
+      const status = query.state.data as UpdateStatus | undefined;
+      if (status?.status === 'downloading' || status?.status === 'installing') {
+        return 1000;
+      }
+      return false;
+    },
   });
 
   // Library trash settings (#1008). Separate endpoint from the generic
@@ -780,6 +796,17 @@ export function SettingsPage() {
     }));
   };
 
+  const applyUpdateMutation = useMutation({
+    mutationFn: api.applyUpdate,
+    onSuccess: (data) => {
+      if (data.is_ha_addon || data.is_docker || data.is_windows_installer) {
+        showToast(data.message, 'error');
+      } else {
+        refetchUpdateStatus();
+      }
+    },
+  });
+
   // Test all notification providers
   const [testAllResult, setTestAllResult] = useState<{
     tested: number;
@@ -973,7 +1000,9 @@ export function SettingsPage() {
       baseline.currency !== localSettings.currency ||
       baseline.energy_cost_per_kwh !== localSettings.energy_cost_per_kwh ||
       baseline.energy_tracking_mode !== localSettings.energy_tracking_mode ||
+      baseline.check_updates !== localSettings.check_updates ||
       (baseline.check_printer_firmware ?? true) !== (localSettings.check_printer_firmware ?? true) ||
+      (baseline.include_beta_updates ?? false) !== (localSettings.include_beta_updates ?? false) ||
       (baseline.local_login_enabled ?? true) !== (localSettings.local_login_enabled ?? true) ||
       baseline.notification_language !== localSettings.notification_language ||
       (baseline.bed_cooled_threshold ?? 35) !== (localSettings.bed_cooled_threshold ?? 35) ||
@@ -1074,7 +1103,9 @@ export function SettingsPage() {
         currency: localSettings.currency,
         energy_cost_per_kwh: localSettings.energy_cost_per_kwh,
         energy_tracking_mode: localSettings.energy_tracking_mode,
+        check_updates: localSettings.check_updates,
         check_printer_firmware: localSettings.check_printer_firmware,
+        include_beta_updates: localSettings.include_beta_updates,
         local_login_enabled: localSettings.local_login_enabled,
         notification_language: localSettings.notification_language,
         bed_cooled_threshold: localSettings.bed_cooled_threshold,
@@ -1531,46 +1562,6 @@ export function SettingsPage() {
       <div className="flex-1 min-w-0">
       {activeTab === 'general' && (
       <>
-      {/* Sponsor banner — independence callout, or the commercial ask on a
-          business-sized fleet (see utils/fleetAudience). */}
-      <a
-        href={sponsorHref(sponsorAudience, 'app-settings')}
-        target="_blank"
-        rel="noopener noreferrer"
-        className="group block mb-4 lg:mb-6 rounded-xl border border-bambu-green/30 bg-gradient-to-br from-bambu-green/15 via-bambu-green/5 to-transparent hover:border-bambu-green/50 hover:from-bambu-green/20 transition-colors"
-      >
-        <div className="flex flex-col md:flex-row items-start md:items-center gap-4 p-4 md:p-5">
-          <div className="p-3 rounded-lg bg-bambu-green/20 text-bambu-green flex-shrink-0">
-            {sponsorAudience === 'business' ? <Briefcase className="w-6 h-6" /> : <Heart className="w-6 h-6" />}
-          </div>
-          <div className="flex-1 min-w-0">
-            <p className="text-base font-semibold text-white">
-              {sponsorAudience === 'business'
-                ? t('sponsors.businessTitle', 'Bambuddy for business')
-                : t('sponsors.sectionTitle', 'Independent & community-funded')}
-            </p>
-            <p className="text-sm text-bambu-gray mt-0.5">
-              {sponsorAudience === 'business'
-                ? t(
-                    'sponsors.businessTagline',
-                    "You're running {{count}} printers. Priority support, commercial licensing and invoicing are available for teams and print farms.",
-                    { count: printers?.length ?? 0 }
-                  )
-                : t(
-                    'sponsors.tagline',
-                    'Bambuddy is free and stays that way because people choose to support it. No VC, no cloud lock-in.'
-                  )}
-            </p>
-          </div>
-          <div className="flex items-center gap-2 px-4 py-2 rounded-lg bg-bambu-green/20 text-bambu-green group-hover:bg-bambu-green/30 text-sm font-medium whitespace-nowrap self-start md:self-auto">
-            {sponsorAudience === 'business'
-              ? t('sponsors.businessCta', 'Bambuddy for business')
-              : t('sponsors.viewSupporters', 'View supporters')}
-            <ExternalLink className="w-4 h-4" />
-          </div>
-        </div>
-      </a>
-
       <div className="flex flex-col lg:flex-row gap-4 lg:gap-6">
         {/* Left Column - General Settings */}
         <div className="space-y-3 flex-1 lg:max-w-xl">
@@ -2545,15 +2536,177 @@ export function SettingsPage() {
                 </label>
               </div>
               <div className="border-t border-bambu-dark-tertiary pt-4">
-                <p className="text-xs font-medium text-bambu-gray uppercase tracking-wider mb-4">{t('settings.bambuddySoftware')}</p>
+                <p className="text-xs font-medium text-bambu-gray uppercase tracking-wider mb-4">{t('settings.bambuddySoftware', 'Software')}</p>
               </div>
-              {/* This fork has no in-app updater — updating is a deliberate
-                  `git pull` on the host. Only the version is shown. */}
               <div className="flex items-center justify-between">
                 <div>
-                  <p className="text-white">{t('settings.currentVersion')}</p>
-                  <p className="text-sm text-bambu-gray">v{versionInfo?.version || '...'}</p>
+                  <p className="text-white">{t('settings.checkForUpdatesLabel', 'Check for updates')}</p>
+                  <p className="text-sm text-bambu-gray">
+                    {t('settings.autoCheckDescription', 'Automatically check for new versions on startup')}
+                  </p>
                 </div>
+                <label className="relative inline-flex items-center cursor-pointer">
+                  <input
+                    type="checkbox"
+                    checked={localSettings.check_updates}
+                    onChange={(e) => updateSetting('check_updates', e.target.checked)}
+                    className="sr-only peer"
+                  />
+                  <div className="w-11 h-6 bg-bambu-dark-tertiary peer-focus:outline-none rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:rounded-full after:h-5 after:w-5 after:transition-all peer-checked:bg-bambu-green"></div>
+                </label>
+              </div>
+              <div className={`flex items-center justify-between ${!localSettings.check_updates ? 'opacity-50' : ''}`}>
+                <div>
+                  <p className="text-white">{t('settings.includeBetaUpdates', 'Include beta versions')}</p>
+                  <p className="text-sm text-bambu-gray">
+                    {t('settings.includeBetaUpdatesDesc', 'Notify about beta and prerelease versions when checking for updates')}
+                  </p>
+                </div>
+                <label className="relative inline-flex items-center cursor-pointer">
+                  <input
+                    type="checkbox"
+                    checked={localSettings.include_beta_updates ?? false}
+                    onChange={(e) => updateSetting('include_beta_updates', e.target.checked)}
+                    disabled={!localSettings.check_updates}
+                    className="sr-only peer"
+                  />
+                  <div className="w-11 h-6 bg-bambu-dark-tertiary peer-focus:outline-none rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:rounded-full after:h-5 after:w-5 after:transition-all peer-checked:bg-bambu-green"></div>
+                </label>
+              </div>
+              <div>
+                <div className="flex items-center justify-between mb-2">
+                  <div>
+                    <p className="text-white">{t('settings.currentVersion')}</p>
+                    <p className="text-sm text-bambu-gray">v{versionInfo?.version || '...'}</p>
+                  </div>
+                  <Button
+                    variant="secondary"
+                    size="sm"
+                    onClick={() => refetchUpdateCheck()}
+                    disabled={isCheckingUpdate}
+                  >
+                    {isCheckingUpdate ? (
+                      <Loader2 className="w-4 h-4 animate-spin" />
+                    ) : (
+                      <RefreshCw className="w-4 h-4" />
+                    )}
+                    {t('settings.checkNow', 'Check now')}
+                  </Button>
+                </div>
+
+                {updateCheck?.update_available ? (
+                  <div className="mt-4 p-3 bg-bambu-green/10 border border-bambu-green/30 rounded-lg">
+                    <div className="flex items-start justify-between">
+                      <div>
+                        <p className="text-bambu-green font-medium">
+                          {t('settings.updateAvailableVersion', { version: updateCheck.latest_version, defaultValue: `Update available: v${updateCheck.latest_version}` })}
+                        </p>
+                        {updateCheck.release_name && updateCheck.release_name !== updateCheck.latest_version && (
+                          <p className="text-sm text-bambu-gray mt-1">{updateCheck.release_name}</p>
+                        )}
+                      </div>
+                      <div className="flex items-center gap-2">
+                        {updateCheck.release_notes && (
+                          <button
+                            onClick={() => setShowReleaseNotes(true)}
+                            className="text-bambu-gray hover:text-white transition-colors text-sm underline"
+                          >
+                            {t('settings.releaseNotes', 'Release Notes')}
+                          </button>
+                        )}
+                        {updateCheck.release_url && (
+                          <a
+                            href={updateCheck.release_url}
+                            target="_blank"
+                            rel="noopener noreferrer"
+                            className="text-bambu-gray hover:text-white transition-colors"
+                            title={t('settings.viewReleaseOnGitHub', 'View release on GitHub')}
+                          >
+                            <ExternalLink className="w-4 h-4" />
+                          </a>
+                        )}
+                      </div>
+                    </div>
+
+                    {updateStatus?.status === 'downloading' || updateStatus?.status === 'installing' ? (
+                      <div className="mt-3">
+                        <div className="flex items-center gap-2 text-sm text-bambu-gray">
+                          <Loader2 className="w-4 h-4 animate-spin" />
+                          <span>{updateStatus.message}</span>
+                        </div>
+                        <div className="mt-2 w-full bg-bambu-dark-tertiary rounded-full h-2">
+                          <div
+                            className="bg-bambu-green h-2 rounded-full transition-all duration-300"
+                            style={{ width: `${updateStatus.progress}%` }}
+                          />
+                        </div>
+                      </div>
+                    ) : updateStatus?.status === 'complete' ? (
+                      <div className="mt-3 p-2 bg-bambu-green/20 rounded text-sm text-bambu-green">
+                        {updateStatus.message}
+                      </div>
+                    ) : updateStatus?.status === 'error' ? (
+                      <div className="mt-3 p-2 bg-red-100 dark:bg-red-500/20 rounded text-sm text-red-700 dark:text-red-400">
+                        {updateStatus.error || updateStatus.message}
+                      </div>
+                    ) : updateCheck?.is_ha_addon ? (
+                      <div className="mt-3 p-3 bg-bambu-dark-tertiary rounded-lg">
+                        <p className="text-sm text-bambu-gray">
+                          {t('settings.updateViaHomeAssistant')}
+                        </p>
+                      </div>
+                    ) : updateCheck?.is_docker ? (
+                      <div className="mt-3 p-3 bg-bambu-dark-tertiary rounded-lg">
+                        <p className="text-sm text-bambu-gray mb-2">
+                          {t('settings.updateViaDocker', 'Update via Docker Compose:')}
+                        </p>
+                        <code className="block text-xs bg-bambu-dark p-2 rounded text-bambu-green font-mono">
+                          docker compose pull && docker compose up -d
+                        </code>
+                      </div>
+                    ) : updateCheck?.update_method === 'windows_installer' ? (
+                      <div className="mt-3 p-3 bg-bambu-dark-tertiary rounded-lg">
+                        <p className="text-sm text-bambu-gray mb-3">
+                          {t('settings.updateViaWindowsInstaller')}
+                        </p>
+                        <a
+                          href={updateCheck.installer_download_url || updateCheck.release_url || `https://github.com/Nicolas-Cilia/Backoffice-Printing/releases/tag/v${updateCheck.latest_version}`}
+                          target="_blank"
+                          rel="noopener noreferrer"
+                          className="inline-flex items-center justify-center font-medium rounded-lg transition-colors focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-offset-bambu-dark disabled:opacity-50 bg-bambu-green hover:bg-bambu-green-light text-white focus:ring-bambu-green px-4 py-2 text-sm gap-2 min-h-[44px] md:min-h-0"
+                        >
+                          <Download className="w-4 h-4" />
+                          {t('settings.downloadWindowsInstaller', { version: updateCheck.latest_version })}
+                        </a>
+                      </div>
+                    ) : (
+                      <Button
+                        className="mt-3"
+                        onClick={() => applyUpdateMutation.mutate()}
+                        disabled={applyUpdateMutation.isPending}
+                      >
+                        {applyUpdateMutation.isPending ? (
+                          <Loader2 className="w-4 h-4 animate-spin" />
+                        ) : (
+                          <Download className="w-4 h-4" />
+                        )}
+                        {t('settings.installUpdate', 'Install Update')}
+                      </Button>
+                    )}
+                  </div>
+                ) : updateCheck?.error ? (
+                  <div className="mt-2 p-2 bg-red-50 dark:bg-red-500/10 border border-red-300 dark:border-red-500/30 rounded text-sm text-red-700 dark:text-red-400">
+                    {t('settings.failedToCheckUpdates', { error: updateCheck.error })}
+                  </div>
+                ) : updateCheck && !updateCheck.update_available && !updateCheck.latest_version ? (
+                  <p className="mt-2 text-sm text-bambu-gray">
+                    {t('settings.noReleasesFound', 'No GitHub releases or tags found yet')}
+                  </p>
+                ) : updateCheck && !updateCheck.update_available ? (
+                  <p className="mt-2 text-sm text-bambu-gray">
+                    {t('settings.latestVersionRunning', "You're running the latest version")}
+                  </p>
+                ) : null}
               </div>
             </CardContent>
           </Card>
@@ -5362,6 +5515,58 @@ export function SettingsPage() {
           }}
           onCancel={() => setShowBulkPlugConfirm(null)}
         />
+      )}
+
+      {showReleaseNotes && updateCheck?.release_notes && (
+        <div
+          className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-4"
+          onClick={() => setShowReleaseNotes(false)}
+        >
+          <Card className="w-full max-w-2xl max-h-[80vh] flex flex-col" onClick={(e: React.MouseEvent) => e.stopPropagation()}>
+            <CardHeader className="flex flex-row items-center justify-between shrink-0">
+              <div>
+                <h2 className="text-lg font-semibold text-white">
+                  {t('settings.releaseNotes', 'Release Notes')} - v{updateCheck.latest_version}
+                </h2>
+                {updateCheck.release_name && updateCheck.release_name !== updateCheck.latest_version && (
+                  <p className="text-sm text-bambu-gray">{updateCheck.release_name}</p>
+                )}
+              </div>
+              <button
+                onClick={() => setShowReleaseNotes(false)}
+                className="p-1 rounded hover:bg-bambu-dark-tertiary text-bambu-gray hover:text-white"
+              >
+                <X className="w-5 h-5" />
+              </button>
+            </CardHeader>
+            <CardContent className="overflow-y-auto flex-1">
+              <pre className="text-sm text-bambu-gray whitespace-pre-wrap font-sans">
+                {updateCheck.release_notes}
+              </pre>
+            </CardContent>
+            <div className="p-4 border-t border-bambu-dark-tertiary shrink-0 flex gap-2">
+              {updateCheck.release_url && (
+                <a
+                  href={updateCheck.release_url}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="flex-1"
+                >
+                  <Button variant="secondary" className="w-full">
+                    <ExternalLink className="w-4 h-4" />
+                    {t('settings.viewReleaseOnGitHub', 'View release on GitHub')}
+                  </Button>
+                </a>
+              )}
+              <Button
+                onClick={() => setShowReleaseNotes(false)}
+                className="flex-1"
+              >
+                {t('common.close', 'Close')}
+              </Button>
+            </div>
+          </Card>
+        </div>
       )}
 
       {/* Users Tab */}

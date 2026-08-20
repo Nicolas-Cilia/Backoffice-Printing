@@ -35,9 +35,14 @@ import {
   CircleDot,
   Printer,
   ExternalLink,
+  DollarSign,
+  Link2,
+  ScrollText,
+  Eye,
+  EyeOff,
 } from 'lucide-react';
 import { api } from '../api/client';
-import type { MaintenanceStatus, PrinterMaintenanceOverview, MaintenanceType, Permission } from '../api/client';
+import type { MaintenanceStatus, PrinterMaintenanceOverview, MaintenanceType, MaintenanceHistory, Permission } from '../api/client';
 import { getMaintenanceWikiUrl } from '../utils/maintenanceWikiUrls';
 import { Card, CardContent } from '../components/Card';
 import { Button } from '../components/Button';
@@ -45,6 +50,7 @@ import { Toggle } from '../components/Toggle';
 import { ConfirmModal } from '../components/ConfirmModal';
 import { useToast } from '../contexts/ToastContext';
 import { useAuth } from '../contexts/AuthContext';
+import { getCurrencySymbol } from '../utils/currency';
 
 // Icon mapping for maintenance types
 const iconMap: Record<string, React.ComponentType<{ className?: string }>> = {
@@ -76,7 +82,7 @@ function getIcon(iconName: string | null) {
   return iconMap[iconName] || Wrench;
 }
 
-type TFunction = (key: string, options?: Record<string, unknown>) => string;
+type TFunction = ReturnType<typeof useTranslation>['t'];
 
 function formatDuration(value: number, type: 'hours' | 'days', t?: TFunction): string {
   if (type === 'days') {
@@ -124,6 +130,115 @@ function formatIntervalLabel(value: number, type: 'hours' | 'days', t?: TFunctio
     return t ? t('maintenance.days', { count: value }) : `${value} days`;
   }
   return `${value}h`;
+}
+
+type JobLogFields = { notes?: string | null; part_url?: string | null; cost?: number | null; title?: string };
+
+function LogJobModal({
+  title,
+  currencySymbol,
+  saving,
+  initial,
+  submitLabel,
+  onClose,
+  onSave,
+  t,
+}: {
+  title: string;
+  currencySymbol: string;
+  saving: boolean;
+  initial?: { title?: string | null; notes?: string | null; part_url?: string | null; cost?: number | null };
+  submitLabel?: string;
+  onClose: () => void;
+  onSave: (fields: JobLogFields) => void | Promise<void>;
+  t: TFunction;
+}) {
+  const [name, setName] = useState(initial?.title ?? '');
+  const [notes, setNotes] = useState(initial?.notes ?? '');
+  const [partUrl, setPartUrl] = useState(initial?.part_url ?? '');
+  const [cost, setCost] = useState(initial?.cost != null ? String(initial.cost) : '');
+
+  const handleSubmit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    const trimmedName = name.trim();
+    if (!trimmedName) return;
+    const parsedCost = cost.trim() === '' ? undefined : Number(cost);
+    try {
+      await onSave({
+        title: trimmedName,
+        notes: notes.trim() || undefined,
+        part_url: partUrl.trim() || undefined,
+        cost: parsedCost != null && !Number.isNaN(parsedCost) ? parsedCost : undefined,
+      });
+    } catch {
+      // Mutation onError already toasts; keep the dialog open.
+    }
+  };
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-4" onClick={onClose}>
+      <form
+        className="w-full max-w-md rounded-xl border border-bambu-dark-tertiary bg-bambu-dark-secondary p-5 shadow-xl"
+        onClick={(e) => e.stopPropagation()}
+        onSubmit={handleSubmit}
+      >
+        <h3 className="text-lg font-semibold text-white mb-4">{title}</h3>
+        <div className="space-y-3">
+          <div>
+            <label className="block text-xs text-bambu-gray mb-1">{t('maintenance.jobName', 'Job')}</label>
+            <input
+              value={name}
+              onChange={(e) => setName(e.target.value)}
+              className="w-full px-3 py-2 bg-bambu-dark border border-bambu-dark-tertiary rounded-lg text-white text-sm"
+              placeholder={t('maintenance.jobNamePlaceholder', 'e.g. Replace nozzle')}
+              autoFocus
+              required
+            />
+          </div>
+          <div>
+            <label className="block text-xs text-bambu-gray mb-1">{t('maintenance.notes', 'Notes')}</label>
+            <textarea
+              value={notes}
+              onChange={(e) => setNotes(e.target.value)}
+              rows={3}
+              className="w-full px-3 py-2 bg-bambu-dark border border-bambu-dark-tertiary rounded-lg text-white text-sm resize-y"
+              placeholder={t('maintenance.notesPlaceholder', 'What did you do?')}
+            />
+          </div>
+          <div>
+            <label className="block text-xs text-bambu-gray mb-1">{t('maintenance.partLink', 'Part link (optional)')}</label>
+            <input
+              type="url"
+              value={partUrl}
+              onChange={(e) => setPartUrl(e.target.value)}
+              className="w-full px-3 py-2 bg-bambu-dark border border-bambu-dark-tertiary rounded-lg text-white text-sm"
+              placeholder="https://"
+            />
+          </div>
+          <div>
+            <label className="block text-xs text-bambu-gray mb-1">
+              {t('maintenance.cost', 'Cost (optional)')} ({currencySymbol})
+            </label>
+            <input
+              type="number"
+              min="0"
+              step="0.01"
+              value={cost}
+              onChange={(e) => setCost(e.target.value)}
+              className="w-full px-3 py-2 bg-bambu-dark border border-bambu-dark-tertiary rounded-lg text-white text-sm"
+              placeholder="0.00"
+            />
+          </div>
+        </div>
+        <div className="flex justify-end gap-2 mt-5">
+          <Button type="button" size="sm" variant="secondary" onClick={onClose}>{t('common.cancel')}</Button>
+          <Button type="submit" size="sm" disabled={saving}>
+            {saving ? <Loader2 className="w-4 h-4 animate-spin" /> : (submitLabel || t('maintenance.saveLog', 'Save to log'))}
+          </Button>
+        </div>
+      </form>
+    </div>
+  );
 }
 
 
@@ -277,7 +392,7 @@ function MaintenanceCard({
             className="!px-3"
           >
             <RotateCcw className="w-3.5 h-3.5" />
-            {t('common.reset')}
+            {t('maintenance.logReset', 'Log & reset')}
           </Button>
         </div>
       </div>
@@ -291,19 +406,47 @@ function PrinterSection({
   onPerform,
   onToggle,
   onSetHours,
+  onLogCustomJob,
+  onEditHistory,
+  onDeleteHistory,
+  currencySymbol,
+  savingPerform,
+  savingCustom,
+  savingEdit,
+  savingDelete,
   hasPermission,
   t,
 }: {
   overview: PrinterMaintenanceOverview;
-  onPerform: (id: number) => void;
+  onPerform: (id: number, fields: JobLogFields) => Promise<unknown>;
   onToggle: (id: number, enabled: boolean) => void;
   onSetHours: (printerId: number, hours: number) => void;
+  onLogCustomJob: (printerId: number, fields: JobLogFields) => Promise<unknown>;
+  onEditHistory: (historyId: number, fields: JobLogFields) => Promise<unknown>;
+  onDeleteHistory: (historyId: number) => Promise<unknown>;
+  currencySymbol: string;
+  savingPerform: boolean;
+  savingCustom: boolean;
+  savingEdit: boolean;
+  savingDelete: boolean;
   hasPermission: (permission: Permission) => boolean;
   t: TFunction;
 }) {
   const [expanded, setExpanded] = useState(false);
   const [editingHours, setEditingHours] = useState(false);
   const [hoursInput, setHoursInput] = useState(overview.total_print_hours.toFixed(1));
+  const [resetItem, setResetItem] = useState<MaintenanceStatus | null>(null);
+  const [resetNotes, setResetNotes] = useState('');
+  const [customOpen, setCustomOpen] = useState(false);
+  const [editingEntry, setEditingEntry] = useState<MaintenanceHistory | null>(null);
+  const [editNotes, setEditNotes] = useState('');
+  const [deletingEntry, setDeletingEntry] = useState<MaintenanceHistory | null>(null);
+
+  const { data: history } = useQuery({
+    queryKey: ['maintenanceHistory', overview.printer_id],
+    queryFn: () => api.getPrinterMaintenanceHistory(overview.printer_id),
+    enabled: expanded,
+  });
 
   const sortedItems = [...overview.maintenance_items].sort((a, b) => {
     // Sort by urgency first, then by type
@@ -352,13 +495,21 @@ function PrinterSection({
               )}
             </div>
           </div>
-          <button
-            onClick={() => setExpanded(!expanded)}
-            className="flex items-center gap-1.5 px-3 py-1.5 text-sm text-bambu-gray hover:text-white hover:bg-bambu-dark rounded-lg transition-colors"
-          >
-            {expanded ? <ChevronUp className="w-4 h-4" /> : <ChevronDown className="w-4 h-4" />}
-            {expanded ? t('common.collapse') : t('common.expand')}
-          </button>
+          <div className="flex items-center gap-2">
+            {hasPermission('maintenance:update') && (
+              <Button size="sm" variant="secondary" onClick={() => setCustomOpen(true)}>
+                <Plus className="w-3.5 h-3.5" />
+                {t('maintenance.logCustomJob', 'Log custom job')}
+              </Button>
+            )}
+            <button
+              onClick={() => setExpanded(!expanded)}
+              className="flex items-center gap-1.5 px-3 py-1.5 text-sm text-bambu-gray hover:text-white hover:bg-bambu-dark rounded-lg transition-colors"
+            >
+              {expanded ? <ChevronUp className="w-4 h-4" /> : <ChevronDown className="w-4 h-4" />}
+              {expanded ? t('common.collapse') : t('common.expand')}
+            </button>
+          </div>
         </div>
 
         {/* Quick stats row */}
@@ -409,6 +560,21 @@ function PrinterSection({
           {/* Divider */}
           <div className="w-px h-10 bg-bambu-dark-tertiary" />
 
+          <div className="flex items-center gap-3">
+            <div className="p-2 bg-bambu-dark/50 rounded-lg">
+              <DollarSign className="w-4 h-4 text-bambu-gray" />
+            </div>
+            <div>
+              <div className="text-sm font-medium text-white">
+                {currencySymbol}{(overview.total_maintenance_cost ?? 0).toFixed(2)}
+              </div>
+              <div className="text-xs text-bambu-gray">{t('maintenance.totalMaintenanceCost', 'Maintenance cost')}</div>
+            </div>
+          </div>
+
+          {/* Divider */}
+          <div className="w-px h-10 bg-bambu-dark-tertiary" />
+
           {/* Next Maintenance */}
           {nextTask && (
             <div className="flex items-center gap-3">
@@ -441,14 +607,211 @@ function PrinterSection({
               <MaintenanceCard
                 key={item.id}
                 item={item}
-                onPerform={onPerform}
+                onPerform={(id) => {
+                  const found = overview.maintenance_items.find((entry) => entry.id === id);
+                  if (found) {
+                    setResetNotes('');
+                    setResetItem(found);
+                  }
+                }}
                 onToggle={onToggle}
                 hasPermission={hasPermission}
                 t={t}
               />
             ))}
           </div>
+
+          <div className="mt-6 pt-4 border-t border-bambu-dark-tertiary">
+            <h3 className="text-sm font-medium text-white mb-3 flex items-center gap-2">
+              <ScrollText className="w-4 h-4 text-bambu-gray" />
+              {t('maintenance.printerLog', 'Printer log')}
+            </h3>
+            {history && history.length > 0 ? (
+              <ul className="space-y-2">
+                {history.map((entry: MaintenanceHistory) => (
+                  <li
+                    key={entry.id}
+                    className="flex items-start justify-between gap-3 rounded-lg bg-bambu-dark/40 px-3 py-2"
+                  >
+                    <div className="min-w-0">
+                      <div className="text-sm text-white truncate">{entry.job_name}</div>
+                      <div className="text-xs text-bambu-gray">
+                        {new Date(entry.performed_at.endsWith('Z') || entry.performed_at.includes('+') ? entry.performed_at : `${entry.performed_at}Z`).toLocaleString()}
+                        {entry.notes ? ` · ${entry.notes}` : ''}
+                      </div>
+                    </div>
+                    <div className="flex items-center gap-2 shrink-0">
+                      {entry.cost != null && (
+                        <span className="text-sm text-white">{currencySymbol}{entry.cost.toFixed(2)}</span>
+                      )}
+                      {entry.part_url && (
+                        <a
+                          href={entry.part_url}
+                          target="_blank"
+                          rel="noopener noreferrer"
+                          className="text-bambu-gray hover:text-bambu-green"
+                          title={t('maintenance.partLink', 'Part link')}
+                        >
+                          <Link2 className="w-4 h-4" />
+                        </a>
+                      )}
+                      {hasPermission('maintenance:update') && (
+                        <>
+                          <button
+                            type="button"
+                            onClick={() => {
+                              setEditingEntry(entry);
+                              setEditNotes(entry.notes || '');
+                            }}
+                            className="p-1 rounded text-bambu-gray hover:text-white hover:bg-bambu-dark"
+                            aria-label={t('maintenance.editLog', 'Edit log')}
+                            title={t('maintenance.editLog', 'Edit log')}
+                          >
+                            <Edit3 className="w-3.5 h-3.5" />
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => setDeletingEntry(entry)}
+                            className="p-1 rounded text-bambu-gray hover:text-red-500 hover:bg-bambu-dark"
+                            aria-label={t('maintenance.deleteLog', 'Delete log')}
+                            title={t('maintenance.deleteLog', 'Delete log')}
+                          >
+                            <Trash2 className="w-3.5 h-3.5" />
+                          </button>
+                        </>
+                      )}
+                    </div>
+                  </li>
+                ))}
+              </ul>
+            ) : (
+              <p className="text-sm text-bambu-gray">{t('maintenance.noHistory')}</p>
+            )}
+          </div>
         </CardContent>
+      )}
+      {resetItem && (
+        <ConfirmModal
+          title={t('maintenance.logResetTitle', { name: resetItem.maintenance_type_name, defaultValue: 'Reset {{name}}?' })}
+          message={t('maintenance.logResetMessage', 'This resets the interval and adds it to the printer log. Leave a note only if something came up.')}
+          confirmText={t('maintenance.logReset', 'Log & reset')}
+          isLoading={savingPerform}
+          onConfirm={() => {
+            onPerform(resetItem.id, { notes: resetNotes.trim() || undefined })
+              .then(() => {
+                setResetItem(null);
+                setResetNotes('');
+              })
+              .catch(() => {
+                // Toast already shown by mutation onError; keep the dialog open.
+              });
+          }}
+          onCancel={() => {
+            if (savingPerform) return;
+            setResetItem(null);
+            setResetNotes('');
+          }}
+        >
+          <label className="block text-xs text-bambu-gray mb-1">{t('maintenance.notes', 'Notes')}</label>
+          <textarea
+            value={resetNotes}
+            onChange={(e) => setResetNotes(e.target.value)}
+            rows={3}
+            className="w-full px-3 py-2 bg-bambu-dark border border-bambu-dark-tertiary rounded-lg text-white text-sm resize-y"
+            placeholder={t('maintenance.resetNotesPlaceholder', 'Optional notes…')}
+            autoFocus
+          />
+        </ConfirmModal>
+      )}
+      {customOpen && (
+        <LogJobModal
+          title={t('maintenance.logCustomJob', 'Log custom job')}
+          currencySymbol={currencySymbol}
+          saving={savingCustom}
+          t={t}
+          onClose={() => setCustomOpen(false)}
+          onSave={async (fields) => {
+            await onLogCustomJob(overview.printer_id, fields);
+            setCustomOpen(false);
+          }}
+        />
+      )}
+      {editingEntry && editingEntry.is_custom && (
+        <LogJobModal
+          title={t('maintenance.editLogTitle', 'Edit log')}
+          currencySymbol={currencySymbol}
+          saving={savingEdit}
+          t={t}
+          initial={{
+            title: editingEntry.title || editingEntry.job_name,
+            notes: editingEntry.notes,
+            part_url: editingEntry.part_url,
+            cost: editingEntry.cost,
+          }}
+          submitLabel={t('common.save')}
+          onClose={() => setEditingEntry(null)}
+          onSave={async (fields) => {
+            await onEditHistory(editingEntry.id, {
+              title: fields.title,
+              notes: fields.notes ?? null,
+              part_url: fields.part_url ?? null,
+              cost: fields.cost ?? null,
+            });
+            setEditingEntry(null);
+          }}
+        />
+      )}
+      {editingEntry && !editingEntry.is_custom && (
+        <ConfirmModal
+          title={t('maintenance.editLogTitle', 'Edit log')}
+          message={editingEntry.job_name}
+          confirmText={t('common.save')}
+          isLoading={savingEdit}
+          onConfirm={() => {
+            onEditHistory(editingEntry.id, { notes: editNotes.trim() || null })
+              .then(() => {
+                setEditingEntry(null);
+                setEditNotes('');
+              })
+              .catch(() => {});
+          }}
+          onCancel={() => {
+            if (savingEdit) return;
+            setEditingEntry(null);
+            setEditNotes('');
+          }}
+        >
+          <label className="block text-xs text-bambu-gray mb-1">{t('maintenance.notes', 'Notes')}</label>
+          <textarea
+            value={editNotes}
+            onChange={(e) => setEditNotes(e.target.value)}
+            rows={3}
+            className="w-full px-3 py-2 bg-bambu-dark border border-bambu-dark-tertiary rounded-lg text-white text-sm resize-y"
+            placeholder={t('maintenance.resetNotesPlaceholder', 'Optional notes…')}
+            autoFocus
+          />
+        </ConfirmModal>
+      )}
+      {deletingEntry && (
+        <ConfirmModal
+          title={t('maintenance.deleteLogTitle', 'Delete log entry?')}
+          message={t('maintenance.deleteLogMessage', {
+            name: deletingEntry.job_name,
+            defaultValue: 'Remove "{{name}}" from the printer log? This does not undo a scheduled reset — it only deletes the log row and its cost.',
+          })}
+          confirmText={t('common.delete')}
+          variant="danger"
+          isLoading={savingDelete}
+          onConfirm={() => {
+            onDeleteHistory(deletingEntry.id)
+              .then(() => setDeletingEntry(null))
+              .catch(() => {});
+          }}
+          onCancel={() => {
+            if (savingDelete) return;
+            setDeletingEntry(null);
+          }}
+        />
       )}
     </Card>
   );
@@ -462,6 +825,8 @@ function SettingsSection({
   onAddType,
   onUpdateType,
   onDeleteType,
+  onHideType,
+  onRestoreType,
   onRestoreDefaults,
   isRestoringDefaults,
   onAssignType,
@@ -475,6 +840,8 @@ function SettingsSection({
   onAddType: (data: { name: string; description?: string; default_interval_hours: number; interval_type: 'hours' | 'days'; icon?: string; wiki_url?: string | null }, printerIds: number[]) => void;
   onUpdateType: (id: number, data: { name?: string; default_interval_hours?: number; interval_type?: 'hours' | 'days'; icon?: string; wiki_url?: string | null }) => void;
   onDeleteType: (id: number) => void;
+  onHideType: (id: number) => void;
+  onRestoreType: (id: number) => void;
   onRestoreDefaults: () => void;
   isRestoringDefaults: boolean;
   onAssignType: (printerId: number, typeId: number) => void;
@@ -600,7 +967,8 @@ function SettingsSection({
     items: p.maintenance_items.sort((a, b) => a.maintenance_type_id - b.maintenance_type_id),
   })).sort((a, b) => a.printerName.localeCompare(b.printerName)) || [];
 
-  const systemTypes = types.filter(t => t.is_system);
+  const systemTypes = types.filter(t => t.is_system && !t.is_deleted);
+  const hiddenTypes = types.filter(t => t.is_system && t.is_deleted);
   const customTypes = types.filter(t => !t.is_system);
 
   return (
@@ -613,14 +981,6 @@ function SettingsSection({
             <p className="text-sm text-bambu-gray mt-1">{t('maintenance.maintenanceTypesDescription')}</p>
           </div>
           <div className="flex items-center gap-2">
-            <Button
-              variant="secondary"
-              onClick={onRestoreDefaults}
-              disabled={!hasPermission('maintenance:delete') || isRestoringDefaults}
-              title={!hasPermission('maintenance:delete') ? t('maintenance.noPermissionDeleteTypes') : undefined}
-            >
-              {t('maintenance.restoreDefaults')}
-            </Button>
             <Button
               onClick={() => setShowAddType(!showAddType)}
               disabled={!hasPermission('maintenance:create')}
@@ -777,10 +1137,11 @@ function SettingsSection({
                       setPendingSystemDelete(type);
                     }}
                     disabled={!hasPermission('maintenance:delete')}
-                    title={!hasPermission('maintenance:delete') ? t('maintenance.noPermissionDeleteTypes') : undefined}
-                    className={`p-2 rounded-lg hover:bg-bambu-dark text-bambu-gray hover:text-red-600 dark:hover:text-red-400 transition-colors ${!hasPermission('maintenance:delete') ? 'opacity-50 cursor-not-allowed' : ''}`}
+                    title={!hasPermission('maintenance:delete') ? t('maintenance.noPermissionDeleteTypes') : t('maintenance.hideTask', 'Hide')}
+                    aria-label={t('maintenance.hideTask', 'Hide')}
+                    className={`p-2 rounded-lg hover:bg-bambu-dark text-bambu-gray hover:text-white transition-colors ${!hasPermission('maintenance:delete') ? 'opacity-50 cursor-not-allowed' : ''}`}
                   >
-                    <Trash2 className="w-4 h-4" />
+                    <EyeOff className="w-4 h-4" />
                   </button>
                 </div>
               </div>
@@ -965,6 +1326,56 @@ function SettingsSection({
             );
           })}
         </div>
+
+        {hiddenTypes.length > 0 && (
+          <div className="mt-8">
+            <div className="flex items-center justify-between mb-3">
+              <div>
+                <h3 className="text-sm font-medium text-white">{t('maintenance.hiddenTasks', 'Hidden tasks')}</h3>
+                <p className="text-xs text-bambu-gray mt-1">
+                  {t('maintenance.hiddenTasksDescription', 'Hidden default tasks stay on file. Show one to bring it back without restoring everything.')}
+                </p>
+              </div>
+              <Button
+                variant="secondary"
+                size="sm"
+                onClick={onRestoreDefaults}
+                disabled={!hasPermission('maintenance:delete') || isRestoringDefaults}
+              >
+                {t('maintenance.restoreDefaults')}
+              </Button>
+            </div>
+            <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-3">
+              {hiddenTypes.map((type) => {
+                const Icon = getIcon(type.icon);
+                return (
+                  <div key={type.id} className="bg-bambu-dark-secondary/60 rounded-xl p-4 border border-dashed border-bambu-dark-tertiary">
+                    <div className="flex items-center gap-3">
+                      <div className="p-2.5 bg-bambu-dark rounded-lg">
+                        <Icon className="w-5 h-5 text-bambu-gray" />
+                      </div>
+                      <div className="flex-1 min-w-0">
+                        <div className="text-sm font-medium text-bambu-gray truncate">{type.name}</div>
+                      </div>
+                      <button
+                        onClick={() => {
+                          if (!hasPermission('maintenance:delete')) return;
+                          onRestoreType(type.id);
+                        }}
+                        disabled={!hasPermission('maintenance:delete')}
+                        title={t('maintenance.showTask', 'Show')}
+                        aria-label={t('maintenance.showTask', 'Show')}
+                        className={`p-2 rounded-lg hover:bg-bambu-dark text-bambu-gray hover:text-bambu-green transition-colors ${!hasPermission('maintenance:delete') ? 'opacity-50 cursor-not-allowed' : ''}`}
+                      >
+                        <Eye className="w-4 h-4" />
+                      </button>
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+          </div>
+        )}
       </div>
 
       {/* Per-printer interval overrides */}
@@ -1063,15 +1474,12 @@ function SettingsSection({
 
       {pendingSystemDelete && (
         <ConfirmModal
-          title={t('maintenance.deleteSystemTypeTitle')}
-          message={t('maintenance.deleteSystemTypeMessage', { name: pendingSystemDelete.name })}
-          confirmText={t('common.delete')}
+          title={t('maintenance.hideTaskTitle', { name: pendingSystemDelete.name, defaultValue: 'Hide {{name}}?' })}
+          message={t('maintenance.hideTaskMessage', 'It will leave the Status tab. You can show this task again from Hidden tasks — you will not have to recreate it or restore every default.')}
+          confirmText={t('maintenance.hideTask', 'Hide')}
           cancelText={t('common.cancel')}
-          variant="danger"
-          cancelVariant="primary"
-          cardClassName="bg-red-950/70 border border-red-800/70"
           onConfirm={() => {
-            onDeleteType(pendingSystemDelete.id);
+            onHideType(pendingSystemDelete.id);
             setPendingSystemDelete(null);
           }}
           onCancel={() => setPendingSystemDelete(null)}
@@ -1097,16 +1505,75 @@ export function MaintenancePage() {
 
   const { data: types } = useQuery({
     queryKey: ['maintenanceTypes'],
-    queryFn: api.getMaintenanceTypes,
+    queryFn: () => api.getMaintenanceTypes(true),
   });
 
+  const { data: settings } = useQuery({
+    queryKey: ['settings'],
+    queryFn: api.getSettings,
+  });
+  const currencySymbol = getCurrencySymbol(settings?.currency || 'USD');
+
   const performMutation = useMutation({
-    mutationFn: ({ id, notes }: { id: number; notes?: string }) =>
-      api.performMaintenance(id, notes),
+    mutationFn: ({ id, fields }: { id: number; fields: JobLogFields }) =>
+      api.performMaintenance(id, {
+        notes: fields.notes ?? undefined,
+        part_url: fields.part_url ?? undefined,
+        cost: fields.cost ?? undefined,
+      }),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['maintenanceOverview'] });
       queryClient.invalidateQueries({ queryKey: ['maintenanceSummary'] });
+      queryClient.invalidateQueries({ queryKey: ['maintenanceHistory'] });
       showToast(t('maintenance.maintenanceComplete'));
+    },
+    onError: (error: Error) => {
+      showToast(error.message, 'error');
+    },
+  });
+
+  const customJobMutation = useMutation({
+    mutationFn: ({ printerId, fields }: { printerId: number; fields: JobLogFields }) =>
+      api.logCustomMaintenanceJob(printerId, {
+        title: fields.title || t('maintenance.customJob', 'Custom job'),
+        notes: fields.notes ?? undefined,
+        part_url: fields.part_url ?? undefined,
+        cost: fields.cost ?? undefined,
+      }),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['maintenanceOverview'] });
+      queryClient.invalidateQueries({ queryKey: ['maintenanceHistory'] });
+      showToast(t('maintenance.jobLogged', 'Job saved to printer log'));
+    },
+    onError: (error: Error) => {
+      showToast(error.message, 'error');
+    },
+  });
+
+  const updateHistoryMutation = useMutation({
+    mutationFn: ({ id, fields }: { id: number; fields: JobLogFields }) =>
+      api.updateMaintenanceHistory(id, {
+        notes: fields.notes,
+        part_url: fields.part_url,
+        cost: fields.cost,
+        title: fields.title,
+      }),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['maintenanceOverview'] });
+      queryClient.invalidateQueries({ queryKey: ['maintenanceHistory'] });
+      showToast(t('maintenance.logUpdated', 'Log entry updated'));
+    },
+    onError: (error: Error) => {
+      showToast(error.message, 'error');
+    },
+  });
+
+  const deleteHistoryMutation = useMutation({
+    mutationFn: (id: number) => api.deleteMaintenanceHistory(id),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['maintenanceOverview'] });
+      queryClient.invalidateQueries({ queryKey: ['maintenanceHistory'] });
+      showToast(t('maintenance.logDeleted', 'Log entry deleted'));
     },
     onError: (error: Error) => {
       showToast(error.message, 'error');
@@ -1138,6 +1605,30 @@ export function MaintenancePage() {
       queryClient.invalidateQueries({ queryKey: ['maintenanceTypes'] });
       queryClient.invalidateQueries({ queryKey: ['maintenanceOverview'] });
       showToast(t('maintenance.typeUpdated'));
+    },
+    onError: (error: Error) => {
+      showToast(error.message, 'error');
+    },
+  });
+
+  const hideTypeMutation = useMutation({
+    mutationFn: api.deleteMaintenanceType,
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['maintenanceTypes'] });
+      queryClient.invalidateQueries({ queryKey: ['maintenanceOverview'] });
+      showToast(t('maintenance.taskHidden', 'Task hidden'));
+    },
+    onError: (error: Error) => {
+      showToast(error.message, 'error');
+    },
+  });
+
+  const restoreTypeMutation = useMutation({
+    mutationFn: api.restoreMaintenanceType,
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['maintenanceTypes'] });
+      queryClient.invalidateQueries({ queryKey: ['maintenanceOverview'] });
+      showToast(t('maintenance.taskShown', 'Task shown again'));
     },
     onError: (error: Error) => {
       showToast(error.message, 'error');
@@ -1204,9 +1695,17 @@ export function MaintenancePage() {
     },
   });
 
-  const handlePerform = (id: number) => {
-    performMutation.mutate({ id });
-  };
+  const handlePerform = (id: number, fields: JobLogFields) =>
+    performMutation.mutateAsync({ id, fields });
+
+  const handleLogCustomJob = (printerId: number, fields: JobLogFields) =>
+    customJobMutation.mutateAsync({ printerId, fields });
+
+  const handleEditHistory = (historyId: number, fields: JobLogFields) =>
+    updateHistoryMutation.mutateAsync({ id: historyId, fields });
+
+  const handleDeleteHistory = (historyId: number) =>
+    deleteHistoryMutation.mutateAsync(historyId);
 
   const handleToggle = (id: number, enabled: boolean) => {
     updateMutation.mutate({ id, data: { enabled } });
@@ -1290,6 +1789,14 @@ export function MaintenancePage() {
                 onPerform={handlePerform}
                 onToggle={handleToggle}
                 onSetHours={handleSetHours}
+                onLogCustomJob={handleLogCustomJob}
+                onEditHistory={handleEditHistory}
+                onDeleteHistory={handleDeleteHistory}
+                currencySymbol={currencySymbol}
+                savingPerform={performMutation.isPending}
+                savingCustom={customJobMutation.isPending}
+                savingEdit={updateHistoryMutation.isPending}
+                savingDelete={deleteHistoryMutation.isPending}
                 hasPermission={hasPermission}
                 t={t}
               />
@@ -1324,6 +1831,8 @@ export function MaintenancePage() {
           }}
           onUpdateType={(id, data) => updateTypeMutation.mutate({ id, data })}
           onDeleteType={(id) => deleteTypeMutation.mutate(id)}
+          onHideType={(id) => hideTypeMutation.mutate(id)}
+          onRestoreType={(id) => restoreTypeMutation.mutate(id)}
           onRestoreDefaults={() => restoreDefaultsMutation.mutate()}
           isRestoringDefaults={restoreDefaultsMutation.isPending}
           onAssignType={(printerId, typeId) => assignTypeMutation.mutate({ printerId, typeId })}

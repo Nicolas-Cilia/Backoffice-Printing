@@ -2,7 +2,19 @@
 
 from datetime import datetime
 
-from sqlalchemy import JSON, Boolean, DateTime, ForeignKey, Integer, Select, String, Text, func, select
+from sqlalchemy import (
+    JSON,
+    Boolean,
+    DateTime,
+    ForeignKey,
+    Integer,
+    Select,
+    String,
+    Text,
+    UniqueConstraint,
+    func,
+    select,
+)
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from backend.app.core.database import Base
@@ -220,6 +232,35 @@ class LibraryFolderSection(Base):
     updated_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now(), onupdate=func.now())
 
     folders: Mapped[list["LibraryFolder"]] = relationship(back_populates="section")
+    parts: Mapped[list["LibrarySectionPart"]] = relationship(
+        back_populates="section",
+        cascade="all, delete-orphan",
+        order_by="LibrarySectionPart.sort_order",
+    )
+
+
+class LibrarySectionPart(Base):
+    """Section-level part template for parameter tracking.
+
+    Not printable and not a library file — it only holds the shared print-settings
+    contract for a part code inside one folder section. Folders in that section
+    that add the same code must follow ``locked_parameters``.
+    """
+
+    __tablename__ = "library_section_parts"
+    __table_args__ = (UniqueConstraint("section_id", "code", name="uq_library_section_part_section_code"),)
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    section_id: Mapped[int] = mapped_column(ForeignKey("library_folder_sections.id", ondelete="CASCADE"))
+    code: Mapped[str] = mapped_column(String(32), index=True)
+    name: Mapped[str] = mapped_column(String(255))
+    locked_parameters: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+    thumbnail_path: Mapped[str | None] = mapped_column(String(500), nullable=True)
+    sort_order: Mapped[int] = mapped_column(Integer, default=0, server_default="0")
+    created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
+    updated_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now(), onupdate=func.now())
+
+    section: Mapped["LibraryFolderSection"] = relationship(back_populates="parts")
 
 
 class LibraryFileTag(Base):

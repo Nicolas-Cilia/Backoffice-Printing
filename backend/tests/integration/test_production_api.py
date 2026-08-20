@@ -50,7 +50,14 @@ def _3mf(config: dict | None = None, extra_files: dict[str, str] | None = None) 
 
 def _upload(filename: str, content: bytes | None = None, **form):
     files = {"file": (filename, content if content is not None else _3mf(), "application/octet-stream")}
-    data = {key: str(value) for key, value in form.items() if value is not None}
+    data = {}
+    for key, value in form.items():
+        if value is None:
+            continue
+        if isinstance(value, (dict, list)):
+            data[key] = json.dumps(value)
+        else:
+            data[key] = str(value)
     return files, data
 
 
@@ -281,6 +288,7 @@ class TestProductionAPI:
             _3mf(_config(layer_height="0.28")),
             resolution="proceed",
             reason="keep contract",
+            parameter_notes={"layer_height": "keep the original 0.20 spec"},
         )
         replaced = await async_client.post(f"/api/v1/production/slots/{slot_id}/replace", files=incoming, data=form)
         assert replaced.status_code == 200, replaced.text
@@ -632,6 +640,7 @@ class TestProductionAPI:
             folder_id=x1c["id"],
             resolution="proceed",
             reason="keep x1 contract",
+            parameter_notes={"layer_height": "keep the original 0.20 spec"},
         )
         proceeded = await async_client.post("/api/v1/production/slots", files=proceed_files, data=proceed_data)
         assert proceeded.status_code == 200, proceeded.text

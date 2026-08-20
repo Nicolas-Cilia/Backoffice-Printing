@@ -471,6 +471,7 @@ export const handlers = [
   http.get('/api/v1/inventory/spools', () => HttpResponse.json([])),
   http.get('/api/v1/library/folders', () => HttpResponse.json([])),
   http.get('/api/v1/library/folders/by-archive/:id', () => HttpResponse.json([])),
+  http.get('/api/v1/library/sections/:id/parts', () => HttpResponse.json([])),
   http.get('/api/v1/maintenance/overview', () => HttpResponse.json([])),
   http.get('/api/v1/notification-templates', () => HttpResponse.json([])),
   http.get('/api/v1/pending-uploads/', () => HttpResponse.json([])),
@@ -615,6 +616,16 @@ export const handlers = [
   ),
   http.get('/api/v1/filament-tracking/events', () => HttpResponse.json([])),
   http.get('/api/v1/filament-tracking/printer-consumption', () => HttpResponse.json([])),
+  http.get('/api/v1/filament-tracking/live-rate', () =>
+    HttpResponse.json({
+      grams_per_hour: 0,
+      grams_last_hour: 0,
+      grams_so_far: 0,
+      active_jobs: 0,
+      products: [],
+      warming_up: false,
+    }),
+  ),
   http.get('/api/v1/filament-tracking/assignments', () => HttpResponse.json([])),
   http.post('/api/v1/cloud/filament-info', () => HttpResponse.json({ filaments: [] })),
   http.post('/api/v1/printers/camera/stream-token', () =>

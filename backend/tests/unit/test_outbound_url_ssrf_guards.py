@@ -604,6 +604,9 @@ NOT_A_FETCH_TARGET = {
     ("ExternalLinkUpdate", "url"),
     ("MaintenanceTypeCreate", "wiki_url"),  # documentation link surfaced in the UI/notifications
     ("MaintenanceTypeUpdate", "wiki_url"),
+    ("LogCustomJobRequest", "part_url"),  # shop link stored on the printer log, never fetched
+    ("PerformMaintenanceRequest", "part_url"),
+    ("UpdateMaintenanceHistoryRequest", "part_url"),
     ("ArchiveUpdate", "external_url"),  # stored source link for the model, never fetched
 }
 

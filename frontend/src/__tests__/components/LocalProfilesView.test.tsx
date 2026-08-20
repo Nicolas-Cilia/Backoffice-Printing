@@ -511,6 +511,44 @@ describe('LocalProfilesView', () => {
     expect(screen.getByText('Incoming value')).toBeInTheDocument();
   });
 
+  it('renames a part process section', async () => {
+    const patched: { name?: string }[] = [];
+    let current = mockPartSection;
+    server.use(
+      http.get('/api/v1/profile-parts/sections', () => {
+        return HttpResponse.json([current]);
+      }),
+      http.patch('/api/v1/profile-parts/sections/:sectionId', async ({ request }) => {
+        const body = (await request.json()) as { name: string };
+        patched.push(body);
+        current = { ...current, name: body.name };
+        return HttpResponse.json(current);
+      }),
+    );
+
+    render(<LocalProfilesView />);
+
+    await waitFor(() => {
+      expect(screen.getByText('Top part')).toBeInTheDocument();
+    });
+
+    fireEvent.click(screen.getByTestId('rename-part-section'));
+    const dialog = screen.getByTestId('rename-part-section-modal');
+    expect(within(dialog).getByText('Rename section')).toBeInTheDocument();
+    const input = screen.getByTestId('rename-part-section-input');
+    expect(input).toHaveValue('Top part');
+    fireEvent.change(input, { target: { value: 'Bottom housing' } });
+    fireEvent.click(screen.getByTestId('rename-part-section-save'));
+
+    await waitFor(() => {
+      expect(patched).toEqual([{ name: 'Bottom housing' }]);
+    });
+    await waitFor(() => {
+      expect(screen.getByText('Bottom housing')).toBeInTheDocument();
+    });
+    expect(screen.queryByTestId('rename-part-section-modal')).not.toBeInTheDocument();
+  });
+
   it('creates a section with track parameters on by default and can turn it off', async () => {
     const posted: { name?: string; parameter_tracking?: boolean }[] = [];
     server.use(

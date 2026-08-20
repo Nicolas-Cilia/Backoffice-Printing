@@ -350,4 +350,63 @@ describe('ProductionFolderView', () => {
     expect(screen.getByTestId('scroll-fade-scroller')).toHaveClass('scroll-fade-pane');
     expect(screen.getByTestId('scroll-more-fade')).toBeInTheDocument();
   });
+
+  it('lists a section part in the add-part modal', async () => {
+    const user = userEvent.setup();
+    let posted: { code?: string; name?: string } = {};
+    server.use(
+      http.get('/api/v1/production/folders/9', () => HttpResponse.json(folderWithSpecs)),
+      http.get('/api/v1/library/sections/1/parts', () =>
+        HttpResponse.json([
+          {
+            id: 99,
+            section_id: 1,
+            code: 'KNB',
+            name: 'Knob',
+            locked_parameters: { layer_height: 0.2 },
+            instance_count: 1,
+            created_at: '',
+            updated_at: '',
+          },
+          {
+            id: 1,
+            section_id: 1,
+            code: 'TOP',
+            name: 'Top Housing',
+            locked_parameters: null,
+            instance_count: 1,
+            created_at: '',
+            updated_at: '',
+          },
+        ]),
+      ),
+      http.post('/api/v1/production/folders/9/parts', async ({ request }) => {
+        posted = await request.json() as { code?: string; name?: string };
+        return HttpResponse.json({
+          id: 3,
+          code: posted.code,
+          name: posted.name,
+          instance_id: 30,
+          locked_parameters: { layer_height: 0.2 },
+          slots: [],
+        });
+      }),
+    );
+
+    render(<ProductionFolderView folderId={9} printerModel="X1C" canUpload />);
+
+    await user.click(await screen.findByRole('button', { name: 'Add part' }));
+    await waitFor(() => {
+      expect(screen.getByText('Knob')).toBeInTheDocument();
+    });
+    expect(screen.getByText('KNB')).toBeInTheDocument();
+    expect(
+      screen.getByText('This folder must follow the section print-settings contract.'),
+    ).toBeInTheDocument();
+
+    await user.click(screen.getByRole('button', { name: /KNB/ }));
+    await waitFor(() => {
+      expect(posted).toEqual({ code: 'KNB', name: 'Knob' });
+    });
+  });
 });

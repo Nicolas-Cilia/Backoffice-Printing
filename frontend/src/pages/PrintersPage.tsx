@@ -80,6 +80,7 @@ import {
   LogOut,
   MoreHorizontal,
   SlidersHorizontal,
+  ArrowUpDown,
   Stethoscope,
   ScanEye,
   LineChart as LineChartIcon,
@@ -122,7 +123,17 @@ import { PrintModal } from '../components/PrintModal';
 import { PrinterInfoModal } from '../components/PrinterInfoModal';
 import { getAmsLabel, getGlobalTrayId, getFillBarColor, getSpoolmanFillLevel, getFallbackSpoolTag, isBambuLabSpool, resolveSlotNozzleDiameter } from '../utils/amsHelpers';
 import { getPrinterImage, getWifiStrength, filterCompatibleQueueItems } from '../utils/printer';
+import { getPrinterCardChromeClass, PRINTER_CARD_DISABLED_CONTROL } from '../utils/printerCardChrome';
 import { FilamentSlotCircle } from '../components/FilamentSlotCircle';
+import { SlotTrackingLabel } from '../components/SlotTrackingLabel';
+import { amsSlotHighlightClass } from '../components/slotTrackingHelpers';
+import { ArrangePrintersModal } from '../components/ArrangePrintersModal';
+import {
+  applyPrinterCustomOrder,
+  mergePrinterCustomOrder,
+  readPrinterCustomOrder,
+  writePrinterCustomOrder,
+} from '../utils/printerCustomOrder';
 import { Collapsible } from '../components/Collapsible';
 import { ConnectionDiagnosticModal, DiagnosticChecklist } from '../components/ConnectionDiagnostic';
 import { getColorName, parseFilamentColor, isLightColor } from '../utils/colors';
@@ -1063,10 +1074,10 @@ function StatusSummaryBar({ printers }: { printers: Printer[] | undefined }) {
   const badges: { count: number; dot: string; label: string }[] = [
     { count: counts.printing, dot: 'bg-bambu-green animate-pulse', label: t('printers.status.printing').toLowerCase() },
     { count: counts.paused, dot: 'bg-status-warning', label: t('printers.status.paused', 'paused').toLowerCase() },
-    { count: counts.finished, dot: 'bg-blue-400', label: t('printers.status.finished', 'finished').toLowerCase() },
+    { count: counts.finished, dot: 'bg-status-ok', label: t('printers.status.finished', 'finished').toLowerCase() },
     { count: counts.idle, dot: counts.idle > 0 ? 'bg-bambu-green' : 'bg-gray-500', label: t('printers.status.available').toLowerCase() },
     { count: counts.error, dot: 'bg-status-error', label: t('printers.status.problem').toLowerCase() },
-    { count: counts.offline, dot: 'bg-gray-400', label: t('printers.status.offline').toLowerCase() },
+    { count: counts.offline, dot: 'bg-status-error', label: t('printers.status.offline').toLowerCase() },
   ];
 
   return (
@@ -1104,7 +1115,7 @@ function StatusSummaryBar({ printers }: { printers: Printer[] | undefined }) {
   );
 }
 
-type SortOption = 'name' | 'status' | 'model' | 'location' | 'eta';
+type SortOption = 'name' | 'status' | 'model' | 'location' | 'eta' | 'custom';
 type ViewMode = 'expanded' | 'compact';
 
 type ToolbarDropdownOption<T extends string> = {
@@ -1421,9 +1432,9 @@ const STATUS_GROUP_META: Record<string, { labelKey: string; dot: string }> = {
   error:    { labelKey: 'printers.status.problem',   dot: 'bg-status-error' },
   printing: { labelKey: 'printers.status.printing',  dot: 'bg-bambu-green animate-pulse' },
   paused:   { labelKey: 'printers.status.paused',    dot: 'bg-status-warning' },
-  finished: { labelKey: 'printers.status.finished',  dot: 'bg-blue-400' },
+  finished: { labelKey: 'printers.status.finished',  dot: 'bg-status-ok' },
   idle:     { labelKey: 'printers.status.idle',       dot: 'bg-bambu-green' },
-  offline:  { labelKey: 'printers.status.offline',   dot: 'bg-gray-400' },
+  offline:  { labelKey: 'printers.status.offline',   dot: 'bg-status-error' },
 };
 
 /** Classify a printer into one of the UI status buckets. */
@@ -2077,6 +2088,8 @@ function PrinterCard({
             brand: assigned.brand,
             subtype: assigned.subtype,
             color_hex: assigned.color_hex,
+            extra_colors: assigned.extra_colors,
+            effect_type: assigned.effect_type,
           }
         : null,
       onAssign: () => setAssignTrackingModal({ amsId, trayId }),
@@ -3261,10 +3274,13 @@ function PrinterCard({
     </div>
   );
 
+  const statusBucket = classifyPrinterStatus(status);
+
   return (
     <Card
       id={`printer-card-${printer.id}`}
-      className={`relative flex h-full flex-col ${isSelected ? 'ring-2 ring-bambu-green' : ''} ${selectionMode || viewMode === 'compact' ? 'cursor-pointer' : ''}`}
+      data-printer-status={statusBucket}
+      className={`relative flex h-full flex-col transition-colors ${getPrinterCardChromeClass(statusBucket)} ${isSelected ? 'ring-2 ring-bambu-green' : ''} ${selectionMode || viewMode === 'compact' ? 'cursor-pointer' : ''}`}
       onClick={handleCardClick}
       onDragEnter={handleCardDragEnter}
       onDragOver={handleCardDragOver}
@@ -3833,7 +3849,7 @@ function PrinterCard({
                             <p className="min-w-0 truncate text-sm text-bambu-gray">{getStatusDisplay(status.state, status.stg_cur_name)}</p>
                             {plateStatusPill}
                           </div>
-                          <p className={`min-h-[18px] truncate pr-8 text-sm ${printName ? 'text-white' : 'text-bambu-gray/70'}`}>
+                          <p className={`min-h-[18px] truncate pr-8 text-sm ${printName ? 'text-white' : 'text-bambu-gray'}`}>
                             {printName || t('printers.noActiveJob', 'No active job')}
                           </p>
                           <div className="flex h-3 items-center gap-2 text-sm">
@@ -3876,7 +3892,7 @@ function PrinterCard({
                               <p className="truncate" title={lastPrint.print_name || lastPrint.filename}>
                                 Last: {lastPrint.print_name || lastPrint.filename}
                                 {lastPrint.completed_at && (
-                                  <span className="ml-1 text-bambu-gray/60">
+                                  <span className="ml-1 text-bambu-gray">
                                     • {formatDateOnly(lastPrint.completed_at, { month: 'short', day: 'numeric' })}
                                   </span>
                                 )}
@@ -4231,8 +4247,8 @@ function PrinterCard({
                           title={canUseStatusControls ? label : statusControlTitle}
                           onClick={() => canUseStatusControls && setStatusControlMenu(statusControlMenu === `fan-${key}` ? null : `fan-${key}`)}
                         >
-                          <Icon className={`w-3 h-3 shrink-0 ${active ? activeClass : 'text-bambu-gray/50'}`} />
-                          <span className={`text-[10px] leading-none ${active ? 'text-white' : 'text-bambu-gray/50'}`}>
+                          <Icon className={`w-3 h-3 shrink-0 ${active ? activeClass : 'text-bambu-gray'}`} />
+                          <span className={`text-[10px] leading-none ${active ? 'text-white' : 'text-bambu-gray'}`}>
                             {value}%
                           </span>
                           {statusControlMenu === `fan-${key}` && (
@@ -4279,8 +4295,8 @@ function PrinterCard({
               const isPaused = status.state === 'PAUSE';
               const isPrinting = isRunning || isPaused;
               const isControlBusy = stopPrintMutation.isPending || pausePrintMutation.isPending || resumePrintMutation.isPending;
-              const unavailablePrintActionClass = 'bg-bambu-dark text-bambu-gray/50 cursor-not-allowed opacity-50';
-              const iconControlClass = 'flex h-8 w-8 items-center justify-center rounded-lg text-xs font-medium transition-colors disabled:opacity-50 disabled:cursor-not-allowed';
+              const unavailablePrintActionClass = PRINTER_CARD_DISABLED_CONTROL;
+              const iconControlClass = 'flex h-8 w-8 items-center justify-center rounded-lg text-xs font-medium transition-colors disabled:opacity-80 disabled:cursor-not-allowed';
               const printControlClass = 'flex h-8 w-20 items-center justify-center gap-1 px-2 rounded-lg text-xs font-medium transition-colors';
 
               return (
@@ -4302,7 +4318,7 @@ function PrinterCard({
                         className={`${iconControlClass} ${
                           status.chamber_light
                             ? 'bg-yellow-50 dark:bg-yellow-500/10 text-yellow-700 dark:text-yellow-400 hover:bg-yellow-500/20'
-                            : 'bg-bambu-dark text-bambu-gray/50 hover:bg-bambu-dark-tertiary hover:text-white'
+                            : 'bg-bambu-dark text-bambu-gray hover:bg-bambu-dark-tertiary hover:text-white'
                         }`}
                         title={!hasPermission('printers:control') ? t('printers.permission.noControl') : (status.chamber_light ? t('printers.chamberLightOff') : t('printers.chamberLightOn'))}
                       >
@@ -4382,7 +4398,7 @@ function PrinterCard({
                               disabled={disabled}
                               className={`${iconControlClass} ${
                                 disabled
-                                  ? 'bg-bambu-dark text-bambu-gray/50 cursor-not-allowed'
+                                  ? 'bg-bambu-dark text-bambu-gray cursor-not-allowed'
                                   : 'bg-indigo-50 dark:bg-indigo-500/10 text-indigo-700 dark:text-indigo-400 hover:bg-indigo-500/20'
                               }`}
                               title={!canControl ? t('printers.permission.noControl') : isPrinting ? t('printers.bedJog.disabledWhilePrinting') : t('printers.bedJog.title')}
@@ -4536,7 +4552,7 @@ function PrinterCard({
                           className={`${iconControlClass} rounded-r-none ${
                             printer.plate_detection_enabled
                               ? 'bg-green-50 dark:bg-green-500/10 text-green-700 dark:text-green-400 hover:bg-green-500/20'
-                              : 'bg-bambu-dark text-bambu-gray/50 hover:bg-bambu-dark-tertiary hover:text-white'
+                              : 'bg-bambu-dark text-bambu-gray hover:bg-bambu-dark-tertiary hover:text-white'
                           }`}
                           title={!hasPermission('printers:update') ? t('printers.plateDetection.noPermission') : (printer.plate_detection_enabled ? t('printers.plateDetection.enabledClick') : t('printers.plateDetection.disabledClick'))}
                         >
@@ -4549,10 +4565,10 @@ function PrinterCard({
                         <button
                           onClick={handleOpenPlateManagement}
                           disabled={!status.connected || isCheckingPlate || !hasPermission('printers:update')}
-                          className={`flex h-8 w-8 items-center justify-center rounded-r-lg border-l border-bambu-dark-tertiary transition-colors disabled:opacity-50 disabled:cursor-not-allowed ${
+                          className={`flex h-8 w-8 items-center justify-center rounded-r-lg border-l border-bambu-dark-tertiary transition-colors disabled:opacity-80 disabled:cursor-not-allowed ${
                             printer.plate_detection_enabled
                               ? 'bg-green-50 dark:bg-green-500/10 text-green-700 dark:text-green-400 hover:bg-green-500/20'
-                              : 'bg-bambu-dark text-bambu-gray/50 hover:bg-bambu-dark-tertiary hover:text-white'
+                              : 'bg-bambu-dark text-bambu-gray hover:bg-bambu-dark-tertiary hover:text-white'
                           }`}
                           title={!hasPermission('printers:update') ? t('printers.plateDetection.noPermission') : t('printers.plateDetection.manageCalibration')}
                         >
@@ -4574,7 +4590,7 @@ function PrinterCard({
                             className={`${iconControlClass} ${
                               isPrinting
                                 ? 'bg-amber-50 dark:bg-amber-500/10 text-amber-700 dark:text-amber-400 hover:bg-amber-500/20'
-                                : 'bg-bambu-dark text-bambu-gray/50 cursor-not-allowed'
+                                : 'bg-bambu-dark text-bambu-gray cursor-not-allowed'
                             }`}
                             title={isPrinting ? t('printers.speed.title') : undefined}
                           >
@@ -4705,6 +4721,11 @@ function PrinterCard({
                     />
                     <div className="flex-1 h-[2px] bg-bambu-dark-tertiary" />
                   </div>
+                  {trackingAssignments.length > 0 && (
+                    <p className="text-[10px] text-bambu-gray mb-2">
+                      {t('printers.filamentsTrackingNote', 'Labels under slots show Inventory Tracking products.')}
+                    </p>
+                  )}
 
                   {/* AMS Content */}
                   <div className="flex flex-wrap gap-2">
@@ -4798,7 +4819,7 @@ function PrinterCard({
                                         ams.dry_time > 0
                                           ? 'bg-amber-100 dark:bg-amber-500/20 text-amber-700 dark:text-amber-400'
                                           : status.drying_screen_only || ams.dry_sf_reason?.length
-                                            ? 'bg-bambu-dark text-bambu-gray/50 cursor-not-allowed'
+                                            ? 'bg-bambu-dark text-bambu-gray cursor-not-allowed'
                                             : 'bg-bambu-dark text-bambu-gray hover:text-white hover:bg-bambu-dark/80'
                                       }`}
                                       title={status.drying_screen_only ? t('printers.drying.screenOnly') : ams.dry_time > 0 ? t('printers.drying.stop') : ams.dry_sf_reason?.length ? t('printers.drying.powerRequired') : t('printers.drying.start')}
@@ -4916,6 +4937,8 @@ function PrinterCard({
                                   fillSource,
                                 } : null;
 
+                                const slotTracking = trackingForSlot(ams.id, slotIdx);
+
                                 // Check if this specific slot is being refreshed
                                 const isRefreshing = refreshingSlot?.amsId === ams.id &&
                                   refreshingSlot?.slotId === slotIdx;
@@ -4928,15 +4951,7 @@ function PrinterCard({
                                 // Slot visual content (goes inside hover card)
                                 const slotVisual = (
                                   <div
-                                    className={`relative w-full bg-bambu-dark-secondary rounded-lg p-1 text-center ${isEmpty ? 'opacity-50' : ''} ${
-                                      isExpectedSlot
-                                        ? 'ring-2 ring-amber-400 ring-offset-1 ring-offset-bambu-dark animate-pulse'
-                                        : isRanOutSlot
-                                          ? 'ring-2 ring-red-500/60 ring-offset-1 ring-offset-bambu-dark'
-                                          : isActive
-                                            ? 'ring-2 ring-bambu-green ring-offset-1 ring-offset-bambu-dark'
-                                            : ''
-                                    }`}
+                                    className={`relative w-full bg-bambu-dark-secondary rounded-lg p-1 text-center ${isEmpty ? 'opacity-50' : ''} ${amsSlotHighlightClass({ isActive, isExpected: isExpectedSlot, isRanOut: isRanOutSlot })}`}
                                   >
                                     {isExpectedSlot && (
                                       <span
@@ -4968,7 +4983,7 @@ function PrinterCard({
                                       {tray?.tray_type || t(emptyKind === 'reset' ? 'ams.slotUnconfigured' : 'ams.slotEmpty')}
                                     </div>
                                     {/* Fill bar */}
-                                    <div className="mt-1 h-1.5 bg-black/30 rounded-full overflow-hidden">
+                                    <div className="mt-1 h-1.5 bg-black/20 dark:bg-white/25 rounded-full overflow-hidden">
                                       {effectiveFill !== null && effectiveFill >= 0 && !isEmpty && tray && (
                                         <div
                                           className="h-full rounded-full transition-all"
@@ -5082,7 +5097,7 @@ function PrinterCard({
                                             isAssigned: !!assignment || isBambuLabSpool(tray),
                                           };
                                         })()}
-                                        tracking={trackingForSlot(ams.id, slotIdx)}
+                                        tracking={slotTracking}
                                         configureSlot={{
                                           enabled: hasPermission('printers:control'),
                                           onConfigure: () => setConfigureSlotModal({
@@ -5104,6 +5119,7 @@ function PrinterCard({
                                     ) : (
                                       <EmptySlotHoverCard
                                         kind={emptyKind ?? undefined}
+                                        tracking={slotTracking}
                                         actions={renderAmsSlotActions({
                                           amsId: ams.id,
                                           slotId: slotIdx,
@@ -5135,6 +5151,7 @@ function PrinterCard({
                                         {slotVisual}
                                       </EmptySlotHoverCard>
                                     )}
+                                    <SlotTrackingLabel assigned={slotTracking.assigned} />
                                   </div>
                                 );
                               })}
@@ -5209,6 +5226,8 @@ function PrinterCard({
                           fillSource: htFillSource,
                         } : null;
 
+                        const slotTracking = trackingForSlot(ams.id, htSlotId);
+
                         // Check if this specific slot is being refreshed
                         const isHtRefreshing = refreshingSlot?.amsId === ams.id &&
                           refreshingSlot?.slotId === htSlotId;
@@ -5221,15 +5240,7 @@ function PrinterCard({
                         // Slot visual content (goes inside hover card)
                         const slotVisual = (
                           <div
-                            className={`relative w-full bg-bambu-dark-secondary rounded-lg p-1 text-center ${isEmpty ? 'opacity-50' : ''} ${
-                              isExpectedSlot
-                                ? 'ring-2 ring-amber-400 ring-offset-1 ring-offset-bambu-dark animate-pulse'
-                                : isRanOutSlot
-                                  ? 'ring-2 ring-red-500/60 ring-offset-1 ring-offset-bambu-dark'
-                                  : isActive
-                                    ? 'ring-2 ring-bambu-green ring-offset-1 ring-offset-bambu-dark'
-                                    : ''
-                            }`}
+                            className={`relative w-full bg-bambu-dark-secondary rounded-lg p-1 text-center ${isEmpty ? 'opacity-50' : ''} ${amsSlotHighlightClass({ isActive, isExpected: isExpectedSlot, isRanOut: isRanOutSlot })}`}
                           >
                             {isExpectedSlot && (
                               <span
@@ -5261,7 +5272,7 @@ function PrinterCard({
                               {tray?.tray_type || t(emptyKind === 'reset' ? 'ams.slotUnconfigured' : 'ams.slotEmpty')}
                             </div>
                             {/* Fill bar */}
-                            <div className="mt-1 h-1.5 bg-black/30 rounded-full overflow-hidden">
+                            <div className="mt-1 h-1.5 bg-black/20 dark:bg-white/25 rounded-full overflow-hidden">
                               {htEffectiveFill !== null && htEffectiveFill >= 0 && !isEmpty && (
                                 <div
                                   className="h-full rounded-full transition-all"
@@ -5331,7 +5342,7 @@ function PrinterCard({
                                       ams.dry_time > 0
                                         ? 'bg-amber-100 dark:bg-amber-500/20 text-amber-700 dark:text-amber-400'
                                         : status.drying_screen_only
-                                          ? 'bg-bambu-dark text-bambu-gray/50 cursor-not-allowed'
+                                          ? 'bg-bambu-dark text-bambu-gray cursor-not-allowed'
                                           : 'bg-bambu-dark text-bambu-gray hover:text-white hover:bg-bambu-dark/80'
                                     }`}
                                     title={status.drying_screen_only ? t('printers.drying.screenOnly') : ams.dry_time > 0 ? t('printers.drying.stop') : t('printers.drying.start')}
@@ -5463,7 +5474,7 @@ function PrinterCard({
                                         isAssigned: !!assignment || isBambuLabSpool(tray),
                                       };
                                     })()}
-                                    tracking={trackingForSlot(ams.id, htSlotId)}
+                                    tracking={slotTracking}
                                     configureSlot={{
                                       enabled: hasPermission('printers:control'),
                                       onConfigure: () => setConfigureSlotModal({
@@ -5485,6 +5496,7 @@ function PrinterCard({
                                 ) : (
                                   <EmptySlotHoverCard
                                     kind={emptyKind ?? undefined}
+                                    tracking={slotTracking}
                                     actions={renderAmsSlotActions({
                                       amsId: ams.id,
                                       slotId: htSlotId,
@@ -5516,6 +5528,7 @@ function PrinterCard({
                                     {slotVisual}
                                   </EmptySlotHoverCard>
                                 )}
+                                <SlotTrackingLabel assigned={slotTracking.assigned} />
                               </div>
                               {/* Stats stacked vertically: Temp on top, Humidity below */}
                               {(ams.humidity != null || ams.temp != null) && (
@@ -5620,8 +5633,9 @@ function PrinterCard({
 
                               const isEmpty = !extTray.tray_type;
                               const emptyKind = getEmptySlotKind(extTray);
+                              const slotTracking = trackingForSlot(255, slotTrayId);
                               const extSlotContent = (
-                                <div className={`w-full bg-bambu-dark-secondary rounded-lg p-1 text-center ${isEmpty ? 'opacity-50' : ''} ${isExtActive ? 'ring-2 ring-bambu-green ring-offset-1 ring-offset-bambu-dark' : ''}`}>
+                                <div className={`w-full bg-bambu-dark-secondary rounded-lg p-1 text-center ${isEmpty ? 'opacity-50' : ''} ${amsSlotHighlightClass({ isActive: isExtActive })}`}>
                                   {/* Color circle: L/R inside on dual-nozzle external (replaces
                                       the separate Ext-L/Ext-R caption that made the row taller than
                                       regular AMS slots), 1-based slot number on single-nozzle. */}
@@ -5635,7 +5649,7 @@ function PrinterCard({
                                   <div className={`text-[9px] font-bold truncate ${isEmpty ? 'text-white/40' : 'text-white'}`}>
                                     {extTray.tray_type || t('ams.slotEmpty')}
                                   </div>
-                                  <div className="mt-1 h-1.5 bg-black/30 rounded-full overflow-hidden">
+                                  <div className="mt-1 h-1.5 bg-black/20 dark:bg-white/25 rounded-full overflow-hidden">
                                     {extEffectiveFill !== null && extEffectiveFill >= 0 && !isEmpty && (
                                       <div
                                         className="h-full rounded-full transition-all"
@@ -5736,7 +5750,7 @@ function PrinterCard({
                                           isAssigned: !!assignment || isBambuLabSpool(extTray),
                                         };
                                       })()}
-                                      tracking={trackingForSlot(255, slotTrayId)}
+                                      tracking={slotTracking}
                                       configureSlot={{
                                         enabled: hasPermission('printers:control'),
                                         onConfigure: () => setConfigureSlotModal({
@@ -5758,6 +5772,7 @@ function PrinterCard({
                                   ) : (
                                     <EmptySlotHoverCard
                                       kind={emptyKind ?? undefined}
+                                      tracking={slotTracking}
                                       actions={renderAmsSlotActions({
                                         amsId: 255,
                                         slotId: slotTrayId,
@@ -5789,6 +5804,7 @@ function PrinterCard({
                                       {extSlotContent}
                                     </EmptySlotHoverCard>
                                   )}
+                                  <SlotTrackingLabel assigned={slotTracking.assigned} />
                                 </div>
                               );
                             })}
@@ -5837,9 +5853,9 @@ function PrinterCard({
                   onClick={() => toggleAutoOffMutation.mutate(!smartPlug.auto_off)}
                   disabled={toggleAutoOffMutation.isPending || smartPlug.auto_off_executed || !hasPermission('smart_plugs:control')}
                   title={!hasPermission('smart_plugs:control') ? t('printers.permission.noSmartPlugControl') : (smartPlug.auto_off_executed ? t('printers.autoOffExecuted') : t('printers.autoOffAfterPrint'))}
-                  className={`flex h-8 w-8 flex-shrink-0 items-center justify-center rounded-lg text-xs font-bold transition-colors disabled:opacity-50 disabled:cursor-not-allowed ${
+                  className={`flex h-8 w-8 flex-shrink-0 items-center justify-center rounded-lg text-xs font-bold transition-colors disabled:opacity-80 disabled:cursor-not-allowed ${
                     !hasPermission('smart_plugs:control')
-                      ? 'bg-bambu-dark-tertiary/50 text-bambu-gray/50'
+                      ? 'bg-bambu-dark-tertiary text-bambu-gray'
                       : smartPlug.auto_off || smartPlug.auto_off_executed
                         ? 'bg-bambu-green/20 text-bambu-green hover:bg-bambu-green/30'
                         : 'bg-bambu-dark-tertiary text-bambu-gray hover:text-white hover:bg-bambu-dark-tertiary/80'
@@ -5856,9 +5872,9 @@ function PrinterCard({
                     }
                   }}
                   disabled={powerControlMutation.isPending || !hasPermission('smart_plugs:control')}
-                  className={`flex h-8 w-8 flex-shrink-0 items-center justify-center rounded-lg text-xs transition-colors disabled:opacity-50 disabled:cursor-not-allowed ${
+                  className={`flex h-8 w-8 flex-shrink-0 items-center justify-center rounded-lg text-xs transition-colors disabled:opacity-80 disabled:cursor-not-allowed ${
                     !hasPermission('smart_plugs:control')
-                      ? 'bg-bambu-dark-tertiary/50 text-bambu-gray/50'
+                      ? 'bg-bambu-dark-tertiary text-bambu-gray'
                       : plugStatus?.state === 'ON'
                         ? 'bg-bambu-green/20 text-bambu-green hover:bg-bambu-green/30'
                         : 'bg-bambu-dark-tertiary text-bambu-gray hover:text-white hover:bg-bambu-dark-tertiary/80'
@@ -7905,8 +7921,14 @@ export function PrintersPage() {
   const [showPowerDropdown, setShowPowerDropdown] = useState(false);
   const [poweringOn, setPoweringOn] = useState<number | null>(null);
   const [sortBy, setSortBy] = useState<SortOption>(() => {
-    return (localStorage.getItem('printerSortBy') as SortOption) || 'name';
+    const saved = localStorage.getItem('printerSortBy');
+    if (saved === 'name' || saved === 'status' || saved === 'model' || saved === 'location' || saved === 'eta' || saved === 'custom') {
+      return saved;
+    }
+    return readPrinterCustomOrder().length > 0 ? 'custom' : 'name';
   });
+  const [customOrder, setCustomOrder] = useState<number[]>(() => readPrinterCustomOrder());
+  const [showArrangeModal, setShowArrangeModal] = useState(false);
   const [sortAsc, setSortAsc] = useState<boolean>(() => {
     return localStorage.getItem('printerSortAsc') !== 'false';
   });
@@ -8330,6 +8352,22 @@ export function PrintersPage() {
     localStorage.setItem('printerSortBy', newSort);
   };
 
+  const handleArrangeApply = useCallback((ids: number[]) => {
+    if (ids.length > 0) {
+      const allIds = (printers ?? []).map((printer) => printer.id);
+      const merged = mergePrinterCustomOrder(ids, customOrder, allIds);
+      writePrinterCustomOrder(merged);
+      setCustomOrder(merged);
+      setSortBy('custom');
+      localStorage.setItem('printerSortBy', 'custom');
+    }
+    setShowArrangeModal(false);
+  }, [customOrder, printers]);
+
+  const handleArrangeClose = useCallback(() => {
+    setShowArrangeModal(false);
+  }, []);
+
   const toggleSortDirection = () => {
     const newAsc = !sortAsc;
     setSortAsc(newAsc);
@@ -8418,6 +8456,8 @@ export function PrintersPage() {
     const sorted = [...filteredPrinters];
 
     switch (sortBy) {
+      case 'custom':
+        return applyPrinterCustomOrder(sorted, customOrder);
       case 'name':
         sorted.sort((a, b) => a.name.localeCompare(b.name));
         break;
@@ -8481,7 +8521,7 @@ export function PrintersPage() {
     }
 
     return sorted;
-  }, [filteredPrinters, sortBy, sortAsc, queryClient]);
+  }, [filteredPrinters, sortBy, sortAsc, customOrder, queryClient]);
 
   const selectAll = useCallback(() => {
     setSelectedPrinterIds(new Set(sortedPrinters.map(p => p.id)));
@@ -8526,9 +8566,12 @@ export function PrintersPage() {
     });
   }, []);
 
-  // Group printers when sorted by location, status, or model
+  // Group printers when sorted by location, status, or model.
+  // Unknown values (including a stale printerSortBy=custom from another
+  // session before custom sort existed) must NOT return {} — that is truthy
+  // and the grouped renderer paints zero cards.
   const groupedPrinters = useMemo(() => {
-    if (sortBy === 'name' || sortBy === 'eta') return null;
+    if (sortBy !== 'location' && sortBy !== 'status' && sortBy !== 'model') return null;
 
     const groups: Record<string, typeof sortedPrinters> = {};
 
@@ -8556,6 +8599,39 @@ export function PrintersPage() {
     return groups;
     // eslint-disable-next-line react-hooks/exhaustive-deps -- classifyPrinterStatus & filterKnownHMSErrors are stable module-level functions, not reactive deps; statusCacheVersion forces recompute on WebSocket status updates
   }, [sortBy, sortedPrinters, queryClient, statusCacheVersion]);
+
+  const arrangeTitle = useMemo(() => {
+    if (groupedPrinters) {
+      const keys = sortBy === 'status'
+        ? STATUS_GROUP_ORDER.filter(k => groupedPrinters[k]?.length > 0)
+        : Object.keys(groupedPrinters);
+      if (keys.length === 1) {
+        const key = keys[0];
+        if (sortBy === 'status') return t(STATUS_GROUP_META[key]?.labelKey || key);
+        if (key === 'Ungrouped') return t('printers.ungrouped', 'Ungrouped');
+        return key;
+      }
+    }
+    const locations = [...new Set((printers ?? []).map(p => p.location).filter((loc): loc is string => Boolean(loc)))];
+    if (locations.length === 1 && (printers ?? []).every(p => p.location === locations[0])) {
+      return locations[0];
+    }
+    return t('printers.arrange.defaultGroup', 'Group 1');
+  }, [groupedPrinters, printers, sortBy, t]);
+
+  const arrangePrinters = useMemo(() => {
+    if (!printers) return [];
+    // Always list every printer. When a filter is active and there is no saved
+    // custom order yet, seed from the full printer list rather than the filtered
+    // view so hidden cards are not pinned to the end.
+    const seed =
+      customOrder.length > 0
+        ? customOrder
+        : filteredPrinters.length === printers.length
+          ? sortedPrinters.map((p) => p.id)
+          : printers.map((p) => p.id);
+    return applyPrinterCustomOrder(printers, seed).map((p) => ({ id: p.id, name: p.name, model: p.model }));
+  }, [printers, customOrder, filteredPrinters, sortedPrinters]);
 
   const toolbarRef = useRef<HTMLDivElement>(null);
   const expandedToolbarControlsRef = useRef<HTMLDivElement>(null);
@@ -8667,6 +8743,7 @@ export function PrintersPage() {
             { value: 'model', label: t('printers.sort.model') },
             { value: 'location', label: t('printers.sort.location') },
             { value: 'eta', label: t('printers.sort.eta') },
+            { value: 'custom', label: t('printers.sort.custom', 'Custom') },
           ]}
         />
         <button
@@ -8681,6 +8758,18 @@ export function PrintersPage() {
           )}
         </button>
       </div>
+
+      {printers && printers.length > 0 && (
+        <button
+          type="button"
+          onClick={() => setShowArrangeModal(true)}
+          className={`h-8 px-2 rounded-lg border bg-bambu-dark border-bambu-dark-tertiary text-white hover:bg-bambu-dark-tertiary transition-colors flex items-center gap-1.5 ${inMenu ? 'w-full justify-center text-sm font-medium' : ''}`}
+          title={t('printers.arrange.button', 'Arrange')}
+        >
+          <ArrowUpDown className="w-4 h-4" />
+          <span className={inMenu ? '' : 'text-sm font-medium'}>{t('printers.arrange.button', 'Arrange')}</span>
+        </button>
+      )}
 
       {/* Page view toggle: Cards / Cam Wall */}
       <div className={`flex h-8 items-center bg-bambu-dark rounded-lg border border-bambu-dark-tertiary ${inMenu ? 'w-full' : ''}`}>
@@ -8985,6 +9074,7 @@ export function PrintersPage() {
             return (sortAsc ? keys : [...keys].reverse());
           })().map((groupKey) => {
             const groupPrinters = groupedPrinters[groupKey];
+            if (!groupPrinters?.length) return null;
             const collapseKey = `${sortBy}:${groupKey}`;
             const isOpen = !collapsedSections[collapseKey];
 
@@ -9203,6 +9293,16 @@ export function PrintersPage() {
           })}
         />
       ))}
+
+      {showArrangeModal && (
+        <ArrangePrintersModal
+          isOpen
+          title={arrangeTitle}
+          printers={arrangePrinters}
+          onApply={handleArrangeApply}
+          onClose={handleArrangeClose}
+        />
+      )}
     </div>
   );
 }

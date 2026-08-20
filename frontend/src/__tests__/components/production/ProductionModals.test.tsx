@@ -126,6 +126,68 @@ describe('ReplaceProductionFileModal', () => {
     expect(screen.getByText('Accept as new baseline')).toBeInTheDocument();
     expect(screen.getByText('1 parameter(s) differ')).toBeInTheDocument();
   });
+
+  it('keeps Proceed anyway disabled until each mismatched parameter has a note', async () => {
+    const user = userEvent.setup();
+    let postedNotes: string | null = null;
+    server.use(
+      http.post('/api/v1/production/slots/:id/replace', async ({ request }) => {
+        const body = await request.formData();
+        postedNotes = body.get('parameter_notes') as string | null;
+        return HttpResponse.json({
+          id: 7,
+          instance_id: 1,
+          part_id: 1,
+          code: 'TOP',
+          name: 'Top',
+          quantity: 1,
+          major: 1,
+          revision: 14,
+          minor: 0,
+          version: '1.14.0',
+          active_file: null,
+          has_overrides: false,
+          last_mismatch: true,
+          folder_id: 9,
+          printer_model: 'X1C',
+          locked_parameters: { layer_height: 0.2 },
+        });
+      }),
+    );
+    const onReplaced = vi.fn();
+    render(
+      <ReplaceProductionFileModal
+        slotId={7}
+        code="TOP"
+        quantity={1}
+        major={1}
+        revision={13}
+        minor={2}
+        currentVersion="1.13.2"
+        printerModel="X1C"
+        onClose={vi.fn()}
+        onReplaced={onReplaced}
+      />,
+    );
+
+    const input = document.querySelector('input[type="file"]') as HTMLInputElement;
+    const file = new File(['3mf'], 'TOP - 1.14.0 - X1C.gcode.3mf', { type: 'application/octet-stream' });
+    await user.upload(input, file);
+
+    const proceed = await screen.findByRole('button', { name: 'Proceed anyway' });
+    expect(proceed).toBeDisabled();
+    expect(screen.getByLabelText('Note')).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Accept as new baseline' })).not.toBeDisabled();
+
+    await user.type(screen.getByLabelText('Note'), 'Need a finer layer for the logo');
+    expect(proceed).not.toBeDisabled();
+
+    await user.click(proceed);
+    await waitFor(() => {
+      expect(onReplaced).toHaveBeenCalled();
+    });
+    expect(postedNotes).toBe(JSON.stringify({ layer_height: 'Need a finer layer for the logo' }));
+  });
 });
 
 describe('AddProductionFileModal', () => {
@@ -249,5 +311,9 @@ describe('AddProductionFileModal', () => {
     expect(screen.getByText('Proceed anyway')).toBeInTheDocument();
     expect(screen.getByText('Accept as new baseline')).toBeInTheDocument();
     expect(screen.queryByRole('checkbox')).not.toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Proceed anyway' })).toBeDisabled();
+    expect(screen.getByLabelText('Note')).toBeInTheDocument();
+    await user.type(screen.getByLabelText('Note'), 'Layer height is for a smoother lid');
+    expect(screen.getByRole('button', { name: 'Proceed anyway' })).not.toBeDisabled();
   });
 });

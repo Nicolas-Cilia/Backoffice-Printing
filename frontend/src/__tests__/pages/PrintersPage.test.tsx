@@ -1609,3 +1609,71 @@ describe('PrintersPage Phase 14 — Local-Branch BL-detection symmetry', () => {
     expect(definedUnassign.length).toBe(0);
   });
 });
+
+describe('printer card status chrome', () => {
+  beforeEach(() => {
+    localStorage.removeItem('hideDisconnectedPrinters');
+    server.use(
+      http.get('/api/v1/printers/', () => HttpResponse.json(mockPrinters)),
+      http.get('/api/v1/settings/ui-preferences', () =>
+        HttpResponse.json({
+          ams_humidity_good: 40,
+          ams_humidity_fair: 60,
+          ams_temp_good: 30,
+          ams_temp_fair: 35,
+          require_plate_clear: true,
+        }),
+      ),
+    );
+  });
+
+  const renderWithStatus = (status: Record<string, unknown>) => {
+    server.use(
+      http.get('/api/v1/printers/:id/status', ({ params }) => {
+        if (Number(params.id) === 1) {
+          return HttpResponse.json({ ...mockPrinterStatus, ...status });
+        }
+        return HttpResponse.json(mockPrinterStatus);
+      })
+    );
+    render(<PrintersPage />);
+  };
+
+  it('turns the widget orange when paused', async () => {
+    renderWithStatus({ connected: true, state: 'PAUSE' });
+
+    await waitFor(() => {
+      expect(document.getElementById('printer-card-1')).toHaveAttribute('data-printer-status', 'paused');
+    });
+    expect(document.getElementById('printer-card-1')?.className).toContain('border-status-warning');
+  });
+
+  it('turns the widget red when disconnected', async () => {
+    renderWithStatus({ connected: false, state: 'IDLE' });
+
+    await waitFor(() => {
+      expect(document.getElementById('printer-card-1')).toHaveAttribute('data-printer-status', 'offline');
+    });
+    expect(document.getElementById('printer-card-1')?.className).toContain('border-status-error');
+  });
+
+  it('turns the widget green when finished', async () => {
+    renderWithStatus({ connected: true, state: 'FINISH' });
+
+    await waitFor(() => {
+      expect(document.getElementById('printer-card-1')).toHaveAttribute('data-printer-status', 'finished');
+    });
+    expect(document.getElementById('printer-card-1')?.className).toContain('border-status-ok');
+    expect(document.getElementById('printer-card-1')?.className).toContain('printer-card-tinted');
+  });
+
+  it('turns the widget green when idle', async () => {
+    renderWithStatus({ connected: true, state: 'IDLE' });
+
+    await waitFor(() => {
+      expect(document.getElementById('printer-card-1')).toHaveAttribute('data-printer-status', 'idle');
+    });
+    expect(document.getElementById('printer-card-1')?.className).toContain('border-status-ok');
+    expect(document.getElementById('printer-card-1')?.className).toContain('printer-card-tinted');
+  });
+});

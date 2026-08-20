@@ -104,6 +104,49 @@ export const CHECKERBOARD_TILE_SIZE = '12px 12px';
  *  white main + black extras. */
 export const PARTICLE_EFFECTS: ReadonlySet<string> = new Set(['sparkle']);
 
+/**
+ * Rec. 601 luma below which a swatch disc disappears on dark UI.
+ * Black / charcoal / navy sit under this; mid greys, white, and saturated
+ * colours stay above so they keep the existing ``border-black/20`` only.
+ */
+export const DARK_SWATCH_LUMA_THRESHOLD = 0.2;
+
+/** Rec. 601 relative luminance in 0..1, or null when the token is unusable.
+ *  Fully-transparent (alpha 00) returns null — those paint as checkerboard,
+ *  not a dark disc. */
+export function hexLuminance(token: string | null | undefined): number | null {
+  const css = token ? toCssHex(token) : null;
+  if (!css) return null;
+  const t = css.slice(1);
+  if (t.length >= 8 && t.slice(6, 8).toLowerCase() === '00') return null;
+  const r = parseInt(t.slice(0, 2), 16);
+  const g = parseInt(t.slice(2, 4), 16);
+  const b = parseInt(t.slice(4, 6), 16);
+  if (Number.isNaN(r) || Number.isNaN(g) || Number.isNaN(b)) return null;
+  return (0.299 * r + 0.587 * g + 0.114 * b) / 255;
+}
+
+/** True when the painted field is near-black and needs a faint light ring.
+ *  Sparkle judges the main ``rgba`` fill (extras are flecks). Gradient /
+ *  dual / tri / multicolor judge the extra-color stops, since those replace
+ *  the fill. */
+export function isDarkSwatchFill(opts: {
+  rgba?: string | null;
+  extraColors?: string | null;
+  effectType?: string | null;
+}): boolean {
+  const stops = parseStops(opts.extraColors);
+  const fieldTokens =
+    isParticleEffect(opts.effectType) || stops.length === 0
+      ? [opts.rgba]
+      : stops;
+  const lumas = fieldTokens
+    .map((token) => hexLuminance(token))
+    .filter((n): n is number => n != null);
+  if (lumas.length === 0) return false;
+  return lumas.every((l) => l < DARK_SWATCH_LUMA_THRESHOLD);
+}
+
 export function isParticleEffect(effectType?: string | null): boolean {
   return PARTICLE_EFFECTS.has((effectType ?? '').toLowerCase());
 }
