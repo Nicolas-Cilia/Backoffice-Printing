@@ -96,7 +96,9 @@ def existing_3mf_path(stored: str | None, base_dir) -> Path | None:
     if not isinstance(stored, str) or not stored.strip():
         return None
     path = Path(stored)
-    candidate = path if path.is_absolute() else base_dir / stored  # SEC-PATH-OK: stored is LibraryFile/PrintArchive.file_path from DB
+    candidate = (
+        path if path.is_absolute() else base_dir / stored
+    )  # SEC-PATH-OK: stored is LibraryFile/PrintArchive.file_path from DB
     try:
         suffix = str(getattr(candidate, "suffix", "") or "").lower()
         if candidate.exists() and suffix == ".3mf" and candidate.stat().st_size > 0:
