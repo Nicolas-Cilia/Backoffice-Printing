@@ -32,6 +32,8 @@ class MaintenanceTypeUpdate(BaseModel):
 class MaintenanceTypeResponse(MaintenanceTypeBase):
     id: int
     is_system: bool
+    is_adhoc: bool = False
+    is_deleted: bool = False
     created_at: datetime
 
     class Config:
@@ -75,6 +77,8 @@ class PrinterMaintenanceResponse(BaseModel):
 # Maintenance History schemas
 class MaintenanceHistoryBase(BaseModel):
     notes: str | None = None
+    part_url: str | None = Field(default=None, max_length=500)
+    cost: float | None = Field(default=None, ge=0)
 
 
 class MaintenanceHistoryCreate(MaintenanceHistoryBase):
@@ -84,11 +88,30 @@ class MaintenanceHistoryCreate(MaintenanceHistoryBase):
 class MaintenanceHistoryResponse(MaintenanceHistoryBase):
     id: int
     printer_maintenance_id: int
+    printer_id: int | None = None
     performed_at: datetime
     hours_at_maintenance: float
+    title: str | None = None
+    job_name: str  # Display name: title, or the maintenance type name
+    is_custom: bool = False  # True for one-off jobs; scheduled resets stay notes-focused
 
     class Config:
         from_attributes = True
+
+
+class LogCustomJobRequest(MaintenanceHistoryBase):
+    """One-off job on a printer (replace nozzle, swap a sensor, …)."""
+
+    title: str = Field(..., min_length=1, max_length=100)
+
+
+class UpdateMaintenanceHistoryRequest(BaseModel):
+    """Edit an existing log row after a mistaken save."""
+
+    notes: str | None = None
+    part_url: str | None = Field(default=None, max_length=500)
+    cost: float | None = Field(default=None, ge=0)
+    title: str | None = Field(default=None, min_length=1, max_length=100)
 
 
 # Combined status response for frontend
@@ -127,6 +150,7 @@ class PrinterMaintenanceOverview(BaseModel):
     printer_name: str
     printer_model: str | None  # For model-specific documentation links
     total_print_hours: float
+    total_maintenance_cost: float = 0.0
     maintenance_items: list[MaintenanceStatus]
     due_count: int
     warning_count: int
@@ -136,3 +160,5 @@ class PerformMaintenanceRequest(BaseModel):
     """Request to mark maintenance as performed."""
 
     notes: str | None = None
+    part_url: str | None = Field(default=None, max_length=500)
+    cost: float | None = Field(default=None, ge=0)

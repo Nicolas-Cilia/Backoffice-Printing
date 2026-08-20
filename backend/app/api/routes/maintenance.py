@@ -3,8 +3,8 @@
 import logging
 from datetime import datetime, timezone
 
-from fastapi import APIRouter, Depends, HTTPException
-from sqlalchemy import select
+from fastapi import APIRouter, Depends, HTTPException, Query
+from sqlalchemy import and_, func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
@@ -15,6 +15,7 @@ from backend.app.models.maintenance import MaintenanceHistory, MaintenanceType, 
 from backend.app.models.printer import Printer
 from backend.app.models.user import User
 from backend.app.schemas.maintenance import (
+    LogCustomJobRequest,
     MaintenanceHistoryResponse,
     MaintenanceStatus,
     MaintenanceTypeCreate,
@@ -24,9 +25,41 @@ from backend.app.schemas.maintenance import (
     PrinterMaintenanceOverview,
     PrinterMaintenanceResponse,
     PrinterMaintenanceUpdate,
+    UpdateMaintenanceHistoryRequest,
 )
 from backend.app.services.notification_service import notification_service
 from backend.app.utils.printer_models import get_rod_type
+
+ADHOC_TYPE_NAME = "Custom job"
+
+
+def _history_is_custom(entry: MaintenanceHistory, type_name: str | None = None) -> bool:
+    if type_name == ADHOC_TYPE_NAME:
+        return True
+    # Avoid lazy-loading after commit (MissingGreenlet in async tests).
+    maint = entry.__dict__.get("printer_maintenance")
+    maint_type = getattr(maint, "maintenance_type", None) if maint is not None else None
+    if maint_type is not None:
+        return bool(getattr(maint_type, "is_adhoc", False) or maint_type.name == ADHOC_TYPE_NAME)
+    return False
+
+
+def _history_to_response(entry: MaintenanceHistory, type_name: str | None = None) -> MaintenanceHistoryResponse:
+    is_custom = _history_is_custom(entry, type_name)
+    return MaintenanceHistoryResponse(
+        id=entry.id,
+        printer_maintenance_id=entry.printer_maintenance_id,
+        printer_id=entry.printer_id,
+        performed_at=entry.performed_at,
+        hours_at_maintenance=entry.hours_at_maintenance,
+        notes=entry.notes,
+        title=entry.title,
+        part_url=entry.part_url,
+        cost=entry.cost,
+        job_name=entry.title or type_name or ADHOC_TYPE_NAME,
+        is_custom=is_custom,
+    )
+
 
 logger = logging.getLogger(__name__)
 
@@ -94,6 +127,14 @@ DEFAULT_MAINTENANCE_TYPES = [
         "default_interval_hours": 500.0,
         "icon": "Cable",
     },
+    # Hidden bucket for one-off jobs logged on a printer (no interval card).
+    {
+        "name": "Custom job",
+        "description": "One-off repair or part replacement",
+        "default_interval_hours": 999999.0,
+        "icon": "Wrench",
+        "is_adhoc": True,
+    },
 ]
 
 # System types that only apply to printers with a specific rod/rail type.
@@ -144,6 +185,62 @@ async def get_printer_total_hours(db: AsyncSession, printer_id: int) -> float:
     return runtime_hours + offset
 
 
+async def _printer_maintenance_cost(db: AsyncSession, printer_id: int) -> float:
+    """Sum logged costs for a printer, including pre-migration rows without printer_id."""
+    printer_item_ids = select(PrinterMaintenance.id).where(PrinterMaintenance.printer_id == printer_id)
+    result = await db.execute(
+        select(func.coalesce(func.sum(MaintenanceHistory.cost), 0)).where(
+            or_(
+                MaintenanceHistory.printer_id == printer_id,
+                and_(
+                    MaintenanceHistory.printer_id.is_(None),
+                    MaintenanceHistory.printer_maintenance_id.in_(printer_item_ids),
+                ),
+            )
+        )
+    )
+    return float(result.scalar() or 0)
+
+
+async def _get_or_create_adhoc_item(db: AsyncSession, printer_id: int) -> PrinterMaintenance:
+    """Hidden Custom-job row used as the FK for one-off printer log entries."""
+    await ensure_default_types(db)
+    type_result = await db.execute(
+        select(MaintenanceType).where(MaintenanceType.name == ADHOC_TYPE_NAME, MaintenanceType.is_system.is_(True))
+    )
+    adhoc_type = type_result.scalar_one_or_none()
+    if not adhoc_type:
+        adhoc_type = MaintenanceType(
+            name=ADHOC_TYPE_NAME,
+            description="One-off repair or part replacement",
+            default_interval_hours=999999.0,
+            icon="Wrench",
+            is_system=True,
+            is_adhoc=True,
+        )
+        db.add(adhoc_type)
+        await db.flush()
+
+    item_result = await db.execute(
+        select(PrinterMaintenance).where(
+            PrinterMaintenance.printer_id == printer_id,
+            PrinterMaintenance.maintenance_type_id == adhoc_type.id,
+        )
+    )
+    item = item_result.scalar_one_or_none()
+    if item:
+        return item
+    item = PrinterMaintenance(
+        printer_id=printer_id,
+        maintenance_type_id=adhoc_type.id,
+        enabled=False,
+        last_performed_hours=0.0,
+    )
+    db.add(item)
+    await db.flush()
+    return item
+
+
 async def ensure_default_types(db: AsyncSession) -> None:
     """Ensure default maintenance types exist, remove stale/duplicate ones."""
     result = await db.execute(
@@ -162,6 +259,8 @@ async def ensure_default_types(db: AsyncSession) -> None:
             await db.delete(t)
         else:
             seen_names.add(t.name)
+            if t.name == ADHOC_TYPE_NAME:
+                t.is_adhoc = True
 
     # Create any missing default types
     for type_def in DEFAULT_MAINTENANCE_TYPES:
@@ -172,6 +271,7 @@ async def ensure_default_types(db: AsyncSession) -> None:
                 default_interval_hours=type_def["default_interval_hours"],
                 icon=type_def["icon"],
                 is_system=True,
+                is_adhoc=bool(type_def.get("is_adhoc", False)),
             )
             db.add(new_type)
 
@@ -183,16 +283,22 @@ async def ensure_default_types(db: AsyncSession) -> None:
 
 @router.get("/types", response_model=list[MaintenanceTypeResponse])
 async def get_maintenance_types(
+    include_hidden: bool = Query(False),
     db: AsyncSession = Depends(get_db),
     _: User | None = RequirePermissionIfAuthEnabled(Permission.MAINTENANCE_READ),
 ):
-    """Get all maintenance types."""
+    """Get maintenance types. Hidden default tasks are omitted unless include_hidden is set."""
     await ensure_default_types(db)
-    result = await db.execute(
+    query = (
         select(MaintenanceType)
-        .where(MaintenanceType.is_deleted.is_(False))
+        .where(or_(MaintenanceType.is_adhoc.is_(False), MaintenanceType.is_adhoc.is_(None)))
         .order_by(MaintenanceType.is_system.desc(), MaintenanceType.name)
     )
+    if not include_hidden:
+        query = query.where(
+            or_(MaintenanceType.is_deleted.is_(False), MaintenanceType.is_deleted.is_(None))
+        )
+    result = await db.execute(query)
     return result.scalars().all()
 
 
@@ -255,11 +361,30 @@ async def delete_maintenance_type(
     if maint_type.is_system:
         maint_type.is_deleted = True
         await db.commit()
-        return {"status": "deleted"}
+        return {"status": "hidden"}
 
     await db.delete(maint_type)
     await db.commit()
     return {"status": "deleted"}
+
+
+@router.post("/types/{type_id}/restore", response_model=MaintenanceTypeResponse)
+async def restore_maintenance_type(
+    type_id: int,
+    db: AsyncSession = Depends(get_db),
+    _: User | None = RequirePermissionIfAuthEnabled(Permission.MAINTENANCE_DELETE),
+):
+    """Un-hide a single default maintenance task."""
+    result = await db.execute(select(MaintenanceType).where(MaintenanceType.id == type_id))
+    maint_type = result.scalar_one_or_none()
+    if not maint_type:
+        raise HTTPException(status_code=404, detail="Maintenance type not found")
+    if not maint_type.is_system or getattr(maint_type, "is_adhoc", False):
+        raise HTTPException(status_code=400, detail="Only hidden default tasks can be restored")
+    maint_type.is_deleted = False
+    await db.commit()
+    await db.refresh(maint_type)
+    return maint_type
 
 
 @router.post("/types/restore-defaults")
@@ -318,6 +443,9 @@ async def _get_printer_maintenance_internal(
     now = datetime.now(timezone.utc)
 
     for maint_type in all_types:
+        # One-off custom jobs live in the printer log, not as interval cards.
+        if getattr(maint_type, "is_adhoc", False):
+            continue
         # Skip system types that don't apply to this printer model
         # (e.g., "Clean Carbon Rods" for H2D which has steel rods)
         if maint_type.is_system and not _should_apply_to_printer(maint_type.name, printer.model):
@@ -425,11 +553,14 @@ async def _get_printer_maintenance_internal(
     if commit:
         await db.commit()
 
+    total_cost = await _printer_maintenance_cost(db, printer_id)
+
     return PrinterMaintenanceOverview(
         printer_id=printer_id,
         printer_name=printer.name,
         printer_model=printer.model,
         total_print_hours=total_hours,
+        total_maintenance_cost=round(total_cost, 2),
         maintenance_items=maintenance_items,
         due_count=due_count,
         warning_count=warning_count,
@@ -602,8 +733,12 @@ async def perform_maintenance(
     # Create history entry
     history = MaintenanceHistory(
         printer_maintenance_id=item.id,
+        printer_id=item.printer_id,
         hours_at_maintenance=current_hours,
         notes=data.notes,
+        part_url=data.part_url,
+        cost=data.cost,
+        title=item.maintenance_type.name,
     )
     db.add(history)
 
@@ -666,7 +801,142 @@ async def get_maintenance_history(
         .where(MaintenanceHistory.printer_maintenance_id == item_id)
         .order_by(MaintenanceHistory.performed_at.desc())
     )
-    return result.scalars().all()
+    type_name = None
+    item_result = await db.execute(
+        select(PrinterMaintenance)
+        .where(PrinterMaintenance.id == item_id)
+        .options(selectinload(PrinterMaintenance.maintenance_type))
+    )
+    item = item_result.scalar_one_or_none()
+    if item:
+        type_name = item.maintenance_type.name
+    return [_history_to_response(row, type_name) for row in result.scalars().all()]
+
+
+@router.get("/printers/{printer_id}/history", response_model=list[MaintenanceHistoryResponse])
+async def get_printer_maintenance_history(
+    printer_id: int,
+    db: AsyncSession = Depends(get_db),
+    _: User | None = RequirePermissionIfAuthEnabled(Permission.MAINTENANCE_READ),
+):
+    """Get the full maintenance log for a printer (scheduled resets + custom jobs)."""
+    result = await db.execute(select(Printer).where(Printer.id == printer_id))
+    if not result.scalar_one_or_none():
+        raise HTTPException(status_code=404, detail="Printer not found")
+
+    result = await db.execute(
+        select(MaintenanceHistory)
+        .outerjoin(PrinterMaintenance)
+        .where(
+            or_(
+                MaintenanceHistory.printer_id == printer_id,
+                and_(
+                    MaintenanceHistory.printer_id.is_(None),
+                    PrinterMaintenance.printer_id == printer_id,
+                ),
+            )
+        )
+        .options(selectinload(MaintenanceHistory.printer_maintenance).selectinload(PrinterMaintenance.maintenance_type))
+        .order_by(MaintenanceHistory.performed_at.desc())
+    )
+    rows = result.scalars().all()
+    responses = []
+    for row in rows:
+        type_name = None
+        if row.printer_maintenance and row.printer_maintenance.maintenance_type:
+            type_name = row.printer_maintenance.maintenance_type.name
+        responses.append(_history_to_response(row, type_name))
+    return responses
+
+
+@router.post("/printers/{printer_id}/jobs", response_model=MaintenanceHistoryResponse)
+async def log_custom_maintenance_job(
+    printer_id: int,
+    data: LogCustomJobRequest,
+    db: AsyncSession = Depends(get_db),
+    _: User | None = RequirePermissionIfAuthEnabled(Permission.MAINTENANCE_UPDATE),
+):
+    """Log a one-off job (replace nozzle, swap a sensor, …) without resetting a scheduled task."""
+    result = await db.execute(select(Printer).where(Printer.id == printer_id))
+    printer = result.scalar_one_or_none()
+    if not printer:
+        raise HTTPException(status_code=404, detail="Printer not found")
+
+    item = await _get_or_create_adhoc_item(db, printer_id)
+    current_hours = await get_printer_total_hours(db, printer_id)
+    history = MaintenanceHistory(
+        printer_maintenance_id=item.id,
+        printer_id=printer_id,
+        hours_at_maintenance=current_hours,
+        notes=data.notes,
+        title=data.title.strip(),
+        part_url=data.part_url,
+        cost=data.cost,
+    )
+    db.add(history)
+    await db.commit()
+    await db.refresh(history)
+    return _history_to_response(history, ADHOC_TYPE_NAME)
+
+
+@router.patch("/history/{history_id}", response_model=MaintenanceHistoryResponse)
+async def update_maintenance_history(
+    history_id: int,
+    data: UpdateMaintenanceHistoryRequest,
+    db: AsyncSession = Depends(get_db),
+    _: User | None = RequirePermissionIfAuthEnabled(Permission.MAINTENANCE_UPDATE),
+):
+    """Correct a printer-log row after an accidental save."""
+    result = await db.execute(
+        select(MaintenanceHistory)
+        .where(MaintenanceHistory.id == history_id)
+        .options(selectinload(MaintenanceHistory.printer_maintenance).selectinload(PrinterMaintenance.maintenance_type))
+    )
+    entry = result.scalar_one_or_none()
+    if not entry:
+        raise HTTPException(status_code=404, detail="Maintenance history entry not found")
+
+    type_name = None
+    if entry.printer_maintenance and entry.printer_maintenance.maintenance_type:
+        type_name = entry.printer_maintenance.maintenance_type.name
+    is_custom = _history_is_custom(entry, type_name)
+    updates = data.model_dump(exclude_unset=True)
+
+    if "notes" in updates:
+        notes = updates["notes"]
+        entry.notes = notes.strip() if isinstance(notes, str) and notes.strip() else None
+
+    if is_custom:
+        if "part_url" in updates:
+            part_url = updates["part_url"]
+            entry.part_url = part_url.strip() if isinstance(part_url, str) and part_url.strip() else None
+        if "cost" in updates:
+            entry.cost = updates["cost"]
+        if "title" in updates:
+            title = (updates["title"] or "").strip()
+            if not title:
+                raise HTTPException(status_code=422, detail="Title is required for custom jobs")
+            entry.title = title
+
+    await db.commit()
+    await db.refresh(entry)
+    return _history_to_response(entry, type_name)
+
+
+@router.delete("/history/{history_id}")
+async def delete_maintenance_history(
+    history_id: int,
+    db: AsyncSession = Depends(get_db),
+    _: User | None = RequirePermissionIfAuthEnabled(Permission.MAINTENANCE_UPDATE),
+):
+    """Remove a printer-log row (does not undo a scheduled interval reset)."""
+    result = await db.execute(select(MaintenanceHistory).where(MaintenanceHistory.id == history_id))
+    entry = result.scalar_one_or_none()
+    if not entry:
+        raise HTTPException(status_code=404, detail="Maintenance history entry not found")
+    await db.delete(entry)
+    await db.commit()
+    return {"status": "deleted"}
 
 
 @router.get("/summary")
