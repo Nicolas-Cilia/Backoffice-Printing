@@ -136,6 +136,7 @@ describe('PrintersPage — FILAMENTS tracking labels', () => {
 
     const labels = await screen.findAllByTestId('slot-tracking-label');
     expect(labels).toHaveLength(2);
+    expect(labels[0].className).toContain('mt-1.5');
     expect(labels[0]).toHaveTextContent('White · EasyRock · PLA');
     expect(labels[1]).toHaveTextContent('Galaxy · Bambu Lab · PETG');
     expect(screen.queryByText('White · PLA')).not.toBeInTheDocument();
@@ -263,5 +264,25 @@ describe('PrintersPage — FILAMENTS tracking labels', () => {
     await waitFor(() => {
       expect(deleted).toBe(true);
     });
+  });
+
+  it('insets the selected AMS slot ring so it does not overlap tracking swatches', async () => {
+    server.use(
+      http.get('/api/v1/filament-tracking/assignments', () =>
+        HttpResponse.json([amsAssignment, externalAssignment]),
+      ),
+      http.get('/api/v1/printers/:id/status', () =>
+        HttpResponse.json({ ...mockStatus, state: 'RUNNING', tray_now: 0 }),
+      ),
+    );
+
+    render(<PrintersPage />);
+
+    const labels = await screen.findAllByTestId('slot-tracking-label');
+    const tile = labels[0].parentElement?.querySelector('[class*="ring-inset"]');
+    expect(tile?.className).toContain('ring-bambu-green');
+    expect(tile?.className).toContain('ring-1');
+    expect(tile?.className).not.toContain('ring-offset');
+    expect(tile?.className).not.toContain('ring-2');
   });
 });

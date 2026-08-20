@@ -19,6 +19,26 @@ function swatchRgba(hex: string | null | undefined): string | undefined {
 }
 
 /**
+ * Highlight ring for an AMS/external slot tile.
+ * Inset (no offset) so the ring stays inside the tile and does not collide
+ * with SlotTrackingLabel underneath.
+ */
+export function amsSlotHighlightClass({
+  isActive = false,
+  isExpected = false,
+  isRanOut = false,
+}: {
+  isActive?: boolean;
+  isExpected?: boolean;
+  isRanOut?: boolean;
+} = {}): string {
+  if (isExpected) return 'ring-1 ring-inset ring-amber-400 animate-pulse';
+  if (isRanOut) return 'ring-1 ring-inset ring-red-500/70';
+  if (isActive) return 'ring-1 ring-inset ring-bambu-green';
+  return 'ring-1 ring-inset ring-black/10 dark:ring-white/12';
+}
+
+/**
  * Compact Inventory Tracking product label shown under an AMS/external slot.
  * Renders nothing when the slot has no tracking assignment — never invents a color.
  */
@@ -37,7 +57,7 @@ export function SlotTrackingLabel({
   return (
     <div
       data-testid="slot-tracking-label"
-      className="mt-0.5 flex min-w-0 items-center justify-center gap-0.5 px-0.5"
+      className="mt-1.5 flex min-w-0 items-center justify-center gap-0.5 px-0.5"
       title={label}
     >
       {showSwatch && (
@@ -50,7 +70,7 @@ export function SlotTrackingLabel({
           effectSize="table"
         />
       )}
-      <span className="truncate text-[8px] leading-tight text-bambu-gray">{label}</span>
+      <span className="truncate text-[8px] leading-tight font-medium text-bambu-gray-light">{label}</span>
     </div>
   );
 }

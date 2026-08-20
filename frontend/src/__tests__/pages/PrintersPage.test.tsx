@@ -1664,6 +1664,7 @@ describe('printer card status chrome', () => {
       expect(document.getElementById('printer-card-1')).toHaveAttribute('data-printer-status', 'finished');
     });
     expect(document.getElementById('printer-card-1')?.className).toContain('border-status-ok');
+    expect(document.getElementById('printer-card-1')?.className).toContain('printer-card-tinted');
   });
 
   it('turns the widget green when idle', async () => {
@@ -1673,5 +1674,6 @@ describe('printer card status chrome', () => {
       expect(document.getElementById('printer-card-1')).toHaveAttribute('data-printer-status', 'idle');
     });
     expect(document.getElementById('printer-card-1')?.className).toContain('border-status-ok');
+    expect(document.getElementById('printer-card-1')?.className).toContain('printer-card-tinted');
   });
 });
