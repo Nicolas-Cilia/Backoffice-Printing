@@ -8,7 +8,7 @@ from datetime import date, datetime, time, timedelta, timezone
 from decimal import ROUND_HALF_UP, Decimal
 from pathlib import Path
 
-from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, Request, UploadFile
+from fastapi import APIRouter, Depends, File, HTTPException, Query, Request, UploadFile
 from fastapi.responses import FileResponse, Response
 from sqlalchemy import and_, case, func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -333,7 +333,6 @@ def archive_to_response(
         "started_at": archive.started_at,
         "completed_at": archive.completed_at,
         "extra_data": archive.extra_data,
-        "makerworld_url": archive.makerworld_url,
         "designer": archive.designer,
         "external_url": archive.external_url,
         "is_favorite": archive.is_favorite,
@@ -1494,12 +1493,10 @@ async def get_archive(
     archive = _ensure_archive_visible(await service.get_archive(archive_id), user, can_read_all)
 
     # Find duplicates
-    makerworld_id = archive.extra_data.get("makerworld_model_id") if archive.extra_data else None
     duplicates = await service.find_duplicates(
         archive_id=archive.id,
         content_hash=archive.content_hash,
         print_name=archive.print_name,
-        makerworld_model_id=makerworld_id,
     )
     run_aggregates = await _load_run_aggregates(db, [archive.id])
     return archive_to_response(archive, duplicates, run_aggregate=run_aggregates.get(archive.id))
@@ -1733,8 +1730,6 @@ async def rescan_archive(
         archive.bed_type = metadata["bed_type"]
     if metadata.get("nozzle_temperature"):
         archive.nozzle_temperature = metadata["nozzle_temperature"]
-    if metadata.get("makerworld_url"):
-        archive.makerworld_url = metadata["makerworld_url"]
     if metadata.get("designer"):
         archive.designer = metadata["designer"]
 
@@ -1892,8 +1887,6 @@ async def rescan_all_archives(
                 archive.layer_height = metadata["layer_height"]
             if metadata.get("nozzle_diameter"):
                 archive.nozzle_diameter = metadata["nozzle_diameter"]
-            if metadata.get("makerworld_url"):
-                archive.makerworld_url = metadata["makerworld_url"]
             if metadata.get("designer"):
                 archive.designer = metadata["designer"]
 
@@ -1922,12 +1915,10 @@ async def get_archive_duplicates(
     service = ArchiveService(db)
     archive = _ensure_archive_visible(await service.get_archive(archive_id), user, can_read_all)
 
-    makerworld_id = archive.extra_data.get("makerworld_model_id") if archive.extra_data else None
     duplicates = await service.find_duplicates(
         archive_id=archive.id,
         content_hash=archive.content_hash,
         print_name=archive.print_name,
-        makerworld_model_id=makerworld_id,
     )
     return {"duplicates": duplicates, "count": len(duplicates)}
 
@@ -2649,192 +2640,6 @@ async def upload_timelapse(
         raise HTTPException(500, "Failed to attach timelapse")
 
     return {"status": "attached", "filename": safe_filename}
-
-
-@router.get("/{archive_id}/timelapse/info")
-async def get_timelapse_info(
-    archive_id: int,
-    db: AsyncSession = Depends(get_db),
-    auth_result: tuple[User | None, bool] = Depends(
-        require_ownership_permission(
-            Permission.ARCHIVES_READ_ALL,
-            Permission.ARCHIVES_READ_OWN,
-        )
-    ),
-):
-    """Get timelapse video metadata for editor."""
-    from backend.app.schemas.timelapse import TimelapseInfoResponse
-    from backend.app.services.timelapse_processor import TimelapseProcessor
-
-    user, can_read_all = auth_result
-    service = ArchiveService(db)
-    archive = _ensure_archive_visible(await service.get_archive(archive_id), user, can_read_all)
-    if not archive.timelapse_path:
-        raise HTTPException(404, "Timelapse not found")
-
-    timelapse_path = settings.base_dir / archive.timelapse_path
-    if not timelapse_path.exists():
-        raise HTTPException(404, "Timelapse file not found")
-
-    try:
-        processor = TimelapseProcessor(timelapse_path)
-        info = await processor.get_info()
-        return TimelapseInfoResponse(**info)
-    except Exception as e:
-        logger.error("Failed to get timelapse info: %s", e)
-        raise HTTPException(500, f"Failed to get video info: {str(e)}")
-
-
-@router.get("/{archive_id}/timelapse/thumbnails")
-async def get_timelapse_thumbnails(
-    archive_id: int,
-    count: int = Query(10, ge=1, le=30),
-    width: int = Query(160, ge=80, le=320),
-    db: AsyncSession = Depends(get_db),
-    auth_result: tuple[User | None, bool] = Depends(
-        require_ownership_permission(
-            Permission.ARCHIVES_READ_ALL,
-            Permission.ARCHIVES_READ_OWN,
-        )
-    ),
-):
-    """Generate timeline thumbnail frames for visual scrubbing."""
-    import base64
-
-    from backend.app.schemas.timelapse import ThumbnailResponse
-    from backend.app.services.timelapse_processor import TimelapseProcessor
-
-    user, can_read_all = auth_result
-    service = ArchiveService(db)
-    archive = _ensure_archive_visible(await service.get_archive(archive_id), user, can_read_all)
-    if not archive.timelapse_path:
-        raise HTTPException(404, "Timelapse not found")
-
-    timelapse_path = settings.base_dir / archive.timelapse_path
-    if not timelapse_path.exists():
-        raise HTTPException(404, "Timelapse file not found")
-
-    try:
-        processor = TimelapseProcessor(timelapse_path)
-        thumbnails = await processor.generate_thumbnails(count, width)
-
-        return ThumbnailResponse(
-            thumbnails=[base64.b64encode(data).decode() for _, data in thumbnails],
-            timestamps=[ts for ts, _ in thumbnails],
-        )
-    except Exception as e:
-        logger.error("Failed to generate thumbnails: %s", e)
-        raise HTTPException(500, f"Failed to generate thumbnails: {str(e)}")
-
-
-@router.post("/{archive_id}/timelapse/process")
-async def process_timelapse(
-    archive_id: int,
-    trim_start: float = Form(0),
-    trim_end: float = Form(None),
-    speed: float = Form(1.0),
-    save_mode: str = Form("new"),
-    output_filename: str = Form(None),
-    audio: UploadFile = File(None),
-    db: AsyncSession = Depends(get_db),
-    _: User | None = RequirePermissionIfAuthEnabled(Permission.ARCHIVES_UPDATE_ALL),
-):
-    """Process timelapse with trim, speed, and optional audio overlay."""
-    import shutil
-    import tempfile
-
-    from backend.app.schemas.timelapse import ProcessResponse
-    from backend.app.services.timelapse_processor import TimelapseProcessor
-
-    # Validate speed
-    if not 0.25 <= speed <= 4.0:
-        raise HTTPException(400, "Speed must be between 0.25 and 4.0")
-
-    if save_mode not in ("replace", "new"):
-        raise HTTPException(400, "save_mode must be 'replace' or 'new'")
-
-    service = ArchiveService(db)
-    archive = await service.get_archive(archive_id)
-    if not archive or not archive.timelapse_path:
-        raise HTTPException(404, "Timelapse not found")
-
-    timelapse_path = settings.base_dir / archive.timelapse_path
-    if not timelapse_path.exists():
-        raise HTTPException(404, "Timelapse file not found")
-
-    archive_dir = timelapse_path.parent
-
-    # Handle audio file
-    audio_temp_path = None
-    if audio and audio.filename:
-        # Validate audio file extension
-        if not audio.filename.lower().endswith((".mp3", ".wav", ".m4a", ".aac", ".ogg")):
-            raise HTTPException(400, "Audio must be .mp3, .wav, .m4a, .aac, or .ogg")
-
-        audio_content = await audio.read()
-        # Extract and validate suffix to prevent path injection
-        suffix = Path(audio.filename).suffix.lower()
-        if suffix not in (".mp3", ".wav", ".m4a", ".aac", ".ogg"):
-            raise HTTPException(400, "Invalid audio file extension")
-        audio_temp_path = Path(tempfile.gettempdir()) / f"audio_{archive_id}{suffix}"
-        audio_temp_path.write_bytes(audio_content)
-
-    try:
-        processor = TimelapseProcessor(timelapse_path)
-
-        # Determine output path
-        if save_mode == "replace":
-            # Process to temp file first, then replace
-            temp_output = Path(tempfile.gettempdir()) / f"processed_{archive_id}.mp4"
-            output_path = temp_output
-        else:
-            # Save as new file alongside original
-            filename = output_filename or f"{archive.print_name or 'timelapse'}_edited.mp4"
-            # Sanitize filename - remove path separators and traversal sequences
-            filename = "".join(c for c in filename if c.isalnum() or c in "._- ")
-            # Prevent path traversal
-            if ".." in filename or not filename or filename.startswith("."):
-                filename = f"timelapse_{archive_id}_edited"
-            if not filename.endswith(".mp4"):
-                filename += ".mp4"
-            output_path = archive_dir / filename  # SEC-PATH-OK: filename alnum-filtered + .. rejected above
-
-        success = await processor.process(
-            output_path=output_path,
-            trim_start=trim_start,
-            trim_end=trim_end,
-            speed=speed,
-            audio_path=audio_temp_path,
-        )
-
-        if not success:
-            raise HTTPException(500, "Video processing failed")
-
-        # Handle save mode
-        if save_mode == "replace":
-            # Replace original file
-            shutil.move(str(output_path), str(timelapse_path))
-            final_path = archive.timelapse_path
-            message = "Timelapse replaced successfully"
-        else:
-            final_path = str(output_path.relative_to(settings.base_dir))
-            message = f"Saved as {output_path.name}"
-
-        return ProcessResponse(
-            status="completed",
-            output_path=final_path,
-            message=message,
-        )
-
-    except HTTPException:
-        raise
-    except Exception as e:
-        logger.error("Timelapse processing failed: %s", e)
-        raise HTTPException(500, f"Processing failed: {str(e)}")
-    finally:
-        # Cleanup temp audio file
-        if audio_temp_path and audio_temp_path.exists():
-            audio_temp_path.unlink()
 
 
 # ============================================

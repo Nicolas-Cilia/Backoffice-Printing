@@ -2,9 +2,9 @@
 """Import spools from Spoolman into Bambuddy inventory.
 
 Usage:
-    python scripts/import_spoolman.py --spoolman-url http://localhost:7912 --bambuddy-url http://localhost:8000
-    python scripts/import_spoolman.py --spoolman-url http://localhost:7912 --bambuddy-url http://localhost:8000 --api-key YOUR_KEY
-    python scripts/import_spoolman.py --spoolman-url http://localhost:7912 --bambuddy-url http://localhost:8000 --dry-run
+    python scripts/import_spoolman.py --spoolman-url http://localhost:7912 --bambuddy-url http://localhost:7474
+    python scripts/import_spoolman.py --spoolman-url http://localhost:7912 --bambuddy-url http://localhost:7474 --api-key YOUR_KEY
+    python scripts/import_spoolman.py --spoolman-url http://localhost:7912 --bambuddy-url http://localhost:7474 --dry-run
 """
 
 import argparse
@@ -109,7 +109,7 @@ def create_bambuddy_spool(bambuddy_url: str, spool_data: dict, api_key: str | No
 def main():
     parser = argparse.ArgumentParser(description="Import spools from Spoolman into Bambuddy inventory")
     parser.add_argument("--spoolman-url", required=True, help="Spoolman URL (e.g. http://localhost:7912)")
-    parser.add_argument("--bambuddy-url", required=True, help="Bambuddy URL (e.g. http://localhost:8000)")
+    parser.add_argument("--bambuddy-url", required=True, help="Bambuddy URL (e.g. http://localhost:7474)")
     parser.add_argument("--api-key", help="Bambuddy API key (required if auth is enabled)")
     parser.add_argument("--dry-run", action="store_true", help="Print mapped spools without importing")
     parser.add_argument("--archived", action="store_true", help="Include archived Spoolman spools")

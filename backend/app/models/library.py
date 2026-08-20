@@ -114,11 +114,10 @@ class LibraryFile(Base):
     # User notes
     notes: Mapped[str | None] = mapped_column(Text, nullable=True)
 
-    # Provenance — when the file was imported from an external source (e.g.
-    # MakerWorld), ``source_type`` identifies the source and ``source_url`` is
-    # the canonical public URL. Used for "already imported" detection and
-    # "re-open on MakerWorld" affordances. Index on source_url so the
-    # dedupe lookup is O(log N).
+    # Provenance — when the file was imported from an external source,
+    # ``source_type`` identifies the source and ``source_url`` is the
+    # canonical public URL. Used for "already imported" detection. Index
+    # on source_url so the dedupe lookup is O(log N).
     source_type: Mapped[str | None] = mapped_column(String(32), nullable=True)
     source_url: Mapped[str | None] = mapped_column(String(512), nullable=True, index=True)
 

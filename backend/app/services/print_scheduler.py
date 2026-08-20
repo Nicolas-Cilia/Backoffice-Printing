@@ -3660,14 +3660,6 @@ class PrintScheduler:
         pre_subtask_id = getattr(pre_status, "subtask_id", None) if pre_status else None
         pre_gcode_file = getattr(pre_status, "gcode_file", None) if pre_status else None
 
-        # #1721: respect the user's explicit timelapse choice. The #1397
-        # force-on at dispatch was removed because it caused per-layer nozzle
-        # parking on slicer profiles with Timelapse Type = Smooth. Finish-photo
-        # capture is now driven by the stg_cur=22 transition in bambu_mqtt.py
-        # ("Filament unloading", toolhead parked, bed not yet dropped) with a
-        # FINISH-state fallback — no need to force a video.
-        effective_timelapse = bool(item.timelapse)
-
         # Start the print with AMS mapping, plate_id and print options.
         # nozzle_mapping rides through verbatim — JSON string captured from
         # Bambu Studio's project_file on VP intake (#1780); the MQTT layer
@@ -3682,7 +3674,6 @@ class PrintScheduler:
             flow_cali=item.flow_cali,
             vibration_cali=item.vibration_cali,
             layer_inspect=item.layer_inspect,
-            timelapse=effective_timelapse,
             use_ams=item.use_ams,
             nozzle_offset_cali=item.nozzle_offset_cali,
             nozzle_mapping=item.nozzle_mapping,

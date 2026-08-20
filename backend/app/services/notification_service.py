@@ -23,11 +23,11 @@ from backend.app.models.notification_template import NotificationTemplate
 logger = logging.getLogger(__name__)
 
 # Honest User-Agent — matches the convention used by every other outbound
-# httpx client in the codebase (bambu_cloud, makerworld, firmware_check,
-# inventory). Previously this client leaked python-httpx/<version>, which
+# httpx client in the codebase (bambu_cloud, firmware_check, inventory).
+# Previously this client leaked python-httpx/<version>, which
 # was both inconsistent with the rest of the project and a more obvious
 # bot signature for upstream WAFs.
-_USER_AGENT = "Bambuddy/1.0 (+https://github.com/maziggy/bambuddy)"
+_USER_AGENT = "Bambuddy/1.0 (+https://github.com/Nicolas-Cilia/Backoffice-Printing)"
 
 
 def _looks_like_cloudflare_challenge(response: httpx.Response) -> bool:

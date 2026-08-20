@@ -25,6 +25,8 @@ export interface PrintModalProps {
   libraryFileId?: number;
   /** Display name for the print */
   archiveName: string;
+  /** Known sliced-for model from the file list (avoids waiting on archive/library fetch) */
+  slicedForModel?: string | null;
   /** Existing queue item (only for edit-queue-item mode) */
   queueItem?: PrintQueueItem;
   /** Pre-select specific printers when opening the modal */
@@ -48,7 +50,6 @@ export interface PrintOptions {
   flow_cali: CalibrationMode;
   vibration_cali: boolean;
   layer_inspect: boolean;
-  timelapse: boolean;
   nozzle_offset_cali: CalibrationMode;
   // Per-item preheat / heat-soak override (#1468). 'inherit' uses the global
   // Settings → Workflow toggle; 'on' / 'off' force the per-print decision.
@@ -66,7 +67,6 @@ export const DEFAULT_PRINT_OPTIONS: PrintOptions = {
   flow_cali: 'auto',
   vibration_cali: true,
   layer_inspect: false,
-  timelapse: false,
   nozzle_offset_cali: 'auto',
   preheat_override: 'inherit',
   preheat_chamber_target_override: null,

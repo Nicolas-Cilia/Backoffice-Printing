@@ -41,7 +41,7 @@ Environment="PATH=INSTALL_PATH/venv/bin:/usr/local/bin:/usr/bin:/bin"
 # up and SIGKILLed, skipping the WAL checkpoint, the MQTT disconnect and the
 # virtual-printer teardown entirely. On timeout uvicorn cancels the request
 # tasks; the camera generators unwind cleanly on CancelledError.
-ExecStart=INSTALL_PATH/venv/bin/uvicorn backend.app.main:app --host 0.0.0.0 --port ${PORT:-8000} --loop asyncio --timeout-graceful-shutdown 5
+ExecStart=INSTALL_PATH/venv/bin/uvicorn backend.app.main:app --host 0.0.0.0 --port ${PORT:-7474} --loop asyncio --timeout-graceful-shutdown 5
 
 # Restart policy
 Restart=on-failure
@@ -53,7 +53,7 @@ RestartSec=5
 # on a Pi with several virtual printers.
 TimeoutStopSec=30
 
-# Kill zombie ffmpeg processes (timelapse processing)
+# Kill zombie ffmpeg processes (camera streaming/snapshots, archive thumbnails)
 ExecStartPre=-/usr/bin/pkill -9 -f "ffmpeg.*bambuddy"
 ExecStopPost=-/usr/bin/pkill -9 -f "ffmpeg.*bambuddy"
 

@@ -828,7 +828,6 @@ class GitHubBackupService:
                 "status": a.status,
                 "started_at": str(a.started_at) if a.started_at else None,
                 "completed_at": str(a.completed_at) if a.completed_at else None,
-                "makerworld_url": a.makerworld_url,
                 "designer": a.designer,
                 "external_url": a.external_url,
                 "is_favorite": a.is_favorite,

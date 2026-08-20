@@ -1,0 +1,27 @@
+---
+description: App version is APP_VERSION; bump on main before publishing the matching Docker tag.
+alwaysApply: true
+---
+
+# Version
+
+One source of truth: `APP_VERSION` in `backend/app/core/config.py` (currently `1.0.0`).
+
+- Do **not** treat `frontend/package.json` as the app version.
+- Bump `APP_VERSION` on **`main`** before you publish.
+- The Docker tag must be the **same** number:
+  - `1.0.1` patch
+  - `1.1.0` feature
+  - `2.0.0` breaking
+
+## Publish
+
+After promoting `dev` → `main`, from a **`main`** checkout:
+
+```bash
+./docker-publish.sh 1.0.1 --ghcr-only
+```
+
+Use the same string as `APP_VERSION`. Details: `docs/docker-workflow.md`.
+
+Daily work still opens PRs against **`dev`** (see `.cursor/rules/git-workflow.mdc`).

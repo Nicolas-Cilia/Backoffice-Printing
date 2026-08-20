@@ -1,6 +1,6 @@
 services:
   bambuddy:
-    image: ghcr.io/maziggy/bambuddy:latest
+    image: ghcr.io/nicolas-cilia/backoffice-printing:latest
     build: .
     # Usage:
     #   docker compose up -d          → pulls pre-built image from ghcr.io
@@ -19,14 +19,18 @@ services:
     cap_add:
       - NET_BIND_SERVICE
     #
-    # LINUX: Use host mode for printer discovery and camera streaming
-    network_mode: host
+    # Default: bridge + published ports so Docker Desktop (macOS/Windows)
+    # works without a compose hand-edit. Printer discovery (SSDP) does not
+    # work in this mode — add printers by IP.
     #
-    # macOS/WINDOWS: Docker Desktop doesn't support host mode.
-    # Comment out "network_mode: host" above and uncomment "ports:" below.
-    # Note: Printer discovery won't work - add printers manually by IP.
-    #ports:
-    #  - "${PORT:-8000}:8000"
+    # LINUX: for discovery and camera streaming, comment out the ports:
+    # block and uncomment network_mode: host instead.
+    # network_mode: host
+    ports:
+      # Host port (left) is what you open in the browser. Container stays on
+      # 8000 (right) — do not set PORT in .env to change the URL; that would
+      # desync uvicorn from this mapping. Use HOST_PORT instead.
+      - "${HOST_PORT:-8484}:8000"
     #  - "3000:3000"                  # Virtual printer bind/detect
     #  - "3002:3002"                  # Virtual printer bind/detect
     #  - "8883:8883"                  # Virtual printer MQTT
@@ -109,8 +113,8 @@ services:
       # show up as your user on the host. Defaults to 1000:1000.
       - PUID=${PUID:-1000}
       - PGID=${PGID:-1000}
-      # Port BamBuddy runs on (default: 8000)
-      # Usage: PORT=8080 docker compose up -d
+      # Port the app listens on *inside* the container. Leave at 8000 unless
+      # you also change the right-hand side of the ports: mapping above.
       - PORT=${PORT:-8000}
       # Virtual printer: Set to the Docker host's IP when using bridge mode (ports:).
       # Required for FTP passive mode to work behind NAT.

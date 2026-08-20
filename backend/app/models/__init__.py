@@ -5,6 +5,11 @@ from backend.app.models.archive import PrintArchive
 from backend.app.models.auth_ephemeral import AuthEphemeralToken, AuthRateLimitEvent
 from backend.app.models.color_catalog import ColorCatalogEntry
 from backend.app.models.filament import Filament
+from backend.app.models.filament_tracking import (
+    FilamentColorBucket,
+    FilamentColorUsage,
+    FilamentSlotAssignment,
+)
 from backend.app.models.github_backup import GitHubBackupConfig, GitHubBackupLog
 from backend.app.models.group import Group, user_groups
 from backend.app.models.kprofile_note import KProfileNote
@@ -28,6 +33,11 @@ from backend.app.models.production import (
     ProductionRevision,
     ProductionSlot,
 )
+from backend.app.models.profile_part import (
+    ProfilePartRevision,
+    ProfilePartSection,
+    ProfilePartSlot,
+)
 from backend.app.models.settings import Settings
 from backend.app.models.slicer_pipeline import SlicerPipeline
 from backend.app.models.smart_plug import SmartPlug
@@ -48,6 +58,9 @@ __all__ = [
     "Printer",
     "PrintArchive",
     "Filament",
+    "FilamentColorBucket",
+    "FilamentColorUsage",
+    "FilamentSlotAssignment",
     "Settings",
     "SmartPlug",
     "SmartPlugEnergySnapshot",
@@ -57,7 +70,6 @@ __all__ = [
     "KProfileNote",
     "NotificationTemplate",
     "NotificationLog",
-    "Project",
     "APIKey",
     "AMSSensorHistory",
     "PrinterSensorHistory",
@@ -71,6 +83,9 @@ __all__ = [
     "ProductionPartInstance",
     "ProductionSlot",
     "ProductionRevision",
+    "ProfilePartSection",
+    "ProfilePartSlot",
+    "ProfilePartRevision",
     "Location",
     "User",
     "Group",

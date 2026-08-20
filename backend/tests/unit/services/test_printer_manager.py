@@ -386,7 +386,6 @@ class TestPrinterManager:
             "test.gcode",
             1,
             ams_mapping=None,
-            timelapse=False,
             bed_levelling="auto",
             flow_cali="auto",
             vibration_cali=True,

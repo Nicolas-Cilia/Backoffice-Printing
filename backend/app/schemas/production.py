@@ -5,6 +5,8 @@ from typing import Any
 
 from pydantic import BaseModel, Field
 
+from backend.app.schemas.library import TagSummary
+
 
 class ProductionFolderSummary(BaseModel):
     """Printer folder created or adopted by production bootstrap."""
@@ -34,6 +36,7 @@ class ProductionActiveFile(BaseModel):
     file_size: int
     print_time_seconds: int | None = None
     sliced_for_model: str | None = None
+    tags: list[TagSummary] = Field(default_factory=list)
 
 
 class ProductionSlotNested(BaseModel):

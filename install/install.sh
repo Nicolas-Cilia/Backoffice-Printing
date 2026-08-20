@@ -4,12 +4,12 @@
 # Supports: Debian/Ubuntu, RHEL/Fedora/CentOS, Arch Linux, macOS
 #
 # Usage:
-#   Interactive:  curl -fsSL https://raw.githubusercontent.com/maziggy/bambuddy/main/install/install.sh -o install.sh && chmod +x install.sh && ./install.sh
-#   Unattended:   ./install.sh --path /opt/bambuddy --port 8000 --yes
+#   Interactive:  curl -fsSL https://raw.githubusercontent.com/Nicolas-Cilia/Backoffice-Printing/main/install/install.sh -o install.sh && chmod +x install.sh && ./install.sh
+#   Unattended:   ./install.sh --path /opt/bambuddy --port 7474 --yes
 #
 # Options:
 #   --path PATH        Installation directory (default: /opt/bambuddy)
-#   --port PORT        Port to listen on (default: 8000)
+#   --port PORT        Port to listen on (default: 7474)
 #   --bind ADDRESS     Bind address: 0.0.0.0 (network) or 127.0.0.1 (local only)
 #   --tz TIMEZONE      Timezone (default: system timezone or UTC)
 #   --data-dir PATH    Data directory (default: INSTALL_PATH/data)
@@ -36,7 +36,7 @@ BOLD='\033[1m'
 
 # Default values
 DEFAULT_INSTALL_PATH="/opt/bambuddy"
-DEFAULT_PORT="8000"
+DEFAULT_PORT="7474"
 DEFAULT_BIND_ADDRESS="0.0.0.0"
 DEFAULT_LOG_LEVEL="INFO"
 DEFAULT_DEBUG="false"
@@ -151,7 +151,7 @@ show_help() {
     echo ""
     echo "Options:"
     echo "  --path PATH        Installation directory (default: /opt/bambuddy)"
-    echo "  --port PORT        Port to listen on (default: 8000)"
+    echo "  --port PORT        Port to listen on (default: 7474)"
     echo "  --bind ADDRESS     Bind address: 0.0.0.0 (network) or 127.0.0.1 (local only)"
     echo "  --tz TIMEZONE      Timezone (default: system timezone or UTC)"
     echo "  --data-dir PATH    Data directory (default: INSTALL_PATH/data)"
@@ -356,10 +356,10 @@ download_bambuddy() {
     log_info "Downloading BamBuddy..."
 
     # Validate branch exists on remote before proceeding
-    if ! git ls-remote --exit-code --heads https://github.com/maziggy/bambuddy.git "$BRANCH" &>/dev/null; then
+    if ! git ls-remote --exit-code --heads https://github.com/Nicolas-Cilia/Backoffice-Printing.git "$BRANCH" &>/dev/null; then
         log_error "Branch '$BRANCH' not found in the BamBuddy repository."
         log_info "Available branches:"
-        git ls-remote --heads https://github.com/maziggy/bambuddy.git | sed 's|.*refs/heads/|  - |'
+        git ls-remote --heads https://github.com/Nicolas-Cilia/Backoffice-Printing.git | sed 's|.*refs/heads/|  - |'
         exit 1
     fi
 
@@ -377,7 +377,7 @@ download_bambuddy() {
             git checkout "$BRANCH" 2>/dev/null || git checkout -b "$BRANCH" "origin/$BRANCH"
             git reset --hard "origin/$BRANCH"
         else
-            git clone --branch "$BRANCH" https://github.com/maziggy/bambuddy.git "$INSTALL_PATH"
+            git clone --branch "$BRANCH" https://github.com/Nicolas-Cilia/Backoffice-Printing.git "$INSTALL_PATH"
         fi
     elif [[ -d "$INSTALL_PATH/.git" ]]; then
         log_info "Existing installation found, updating..."
@@ -395,7 +395,7 @@ download_bambuddy() {
         # dir to the service user before the clone, which left the install-running
         # user (not root, not bambuddy) unable to write .git into it.
         sudo mkdir -p "$INSTALL_PATH"
-        sudo git clone --branch "$BRANCH" https://github.com/maziggy/bambuddy.git "$INSTALL_PATH"
+        sudo git clone --branch "$BRANCH" https://github.com/Nicolas-Cilia/Backoffice-Printing.git "$INSTALL_PATH"
         sudo chown -R "$SERVICE_USER:$SERVICE_USER" "$INSTALL_PATH" 2>/dev/null || true
     fi
 
@@ -601,7 +601,7 @@ create_systemd_service() {
     cat > /tmp/bambuddy.service << EOF
 [Unit]
 Description=BamBuddy - Bambu Lab Print Management
-Documentation=https://github.com/maziggy/bambuddy
+Documentation=https://github.com/Nicolas-Cilia/Backoffice-Printing
 After=network.target
 
 [Service]

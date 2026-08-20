@@ -28,7 +28,6 @@ const mockQueueItems = [
     flow_cali: 'off',
     vibration_cali: true,
     layer_inspect: false,
-    timelapse: false,
     use_ams: true,
     started_at: null,
     completed_at: null,
@@ -55,7 +54,6 @@ const mockQueueItems = [
     flow_cali: 'off',
     vibration_cali: true,
     layer_inspect: false,
-    timelapse: false,
     use_ams: true,
     started_at: '2024-01-01T10:00:00Z',
     completed_at: null,
@@ -82,7 +80,6 @@ const mockQueueItems = [
     flow_cali: 'off',
     vibration_cali: true,
     layer_inspect: false,
-    timelapse: false,
     use_ams: true,
     started_at: '2024-01-01T08:00:00Z',
     completed_at: '2024-01-01T09:00:00Z',
@@ -195,6 +192,37 @@ describe('QueuePage', () => {
         expect(screen.getByText('Active Print')).toBeInTheDocument();
         expect(screen.getByText('Currently Printing')).toBeInTheDocument();
       });
+    });
+
+    it('does not link archive-backed jobs to the removed archives page', async () => {
+      render(<QueuePage />);
+
+      await screen.findByText('Active Print');
+
+      expect(document.querySelector('a[href*="/archives"]')).not.toBeInTheDocument();
+      expect(screen.queryByTitle('View archive')).not.toBeInTheDocument();
+    });
+
+    it('links library-backed jobs to File Manager', async () => {
+      server.use(
+        http.get('/api/v1/queue/', () => {
+          return HttpResponse.json([
+            {
+              ...mockQueueItems[0],
+              archive_id: null,
+              archive_name: null,
+              archive_thumbnail: null,
+              library_file_id: 42,
+              library_file_name: 'Library Model',
+            },
+          ]);
+        }),
+      );
+
+      render(<QueuePage />);
+
+      const link = await screen.findByTitle('View in File Manager');
+      expect(link).toHaveAttribute('href', '/files?highlight=42');
     });
 
     it('shows one if-started-now ETA for an eligible pending item', async () => {

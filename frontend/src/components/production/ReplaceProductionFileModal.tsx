@@ -1,13 +1,19 @@
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { Loader2, Upload, X } from 'lucide-react';
 import { api } from '../../api/client';
 import type { ProductionReplacePreview } from '../../api/client';
 import { Button } from '../Button';
 import { ProductionParameterDiffTable } from './ProductionParameterDiffTable';
+import { parseProductionFilename, storedProductionFilename } from '../../utils/productionFilename';
 
 interface ReplaceProductionFileModalProps {
   slotId: number;
+  code: string;
+  quantity: number;
+  major: number;
+  revision: number;
+  minor: number;
   currentVersion: string;
   printerModel: string;
   onClose: () => void;
@@ -16,6 +22,11 @@ interface ReplaceProductionFileModalProps {
 
 export function ReplaceProductionFileModal({
   slotId,
+  code: slotCode,
+  quantity: slotQuantity,
+  major: slotMajor,
+  revision: slotRevision,
+  minor: slotMinor,
   currentVersion,
   printerModel,
   onClose,
@@ -24,6 +35,13 @@ export function ReplaceProductionFileModal({
   const { t } = useTranslation();
   const fileInputRef = useRef<HTMLInputElement>(null);
   const [file, setFile] = useState<File | null>(null);
+  const [code, setCode] = useState(slotCode);
+  const [quantity, setQuantity] = useState(String(slotQuantity));
+  const [major, setMajor] = useState(String(slotMajor));
+  const [revision, setRevision] = useState(String(slotRevision));
+  const [minor, setMinor] = useState(String(slotMinor));
+  const [printer, setPrinter] = useState(printerModel);
+  const [parseFailed, setParseFailed] = useState(false);
   const [preview, setPreview] = useState<ProductionReplacePreview | null>(null);
   const [previewing, setPreviewing] = useState(false);
   const [submitting, setSubmitting] = useState(false);
@@ -38,8 +56,53 @@ export function ReplaceProductionFileModal({
     return () => window.removeEventListener('keydown', handleKeyDown);
   }, [onClose, submitting, previewing]);
 
+  const qtyNumber = Number(quantity);
+  const identityComplete =
+    code.trim().length > 0
+    && Number.isInteger(qtyNumber)
+    && qtyNumber >= 1
+    && Number.isInteger(Number(major))
+    && Number.isInteger(Number(revision))
+    && Number.isInteger(Number(minor))
+    && printer.trim().length > 0;
+
+  const savedAs = useMemo(() => {
+    if (!file || !identityComplete) return null;
+    return storedProductionFilename(
+      file.name,
+      code.trim().toUpperCase(),
+      qtyNumber,
+      Number(major),
+      Number(revision),
+      Number(minor),
+      printer.trim(),
+    );
+  }, [file, identityComplete, code, qtyNumber, major, revision, minor, printer]);
+
+  const applyIdentityFromFile = (next: File) => {
+    const parsed = parseProductionFilename(next.name);
+    if (parsed) {
+      setCode(parsed.code);
+      setQuantity(String(parsed.quantity));
+      setMajor(String(parsed.major));
+      setRevision(String(parsed.revision));
+      setMinor(String(parsed.minor));
+      setPrinter(parsed.printer);
+      setParseFailed(false);
+      return;
+    }
+    setCode(slotCode);
+    setQuantity(String(slotQuantity));
+    setMajor(String(slotMajor));
+    setRevision(String(slotRevision));
+    setMinor(String(slotMinor));
+    setPrinter(printerModel);
+    setParseFailed(true);
+  };
+
   const loadPreview = async (next: File) => {
     setFile(next);
+    applyIdentityFromFile(next);
     setPreview(null);
     setError(null);
     setPreviewing(true);
@@ -55,17 +118,19 @@ export function ReplaceProductionFileModal({
   };
 
   const submit = async (resolution: 'proceed' | 'accept_baseline') => {
-    if (!file) return;
+    if (!file || !identityComplete) return;
     setSubmitting(true);
     setError(null);
     try {
-      const parsed = preview?.parsed_filename;
       await api.replaceProductionSlot(slotId, file, {
         resolution,
         reason: reason.trim() || null,
-        major: parsed?.major ?? null,
-        revision: parsed?.revision ?? null,
-        minor: parsed?.minor ?? null,
+        code: code.trim().toUpperCase(),
+        quantity: qtyNumber,
+        major: Number(major),
+        revision: Number(revision),
+        minor: Number(minor),
+        printer: printer.trim(),
       });
       onReplaced();
     } catch (err) {
@@ -114,6 +179,74 @@ export function ReplaceProductionFileModal({
             <Upload className="w-8 h-8 mx-auto mb-2 text-bambu-green" />
             <p className="text-sm">{file ? file.name : t('fileManager.production.pickFile')}</p>
           </button>
+          {savedAs && (
+            <p className="text-xs text-bambu-gray font-mono text-center" data-testid="production-saved-as">
+              {savedAs}
+            </p>
+          )}
+
+          {file && parseFailed && (
+            <p className="text-sm text-amber-500">{t('fileManager.production.parseFailed')}</p>
+          )}
+
+          {file && (
+            <div className="grid grid-cols-2 gap-3">
+              <label className="block text-sm">
+                <span className="text-bambu-gray">{t('fileManager.production.code')}</span>
+                <input
+                  value={code}
+                  onChange={(e) => setCode(e.target.value.toUpperCase())}
+                  className="mt-1 w-full bg-bambu-dark border border-bambu-dark-tertiary rounded px-3 py-2 text-white focus:outline-none focus:border-bambu-green"
+                />
+              </label>
+              <label className="block text-sm">
+                <span className="text-bambu-gray">{t('fileManager.production.quantity')}</span>
+                <input
+                  type="number"
+                  min={1}
+                  value={quantity}
+                  onChange={(e) => setQuantity(e.target.value)}
+                  className="mt-1 w-full bg-bambu-dark border border-bambu-dark-tertiary rounded px-3 py-2 text-white focus:outline-none focus:border-bambu-green"
+                />
+              </label>
+              <label className="block text-sm">
+                <span className="text-bambu-gray">{t('fileManager.production.version')}</span>
+                <div className="mt-1 flex items-center gap-1">
+                  <input
+                    type="number"
+                    min={0}
+                    value={major}
+                    onChange={(e) => setMajor(e.target.value)}
+                    className="w-full bg-bambu-dark border border-bambu-dark-tertiary rounded px-2 py-2 text-white focus:outline-none focus:border-bambu-green"
+                  />
+                  <span className="text-bambu-gray">.</span>
+                  <input
+                    type="number"
+                    min={0}
+                    value={revision}
+                    onChange={(e) => setRevision(e.target.value)}
+                    className="w-full bg-bambu-dark border border-bambu-dark-tertiary rounded px-2 py-2 text-white focus:outline-none focus:border-bambu-green"
+                  />
+                  <span className="text-bambu-gray">.</span>
+                  <input
+                    type="number"
+                    min={0}
+                    value={minor}
+                    onChange={(e) => setMinor(e.target.value)}
+                    className="w-full bg-bambu-dark border border-bambu-dark-tertiary rounded px-2 py-2 text-white focus:outline-none focus:border-bambu-green"
+                  />
+                </div>
+              </label>
+              <label className="block text-sm">
+                <span className="text-bambu-gray">{t('fileManager.production.printer')}</span>
+                <input
+                  value={printer}
+                  onChange={(e) => setPrinter(e.target.value)}
+                  className="mt-1 w-full bg-bambu-dark border border-bambu-dark-tertiary rounded px-3 py-2 text-white focus:outline-none focus:border-bambu-green"
+                />
+              </label>
+            </div>
+          )}
 
           {previewing && (
             <div className="flex items-center gap-2 text-sm text-bambu-gray">
@@ -187,7 +320,7 @@ export function ReplaceProductionFileModal({
               type="button"
               variant="secondary"
               onClick={() => void submit('proceed')}
-              disabled={!preview || submitting}
+              disabled={!preview || !identityComplete || submitting}
             >
               {submitting ? <Loader2 className="w-4 h-4 animate-spin" /> : null}
               {t('fileManager.production.proceedAnyway')}
@@ -195,7 +328,7 @@ export function ReplaceProductionFileModal({
             <Button
               type="button"
               onClick={() => void submit('accept_baseline')}
-              disabled={!preview || submitting}
+              disabled={!preview || !identityComplete || submitting}
             >
               {submitting ? <Loader2 className="w-4 h-4 animate-spin" /> : null}
               {t('fileManager.production.acceptBaseline')}

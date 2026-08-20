@@ -294,7 +294,7 @@ export interface PrinterDiagnosticResult {
   checks: DiagnosticCheck[];
 }
 
-// --- Log-health scan: self-service triage on the System page + bug reporter.
+// --- Log-health scan: self-service triage on the System page.
 // The backend matches recent logs against a curated known-issue catalog;
 // human-readable cause/fix text is rendered from i18n keys keyed by signature_id.
 export type LogFindingSeverity = 'error' | 'warning';
@@ -734,7 +734,6 @@ export interface Archive {
   started_at: string | null;
   completed_at: string | null;
   extra_data: Record<string, unknown> | null;
-  makerworld_url: string | null;
   designer: string | null;
   external_url: string | null;
   is_favorite: boolean;
@@ -1095,7 +1094,6 @@ export interface AppSettings {
   default_flow_cali: CalibrationMode;
   default_vibration_cali: boolean;
   default_layer_inspect: boolean;
-  default_timelapse: boolean;
   default_nozzle_offset_cali: CalibrationMode;
   // Staggered batch start defaults
   stagger_group_size: number;
@@ -1234,41 +1232,6 @@ export interface OrcaProfileDetail {
   base_id: string | null;
   update_time: string | null;
   setting: Record<string, unknown>;
-}
-
-// MakerWorld integration. Full metadata/instance shapes come back as
-// Record<string, unknown> — MakerWorld's API adds fields over time, so we
-// pass them through verbatim rather than maintaining a brittle mirror.
-export interface MakerworldStatus {
-  has_cloud_token: boolean;
-  can_download: boolean;
-  /** A token is stored but Bambu rejected it — downloads will fail until the user signs in again. */
-  sign_in_expired?: boolean;
-}
-
-export interface MakerworldResolvedModel {
-  model_id: number;
-  profile_id: number | null;
-  design: Record<string, unknown>;
-  instances: Array<Record<string, unknown>>;
-  already_imported_library_ids: number[];
-}
-
-export interface MakerworldImportResponse {
-  library_file_id: number;
-  filename: string;
-  folder_id: number | null;
-  profile_id: number | null;
-  was_existing: boolean;
-}
-
-export interface MakerworldRecentImport {
-  library_file_id: number;
-  filename: string;
-  folder_id: number | null;
-  thumbnail_path: string | null;
-  source_url: string | null;
-  created_at: string;
 }
 
 export interface SlicerSetting {
@@ -1651,6 +1614,7 @@ export interface LocalPreset {
   version: string | null;
   created_at: string;
   updated_at: string;
+  locked_parameters?: Record<string, unknown> | null;
 }
 
 export interface LocalPresetDetail extends LocalPreset {
@@ -1668,6 +1632,72 @@ export interface ImportResponse {
   imported: number;
   skipped: number;
   errors: string[];
+}
+
+export interface ProfilePartPresetSummary {
+  id: number;
+  name: string;
+  printer_model: string;
+  locked_parameters?: Record<string, unknown> | null;
+}
+
+export interface ProfilePartSlotView {
+  id: number;
+  printer_model: string;
+  last_mismatch: boolean;
+  spec_status: 'mismatch' | 'match';
+  parameter_diff: ProductionParameterDiff[];
+  parameter_overrides?: Record<string, unknown> | null;
+  preset: ProfilePartPresetSummary | null;
+}
+
+export interface ProfilePartSectionView {
+  id: number;
+  name: string;
+  locked_parameters: Record<string, unknown> | null;
+  parameter_tracking: boolean;
+  created_at: string;
+  updated_at: string;
+  slots: ProfilePartSlotView[];
+}
+
+export interface ProfilePartReplacePreview {
+  parameter_diff: ProductionParameterDiff[];
+  has_mismatches: boolean;
+  incoming_parameters: Record<string, unknown>;
+  printer_model: string;
+}
+
+export interface ProfilePartImportAttached {
+  slot: ProfilePartSlotView;
+  spec_status: 'mismatch' | 'match';
+  parameter_diff: ProductionParameterDiff[];
+}
+
+export interface ProfilePartImportNeedsReplace {
+  printer_model: string;
+  preset_id: number;
+  preset_name: string;
+  existing_slot_id: number;
+  preview: ProfilePartReplacePreview;
+}
+
+export interface ProfilePartImportNeedsConfirm {
+  printer_model: string;
+  preset_id: number;
+  preset_name: string;
+  preview: ProfilePartReplacePreview;
+}
+
+export interface ProfilePartImportResponse {
+  success: boolean;
+  imported: number;
+  skipped: number;
+  errors: string[];
+  attached: ProfilePartImportAttached[];
+  needs_replace: ProfilePartImportNeedsReplace[];
+  needs_confirm: ProfilePartImportNeedsConfirm[];
+  section: ProfilePartSectionView;
 }
 
 export interface FieldOption {
@@ -2025,7 +2055,6 @@ export interface PrintQueueItem {
   flow_cali: CalibrationMode;
   vibration_cali: boolean;
   layer_inspect: boolean;
-  timelapse: boolean;
   use_ams: boolean;
   nozzle_offset_cali: CalibrationMode;
   preheat_override: 'inherit' | 'on' | 'off';
@@ -2102,7 +2131,6 @@ export interface PrintQueueItemCreate {
   flow_cali?: CalibrationMode;
   vibration_cali?: boolean;
   layer_inspect?: boolean;
-  timelapse?: boolean;
   use_ams?: boolean;
   nozzle_offset_cali?: CalibrationMode;
   preheat_override?: 'inherit' | 'on' | 'off';
@@ -2144,7 +2172,6 @@ export interface PrintQueueItemUpdate {
   flow_cali?: CalibrationMode;
   vibration_cali?: boolean;
   layer_inspect?: boolean;
-  timelapse?: boolean;
   use_ams?: boolean;
   nozzle_offset_cali?: CalibrationMode;
   preheat_override?: 'inherit' | 'on' | 'off';
@@ -2165,7 +2192,6 @@ export interface PrintQueueBulkUpdate {
   flow_cali?: CalibrationMode;
   vibration_cali?: boolean;
   layer_inspect?: boolean;
-  timelapse?: boolean;
   use_ams?: boolean;
   nozzle_offset_cali?: CalibrationMode;
   preheat_override?: 'inherit' | 'on' | 'off';
@@ -2968,6 +2994,105 @@ export interface ShoppingListItemCreate {
   note?: string | null;
 }
 
+export type FilamentTrackingStage = 'collecting' | 'day' | 'week' | 'month';
+
+export interface FilamentTrackingMaterial {
+  bucket_id: number;
+  color_name: string;
+  material: string;
+  brand?: string | null;
+  subtype?: string | null;
+  extra_colors?: string | null;
+  effect_type?: string | null;
+  color_hex: string | null;
+  on_hand_grams: number;
+  stock_initialized: boolean;
+  spool_weight_grams: number;
+  spool_equivalent: number;
+  observed_usage_grams: number;
+  daily_rate_grams: number;
+  monthly_estimate_grams: number;
+  projected_remaining_grams: number;
+  recommended_spools: number;
+  days_of_cover: number | null;
+  days_until_order?: number | null;
+  lead_time_days?: number;
+  reorder_grams?: number | null;
+  stage: FilamentTrackingStage;
+  cost_per_kg?: number | null;
+  on_hand_value?: number | null;
+  monthly_cost_estimate?: number | null;
+}
+
+export interface FilamentTrackingPlan {
+  stage: FilamentTrackingStage;
+  days_observed: number;
+  window_label: string;
+  materials: FilamentTrackingMaterial[];
+  total_on_hand_grams: number;
+  total_observed_usage_grams: number;
+  total_monthly_estimate_grams: number;
+  total_on_hand_value?: number | null;
+  total_monthly_cost_estimate?: number | null;
+  total_recommended_spools: number;
+  soonest_days_until_order?: number | null;
+  tracking_started_at: string | null;
+}
+
+export interface FilamentTrackingEvent {
+  id: number;
+  bucket_id: number;
+  color_name: string;
+  material: string;
+  brand?: string | null;
+  subtype?: string | null;
+  extra_colors?: string | null;
+  effect_type?: string | null;
+  color_hex: string | null;
+  grams: number;
+  occurred_at: string;
+  kind: string;
+  progress: number | null;
+  archive_id: number | null;
+  printer_id: number | null;
+  print_name: string | null;
+}
+
+export interface FilamentTrackingBucketCreate {
+  color_name: string;
+  material: string;
+  brand?: string | null;
+  subtype?: string | null;
+  extra_colors?: string | null;
+  effect_type?: string | null;
+  color_hex?: string | null;
+  on_hand_grams?: number;
+  spool_weight_grams?: number;
+  cost_per_kg?: number | null;
+  lead_time_days?: number;
+}
+
+export interface FilamentTrackingPrinterConsumption {
+  printer_id: number;
+  name: string;
+  grams: number;
+}
+
+export interface FilamentTrackingAssignment {
+  id: number;
+  printer_id: number;
+  ams_id: number;
+  tray_id: number;
+  bucket_id: number;
+  color_name: string;
+  material: string;
+  brand?: string | null;
+  subtype?: string | null;
+  extra_colors?: string | null;
+  effect_type?: string | null;
+  color_hex: string | null;
+}
+
 // Update types
 export interface VersionInfo {
   version: string;
@@ -3104,7 +3229,6 @@ export type Permission =
   | 'settings:read' | 'settings:update' | 'settings:backup' | 'settings:restore'
   | 'github:backup' | 'github:restore'
   | 'cloud:auth' | 'orca_cloud:auth'
-  | 'makerworld:view' | 'makerworld:import'
   | 'api_keys:read' | 'api_keys:create' | 'api_keys:update' | 'api_keys:delete'
   | 'users:read' | 'users:create' | 'users:update' | 'users:delete'
   | 'groups:read' | 'groups:create' | 'groups:update' | 'groups:delete'
@@ -4232,61 +4356,6 @@ export const api = {
     }
     return response.json();
   },
-  // Timelapse Editor
-  getTimelapseInfo: (archiveId: number) =>
-    request<{
-      duration: number;
-      width: number;
-      height: number;
-      fps: number;
-      codec: string;
-      file_size: number;
-      has_audio: boolean;
-    }>(`/archives/${archiveId}/timelapse/info`),
-  getTimelapseThumbnails: (archiveId: number, count: number = 10) =>
-    request<{
-      thumbnails: string[];
-      timestamps: number[];
-    }>(`/archives/${archiveId}/timelapse/thumbnails?count=${count}`),
-  processTimelapse: async (
-    archiveId: number,
-    params: {
-      trimStart?: number;
-      trimEnd?: number;
-      speed?: number;
-      saveMode: 'replace' | 'new';
-      outputFilename?: string;
-    },
-    audioFile?: File
-  ): Promise<{ status: string; output_path: string | null; message: string }> => {
-    const formData = new FormData();
-    formData.append('trim_start', String(params.trimStart ?? 0));
-    if (params.trimEnd !== undefined) {
-      formData.append('trim_end', String(params.trimEnd));
-    }
-    formData.append('speed', String(params.speed ?? 1));
-    formData.append('save_mode', params.saveMode);
-    if (params.outputFilename) {
-      formData.append('output_filename', params.outputFilename);
-    }
-    if (audioFile) {
-      formData.append('audio', audioFile);
-    }
-    const headers: Record<string, string> = {};
-    if (authToken) {
-      headers['Authorization'] = `Bearer ${authToken}`;
-    }
-    const response = await fetch(`${API_BASE}/archives/${archiveId}/timelapse/process`, {
-      method: 'POST',
-      headers,
-      body: formData,
-    });
-    if (!response.ok) {
-      const error = await response.json().catch(() => ({}));
-      throw new Error(error.detail || `HTTP ${response.status}`);
-    }
-    return response.json();
-  },
   // Photos
   getArchivePhotoUrl: (archiveId: number, filename: string) =>
     withStreamToken(`${API_BASE}/archives/${archiveId}/photos/${encodeURIComponent(filename)}`),
@@ -4446,9 +4515,6 @@ export const api = {
       profile_cover: string | null;
       profile_user_id: string | null;
       profile_user_name: string | null;
-      design_model_id: string | null;
-      design_profile_id: string | null;
-      design_region: string | null;
       model_pictures: Array<{ name: string; path: string; url: string }>;
       profile_pictures: Array<{ name: string; path: string; url: string }>;
       thumbnails: Array<{ name: string; path: string; url: string }>;
@@ -4737,31 +4803,6 @@ export const api = {
     );
   },
 
-  // MakerWorld URL-paste import flow.
-  getMakerworldStatus: () =>
-    request<MakerworldStatus>('/makerworld/status'),
-  resolveMakerworldUrl: (url: string) =>
-    request<MakerworldResolvedModel>('/makerworld/resolve', {
-      method: 'POST',
-      body: JSON.stringify({ url }),
-    }),
-  getMakerworldRecentImports: (limit = 10) =>
-    request<MakerworldRecentImport[]>(`/makerworld/recent-imports?limit=${limit}`),
-  importMakerworldInstance: (
-    model_id: number,
-    instance_id: number | null,
-    profile_id?: number | null,
-    folder_id?: number | null,
-  ) =>
-    request<MakerworldImportResponse>('/makerworld/import', {
-      method: 'POST',
-      body: JSON.stringify({
-        model_id,
-        instance_id: instance_id ?? null,
-        profile_id: profile_id ?? null,
-        folder_id: folder_id ?? null,
-      }),
-    }),
   getCloudSettingDetail: (settingId: string) =>
     request<SlicerSettingDetail>(`/cloud/settings/${settingId}`),
   createCloudSetting: (data: SlicerSettingCreate) =>
@@ -5392,6 +5433,60 @@ export const api = {
     request<{ status: string }>(`/inventory/spools/${spoolId}/usage`, { method: 'DELETE' }),
   syncWeightsFromAms: () =>
     request<{ synced: number; skipped: number }>('/inventory/sync-ams-weights', { method: 'POST' }),
+  getFilamentTrackingPlan: () =>
+    request<FilamentTrackingPlan>('/filament-tracking/plan'),
+  getFilamentTrackingEvents: (limit = 40) =>
+    request<FilamentTrackingEvent[]>(`/filament-tracking/events?limit=${limit}`),
+  getFilamentTrackingPrinterConsumption: () =>
+    request<FilamentTrackingPrinterConsumption[]>('/filament-tracking/printer-consumption'),
+  createFilamentTrackingBucket: (data: FilamentTrackingBucketCreate) =>
+    request<FilamentTrackingMaterial>('/filament-tracking/buckets', {
+      method: 'POST',
+      body: JSON.stringify(data),
+    }),
+  updateFilamentTrackingBucket: (
+    id: number,
+    data: {
+      color_name?: string;
+      material?: string;
+      brand?: string | null;
+      subtype?: string | null;
+      extra_colors?: string | null;
+      effect_type?: string | null;
+      on_hand_grams?: number;
+      add_grams?: number;
+      color_hex?: string | null;
+      spool_weight_grams?: number;
+      cost_per_kg?: number | null;
+      lead_time_days?: number;
+    },
+  ) =>
+    request<FilamentTrackingMaterial>(`/filament-tracking/buckets/${id}`, {
+      method: 'PATCH',
+      body: JSON.stringify(data),
+    }),
+  deleteFilamentTrackingBucket: (id: number) =>
+    request<{ status: string }>(`/filament-tracking/buckets/${id}`, { method: 'DELETE' }),
+  getFilamentTrackingAssignments: (printerId?: number) =>
+    request<FilamentTrackingAssignment[]>(
+      printerId != null
+        ? `/filament-tracking/assignments?printer_id=${printerId}`
+        : '/filament-tracking/assignments',
+    ),
+  assignFilamentTrackingSlot: (data: {
+    printer_id: number;
+    ams_id: number;
+    tray_id: number;
+    bucket_id: number;
+  }) =>
+    request<FilamentTrackingAssignment>('/filament-tracking/assignments', {
+      method: 'POST',
+      body: JSON.stringify(data),
+    }),
+  unassignFilamentTrackingSlot: (printerId: number, amsId: number, trayId: number) =>
+    request<{ status: string }>(`/filament-tracking/assignments/${printerId}/${amsId}/${trayId}`, {
+      method: 'DELETE',
+    }),
   getSkuSettings: () =>
     request<FilamentSkuSettings[]>('/inventory/sku-settings'),
   upsertSkuSettings: (data: Omit<FilamentSkuSettings, 'id'>) =>
@@ -5925,18 +6020,24 @@ export const api = {
     fields: {
       resolution: 'proceed' | 'accept_baseline';
       reason?: string | null;
+      code?: string | null;
+      quantity?: number | null;
       major?: number | null;
       revision?: number | null;
       minor?: number | null;
+      printer?: string | null;
     },
   ): Promise<ProductionSlotResponse> => {
     const formData = new FormData();
     formData.append('file', file);
     formData.append('resolution', fields.resolution);
     if (fields.reason) formData.append('reason', fields.reason);
+    if (fields.code) formData.append('code', fields.code);
+    if (fields.quantity != null) formData.append('quantity', String(fields.quantity));
     if (fields.major != null) formData.append('major', String(fields.major));
     if (fields.revision != null) formData.append('revision', String(fields.revision));
     if (fields.minor != null) formData.append('minor', String(fields.minor));
+    if (fields.printer) formData.append('printer', fields.printer);
     return postFormData<ProductionSlotResponse>(`/production/slots/${slotId}/replace`, formData);
   },
   getProductionSlotHistory: (slotId: number) =>
@@ -6387,8 +6488,70 @@ export const api = {
     }),
   deleteLocalPreset: (id: number) =>
     request<{ success: boolean }>(`/local-presets/${id}`, { method: 'DELETE' }),
+  downloadLocalPreset: async (id: number): Promise<void> => {
+    const headers: Record<string, string> = {};
+    if (authToken) {
+      headers['Authorization'] = `Bearer ${authToken}`;
+    }
+    const response = await fetch(`${API_BASE}/local-presets/${id}/download`, { headers });
+    if (!response.ok) {
+      const error = await response.json().catch(() => ({}));
+      throw new Error(error.detail || `HTTP ${response.status}`);
+    }
+    const disposition = response.headers.get('Content-Disposition');
+    const filename = parseContentDispositionFilename(disposition) || `preset_${id}.json`;
+    const blob = await response.blob();
+    const url = window.URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = filename;
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    window.URL.revokeObjectURL(url);
+  },
   refreshBaseProfileCache: () =>
     request<{ refreshed: number; failed: number; total: number }>('/local-presets/base-cache/refresh', { method: 'POST' }),
+  getProfilePartSections: () =>
+    request<ProfilePartSectionView[]>('/profile-parts/sections'),
+  createProfilePartSection: (name: string, options?: { parameter_tracking?: boolean }) =>
+    request<ProfilePartSectionView>('/profile-parts/sections', {
+      method: 'POST',
+      body: JSON.stringify({ name, parameter_tracking: options?.parameter_tracking ?? true }),
+    }),
+  deleteProfilePartSection: (sectionId: number) =>
+    request<{ success: boolean }>(`/profile-parts/sections/${sectionId}`, { method: 'DELETE' }),
+  addProfilePartSlot: (sectionId: number, presetId: number, resolution?: 'proceed') =>
+    request<ProfilePartSectionView>('/profile-parts/slots', {
+      method: 'POST',
+      body: JSON.stringify({ section_id: sectionId, preset_id: presetId, resolution }),
+    }),
+  previewAddProfilePartSlot: (sectionId: number, presetId: number) =>
+    request<ProfilePartReplacePreview>(`/profile-parts/sections/${sectionId}/preview-add`, {
+      method: 'POST',
+      body: JSON.stringify({ preset_id: presetId }),
+    }),
+  previewReplaceProfilePartSlot: (slotId: number, presetId: number) =>
+    request<ProfilePartReplacePreview>(`/profile-parts/slots/${slotId}/preview-replace`, {
+      method: 'POST',
+      body: JSON.stringify({ preset_id: presetId }),
+    }),
+  replaceProfilePartSlot: (
+    slotId: number,
+    data: { preset_id: number; resolution: 'proceed' | 'accept_baseline'; reason?: string | null },
+  ) =>
+    request<ProfilePartSectionView>(`/profile-parts/slots/${slotId}/replace`, {
+      method: 'POST',
+      body: JSON.stringify(data),
+    }),
+  deleteProfilePartSlot: (slotId: number) =>
+    request<ProfilePartSectionView>(`/profile-parts/slots/${slotId}`, { method: 'DELETE' }),
+  importProfilePartSectionProcess: (sectionId: number, file: File, slotId?: number) => {
+    const formData = new FormData();
+    formData.append('file', file);
+    const qs = slotId != null ? `?slot_id=${slotId}` : '';
+    return postFormData<ProfilePartImportResponse>(`/profile-parts/sections/${sectionId}/import${qs}`, formData);
+  },
 };
 
 // AMS History types
@@ -6593,6 +6756,7 @@ export interface ProductionActiveFile {
   file_size: number;
   print_time_seconds: number | null;
   sliced_for_model: string | null;
+  tags?: LibraryTagSummary[];
 }
 
 export interface ProductionSlotNested {
@@ -7492,37 +7656,6 @@ export const spoolbuddyApi = {
       `/spoolbuddy/diagnostics/${deviceId}/result?diagnostic=${type}`,
       { method: 'GET' }
     ),
-};
-
-export interface BugReportRequest {
-  description: string;
-  email?: string;
-  screenshot_base64?: string;
-  include_support_info?: boolean;
-  debug_logs?: string;
-}
-
-export interface BugReportResponse {
-  success: boolean;
-  message: string;
-  issue_url?: string;
-  issue_number?: number;
-}
-
-export const bugReportApi = {
-  submit: (data: BugReportRequest) =>
-    request<BugReportResponse>('/bug-report/submit', {
-      method: 'POST',
-      body: JSON.stringify(data),
-    }),
-  startLogging: () =>
-    request<{ started: boolean; was_debug: boolean }>('/bug-report/start-logging', {
-      method: 'POST',
-    }),
-  stopLogging: (wasDebug: boolean) =>
-    request<{ logs: string }>(`/bug-report/stop-logging?was_debug=${wasDebug}`, {
-      method: 'POST',
-    }),
 };
 
 export interface SponsorPromptCheckResponse {

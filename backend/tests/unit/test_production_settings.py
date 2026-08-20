@@ -7,6 +7,7 @@ import zipfile
 from backend.app.services.production_settings import (
     MULTI_COLOR_KEY,
     diff_parameters,
+    extract_from_process_settings,
     extract_production_settings,
 )
 
@@ -29,6 +30,7 @@ def _config(**overrides) -> dict:
         "support_style": "default",
         "enable_prime_tower": "0",
         "seam_position": "aligned",
+        "curr_bed_type": "Textured PEI Plate",
         "filament_settings_id": ["Bambu PLA Basic @BBL X1C"],
     }
     base.update(overrides)
@@ -107,6 +109,7 @@ class TestExtractProductionSettings:
         assert contract["wall_loops"] == 3
         assert contract["enable_support"] is False
         assert contract["support_style"] == "default"
+        assert contract["curr_bed_type"] == "Textured PEI Plate"
         assert contract[MULTI_COLOR_KEY] is False
         assert "nozzles_used" not in contract
 
@@ -247,9 +250,7 @@ class TestExtractProductionSettings:
     def test_sliced_customized_fuzzy_settings_stay_none_without_mesh_paint(self):
         config = _config(
             fuzzy_skin="none",
-            different_settings_to_system=[
-                "brim_type;fuzzy_skin_point_distance;fuzzy_skin_thickness;wall_loops"
-            ],
+            different_settings_to_system=["brim_type;fuzzy_skin_point_distance;fuzzy_skin_thickness;wall_loops"],
         )
         contract = extract_production_settings(
             _3mf(config, extra_files={"Metadata/plate_1.gcode": "; fuzzy_skin = none\n"})
@@ -270,15 +271,13 @@ class TestExtractProductionSettings:
             fuzzy_skin="disabled_fuzzy",
             different_settings_to_system=["fuzzy_skin_thickness;fuzzy_skin_point_distance"],
         )
-        contract = extract_production_settings(
-            _3mf(config, extra_files={"Metadata/plate_1.gcode": "G1 X0 Y0\n"})
-        )
+        contract = extract_production_settings(_3mf(config, extra_files={"Metadata/plate_1.gcode": "G1 X0 Y0\n"}))
         assert contract["fuzzy_skin"] == "disabled_fuzzy"
 
     def test_fuzzy_skin_paint_from_utf16_model(self):
         xml = (
             '<?xml version="1.0"?>'
-            '<model><triangles>'
+            "<model><triangles>"
             '<triangle v1="0" v2="1" v3="2" paint_fuzzy_skin="8"/>'
             "</triangles></model>"
         )
@@ -309,6 +308,98 @@ class TestExtractProductionSettings:
         assert left["nozzles_used"] == "left"
         assert right["nozzles_used"] == "right"
         assert both["nozzles_used"] == "both"
+
+    def test_extracts_curr_bed_type_and_falls_back_to_bed_type(self):
+        present = extract_production_settings(_3mf(_config(curr_bed_type="Smooth PEI Plate")))
+        assert present["curr_bed_type"] == "Smooth PEI Plate"
+
+        fallback_config = _config(bed_type="Engineering Plate")
+        fallback_config.pop("curr_bed_type", None)
+        fallback = extract_production_settings(_3mf(fallback_config))
+        assert fallback["curr_bed_type"] == "Engineering Plate"
+
+        preferred = extract_production_settings(
+            _3mf(_config(curr_bed_type="Textured PEI Plate", bed_type="Cool Plate"))
+        )
+        assert preferred["curr_bed_type"] == "Textured PEI Plate"
+
+    def test_normalizes_bed_type_aliases_and_omits_missing(self):
+        short = extract_production_settings(_3mf(_config(curr_bed_type="Smooth PEI")))
+        assert short["curr_bed_type"] == "Smooth PEI Plate"
+
+        enum_name = extract_production_settings(_3mf(_config(curr_bed_type="textured_pei")))
+        assert enum_name["curr_bed_type"] == "Textured PEI Plate"
+
+        missing_config = _config()
+        missing_config.pop("curr_bed_type", None)
+        missing = extract_production_settings(_3mf(missing_config))
+        assert "curr_bed_type" not in missing
+
+        empty = extract_production_settings(_3mf(_config(curr_bed_type="  ")))
+        assert "curr_bed_type" not in empty
+
+
+class TestExtractFromProcessSettings:
+    def test_extracts_same_contract_keys_as_zip_without_zip_only_bits(self):
+        contract = extract_from_process_settings(_config())
+
+        assert contract["layer_height"] == 0.2
+        assert contract["sparse_infill_density"] == 20
+        assert contract["sparse_infill_pattern"] == "grid"
+        assert contract["brim_type"] == "auto_brim"
+        assert contract["brim_width"] == 5
+        assert contract["brim_object_gap"] == 0.1
+        assert contract["fuzzy_skin"] == "none"
+        assert contract["fuzzy_skin_thickness"] == 0.3
+        assert contract["fuzzy_skin_point_distance"] == 0.8
+        assert contract["wall_loops"] == 3
+        assert contract["enable_support"] is False
+        assert contract["support_style"] == "default"
+        assert contract["curr_bed_type"] == "Textured PEI Plate"
+        assert contract["seam_position"] == "aligned"
+        assert contract[MULTI_COLOR_KEY] is False
+        assert "nozzles_used" not in contract
+
+    def test_empty_or_invalid_returns_empty(self):
+        assert extract_from_process_settings(None) == {}
+        assert extract_from_process_settings({}) == {}
+        assert extract_from_process_settings("not a dict") == {}
+        assert extract_from_process_settings([{"layer_height": "0.2"}]) == {}
+
+    def test_unwraps_list_values(self):
+        contract = extract_from_process_settings(_config(layer_height=["0.16"]))
+        assert contract["layer_height"] == 0.16
+
+    def test_bed_type_fallback_and_aliases(self):
+        fallback_config = _config(bed_type="Engineering Plate")
+        fallback_config.pop("curr_bed_type", None)
+        fallback = extract_from_process_settings(fallback_config)
+        assert fallback["curr_bed_type"] == "Engineering Plate"
+
+        short = extract_from_process_settings(_config(curr_bed_type="Smooth PEI"))
+        assert short["curr_bed_type"] == "Smooth PEI Plate"
+
+    def test_support_style_falls_back_to_tree_support_style(self):
+        fallback_config = _config(tree_support_style="tree_hybrid")
+        fallback_config.pop("support_style", None)
+        fallback = extract_from_process_settings(fallback_config)
+        assert fallback["support_style"] == "tree_hybrid"
+
+    def test_fuzzy_skin_none_is_not_upgraded_to_paint(self):
+        contract = extract_from_process_settings(_config(fuzzy_skin="none"))
+        assert contract["fuzzy_skin"] == "none"
+
+    def test_multi_color_from_filament_settings_id(self):
+        multi = extract_from_process_settings(_config(filament_settings_id=["PLA", "PETG"]))
+        assert multi[MULTI_COLOR_KEY] is True
+
+        no_filaments = dict(_config())
+        no_filaments.pop("filament_settings_id", None)
+        assert MULTI_COLOR_KEY not in extract_from_process_settings(no_filaments)
+
+    def test_does_not_infer_nozzles_from_physical_extruder_map(self):
+        contract = extract_from_process_settings(_h2d_config())
+        assert "nozzles_used" not in contract
 
 
 class TestDiffParameters:
@@ -348,65 +439,43 @@ class TestDiffParameters:
         fallback = extract_production_settings(_3mf(fallback_config))
         assert fallback["support_style"] == "tree_hybrid"
 
-        preferred = extract_production_settings(
-            _3mf(_config(support_style="tree_slim", tree_support_style="organic"))
-        )
+        preferred = extract_production_settings(_3mf(_config(support_style="tree_slim", tree_support_style="organic")))
         assert preferred["support_style"] == "tree_slim"
 
     def test_support_style_not_compared_when_supports_off(self):
-        locked = extract_production_settings(
-            _3mf(_config(enable_support="0", support_style="tree_slim"))
-        )
-        incoming = extract_production_settings(
-            _3mf(_config(enable_support="0", support_style="tree_hybrid"))
-        )
+        locked = extract_production_settings(_3mf(_config(enable_support="0", support_style="tree_slim")))
+        incoming = extract_production_settings(_3mf(_config(enable_support="0", support_style="tree_hybrid")))
         by_key = _diff_by_key(locked, incoming)
         assert "support_style" not in by_key
         assert "support_type" not in by_key
 
     def test_support_style_compared_when_supports_on(self):
-        locked = extract_production_settings(
-            _3mf(_config(enable_support="1", support_style="tree_slim"))
-        )
-        incoming = extract_production_settings(
-            _3mf(_config(enable_support=True, support_style="tree_hybrid"))
-        )
+        locked = extract_production_settings(_3mf(_config(enable_support="1", support_style="tree_slim")))
+        incoming = extract_production_settings(_3mf(_config(enable_support=True, support_style="tree_hybrid")))
         by_key = _diff_by_key(locked, incoming)
         assert by_key["support_style"]["match"] is False
         assert by_key["support_style"]["locked"] == "tree_slim"
         assert by_key["support_style"]["incoming"] == "tree_hybrid"
 
-        matching = extract_production_settings(
-            _3mf(_config(enable_support="1", support_style="tree_slim"))
-        )
+        matching = extract_production_settings(_3mf(_config(enable_support="1", support_style="tree_slim")))
         assert _diff_by_key(locked, matching)["support_style"]["match"] is True
 
     def test_brim_object_gap_not_compared_when_brim_off(self):
-        locked = extract_production_settings(
-            _3mf(_config(brim_type="no_brim", brim_object_gap="0.1"))
-        )
-        incoming = extract_production_settings(
-            _3mf(_config(brim_type="no_brim", brim_object_gap="0.5"))
-        )
+        locked = extract_production_settings(_3mf(_config(brim_type="no_brim", brim_object_gap="0.1")))
+        incoming = extract_production_settings(_3mf(_config(brim_type="no_brim", brim_object_gap="0.5")))
         by_key = _diff_by_key(locked, incoming)
         assert "brim_object_gap" not in by_key
         assert by_key["brim_type"]["match"] is True
 
     def test_brim_object_gap_compared_when_brim_on(self):
-        locked = extract_production_settings(
-            _3mf(_config(brim_type="auto_brim", brim_object_gap="0.1"))
-        )
-        incoming = extract_production_settings(
-            _3mf(_config(brim_type="auto_brim", brim_object_gap="0.5"))
-        )
+        locked = extract_production_settings(_3mf(_config(brim_type="auto_brim", brim_object_gap="0.1")))
+        incoming = extract_production_settings(_3mf(_config(brim_type="auto_brim", brim_object_gap="0.5")))
         row = _diff_by_key(locked, incoming)["brim_object_gap"]
         assert row["match"] is False
         assert row["locked"] == 0.1
         assert row["incoming"] == 0.5
 
-        matching = extract_production_settings(
-            _3mf(_config(brim_type="outer_only", brim_object_gap="0.1"))
-        )
+        matching = extract_production_settings(_3mf(_config(brim_type="outer_only", brim_object_gap="0.1")))
         assert _diff_by_key(locked, matching)["brim_object_gap"]["match"] is True
 
     def test_missing_key_is_mismatch(self):
@@ -443,3 +512,62 @@ class TestDiffParameters:
         assert row["match"] is False
         assert row["locked"] == "left"
         assert row["incoming"] == "both"
+
+    def test_bed_type_mismatch_when_plates_differ(self):
+        locked = extract_production_settings(_3mf(_config(curr_bed_type="Textured PEI Plate")))
+        incoming = extract_production_settings(_3mf(_config(curr_bed_type="Smooth PEI Plate")))
+        row = _diff_by_key(locked, incoming)["curr_bed_type"]
+        assert row["match"] is False
+        assert row["locked"] == "Textured PEI Plate"
+        assert row["incoming"] == "Smooth PEI Plate"
+
+        alias_match = extract_production_settings(_3mf(_config(curr_bed_type="Smooth PEI")))
+        assert _diff_by_key(incoming, alias_match)["curr_bed_type"]["match"] is True
+
+    def test_missing_incoming_bed_type_is_mismatch(self):
+        locked = extract_production_settings(_3mf(_config(curr_bed_type="Textured PEI Plate")))
+        incoming_config = _config()
+        incoming_config.pop("curr_bed_type", None)
+        incoming = extract_production_settings(_3mf(incoming_config))
+        row = _diff_by_key(locked, incoming)["curr_bed_type"]
+        assert row["match"] is False
+        assert row["locked"] == "Textured PEI Plate"
+        assert row["incoming"] is None
+
+    def test_capped_printer_max_layer_matches_thicker_spec(self):
+        locked = {"layer_height": 0.28}
+        incoming = {"layer_height": 0.24}
+        for model in ("H2S", "H2D", "H2D Pro"):
+            row = {r["key"]: r for r in diff_parameters(locked, incoming, printer_model=model)}["layer_height"]
+            assert row["match"] is True, model
+            assert row["locked"] == 0.28
+            assert row["incoming"] == 0.24
+
+    def test_capped_printer_below_max_mismatches_thicker_spec(self):
+        row = {
+            r["key"]: r for r in diff_parameters({"layer_height": 0.28}, {"layer_height": 0.16}, printer_model="H2S")
+        }["layer_height"]
+        assert row["match"] is False
+        assert row["locked"] == 0.28
+        assert row["incoming"] == 0.16
+
+    def test_uncapped_printer_thinner_layer_mismatches(self):
+        locked = {"layer_height": 0.28}
+        incoming = {"layer_height": 0.24}
+        for model in (None, "X1C", "A1", "P1S"):
+            row = {r["key"]: r for r in diff_parameters(locked, incoming, printer_model=model)}["layer_height"]
+            assert row["match"] is False, model
+
+    def test_capped_printer_max_thicker_than_thinner_spec_mismatches(self):
+        row = {
+            r["key"]: r for r in diff_parameters({"layer_height": 0.20}, {"layer_height": 0.24}, printer_model="H2S")
+        }["layer_height"]
+        assert row["match"] is False
+        assert row["locked"] == 0.20
+        assert row["incoming"] == 0.24
+
+    def test_capped_printer_equal_layer_still_matches(self):
+        row = {
+            r["key"]: r for r in diff_parameters({"layer_height": 0.24}, {"layer_height": 0.24}, printer_model="H2S")
+        }["layer_height"]
+        assert row["match"] is True

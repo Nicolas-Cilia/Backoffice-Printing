@@ -1,5 +1,5 @@
 import { useState, useCallback, useMemo, useEffect } from 'react';
-import { Link, useNavigate, useSearchParams } from 'react-router-dom';
+import { useNavigate, useSearchParams } from 'react-router-dom';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { useTranslation } from 'react-i18next';
 import {
@@ -65,6 +65,7 @@ import { BulkTagsPickerModal } from '../components/BulkTagsPickerModal';
 import { FileUploadModal } from '../components/FileUploadModal';
 import { FolderReadmePanel } from '../components/FolderReadmePanel';
 import { ProductionFolderView } from '../components/production/ProductionFolderView';
+import { ScrollFadeContainer } from '../components/ScrollFadeContainer';
 import { LibraryTagsModal } from '../components/LibraryTagsModal';
 import { PurgeOldFilesModal } from '../components/PurgeOldFilesModal';
 import { useToast } from '../contexts/ToastContext';
@@ -73,6 +74,8 @@ import { usePageFileDrop } from '../hooks/usePageFileDrop';
 import { useAuth } from '../contexts/AuthContext';
 import { formatDuration, parseUTCDate, formatDate } from '../utils/date';
 import { formatFileSize } from '../utils/file';
+import { libraryTagsQueryKey } from '../utils/libraryTagsQuery';
+import { FILE_MANAGER_HOME_EVENT } from '../utils/fileManagerNav';
 
 type SortField = 'name' | 'date' | 'size' | 'type' | 'prints';
 type SortDirection = 'asc' | 'desc';
@@ -84,6 +87,9 @@ function isTrackingFolder(folder: {
 }): boolean {
   return Boolean(folder.parameter_tracking || folder.production_printer_model);
 }
+
+/** Temporarily hide File Manager "Link External". Flip to true to restore the UI. */
+const SHOW_LINK_EXTERNAL = false;
 
 // New Folder Modal
 interface NewFolderModalProps {
@@ -975,6 +981,8 @@ interface FileCardProps {
   onRename?: (file: LibraryFileListItem) => void;
   onGenerateThumbnail?: (file: LibraryFileListItem) => void;
   onTagClick?: (tagId: number) => void;
+  onEditTags?: (file: LibraryFileListItem) => void;
+  onRemoveTag?: (fileId: number, tagId: number) => void;
   thumbnailVersion?: number;
   hasPermission: (permission: Permission) => boolean;
   canModify: (resource: 'queue' | 'archives' | 'library', action: 'update' | 'delete' | 'reprint', createdById: number | null | undefined) => boolean;
@@ -983,8 +991,10 @@ interface FileCardProps {
   t: TFunction;
 }
 
-function FileCard({ file, isSelected, isMobile, onSelect, onDelete, onDownload, onPrint, onSlice, onRunPipeline, useSlicerApi, onPreview3d, onRename, onGenerateThumbnail, onTagClick, thumbnailVersion, hasPermission, canModify, authEnabled, showModified, t }: FileCardProps) {
+function FileCard({ file, isSelected, isMobile, onSelect, onDelete, onDownload, onPrint, onSlice, onRunPipeline, useSlicerApi, onPreview3d, onRename, onGenerateThumbnail, onTagClick, onEditTags, onRemoveTag, thumbnailVersion, hasPermission, canModify, authEnabled, showModified, t }: FileCardProps) {
   const [showActions, setShowActions] = useState(false);
+  const canEditTags = Boolean(onEditTags) && canModify('library', 'update', file.created_by_id);
+  const attachedTags = file.tags ?? [];
 
   return (
     <div
@@ -1058,29 +1068,61 @@ function FileCard({ file, isSelected, isMobile, onSelect, onDelete, onDownload, 
             {formatDate(file.fs_modified_at ?? file.created_at)}
           </div>
         )}
-        {(file.tags?.length ?? 0) > 0 && (
+        {(attachedTags.length > 0 || canEditTags) && (
           <div className="mt-2 flex flex-wrap gap-1" onClick={(e) => e.stopPropagation()}>
-            {file.tags!.map((tg) => (
-              <button
+            {attachedTags.map((tg) => (
+              <span
                 key={tg.id}
-                type="button"
-                onClick={() => onTagClick?.(tg.id)}
-                className="inline-flex items-center gap-0.5 px-1.5 py-0.5 rounded-full text-[10px] bg-bambu-green/10 text-bambu-green hover:bg-bambu-green/20 transition-colors max-w-full"
-                title={tg.name}
+                className="inline-flex items-center max-w-full rounded-full bg-bambu-green/10 text-bambu-green text-[10px]"
               >
-                <TagIcon className="w-2.5 h-2.5 flex-shrink-0" />
-                <span className="truncate">{tg.name}</span>
-              </button>
+                <button
+                  type="button"
+                  onClick={() => onTagClick?.(tg.id)}
+                  className={`inline-flex items-center gap-0.5 pl-1.5 py-0.5 hover:bg-bambu-green/20 transition-colors min-w-0 ${
+                    canEditTags && onRemoveTag ? 'rounded-l-full' : 'pr-1.5 rounded-full'
+                  }`}
+                  title={tg.name}
+                >
+                  <TagIcon className="w-2.5 h-2.5 flex-shrink-0" />
+                  <span className="truncate">{tg.name}</span>
+                </button>
+                {canEditTags && onRemoveTag && (
+                  <button
+                    type="button"
+                    className="pr-1 pl-0.5 py-0.5 hover:text-white rounded-r-full"
+                    onClick={() => onRemoveTag(file.id, tg.id)}
+                    aria-label={t('fileManager.tags.removeFromFileAria', { name: tg.name })}
+                    title={t('fileManager.tags.removeFromFileAria', { name: tg.name })}
+                  >
+                    <X className="w-2.5 h-2.5" />
+                  </button>
+                )}
+              </span>
             ))}
+            {canEditTags && (
+              <button
+                type="button"
+                onClick={() => onEditTags?.(file)}
+                className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full border border-dashed border-bambu-green/70 text-bambu-green text-[11px] font-medium hover:bg-bambu-green/10 transition-colors"
+                aria-label={t('fileManager.tags.addToFileAria')}
+                title={t('fileManager.tags.fileTooltip')}
+              >
+                <Plus className="w-3 h-3" />
+                {t('fileManager.tags.title')}
+              </button>
+            )}
           </div>
         )}
       </div>
 
-      {/* Actions - always visible on mobile, hover on desktop */}
-      <div className={`absolute bottom-2 right-2 transition-opacity ${isMobile ? 'opacity-100' : 'opacity-0 group-hover:opacity-100'}`} onClick={(e) => e.stopPropagation()}>
+      {/* Actions — always visible so Tags / rename / delete are discoverable */}
+      <div className="absolute bottom-2 right-2" onClick={(e) => e.stopPropagation()}>
         <button
           onClick={() => setShowActions(!showActions)}
           className="p-1.5 rounded bg-bambu-dark-secondary/90 hover:bg-bambu-dark-tertiary"
+          aria-label={t('common.actions')}
+          aria-haspopup="menu"
+          aria-expanded={showActions}
         >
           <MoreVertical className="w-4 h-4 text-bambu-gray" />
         </button>
@@ -1164,6 +1206,19 @@ function FileCard({ file, isSelected, isMobile, onSelect, onDelete, onDownload, 
                   {t('common.rename')}
                 </button>
               )}
+              {onEditTags && (
+                <button
+                  className={`w-full px-3 py-1.5 text-left text-sm flex items-center gap-2 ${
+                    canEditTags ? 'text-white hover:bg-bambu-dark' : 'text-bambu-gray cursor-not-allowed'
+                  }`}
+                  onClick={() => { if (canEditTags) { onEditTags(file); setShowActions(false); } }}
+                  disabled={!canEditTags}
+                  title={!canEditTags ? t('fileManager.tags.noPermission') : t('fileManager.tags.fileTooltip')}
+                >
+                  <TagIcon className="w-3.5 h-3.5" />
+                  {t('fileManager.tags.title')}
+                </button>
+              )}
               {onGenerateThumbnail && file.file_type === 'stl' && (
                 <button
                   className={`w-full px-3 py-1.5 text-left text-sm flex items-center gap-2 ${
@@ -1236,7 +1291,10 @@ export function FileManagerPage() {
   // the listing; setting it bypasses folder scoping on the server so
   // "every toy" works regardless of which folder is currently selected.
   const [showTagsModal, setShowTagsModal] = useState(false);
-  const [showBulkTagsModal, setShowBulkTagsModal] = useState(false);
+  const [tagPickerTarget, setTagPickerTarget] = useState<{
+    fileIds: number[];
+    currentTagIds?: number[];
+  } | null>(null);
   const [selectedTagIds, setSelectedTagIds] = useState<number[]>([]);
   const [linkFolder, setLinkFolder] = useState<LibraryFolderTree | null>(null);
   const [deleteConfirm, setDeleteConfirm] = useState<{ type: 'file' | 'folder' | 'bulk'; id: number; count?: number } | null>(null);
@@ -1286,8 +1344,18 @@ export function FileManagerPage() {
       const newFolderId = parseInt(folderParam, 10);
       setSelectedFolderId(newFolderId);
       setViewEntered(true);
+      return;
     }
   }, [searchParams]);
+
+  useEffect(() => {
+    const goHome = () => {
+      setSelectedFolderId(null);
+      setViewEntered(false);
+    };
+    window.addEventListener(FILE_MANAGER_HOME_EVENT, goHome);
+    return () => window.removeEventListener(FILE_MANAGER_HOME_EVENT, goHome);
+  }, []);
 
   // Queries
   const { data: settings } = useQuery({
@@ -1364,6 +1432,9 @@ export function FileManagerPage() {
   const goToRoot = () => {
     setSelectedFolderId(null);
     setViewEntered(false);
+    if (searchParams.get('folder')) {
+      navigate('/files', { replace: true });
+    }
   };
 
   // Trash count for the header badge (#1008). Empty/error are silently treated
@@ -1396,7 +1467,7 @@ export function FileManagerPage() {
   // Cheap query, shared with LibraryTagsModal / BulkTagsPickerModal via the
   // same queryKey so they all invalidate together on tag CRUD.
   const { data: tagCatalog = [] } = useQuery({
-    queryKey: ['library-tags'],
+    queryKey: libraryTagsQueryKey,
     queryFn: api.getLibraryTags,
   });
   const tagsById = useMemo(() => {
@@ -1627,6 +1698,37 @@ export function FileManagerPage() {
     },
     onError: (error: Error) => showToast(error.message, 'error'),
   });
+
+  const removeFileTagMutation = useMutation({
+    mutationFn: ({ fileId, tagId }: { fileId: number; tagId: number }) =>
+      api.bulkAssignLibraryTags([fileId], [tagId], 'remove'),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['library-files'] });
+      queryClient.invalidateQueries({ queryKey: libraryTagsQueryKey });
+    },
+    onError: (error: Error) => {
+      showToast(error.message || t('fileManager.tags.applyFailed'), 'error');
+    },
+  });
+
+  const openFileTagPicker = useCallback((file: LibraryFileListItem) => {
+    setTagPickerTarget({
+      fileIds: [file.id],
+      currentTagIds: (file.tags ?? []).map((tg) => tg.id),
+    });
+  }, []);
+
+  const openSelectionTagPicker = useCallback(() => {
+    if (selectedFiles.length === 1) {
+      const file = files?.find((f) => f.id === selectedFiles[0]);
+      setTagPickerTarget({
+        fileIds: selectedFiles,
+        currentTagIds: (file?.tags ?? []).map((tg) => tg.id),
+      });
+      return;
+    }
+    setTagPickerTarget({ fileIds: selectedFiles });
+  }, [files, selectedFiles]);
 
   const updateFolderMutation = useMutation({
     mutationFn: ({ id, data }: { id: number; data: LibraryFolderUpdate }) =>
@@ -1869,7 +1971,7 @@ export function FileManagerPage() {
 
   return (
     <div
-      className="p-4 md:p-8 min-h-[calc(100vh-64px)] lg:h-[calc(100vh-64px)] flex flex-col relative"
+      className="p-4 md:p-8 h-full min-h-0 flex-1 overflow-hidden flex flex-col relative"
       {...dragHandlers}
     >
       {/* Drag & Drop Overlay — page-wide file upload (#1510) */}
@@ -1884,7 +1986,7 @@ export function FileManagerPage() {
       )}
 
       {/* Header */}
-      <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 mb-6">
+      <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 mb-6 shrink-0">
         <div>
           <h1 className="text-2xl font-bold text-white flex items-center gap-3">
             {viewEntered && (
@@ -1918,7 +2020,7 @@ export function FileManagerPage() {
             )}
             {t('fileManager.generateThumbnails')}
           </Button>
-          {!isProductionFolder && (
+          {SHOW_LINK_EXTERNAL && !isProductionFolder && (
           <Button
             variant="secondary"
             onClick={() => setShowExternalFolderModal(true)}
@@ -1970,19 +2072,19 @@ export function FileManagerPage() {
             </Button>
           )}
           {(hasAnyPermission('library:delete_own', 'library:delete_all')) && (
-            <Link
-              to="/files/trash"
-              className="inline-flex items-center px-3 py-1.5 text-sm rounded bg-bambu-dark-secondary text-bambu-gray hover:text-white hover:bg-bambu-dark transition-colors"
+            <Button
+              variant="secondary"
+              onClick={() => navigate('/files/trash')}
               title={t('libraryTrash.headerTooltip')}
             >
               <Trash2 className="w-4 h-4 mr-2" />
               {t('libraryTrash.headerButton')}
               {typeof trashCount === 'number' && trashCount > 0 && (
-                <span className="ml-1.5 px-1.5 py-0.5 text-xs rounded-full bg-bambu-green/20 text-bambu-green">
+                <span className="ml-1.5 px-1.5 py-0.5 text-xs font-semibold tabular-nums rounded-full bg-bambu-green text-[color:var(--text-primary)]">
                   {trashCount}
                 </span>
               )}
-            </Link>
+            </Button>
           )}
           {!isProductionFolder && (
           <Button
@@ -1999,7 +2101,7 @@ export function FileManagerPage() {
 
       {/* Disk space warning */}
       {isDiskSpaceLow && stats && settings && (
-        <div className="flex items-center gap-3 mb-4 p-3 bg-amber-500/10 border border-amber-500/30 rounded-lg">
+        <div className="flex items-center gap-3 mb-4 p-3 bg-amber-500/10 border border-amber-500/30 rounded-lg shrink-0">
           <AlertTriangle className="w-5 h-5 text-amber-500 flex-shrink-0" />
           <div className="flex-1">
             <p className="text-sm text-amber-500 font-medium">{t('fileManager.lowDiskSpaceWarning')}</p>
@@ -2012,7 +2114,7 @@ export function FileManagerPage() {
 
       {/* Stats bar */}
       {stats && (
-        <div className="flex flex-wrap items-center gap-3 sm:gap-6 mb-6 p-3 bg-bambu-dark-secondary rounded-lg border border-bambu-dark-tertiary">
+        <div className="flex flex-wrap items-center gap-3 sm:gap-6 mb-6 p-3 bg-bambu-dark-secondary rounded-lg border border-bambu-dark-tertiary shrink-0">
           <div className="flex items-center gap-2 text-sm">
             <File className="w-4 h-4 text-bambu-green" />
             <span className="text-bambu-gray">{t('fileManager.files')}:</span>
@@ -2039,7 +2141,7 @@ export function FileManagerPage() {
 
       {/* Main content */}
       {!viewEntered ? (
-        <div className="flex-1 overflow-y-auto min-h-0 space-y-8">
+        <ScrollFadeContainer className="space-y-8">
           <div className="flex items-center justify-end gap-2">
             <select
               value={folderSortField}
@@ -2194,6 +2296,16 @@ export function FileManagerPage() {
                           <span className="hidden sm:inline">{t('common.move')}</span>
                         </Button>
                         <Button
+                          variant="secondary"
+                          size="sm"
+                          onClick={openSelectionTagPicker}
+                          disabled={!hasAnyPermission('library:update_own', 'library:update_all')}
+                          title={!hasAnyPermission('library:update_own', 'library:update_all') ? t('fileManager.tags.noPermission') : t('fileManager.tags.bulkTooltip')}
+                        >
+                          <TagIcon className="w-4 h-4 sm:mr-1" />
+                          <span className="hidden sm:inline">{t('fileManager.tags.tagAction')}</span>
+                        </Button>
+                        <Button
                           variant="danger"
                           size="sm"
                           onClick={() => {
@@ -2241,6 +2353,8 @@ export function FileManagerPage() {
                         onRename={(f) => setRenameItem({ type: 'file', id: f.id, name: f.filename })}
                         onGenerateThumbnail={(f) => singleThumbnailMutation.mutate(f.id)}
                         onTagClick={toggleTagFilter}
+                        onEditTags={openFileTagPicker}
+                        onRemoveTag={(fileId, tagId) => removeFileTagMutation.mutate({ fileId, tagId })}
                         thumbnailVersion={thumbnailVersions[file.id]}
                         hasPermission={hasPermission}
                         canModify={canModify}
@@ -2253,18 +2367,18 @@ export function FileManagerPage() {
               )}
             </>
           )}
-        </div>
+        </ScrollFadeContainer>
       ) : (
-      <div className="flex-1 flex flex-col lg:flex-row gap-4 lg:gap-6 min-h-0">
+      <div className="flex-1 flex flex-col lg:flex-row gap-4 lg:gap-6 min-h-0 overflow-hidden">
         {/* Files area + README rail (#2520 item 2). On wide screens the
             README docks as a collapsible right-hand column (rendered after
             the files column, below) so it no longer steals vertical space
             from the file list; on narrow screens it stacks above the list
-            via `order-first` and the page itself scrolls. */}
-        <div className="flex-1 flex flex-col lg:flex-row min-w-0 min-h-0 gap-4 lg:gap-6">
-        <div className="flex-1 flex flex-col min-w-0 min-h-0">
+            via `order-first`. The folder body (not the FM header) scrolls. */}
+        <div className="flex-1 flex flex-col lg:flex-row min-w-0 min-h-0 gap-4 lg:gap-6 overflow-hidden">
+        <div className="flex-1 flex flex-col min-w-0 min-h-0 overflow-hidden">
           {folderPath && folderPath.length > 0 && (
-            <nav className="flex flex-wrap items-center gap-1 text-sm mb-4" aria-label="Breadcrumb">
+            <nav className="flex flex-wrap items-center gap-1 text-sm mb-4 shrink-0" aria-label="Breadcrumb">
               <button
                 onClick={goToRoot}
                 className="text-bambu-gray hover:text-white"
@@ -2388,7 +2502,7 @@ export function FileManagerPage() {
           )}
           {/* Search, Filter, Sort toolbar - sticky on mobile for easier access */}
           {files && files.length > 0 && (
-            <div className="flex flex-wrap items-center gap-2 sm:gap-3 mb-4 p-2 sm:p-3 bg-bambu-dark-secondary rounded-lg border border-bambu-dark-tertiary sticky top-0 z-10 lg:static">
+            <div className="flex flex-wrap items-center gap-2 sm:gap-3 mb-4 p-2 sm:p-3 bg-bambu-dark-secondary rounded-lg border border-bambu-dark-tertiary shrink-0">
               {/* Search */}
               <div className="relative w-full sm:w-auto sm:flex-1 sm:max-w-xs">
                 <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-bambu-gray" />
@@ -2513,7 +2627,7 @@ export function FileManagerPage() {
 
           {/* Selection toolbar - sticky on mobile below search bar */}
           {filteredAndSortedFiles.length > 0 && (
-            <div className="flex flex-wrap items-center gap-2 mb-4 p-2 bg-bambu-dark-secondary rounded-lg border border-bambu-dark-tertiary sticky top-[52px] z-10 lg:static">
+            <div className="flex flex-wrap items-center gap-2 mb-4 p-2 bg-bambu-dark-secondary rounded-lg border border-bambu-dark-tertiary shrink-0">
               {/* Select all / Deselect all */}
               {selectedFiles.length === filteredAndSortedFiles.length && selectedFiles.length > 0 ? (
                 <Button
@@ -2567,7 +2681,7 @@ export function FileManagerPage() {
                     <Button
                       variant="secondary"
                       size="sm"
-                      onClick={() => setShowBulkTagsModal(true)}
+                      onClick={openSelectionTagPicker}
                       disabled={!hasAnyPermission('library:update_own', 'library:update_all')}
                       title={!hasAnyPermission('library:update_own', 'library:update_all') ? t('fileManager.tags.noPermission') : t('fileManager.tags.bulkTooltip')}
                     >
@@ -2646,7 +2760,7 @@ export function FileManagerPage() {
               </Button>
             </div>
           ) : (
-            <div className="flex-1 lg:overflow-y-auto">
+            <ScrollFadeContainer>
               <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 xl:grid-cols-5 2xl:grid-cols-6 gap-4">
                 {filteredAndSortedFiles.map((file) => (
                   <FileCard
@@ -2676,6 +2790,8 @@ export function FileManagerPage() {
                     onRename={(f) => setRenameItem({ type: 'file', id: f.id, name: f.filename })}
                     onGenerateThumbnail={(f) => singleThumbnailMutation.mutate(f.id)}
                     onTagClick={toggleTagFilter}
+                    onEditTags={openFileTagPicker}
+                    onRemoveTag={(fileId, tagId) => removeFileTagMutation.mutate({ fileId, tagId })}
                     thumbnailVersion={thumbnailVersions[file.id]}
                     hasPermission={hasPermission}
                     canModify={canModify}
@@ -2684,7 +2800,7 @@ export function FileManagerPage() {
                   />
                 ))}
               </div>
-            </div>
+            </ScrollFadeContainer>
           )}
           </>
           )}
@@ -2736,7 +2852,7 @@ export function FileManagerPage() {
         />
       )}
 
-      {showExternalFolderModal && (
+      {SHOW_LINK_EXTERNAL && showExternalFolderModal && (
         <ExternalFolderModal
           onClose={() => setShowExternalFolderModal(false)}
           onSave={(data) => createExternalFolderMutation.mutate(data)}
@@ -2785,9 +2901,10 @@ export function FileManagerPage() {
       />
 
       <BulkTagsPickerModal
-        open={showBulkTagsModal}
-        fileIds={selectedFiles}
-        onClose={() => setShowBulkTagsModal(false)}
+        open={tagPickerTarget !== null}
+        fileIds={tagPickerTarget?.fileIds ?? []}
+        currentTagIds={tagPickerTarget?.currentTagIds}
+        onClose={() => setTagPickerTarget(null)}
       />
 
       {linkFolder && (
@@ -2830,6 +2947,7 @@ export function FileManagerPage() {
           mode="create"
           libraryFileId={printFile.id}
           archiveName={printFile.print_name || printFile.filename}
+          slicedForModel={printFile.sliced_for_model}
           onClose={() => setPrintFile(null)}
           onSuccess={() => {
             setPrintFile(null);

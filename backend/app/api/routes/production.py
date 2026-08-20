@@ -10,7 +10,7 @@ from datetime import datetime, timezone
 from typing import Any
 
 from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile
-from sqlalchemy import select
+from sqlalchemy import inspect as sa_inspect, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
@@ -38,6 +38,7 @@ from backend.app.models.production import (
     ProductionSlot,
 )
 from backend.app.models.user import User
+from backend.app.schemas.library import TagSummary
 from backend.app.schemas.production import (
     ParsedProductionFilenameOut,
     ProductionActiveFile,
@@ -60,6 +61,7 @@ from backend.app.services.production_filename import (
     is_newer,
     normalize_production_printer,
     parse_production_filename,
+    stored_production_filename,
     suggest_next_revision,
 )
 from backend.app.services.production_settings import diff_parameters, extract_production_settings
@@ -77,6 +79,7 @@ _OWN_FILES_ONLY_DETAIL = "You can only delete your own files"
 _CONTRACT_RESOLUTION_DETAIL = (
     "This part already has a print-settings contract. Pass resolution 'proceed' or 'accept_baseline'."
 )
+_ACTIVE_FILE_WITH_TAGS = selectinload(ProductionSlot.active_file).selectinload(LibraryFile.tags)
 _PART_ALREADY_VISIBLE = "This part is already on this printer"
 _PART_CODE_RE = re.compile(r"^[A-Z]{1,32}$")
 
@@ -97,6 +100,13 @@ def _parsed_out(parsed: ParsedProductionFilename) -> ParsedProductionFilenameOut
     )
 
 
+def _file_tag_summaries(file: LibraryFile) -> list[TagSummary]:
+    """Return chip tags when the relationship is already loaded."""
+    if "tags" in sa_inspect(file).unloaded:
+        return []
+    return [TagSummary(id=tag.id, name=tag.name) for tag in file.tags]
+
+
 def _active_file_out(file: LibraryFile | None) -> ProductionActiveFile | None:
     if file is None:
         return None
@@ -108,6 +118,7 @@ def _active_file_out(file: LibraryFile | None) -> ProductionActiveFile | None:
         file_size=file.file_size,
         print_time_seconds=meta.get("print_time_seconds"),
         sliced_for_model=meta.get("sliced_for_model"),
+        tags=_file_tag_summaries(file),
     )
 
 
@@ -139,9 +150,7 @@ def _fuzzy_skin_token(value: Any) -> str:
     return str(value).strip().lower().replace("-", "_").replace(" ", "_")
 
 
-def _refresh_locked_fuzzy_from_active_file(
-    instance: ProductionPartInstance, slots: list[ProductionSlot]
-) -> bool:
+def _refresh_locked_fuzzy_from_active_file(instance: ProductionPartInstance, slots: list[ProductionSlot]) -> bool:
     """Upgrade stored `none` to `paint` when the active sliced 3MF has fuzzy G-code."""
     locked = instance.locked_parameters or {}
     if _fuzzy_skin_token(locked.get("fuzzy_skin")) == "paint":
@@ -227,6 +236,11 @@ def _form_code(code: str | None) -> str | None:
     return cleaned or None
 
 
+def _form_printer(printer: str | None) -> str | None:
+    cleaned = (printer or "").strip()
+    return cleaned or None
+
+
 def _merge_identity(
     filename: str,
     *,
@@ -237,14 +251,14 @@ def _merge_identity(
     minor: int | None,
     printer: str | None,
 ) -> tuple[str, int, int, int, int, str, ParsedProductionFilename | None]:
-    """Parse the filename, then fill any missing identity fields from the form."""
+    """Parse the filename, then apply form overrides for any provided identity fields."""
     parsed = parse_production_filename(filename)
-    merged_code = (parsed.code if parsed else None) or _form_code(code)
-    merged_qty = parsed.quantity if parsed else quantity
-    merged_major = parsed.major if parsed else major
-    merged_revision = parsed.revision if parsed else revision
-    merged_minor = parsed.minor if parsed else minor
-    printer_raw = (parsed.printer if parsed else None) or printer
+    merged_code = _form_code(code) or (parsed.code if parsed else None)
+    merged_qty = quantity if quantity is not None else (parsed.quantity if parsed else None)
+    merged_major = major if major is not None else (parsed.major if parsed else None)
+    merged_revision = revision if revision is not None else (parsed.revision if parsed else None)
+    merged_minor = minor if minor is not None else (parsed.minor if parsed else None)
+    printer_raw = _form_printer(printer) or (parsed.printer if parsed else None)
     merged_printer = normalize_production_printer(printer_raw) if printer_raw else ""
 
     missing: list[str] = []
@@ -264,6 +278,33 @@ def _merge_identity(
     if merged_qty < 1:
         raise HTTPException(status_code=400, detail="quantity must be at least 1")
     return merged_code, merged_qty, merged_major, merged_revision, merged_minor, merged_printer, parsed
+
+
+def _stored_upload_filename(
+    original_name: str,
+    *,
+    code: str,
+    quantity: int,
+    major: int,
+    revision: int,
+    minor: int,
+    printer: str,
+) -> str:
+    """Library display name: locked identity stem plus the original extension."""
+    stored = stored_production_filename(
+        original_name,
+        code,
+        quantity,
+        major,
+        revision,
+        minor,
+        printer,
+    )
+    try:
+        validate_print_filename(stored)
+    except InvalidFilenameError as e:
+        raise HTTPException(status_code=400, detail=str(e)) from e
+    return stored
 
 
 async def _load_production_folder(db: AsyncSession, folder_id: int) -> LibraryFolder:
@@ -410,8 +451,10 @@ async def _find_part_instance(
     if load_slots:
         stmt = stmt.options(
             selectinload(ProductionPartInstance.part),
-            selectinload(ProductionPartInstance.slots).selectinload(ProductionSlot.active_file),
-            selectinload(ProductionPartInstance.slots).selectinload(ProductionSlot.revisions),
+            selectinload(ProductionPartInstance.slots).options(
+                _ACTIVE_FILE_WITH_TAGS,
+                selectinload(ProductionSlot.revisions),
+            ),
         )
     return (await db.execute(stmt)).scalars().first()
 
@@ -438,7 +481,7 @@ async def _load_slot(db: AsyncSession, slot_id: int) -> ProductionSlot:
             select(ProductionSlot)
             .where(ProductionSlot.id == slot_id)
             .options(
-                selectinload(ProductionSlot.active_file),
+                _ACTIVE_FILE_WITH_TAGS,
                 selectinload(ProductionSlot.revisions),
                 selectinload(ProductionSlot.instance).selectinload(ProductionPartInstance.part),
                 selectinload(ProductionSlot.instance).selectinload(ProductionPartInstance.folder),
@@ -535,7 +578,6 @@ def _settings_preview(
     content: bytes,
 ) -> ProductionReplacePreview:
     parsed = parse_production_filename(filename)
-    folder_printer = _folder_printer(folder) or ""
     printer_matches = _printer_matches_folder(folder, parsed.printer if parsed else None)
     incoming_settings = extract_production_settings(content)
     if _instance_has_contract(instance):
@@ -637,8 +679,10 @@ async def get_production_folder(
                 )
                 .options(
                     selectinload(ProductionPartInstance.part),
-                    selectinload(ProductionPartInstance.slots).selectinload(ProductionSlot.active_file),
-                    selectinload(ProductionPartInstance.slots).selectinload(ProductionSlot.revisions),
+                    selectinload(ProductionPartInstance.slots).options(
+                        _ACTIVE_FILE_WITH_TAGS,
+                        selectinload(ProductionSlot.revisions),
+                    ),
                 )
             )
         )
@@ -733,10 +777,19 @@ async def create_slot(
         instance.hidden = False
         mismatch, accepted_new_baseline = _apply_shared_contract(instance, incoming_settings, resolution)
 
+    stored_name = _stored_upload_filename(
+        filename,
+        code=merged_code,
+        quantity=merged_qty,
+        major=merged_major,
+        revision=merged_revision,
+        minor=merged_minor,
+        printer=merged_printer,
+    )
     library_file = await _save_library_file(
         db,
         content=content,
-        filename=filename,
+        filename=stored_name,
         folder=folder,
         owner_id=current_user.id if current_user else None,
     )
@@ -880,8 +933,10 @@ async def remove_folder_part(
                 ProductionPartInstance.hidden.is_(False),
             )
             .options(
-                selectinload(ProductionPartInstance.slots).selectinload(ProductionSlot.revisions),
-                selectinload(ProductionPartInstance.slots).selectinload(ProductionSlot.active_file),
+                selectinload(ProductionPartInstance.slots).options(
+                    selectinload(ProductionSlot.revisions),
+                    _ACTIVE_FILE_WITH_TAGS,
+                ),
             )
         )
     ).scalar_one_or_none()
@@ -963,9 +1018,12 @@ async def replace_slot(
     file: UploadFile = File(...),
     resolution: str = Form(...),
     reason: str | None = Form(None),
+    code: str | None = Form(None),
+    quantity: int | None = Form(None),
     major: int | None = Form(None),
     revision: int | None = Form(None),
     minor: int | None = Form(None),
+    printer: str | None = Form(None),
     db: AsyncSession = Depends(get_db),
     current_user: User | None = Depends(require_permission_if_auth_enabled(Permission.LIBRARY_UPLOAD)),
 ):
@@ -989,21 +1047,38 @@ async def replace_slot(
             detail=f"Filename printer {parsed.printer} does not match folder printer {folder_printer}",
         )
 
-    merged_major = major if major is not None else (parsed.major if parsed else None)
-    merged_revision = revision if revision is not None else (parsed.revision if parsed else None)
-    merged_minor = minor if minor is not None else (parsed.minor if parsed else None)
-    if merged_major is None or merged_revision is None or merged_minor is None:
-        raise HTTPException(status_code=400, detail="Missing required production identity: version")
+    form_printer = _form_printer(printer)
+    folder_printer = _folder_printer(folder)
+    printer_raw = form_printer or (parsed.printer if parsed else None) or folder_printer or instance.printer_model
+    merged_code = _form_code(code) or part.code
+    merged_qty = quantity if quantity is not None else slot.quantity
+    merged_major = major if major is not None else (parsed.major if parsed else slot.major)
+    merged_revision = revision if revision is not None else (parsed.revision if parsed else slot.revision)
+    merged_minor = minor if minor is not None else (parsed.minor if parsed else slot.minor)
+    merged_printer = normalize_production_printer(printer_raw) if printer_raw else ""
+    if not merged_printer:
+        raise HTTPException(status_code=400, detail="Missing required production identity: printer")
+    if merged_qty < 1:
+        raise HTTPException(status_code=400, detail="quantity must be at least 1")
 
     incoming_settings = extract_production_settings(content)
     diff = diff_parameters(instance.locked_parameters or {}, incoming_settings)
     mismatches = _has_mismatches(diff)
     accept_baseline = resolution == "accept_baseline"
 
+    stored_name = _stored_upload_filename(
+        filename,
+        code=merged_code,
+        quantity=merged_qty,
+        major=merged_major,
+        revision=merged_revision,
+        minor=merged_minor,
+        printer=merged_printer,
+    )
     library_file = await _save_library_file(
         db,
         content=content,
-        filename=filename,
+        filename=stored_name,
         folder=folder,
         owner_id=current_user.id if current_user else None,
     )

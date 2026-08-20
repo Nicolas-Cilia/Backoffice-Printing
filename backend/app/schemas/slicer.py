@@ -100,7 +100,7 @@ class SliceRequest(BaseModel):
             "``Metadata/project_settings.config`` (the designer's own tweaks — wall "
             "count, infill, etc.) instead of the picked printer/process/filament "
             "triplet. This is the 'slice as designed' path: no ``--load-settings`` "
-            "override, so a MakerWorld author's settings survive. Ignored for STL / "
+            "override, so the model's original designer settings survive. Ignored for STL / "
             "plain-model 3MF (no embedded profile to honour). The preset refs are "
             "still required by the validator but go unused on this path. Only makes "
             "sense when the picked printer matches the design's target model — the "

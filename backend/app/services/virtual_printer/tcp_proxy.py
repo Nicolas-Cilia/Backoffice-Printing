@@ -251,7 +251,7 @@ class TLSProxy:
                 logger.error(
                     "%s proxy: cannot bind to port %s (permission denied). "
                     "Port %s requires root or CAP_NET_BIND_SERVICE. "
-                    "Docker: add 'cap_add: [NET_BIND_SERVICE]' to docker-compose.yml. "
+                    "Docker: add '--cap-add=NET_BIND_SERVICE' (or 'cap_add: [NET_BIND_SERVICE]' in your Compose file). "
                     "Native: use 'sudo setcap cap_net_bind_service=+ep $(which python3)' "
                     "or redirect with iptables.",
                     self.name,

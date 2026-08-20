@@ -10,6 +10,7 @@ import {
   Upload, Download,
 } from 'lucide-react';
 import { ForecastPanel } from '../components/ForecastPanel';
+import { FilamentTrackingPage, InventorySectionTabs } from './FilamentTrackingPage';
 import { api, spoolbuddyApi, ApiError } from '../api/client';
 import type { InventorySpool, SpoolCatalogEntry } from '../api/client';
 import { Button } from '../components/Button';
@@ -461,8 +462,35 @@ function saveSortState(state: SortState) {
   } catch { /* ignore */ }
 }
 
+type InventorySectionTab = 'tracking' | 'spools';
+
+function inventorySectionTab(searchParams: URLSearchParams): InventorySectionTab {
+  const tab = searchParams.get('tab');
+  if (tab === 'spools') return 'spools';
+  if (tab === 'tracking') return 'tracking';
+  // Spool-specific deep links stay on the physical-spool view.
+  if (searchParams.has('spool') || searchParams.has('location_id')) return 'spools';
+  return 'tracking';
+}
+
+function applyInventorySectionTab(
+  searchParams: URLSearchParams,
+  tab: InventorySectionTab,
+): URLSearchParams {
+  const next = new URLSearchParams(searchParams);
+  if (tab === 'tracking') next.delete('tab');
+  else next.set('tab', 'spools');
+  return next;
+}
+
 // Wrapper: detects Spoolman mode and passes it to the shared inventory UI
 export default function InventoryPageRouter() {
+  const [searchParams, setSearchParams] = useSearchParams();
+  const pageTab = inventorySectionTab(searchParams);
+  const setPageTab = (tab: InventorySectionTab) => {
+    setSearchParams((prev) => applyInventorySectionTab(prev, tab), { replace: true });
+  };
+
   const { data: spoolmanSettings } = useQuery({
     queryKey: ['spoolman-settings'],
     queryFn: api.getSpoolmanSettings,
@@ -472,6 +500,15 @@ export default function InventoryPageRouter() {
   const spoolmanModeReady = spoolmanSettings !== undefined;
   const spoolmanMode =
     spoolmanSettings?.spoolman_enabled === 'true' && !!spoolmanSettings?.spoolman_url;
+
+  if (pageTab === 'tracking') {
+    return (
+      <div className="p-4 md:p-8 space-y-6">
+        <InventorySectionTabs tab="tracking" onChange={setPageTab} />
+        <FilamentTrackingPage />
+      </div>
+    );
+  }
 
   return <InventoryPage spoolmanMode={spoolmanMode} spoolmanModeReady={spoolmanModeReady} />;
 }
@@ -483,6 +520,10 @@ function InventoryPage({ spoolmanMode = false, spoolmanModeReady = true }: { spo
   const { hasPermission, loading: authLoading } = useAuth();
   const canViewForecast = !authLoading && hasPermission('inventory:forecast_read');
   const [searchParams, setSearchParams] = useSearchParams();
+  const pageTab = inventorySectionTab(searchParams);
+  const setPageTab = (tab: InventorySectionTab) => {
+    setSearchParams((prev) => applyInventorySectionTab(prev, tab), { replace: true });
+  };
   const [formModal, setFormModal] = useState<{ spool?: InventorySpool | null; mode: SpoolFormMode } | null>(null);
   const deepLinkHandled = useRef(false);
   const [confirmAction, setConfirmAction] = useState<
@@ -1304,6 +1345,7 @@ function InventoryPage({ spoolmanMode = false, spoolmanModeReady = true }: { spo
 
   return (
     <div className="p-4 md:p-8 space-y-6">
+      <InventorySectionTabs tab={pageTab} onChange={setPageTab} />
       {/* Header */}
       <div className="flex items-center justify-between">
         <div>

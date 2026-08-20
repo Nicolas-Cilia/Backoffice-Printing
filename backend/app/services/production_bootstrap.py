@@ -164,9 +164,7 @@ async def _ensure_part(db: AsyncSession, code: str, name: str) -> tuple[bool, Pr
     return True, part
 
 
-async def _ensure_default_instance(
-    db: AsyncSession, part: ProductionPart, folder_id: int, printer_model: str
-) -> None:
+async def _ensure_default_instance(db: AsyncSession, part: ProductionPart, folder_id: int, printer_model: str) -> None:
     """Create a visible empty instance if this printer has never had this part.
 
     Does not un-hide a part the user removed from this printer.

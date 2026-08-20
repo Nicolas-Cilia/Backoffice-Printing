@@ -1,4 +1,4 @@
-"""Extract and diff the locked production print-settings contract from a 3MF."""
+"""Extract and diff the locked production print-settings contract from a 3MF or process preset."""
 
 from __future__ import annotations
 
@@ -22,13 +22,24 @@ _EXTRUDER_LEFT = 1
 
 MM_EPSILON = 1e-4
 
+# Max printable layer height (mm) for printers that cannot reach a thicker
+# section spec. Short codes match PRINTER_MODEL_MAP / profile_part_printer.
+# H2D Pro shares the H2D motion stack; H2C is not included.
+LAYER_HEIGHT_CAPS: dict[str, float] = {
+    "H2D": 0.24,
+    "H2D Pro": 0.24,
+    "H2S": 0.24,
+}
+
 # Stored on the contract for gated comparison; never emitted by diff_parameters.
 MULTI_COLOR_KEY = "_multi_color"
 
 # support_style: Bambu/Orca tree *style* (`tree_slim`, `tree_hybrid`, `organic`, …),
 # distinct from support_type (`tree(auto)`, `normal(auto)`, …). Some 3MFs store
 # the same value on tree_support_style; extract normalizes to support_style.
+# curr_bed_type: Bambu process key (sometimes `bed_type`); omitted when absent.
 CONTRACT_KEYS: tuple[str, ...] = (
+    "curr_bed_type",
     "layer_height",
     "initial_layer_line_width",
     "sparse_infill_density",
@@ -61,6 +72,7 @@ MM_KEYS = frozenset(
 )
 STRING_KEYS = frozenset(
     {
+        "curr_bed_type",
         "sparse_infill_pattern",
         "brim_type",
         "fuzzy_skin",
@@ -102,6 +114,48 @@ _INFILL_PATTERN_ALIASES = {
     "zigzag": "rectilinear",
 }
 
+# Canonical BambuStudio / OrcaSlicer curr_bed_type strings. Compact keys are
+# alphanumeric lowercased so "Smooth PEI", "smooth_pei", and "Smooth PEI Plate"
+# collapse to the same plate. Unknown values are kept as-is (never invented).
+_BED_TYPE_ALIASES = {
+    "texturedpeiplate": "Textured PEI Plate",
+    "texturedpei": "Textured PEI Plate",
+    "btpte": "Textured PEI Plate",
+    "smoothpeiplate": "Smooth PEI Plate",
+    "smoothpei": "Smooth PEI Plate",
+    "btpeismooth": "Smooth PEI Plate",
+    "coolplate": "Cool Plate",
+    "pcplate": "Cool Plate",
+    "btpc": "Cool Plate",
+    "coolplatesupertack": "Cool Plate (SuperTack)",
+    "supertackplate": "Cool Plate (SuperTack)",
+    "bambucoolplatesupertack": "Cool Plate (SuperTack)",
+    "supertack": "Cool Plate (SuperTack)",
+    "btsupertack": "Cool Plate (SuperTack)",
+    "engineeringplate": "Engineering Plate",
+    "btep": "Engineering Plate",
+    "hightempplate": "High Temp Plate",
+    "hotplate": "High Temp Plate",
+    "btpei": "High Temp Plate",
+}
+
+
+def extract_from_process_settings(config: Any) -> dict[str, Any]:
+    """Read the production contract from a resolved process-preset dict.
+
+    Reuses the same :data:`CONTRACT_KEYS` loop as a 3MF extract. Skips zip-only
+    inference (mesh/G-code fuzzy-skin paint, 3MF nozzle mapping, slice_info
+    multi-color). ``filament_settings_id`` still sets :data:`MULTI_COLOR_KEY`
+    when it is a list.
+    """
+    if not isinstance(config, dict) or not config:
+        return {}
+    contract = _contract_from_config(config)
+    filaments = config.get("filament_settings_id")
+    if isinstance(filaments, list):
+        contract[MULTI_COLOR_KEY] = len(filaments) > 1
+    return contract
+
 
 def extract_production_settings(source: bytes | zipfile.ZipFile) -> dict[str, Any]:
     """Read the production contract from a 3MF (bytes or an open ZipFile).
@@ -119,7 +173,12 @@ def extract_production_settings(source: bytes | zipfile.ZipFile) -> dict[str, An
         return {}
 
 
-def diff_parameters(locked: dict, incoming: dict) -> list[dict[str, Any]]:
+def diff_parameters(
+    locked: dict,
+    incoming: dict,
+    *,
+    printer_model: str | None = None,
+) -> list[dict[str, Any]]:
     """Compare two contract dicts.
 
     Returns ``{key, locked, incoming, match}`` for each applicable contract key.
@@ -128,6 +187,11 @@ def diff_parameters(locked: dict, incoming: dict) -> list[dict[str, Any]]:
     single-color files, ``nozzles_used`` without a dual-nozzle mapping) are
     omitted. A key present on the locked contract but missing on incoming is a
     mismatch.
+
+    ``printer_model`` is optional so File Manager production diffs stay
+    unchanged. When it is a :data:`LAYER_HEIGHT_CAPS` printer, ``layer_height``
+    also matches if the locked spec is thicker than that printer's cap and
+    incoming is at the cap (the printer's equivalent of the spec).
     """
     locked = locked or {}
     incoming = incoming or {}
@@ -142,6 +206,14 @@ def diff_parameters(locked: dict, incoming: dict) -> list[dict[str, Any]]:
         locked_value = locked.get(key) if locked_has else None
         incoming_value = incoming.get(key) if incoming_has else None
         match = locked_has and incoming_has and _values_match(key, locked_value, incoming_value)
+        if (
+            not match
+            and key == "layer_height"
+            and locked_has
+            and incoming_has
+            and _layer_height_matches_printer_cap(locked_value, incoming_value, printer_model)
+        ):
+            match = True
         rows.append(
             {
                 "key": key,
@@ -153,11 +225,31 @@ def diff_parameters(locked: dict, incoming: dict) -> list[dict[str, Any]]:
     return rows
 
 
-def _extract_from_zip(zf: zipfile.ZipFile) -> dict[str, Any]:
-    config = _read_project_settings(zf)
-    if not config:
-        return {}
+def _layer_height_matches_printer_cap(
+    locked: Any,
+    incoming: Any,
+    printer_model: str | None,
+) -> bool:
+    """True when incoming is at a capped printer's max and the spec is thicker."""
+    if not printer_model:
+        return False
+    cap = LAYER_HEIGHT_CAPS.get(printer_model)
+    if cap is None:
+        return False
+    locked_number = _as_number(locked)
+    incoming_number = _as_number(incoming)
+    if locked_number is None or incoming_number is None:
+        return False
+    locked_mm = float(locked_number)
+    incoming_mm = float(incoming_number)
+    return locked_mm > cap + MM_EPSILON and abs(incoming_mm - cap) <= MM_EPSILON
 
+
+def _contract_from_config(config: dict[str, Any]) -> dict[str, Any]:
+    """Normalize CONTRACT_KEYS present on a process/project settings dict.
+
+    ``nozzles_used`` is zip-only (3MF nozzle mapping) and is skipped here.
+    """
     contract: dict[str, Any] = {}
     for key in CONTRACT_KEYS:
         if key == "nozzles_used":
@@ -165,7 +257,19 @@ def _extract_from_zip(zf: zipfile.ZipFile) -> dict[str, Any]:
         present, raw = _contract_source_value(key, config)
         if not present:
             continue
-        contract[key] = _normalize_value(key, raw)
+        normalized = _normalize_value(key, raw)
+        if key == "curr_bed_type" and not normalized:
+            continue
+        contract[key] = normalized
+    return contract
+
+
+def _extract_from_zip(zf: zipfile.ZipFile) -> dict[str, Any]:
+    config = _read_project_settings(zf)
+    if not config:
+        return {}
+
+    contract = _contract_from_config(config)
 
     mapping = extract_nozzle_mapping_from_3mf(zf)
     if mapping:
@@ -311,6 +415,14 @@ def _normalize_infill_pattern(value: Any) -> str:
     return _INFILL_PATTERN_ALIASES.get(compact, text)
 
 
+def _normalize_bed_type(value: Any) -> str | None:
+    text = str(value).strip()
+    if not text:
+        return None
+    compact = "".join(ch for ch in text.lower() if ch.isalnum())
+    return _BED_TYPE_ALIASES.get(compact, text)
+
+
 def _bytes_look_like_fuzzy_paint(data: bytes) -> bool:
     if _PAINT_FUZZY_SKIN_ATTR_RE.search(data):
         return True
@@ -326,9 +438,7 @@ def _should_scan_member_for_paint(name: str, info: zipfile.ZipInfo) -> bool:
     lower = name.lower()
     if lower.endswith(_SKIP_PAINT_SCAN_SUFFIXES):
         return False
-    if info.file_size > _PAINT_SCAN_MAX_BYTES and not lower.endswith(".model"):
-        return False
-    return True
+    return info.file_size <= _PAINT_SCAN_MAX_BYTES or lower.endswith(".model")
 
 
 def _has_fuzzy_skin_paint(zf: zipfile.ZipFile) -> bool:
@@ -360,14 +470,14 @@ def _as_positive_float(value: Any, default: float) -> float:
 def _outer_wall_is_fuzzy(points: list[tuple[float, float]], point_distance: float) -> bool:
     if len(points) < _FUZZY_GCODE_MIN_POINTS:
         return False
-    dists = [math.hypot(b[0] - a[0], b[1] - a[1]) for a, b in zip(points, points[1:])]
+    dists = [math.hypot(b[0] - a[0], b[1] - a[1]) for a, b in zip(points, points[1:], strict=False)]
     if not dists:
         return False
     lo = 0.6 * point_distance
     hi = 1.5 * point_distance
     band = sum(1 for dist in dists if lo <= dist <= hi) / len(dists)
     turns: list[float] = []
-    for a, b, c in zip(points, points[1:], points[2:]):
+    for a, b, c in zip(points, points[1:], points[2:], strict=False):
         v1 = (b[0] - a[0], b[1] - a[1])
         v2 = (c[0] - b[0], c[1] - b[1])
         n1 = math.hypot(*v1)
@@ -410,13 +520,7 @@ def _gcode_member_looks_like_fuzzy_paint(
                 feature = raw.split(b":", 1)[1].strip()
                 points = []
                 continue
-            if (
-                feature == b"Outer wall"
-                and raw.startswith(b"G1 ")
-                and b"E" in raw
-                and b"X" in raw
-                and b"Y" in raw
-            ):
+            if feature == b"Outer wall" and raw.startswith(b"G1 ") and b"E" in raw and b"X" in raw and b"Y" in raw:
                 xy = _GCODE_XY_RE.search(raw)
                 if xy:
                     try:
@@ -437,9 +541,7 @@ def _gcode_looks_like_fuzzy_paint(zf: zipfile.ZipFile, contract: dict[str, Any])
         lower = name.lower()
         if not lower.endswith(".gcode") or lower.endswith(".md5"):
             continue
-        if _gcode_member_looks_like_fuzzy_paint(
-            zf, name, point_distance=point_distance, min_z=min_z
-        ):
+        if _gcode_member_looks_like_fuzzy_paint(zf, name, point_distance=point_distance, min_z=min_z):
             return True
     return False
 
@@ -463,6 +565,8 @@ def _normalize_value(key: str, value: Any) -> Any:
         return _normalize_fuzzy_skin(value)
     if key == "sparse_infill_pattern":
         return _normalize_infill_pattern(value)
+    if key == "curr_bed_type":
+        return _normalize_bed_type(value)
     if key in BOOL_KEYS:
         return _as_bool(value)
     if key in STRING_KEYS:
@@ -480,6 +584,12 @@ def _contract_source_value(key: str, config: dict[str, Any]) -> tuple[bool, Any]
             return True, config["support_style"]
         if "tree_support_style" in config:
             return True, config["tree_support_style"]
+        return False, None
+    if key == "curr_bed_type":
+        if "curr_bed_type" in config:
+            return True, config["curr_bed_type"]
+        if "bed_type" in config:
+            return True, config["bed_type"]
         return False, None
     if key in config:
         return True, config[key]

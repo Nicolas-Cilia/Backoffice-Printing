@@ -30,12 +30,17 @@ const tags = [
   { id: 2, name: 'petg', file_count: 7, created_at: '2026-01-01', updated_at: '2026-01-01' },
 ];
 
-function renderModal(fileIds: number[] = [10, 11, 12]) {
+function renderModal(fileIds: number[] = [10, 11, 12], currentTagIds?: number[]) {
   const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   return render(
     <QueryClientProvider client={client}>
       <MemoryRouter>
-        <BulkTagsPickerModal open fileIds={fileIds} onClose={mockOnClose} />
+        <BulkTagsPickerModal
+          open
+          fileIds={fileIds}
+          currentTagIds={currentTagIds}
+          onClose={mockOnClose}
+        />
       </MemoryRouter>
     </QueryClientProvider>,
   );
@@ -103,5 +108,57 @@ describe('BulkTagsPickerModal', () => {
     renderModal();
     await screen.findByText('toy');
     expect(screen.getByRole('button', { name: /Add tags/i })).toBeDisabled();
+  });
+
+  it('single-file mode pre-checks current tags and saves with replace', async () => {
+    (api.bulkAssignLibraryTags as ReturnType<typeof vi.fn>).mockResolvedValue({
+      files_updated: 1,
+      associations_added: 1,
+      associations_removed: 0,
+    });
+    const user = userEvent.setup();
+    renderModal([10], [1]);
+
+    expect(await screen.findByText('Tags on this file')).toBeInTheDocument();
+    expect(await screen.findByText('toy')).toBeInTheDocument();
+    expect(screen.queryByRole('radio')).not.toBeInTheDocument();
+
+    const toyCheckbox = screen
+      .getAllByRole('checkbox')
+      .find((el) => el.parentElement?.textContent?.includes('toy'));
+    const petgCheckbox = screen
+      .getAllByRole('checkbox')
+      .find((el) => el.parentElement?.textContent?.includes('petg'));
+    expect(toyCheckbox).toBeChecked();
+    expect(petgCheckbox).not.toBeChecked();
+
+    await user.click(petgCheckbox!);
+    await user.click(screen.getByRole('button', { name: /Save tags/i }));
+    await waitFor(() => {
+      expect(api.bulkAssignLibraryTags).toHaveBeenCalledWith([10], [1, 2], 'replace');
+    });
+  });
+
+  it('single-file mode can clear every tag', async () => {
+    (api.bulkAssignLibraryTags as ReturnType<typeof vi.fn>).mockResolvedValue({
+      files_updated: 1,
+      associations_added: 0,
+      associations_removed: 1,
+    });
+    const user = userEvent.setup();
+    renderModal([10], [1]);
+    await screen.findByText('toy');
+
+    const toyCheckbox = screen
+      .getAllByRole('checkbox')
+      .find((el) => el.parentElement?.textContent?.includes('toy'));
+    await user.click(toyCheckbox!);
+
+    const save = screen.getByRole('button', { name: /Save tags/i });
+    expect(save).toBeEnabled();
+    await user.click(save);
+    await waitFor(() => {
+      expect(api.bulkAssignLibraryTags).toHaveBeenCalledWith([10], [], 'replace');
+    });
   });
 });

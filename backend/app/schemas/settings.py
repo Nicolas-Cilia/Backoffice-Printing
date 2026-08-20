@@ -27,10 +27,9 @@ class AppSettings(BaseModel):
     capture_finish_photo: bool = Field(
         default=True,
         description=(
-            "Capture photo from printer camera when print completes. Bambuddy records a "
-            "brief timelapse during the print so the photo can be sourced from the moment "
-            "before the bed drops; the timelapse file is kept if you enabled timelapse for "
-            "this print, otherwise it is deleted automatically after the photo is captured."
+            "Capture photo from printer camera when print completes. Bambuddy banks a frame "
+            "from the live camera feed just before the bed drops, so the photo reflects the "
+            "finished print rather than an empty plate."
         ),
     )
     finish_photo_restore_plate: bool = Field(
@@ -347,7 +346,6 @@ class AppSettings(BaseModel):
     default_layer_inspect: bool = Field(
         default=False, description="Default first layer inspection option for new prints"
     )
-    default_timelapse: bool = Field(default=False, description="Default timelapse option for new prints")
     default_nozzle_offset_cali: TriState = Field(
         default="auto",
         description="Default nozzle offset calibration option for new prints (dual-nozzle printers only)",
@@ -608,7 +606,6 @@ class AppSettingsUpdate(BaseModel):
     default_flow_cali: TriState | None = None
     default_vibration_cali: bool | None = None
     default_layer_inspect: bool | None = None
-    default_timelapse: bool | None = None
     default_nozzle_offset_cali: TriState | None = None
     stagger_group_size: int | None = Field(default=None, ge=1, le=50)
     stagger_interval_minutes: int | None = Field(default=None, ge=1, le=60)

@@ -280,9 +280,10 @@ Every entry heading carries a status marker, kept in step with its **Status:** l
     upstream project, not the Bambuddy repo. Leave it.
 - **Branch:** `fix/point-github-links-at-fork`
 
-### 7. Fork attribution and licensing notices in the docs 🔵
+### 7. Fork attribution and licensing notices in the docs ✅
 
-- **Status:** idea
+- **Status:** done 2026-08-19 — docs rewritten on `docs/fork-attribution` (not committed
+  in this unit)
 - **Area:** docs
 - **What:** Make the top-level docs say plainly what this repo is: a personal rework of
   Bambuddy, still AGPL-3.0, not affiliated with or endorsed by upstream.
@@ -290,41 +291,31 @@ Every entry heading carries a status marker, kept in step with its **Status:** l
     is, that it is based on [maziggy/bambuddy](https://github.com/maziggy/bambuddy),
     that it is modified, that it is for personal use and offered as-is, and that it
     remains AGPL-3.0. Then strip what belongs to upstream and would be wrong here:
-    GitHub Sponsors, Ko-fi and sponsors-portal badges (lines 21-23), the North Pole 3D
-    Printing "Backed by" block (line 28), the Discord invite (lines 20, 37), and the
-    `demo.bambuddy.cool` live-demo links (lines 32, 42-43, 356-357). Soliciting for
-    upstream's funding or pointing at their demo from a diverged fork is misleading in
-    both directions.
-  - **`CONTRIBUTING.md`** — currently routes contributors to upstream's process. Either
-    rewrite for this fork or state that contributions are not being taken.
-  - **`SECURITY.md`** — same: it points vulnerability reports at upstream. Must not
-    claim upstream handles security for this fork.
-  - **`BACKERS.md`** — upstream's backers. Not ours; remove or clearly attribute.
-  - **`CODE_OF_CONDUCT.md`** — harmless to keep, but check contact addresses.
-  - **`DOCKERHUB.md`, `UPDATING.md`** — describe upstream's published images and update
-    path, neither of which applies here. Overlaps with entry #6.
-  - **Change notices (AGPL §5(a))** — the license requires modified files to carry
-    prominent notice that they were changed and when. `FORK_CHANGELOG.md` already
-    records this per unit with dates; decide whether that satisfies it or whether we add
-    a short "modified from upstream" header to the files we touch.
+    GitHub Sponsors, Ko-fi and sponsors-portal badges, the North Pole 3D Printing
+    "Backed by" block, Discord, and `demo.bambuddy.cool`. Document the actual sidebar
+    and the native + Docker install paths.
+  - **`CONTRIBUTING.md`** — rewrite for how this checkout is developed; outside
+    contributions are not expected.
+  - **`SECURITY.md`** — private advisory on this repo; no fake SLAs or version support
+    table; keep the CI security-stance rules.
+  - **`CODE_OF_CONDUCT.md`** — this repository, GitHub reporting, no Discord.
   - **Keep `LICENSE` exactly as it is**, and keep upstream's copyright notices.
-- **Why:** The repo will be public (see #6), which is distribution under AGPL-3.0. The
-  obligations attach at that point regardless of it being a personal project, and the
-  docs currently read as though this *is* upstream Bambuddy.
-- **Acceptance:** README opens with the fork notice; no upstream funding, Discord or
-  demo links remain; `LICENSE` untouched; nothing claims upstream support or
-  endorsement.
-- **Open questions:**
-  - **Not legal advice.** This entry is written from reading the license text. If
-    anything here carries real risk for you, check it with someone qualified.
-  - Is the repo actually going public, or staying private? Private changes nothing
-    legally, but the docs are still worth fixing.
-  - How much of upstream's README do you want to keep? The feature documentation is
-    genuinely useful and mostly still accurate; it is the branding, funding and support
-    channels that need to go.
-  - Sequencing: this overlaps #4 (logo) and #6 (links). Suggest doing #7 last so the
-    README is rewritten once.
-- **Branch:** `docs/fork-attribution-and-licensing`
+- **Why:** The docs previously read as though this *is* upstream Bambuddy. Distribution
+  under AGPL-3.0 needs a clear fork notice and credit.
+- **Acceptance:** met in the files listed above. README opens with the fork notice;
+  funding / Discord / demo / wiki / screenshot gallery are gone; `LICENSE` untouched;
+  nothing claims upstream support or endorsement. Docker Compose `--build` is documented
+  as a first-class intended path, not a leftover.
+- **How it went / decisions taken:**
+  - Scope for this unit was the five GitHub community tabs plus `FORK_PLAN` /
+    `FORK_CHANGELOG`. `BACKERS.md`, `DOCKERHUB.md`, `UPDATING.md`, issue templates,
+    and in-app `GITHUB_REPO` / GitHub URLs were left alone (the last is entry #6).
+  - Native Mac (venv + uvicorn :8000, Vite :5173 in dev) is documented as what
+    currently works. Docker stays in the README because it is planned to work, with
+    `--build` from source so we do not promise unpublished GHCR/Docker Hub tags.
+  - `FORK_CHANGELOG.md` remains the dated change notice for modified files (AGPL
+    §5(a)); no per-file "modified from upstream" headers were added.
+- **Branch:** `docs/fork-attribution`
 
 ### 8. Change the green accent to Atos Blue ✅
 
@@ -583,6 +574,78 @@ Every entry heading carries a status marker, kept in step with its **Status:** l
   different object-level settings.
 - **Branch:** `feat/production-file-slots`
 
+### 15. Profile parameter tracking 🟠
+
+- **Status:** 15a + source-label + **15b (part process sections + replace +
+  upload-into-section)** + **H2D/H2S layer-height cap** + **Unfiled
+  processes** on `feat/profile-parameter-tracking`. **Local preset
+  download** on stacked `feat/profile-download`.
+- **Area:** backend + frontend
+- **What:** Apply the production print-settings contract to local slicer **process**
+  presets on the Profiles tab, analogous to File Manager production tracking.
+  - **15a — Read-only contract display.** Extract `CONTRACT_KEYS` from process preset
+    JSON and show File Manager spec chips + spec modal on process cards. Filament and
+    printer presets skipped. No import-mismatch flow.
+  - **Source-label fix.** Import stored every preset as `orcaslicer`, so Bambu Studio
+    exports showed as "Orcaslicer". Detect `bambu` vs `orcaslicer` from file type
+    (`.bbscfg`/`.bbsflmt` vs `.orca_filament`) and payload markers (`@BBL`, Bambu
+    printer ids, Bambu Studio fields). Correct existing rows on list/detail. UI
+    shows **Bambu Lab** / **Orca Slicer**.
+  - **15b — Part process sections + replace/diff + upload.** User-named sections
+    (not the production TOP/KNB/BOT catalog). Attach one process per printer;
+    first process seeds `locked_parameters`. Later adds/replaces
+    `diff_parameters` against that baseline. Replace preview + proceed (keep
+    baseline, mark mismatch) or accept-new-baseline (section contract ← incoming,
+    clear that slot's mismatch and recompute the others). Upload a process file
+    onto a section (`POST .../sections/{id}/import`); duplicate library names
+    update the existing row; occupied printer slots return `needs_replace` for
+    the existing replace modal. Matches spec / mismatch chips open the same
+    Current print specs panel as File Manager.
+  - **H2D / H2S layer-height cap.** Those printers max out at 0.24 mm. When
+    the section baseline is thicker (e.g. 0.28 from X1C) and the incoming
+    H2D/H2S/H2D Pro process is 0.24, treat it as a match — the printer's
+    equivalent of the spec. 0.16 vs 0.28 is still a mismatch; 0.24 vs a
+    locked 0.20 is a mismatch (they could have used 0.20). X1C / A1 / P1S
+    stay strict. Implemented as `diff_parameters(..., printer_model=None)`
+    so File Manager production diffs are unchanged unless a model is passed.
+  - **Unfiled processes.** Profiles no longer lists every process in an
+    **All processes** column. **Unfiled processes** shows only process
+    presets that are not `active_preset_id` on any part-section slot.
+    The user picks an existing section to move into (same attach /
+    replace / Proceed anyway gates as upload). Filed processes stay
+    only in their section.
+  - **Local preset download** (branch `feat/profile-download`, stacked
+    on this tip). `GET /local-presets/{id}/download` returns the stored
+    resolved `setting` JSON as an attachment named `{sanitized-name}.json`
+    (re-importable via the existing import path). Download control on
+    Unfiled process cards, filament/printer cards, and part-section slot
+    cards. `settings:read` is enough. Plain JSON rather than `.bbscfg`;
+    section zip skipped. Page-level Import Profiles drop zone removed
+    (Unfiled dump). Slot **Replace** uploads a process file into the
+    section (`?slot_id=`) and uses the existing replace-confirm modal.
+- **Why:** Catch accidental process-preset drift the same way production file replace
+  catches 3MF settings drift. Group the same part's processes across printers.
+- **Acceptance (15a):** process cards show compact spec summary when `locked_parameters`
+  is present; list API does not include the full `setting` blob; filament/printer cards
+  unchanged; extract-from-process unit tests and LocalProfilesView test pass.
+- **Acceptance (15b):** create a named section; add 0.20 X1C then 0.28 A1 and see
+  mismatch on layer_height; replace proceed keeps baseline; accept_baseline updates
+  it. Upload a process JSON into an empty section (seeds contract); second printer
+  with a different layer_height flags mismatch; same printer again returns
+  `needs_replace` (not a second slot); filament-only upload is 400; duplicate
+  name updates and attaches. Isolated `profile_part_*` tables. Process library
+  cards stay. No auto-seeded TOP/KNB/BOT. Combo plates out of scope. UI heading
+  **Part process sections**, add control **Add process sections**.
+  H2S/H2D 0.24 vs a 0.28 section baseline Matches spec; H2S 0.16 still needs
+  Proceed anyway. **Unfiled processes** (not All processes): heading + count,
+  collapsed by default, move-to-section picker; attached presets leave Unfiled.
+- **Acceptance (download):** Unfiled process / filament / printer / slot cards
+  show a download control; `GET /local-presets/{id}/download` returns JSON
+  + filename header; missing id is 404; file re-imports via existing import.
+- **Deliberately not done:** combo plates; filament/printer presets; a display
+  toggle; per-slot overrides UI. Library page import still skips duplicate names.
+- **Branch:** `feat/profile-parameter-tracking` (download: `feat/profile-download`)
+
 ---
 
 ## Explicitly out of scope
@@ -604,3 +667,4 @@ _Things we've decided NOT to change, so they don't get re-litigated._
 | 8. Atos Blue accent (`#07bcec`) | `ui/atos-blue-accent` | 2026-08-17 | New default accent; semantic greens deliberately unchanged; white-on-accent contrast still below AA |
 | 3a-3c. Remove Projects | `feat/remove-projects` | 2026-08-17 | Code removed; `projects` / `project_bom_items` tables kept with rows intact |
 | 10. Remove in-app updating | `fix/disable-upstream-updates` | 2026-08-17 | Only `GET /updates/version` and the two version helpers SpoolBuddy needs survive |
+| 7. Fork attribution in GitHub docs | `docs/fork-attribution` | 2026-08-19 | README, CONTRIBUTING, CoC, SECURITY rewritten; LICENSE untouched; Docker kept as intended `--build` path |

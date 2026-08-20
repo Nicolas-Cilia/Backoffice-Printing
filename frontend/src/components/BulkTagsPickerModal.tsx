@@ -11,21 +11,28 @@ import { libraryTagsQueryKey } from '../utils/libraryTagsQuery';
 interface BulkTagsPickerModalProps {
   open: boolean;
   fileIds: number[];
+  /**
+   * Tags already on the file. When tagging a single file these are pre-checked
+   * and Apply uses replace so the picker both attaches and detaches.
+   */
+  currentTagIds?: number[];
   onClose: () => void;
 }
 
 type Action = 'add' | 'remove';
 
 /**
- * Multi-file tag application modal (#1268). Opens from the File Manager's
- * multi-select toolbar. Checkbox-list of catalog tags + inline "create new" so
- * the user doesn't have to leave the flow to add a tag they forgot to make.
+ * Tag application modal (#1268). Opens from the File Manager multi-select
+ * toolbar or from a single file card. Checkbox-list of catalog tags + inline
+ * "create new" so the user doesn't have to leave the flow to add a tag they
+ * forgot to make.
  *
- * Replace mode is omitted from the UI — it's a destructive op that the user
- * would rarely want for arbitrary multi-selections. The API still exposes it
- * for callers that need it (e.g. a future bulk-edit screen).
+ * One file: checkboxes start as that file's current tags and Apply uses
+ * replace, so the picker both attaches and detaches.
+ * Several files: Add / Remove radios. Replace is omitted there — it's a
+ * destructive op the user would rarely want for an arbitrary multi-selection.
  */
-export function BulkTagsPickerModal({ open, fileIds, onClose }: BulkTagsPickerModalProps) {
+export function BulkTagsPickerModal({ open, fileIds, currentTagIds, onClose }: BulkTagsPickerModalProps) {
   const { t } = useTranslation();
   const queryClient = useQueryClient();
   const { showToast } = useToast();
@@ -34,15 +41,24 @@ export function BulkTagsPickerModal({ open, fileIds, onClose }: BulkTagsPickerMo
   const [selected, setSelected] = useState<Set<number>>(new Set());
   const [filter, setFilter] = useState('');
   const [newTagName, setNewTagName] = useState('');
+  const isFileMode = fileIds.length === 1;
 
-  // Reset state on close so re-opening the modal doesn't keep stale selection.
+  // Reset state when the modal opens so re-opening doesn't keep a stale selection.
+  // Single-file mode pre-checks tags already on that file.
   useEffect(() => {
     if (!open) {
       setAction('add');
       setSelected(new Set());
       setFilter('');
       setNewTagName('');
+      return;
     }
+    setAction('add');
+    setSelected(fileIds.length === 1 ? new Set(currentTagIds ?? []) : new Set());
+    setFilter('');
+    setNewTagName('');
+    // Intentionally only when `open` flips — currentTagIds is sampled at open.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [open]);
 
   const { data: tags = [], isLoading } = useQuery({
@@ -83,21 +99,28 @@ export function BulkTagsPickerModal({ open, fileIds, onClose }: BulkTagsPickerMo
 
   const applyMutation = useMutation({
     mutationFn: () =>
-      api.bulkAssignLibraryTags(fileIds, Array.from(selected), action),
+      api.bulkAssignLibraryTags(
+        fileIds,
+        Array.from(selected),
+        isFileMode ? 'replace' : action,
+      ),
     onSuccess: (result) => {
       showToast(
-        action === 'add'
-          ? t('fileManager.tags.applyAddSuccess', {
-              count: result.associations_added,
-              files: result.files_updated,
-            })
-          : t('fileManager.tags.applyRemoveSuccess', {
-              count: result.associations_removed,
-              files: result.files_updated,
-            }),
+        isFileMode
+          ? t('fileManager.tags.applySaveSuccess')
+          : action === 'add'
+            ? t('fileManager.tags.applyAddSuccess', {
+                count: result.associations_added,
+                files: result.files_updated,
+              })
+            : t('fileManager.tags.applyRemoveSuccess', {
+                count: result.associations_removed,
+                files: result.files_updated,
+              }),
         'success',
       );
       queryClient.invalidateQueries({ queryKey: ['library-files'] });
+      queryClient.invalidateQueries({ queryKey: ['production-folder'] });
       queryClient.invalidateQueries({ queryKey: libraryTagsQueryKey });
       onClose();
     },
@@ -138,7 +161,9 @@ export function BulkTagsPickerModal({ open, fileIds, onClose }: BulkTagsPickerMo
         <div className="flex items-center justify-between gap-4 px-5 py-4 border-b border-bambu-dark-tertiary">
           <h3 id={titleId} className="text-base font-semibold text-white flex items-center gap-2">
             <Tag className="w-4 h-4 text-bambu-green" />
-            {t('fileManager.tags.bulkTitle', { count: fileIds.length })}
+            {isFileMode
+              ? t('fileManager.tags.fileTitle')
+              : t('fileManager.tags.bulkTitle', { count: fileIds.length })}
           </h3>
           <button
             type="button"
@@ -150,6 +175,7 @@ export function BulkTagsPickerModal({ open, fileIds, onClose }: BulkTagsPickerMo
           </button>
         </div>
 
+        {!isFileMode && (
         <div className="px-5 py-3 border-b border-bambu-dark-tertiary flex gap-4 text-sm">
           <label className="flex items-center gap-2 cursor-pointer">
             <input
@@ -172,6 +198,7 @@ export function BulkTagsPickerModal({ open, fileIds, onClose }: BulkTagsPickerMo
             <span className="text-white">{t('fileManager.tags.actionRemove')}</span>
           </label>
         </div>
+        )}
 
         <div className="px-5 py-3 border-b border-bambu-dark-tertiary">
           <input
@@ -213,7 +240,7 @@ export function BulkTagsPickerModal({ open, fileIds, onClose }: BulkTagsPickerMo
           )}
         </div>
 
-        {action === 'add' && (
+        {(isFileMode || action === 'add') && (
           <div className="px-5 py-3 border-t border-bambu-dark-tertiary flex gap-2">
             <input
               type="text"
@@ -248,10 +275,18 @@ export function BulkTagsPickerModal({ open, fileIds, onClose }: BulkTagsPickerMo
           <Button
             type="button"
             onClick={() => applyMutation.mutate()}
-            disabled={selected.size === 0 || applyMutation.isPending || fileIds.length === 0}
+            disabled={
+              applyMutation.isPending ||
+              fileIds.length === 0 ||
+              (!isFileMode && selected.size === 0)
+            }
           >
             {applyMutation.isPending && <Loader2 className="w-4 h-4 animate-spin" />}
-            {action === 'add' ? t('fileManager.tags.applyAdd') : t('fileManager.tags.applyRemove')}
+            {isFileMode
+              ? t('fileManager.tags.applySave')
+              : action === 'add'
+                ? t('fileManager.tags.applyAdd')
+                : t('fileManager.tags.applyRemove')}
           </Button>
         </div>
       </div>

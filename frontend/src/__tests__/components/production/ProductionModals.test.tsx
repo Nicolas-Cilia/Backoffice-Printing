@@ -34,6 +34,37 @@ const emptyParts: ProductionPartView[] = [
   { id: 1, code: 'TOP', name: 'Top', instance_id: null, locked_parameters: null, slots: [] },
 ];
 
+const partsWithX1Contract: ProductionPartView[] = [
+  {
+    id: 1,
+    code: 'TOP',
+    name: 'Top',
+    instance_id: 10,
+    locked_parameters: { layer_height: 0.2 },
+    slots: [
+      {
+        id: 5,
+        quantity: 1,
+        major: 1,
+        revision: 0,
+        minor: 0,
+        version: '1.0.0',
+        active_file: {
+          id: 42,
+          filename: 'TOP - 1.0.0 - X1C.3mf',
+          thumbnail_path: null,
+          file_size: 10,
+          print_time_seconds: null,
+          sliced_for_model: 'X1C',
+        },
+        has_overrides: false,
+        last_mismatch: false,
+        parameter_overrides: null,
+      },
+    ],
+  },
+];
+
 describe('ReplaceProductionFileModal', () => {
   beforeEach(() => {
     server.use(
@@ -43,11 +74,36 @@ describe('ReplaceProductionFileModal', () => {
     );
   });
 
+  it('keeps the Choose file dropzone label on a theme-aware hover class', () => {
+    render(
+      <ReplaceProductionFileModal
+        slotId={7}
+        code="TOP"
+        quantity={1}
+        major={1}
+        revision={13}
+        minor={2}
+        currentVersion="1.13.2"
+        printerModel="X1C"
+        onClose={vi.fn()}
+        onReplaced={vi.fn()}
+      />,
+    );
+
+    const pickFile = screen.getByRole('button', { name: /Choose file/i });
+    expect(pickFile.className).toContain('hover:text-white');
+  });
+
   it('shows a green/red diff table after preview-replace', async () => {
     const user = userEvent.setup();
     render(
       <ReplaceProductionFileModal
         slotId={7}
+        code="TOP"
+        quantity={1}
+        major={1}
+        revision={13}
+        minor={2}
         currentVersion="1.13.2"
         printerModel="X1C"
         onClose={vi.fn()}
@@ -73,6 +129,21 @@ describe('ReplaceProductionFileModal', () => {
 });
 
 describe('AddProductionFileModal', () => {
+  it('keeps the Choose file dropzone label on a theme-aware hover class', () => {
+    render(
+      <AddProductionFileModal
+        folderId={9}
+        printerModel="X1C"
+        parts={emptyParts}
+        onClose={vi.fn()}
+        onCreated={vi.fn()}
+      />,
+    );
+
+    const pickFile = screen.getByRole('button', { name: /Choose file/i });
+    expect(pickFile.className).toContain('hover:text-white');
+  });
+
   it('fills identity from the filename and requires new-slot confirmation', async () => {
     const user = userEvent.setup();
     render(
@@ -100,38 +171,57 @@ describe('AddProductionFileModal', () => {
     expect(create).not.toBeDisabled();
   });
 
+  it('shows the identity filename for an unparseable upload', async () => {
+    const user = userEvent.setup();
+    render(
+      <AddProductionFileModal
+        folderId={9}
+        printerModel="X1C"
+        parts={emptyParts}
+        onClose={vi.fn()}
+        onCreated={vi.fn()}
+      />,
+    );
+
+    const input = document.querySelector('input[type="file"]') as HTMLInputElement;
+    const file = new File(['3mf'], '13_Slot_Buide_Plate_V2(2).3mf', { type: 'application/octet-stream' });
+    await user.upload(input, file);
+
+    await waitFor(() => {
+      expect(screen.getByText(/Could not parse the filename/)).toBeInTheDocument();
+    });
+    await user.type(screen.getByLabelText(/Part code/i), 'TOP');
+    await waitFor(() => {
+      expect(screen.getByTestId('production-saved-as')).toHaveTextContent('TOP - 1.0.0 - X1C.3mf');
+    });
+  });
+
+  it('does not warn that the slot exists until a file is chosen', async () => {
+    const user = userEvent.setup();
+    render(
+      <AddProductionFileModal
+        folderId={9}
+        printerModel="A1"
+        parts={partsWithX1Contract}
+        initialCode="TOP"
+        onClose={vi.fn()}
+        onCreated={vi.fn()}
+      />,
+    );
+
+    expect(screen.queryByText(/already exists/)).not.toBeInTheDocument();
+
+    const input = document.querySelector('input[type="file"]') as HTMLInputElement;
+    const colliding = new File(['3mf'], 'TOP x1 - 1.13.2 - A1.gcode.3mf', { type: 'application/octet-stream' });
+    await user.upload(input, colliding);
+
+    await waitFor(() => {
+      expect(screen.getByText(/already exists/)).toBeInTheDocument();
+    });
+  });
+
   it('previews the shared contract when adding a second quantity', async () => {
     const user = userEvent.setup();
-    const partsWithContract: ProductionPartView[] = [
-      {
-        id: 1,
-        code: 'TOP',
-        name: 'Top',
-        instance_id: 10,
-        locked_parameters: { layer_height: 0.2 },
-        slots: [
-          {
-            id: 5,
-            quantity: 1,
-            major: 1,
-            revision: 0,
-            minor: 0,
-            version: '1.0.0',
-            active_file: {
-              id: 42,
-              filename: 'TOP - 1.0.0 - X1C.3mf',
-              thumbnail_path: null,
-              file_size: 10,
-              print_time_seconds: null,
-              sliced_for_model: 'X1C',
-            },
-            has_overrides: false,
-            last_mismatch: false,
-            parameter_overrides: null,
-          },
-        ],
-      },
-    ];
     server.use(
       http.post('/api/v1/production/slots/preview', () => HttpResponse.json(mockPreview)),
     );
@@ -140,7 +230,8 @@ describe('AddProductionFileModal', () => {
       <AddProductionFileModal
         folderId={9}
         printerModel="X1C"
-        parts={partsWithContract}
+        parts={partsWithX1Contract}
+        initialCode="TOP"
         onClose={vi.fn()}
         onCreated={vi.fn()}
       />,
@@ -153,6 +244,7 @@ describe('AddProductionFileModal', () => {
     await waitFor(() => {
       expect(screen.getByText('Layer height')).toBeInTheDocument();
     });
+    expect(screen.queryByText(/already exists/)).not.toBeInTheDocument();
     expect(screen.getByText(/share one print-settings contract/)).toBeInTheDocument();
     expect(screen.getByText('Proceed anyway')).toBeInTheDocument();
     expect(screen.getByText('Accept as new baseline')).toBeInTheDocument();

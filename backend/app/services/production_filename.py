@@ -173,3 +173,27 @@ def format_production_filename(
     printer_code = normalize_production_printer(printer) or printer.strip()
     qty_part = f" x{quantity}" if quantity != 1 else ""
     return f"{code.strip().upper()}{qty_part} - {major}.{revision}.{minor} - {printer_code}"
+
+
+def production_filename_extension(name: str) -> str:
+    """Return ``.gcode.3mf`` / ``.3mf`` / ``.gcode`` (or ``Path.suffix``) from an upload name."""
+    basename = Path(str(name)).name
+    lower = basename.lower()
+    for ext in _STRIP_EXTENSIONS:
+        if lower.endswith(ext):
+            return ext
+    return Path(basename).suffix
+
+
+def stored_production_filename(
+    original_name: str,
+    code: str,
+    quantity: int,
+    major: int,
+    revision: int,
+    minor: int,
+    printer: str,
+) -> str:
+    """Identity stem plus the original print-file extension."""
+    stem = format_production_filename(code, quantity, major, revision, minor, printer)
+    return f"{stem}{production_filename_extension(original_name)}"

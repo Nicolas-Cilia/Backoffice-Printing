@@ -1,5 +1,12 @@
 import { describe, it, expect } from 'vitest';
-import { parseProductionFilename, normalizeProductionPrinter } from '../../utils/productionFilename';
+import {
+  formatProductionFilename,
+  normalizeProductionPrinter,
+  parseProductionFilename,
+  printerModelsMatch,
+  resolvePrintTargetModel,
+  storedProductionFilename,
+} from '../../utils/productionFilename';
 
 describe('parseProductionFilename', () => {
   it('parses CODE xQTY - M.R.m - PRINTER with .gcode.3mf', () => {
@@ -45,10 +52,59 @@ describe('parseProductionFilename', () => {
   });
 });
 
+describe('formatProductionFilename', () => {
+  it('omits x1 and keeps quantity in the stem', () => {
+    expect(formatProductionFilename('TOP', 1, 1, 0, 0, 'X1C')).toBe('TOP - 1.0.0 - X1C');
+    expect(formatProductionFilename('TOP', 2, 1, 13, 2, 'X1C')).toBe('TOP x2 - 1.13.2 - X1C');
+    expect(formatProductionFilename('top', 1, 1, 0, 0, 'A1 Mini')).toBe('TOP - 1.0.0 - A1M');
+  });
+
+  it('appends the original print-file extension', () => {
+    expect(storedProductionFilename('13_Slot_Buide_Plate_V2(2).3mf', 'TOP', 1, 1, 0, 0, 'X1C'))
+      .toBe('TOP - 1.0.0 - X1C.3mf');
+    expect(storedProductionFilename('random.gcode.3mf', 'TOP', 2, 1, 0, 0, 'X1C'))
+      .toBe('TOP x2 - 1.0.0 - X1C.gcode.3mf');
+  });
+});
+
 describe('normalizeProductionPrinter', () => {
   it('maps compact and display names to production codes', () => {
     expect(normalizeProductionPrinter('X1 Carbon')).toBe('X1C');
     expect(normalizeProductionPrinter('A1 Mini')).toBe('A1M');
     expect(normalizeProductionPrinter('a1m')).toBe('A1M');
+  });
+});
+
+describe('printerModelsMatch', () => {
+  it('treats A1M and A1 Mini as the same printer', () => {
+    expect(printerModelsMatch('A1M', 'A1 Mini')).toBe(true);
+    expect(printerModelsMatch('A1 Mini', 'A1M')).toBe(true);
+    expect(printerModelsMatch('Bambu Lab A1 Mini', 'A1M')).toBe(true);
+  });
+
+  it('does not treat A1 and A1 Mini as the same printer', () => {
+    expect(printerModelsMatch('A1', 'A1 Mini')).toBe(false);
+    expect(printerModelsMatch('A1', 'A1M')).toBe(false);
+  });
+
+  it('maps X1 Carbon to X1C and leaves other models distinct', () => {
+    expect(printerModelsMatch('X1 Carbon', 'X1C')).toBe(true);
+    expect(printerModelsMatch('X1C', 'P1S')).toBe(false);
+    expect(printerModelsMatch('H2D', 'H2S')).toBe(false);
+  });
+});
+
+describe('resolvePrintTargetModel', () => {
+  it('prefers sliced_for_model over the filename suffix', () => {
+    expect(resolvePrintTargetModel('A1 Mini', 'TOP x1 - 1.13.2 - X1C.gcode.3mf')).toBe('A1 Mini');
+  });
+
+  it('parses the production filename when slice metadata is missing', () => {
+    expect(resolvePrintTargetModel(null, 'TOP x1 - 1.13.2 - A1M.gcode.3mf')).toBe('A1M');
+    expect(resolvePrintTargetModel('', 'BOT - 2.0.1 - A1 Mini.3mf')).toBe('A1M');
+  });
+
+  it('returns null for an ordinary file with no slice metadata', () => {
+    expect(resolvePrintTargetModel(null, 'benchy.gcode.3mf')).toBeNull();
   });
 });

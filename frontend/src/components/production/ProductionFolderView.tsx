@@ -1,10 +1,12 @@
 import { useMemo, useState, type DragEvent } from 'react';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { useTranslation } from 'react-i18next';
-import { ChevronRight, FileBox, Loader2, Plus, Printer, RefreshCw, Trash2, X } from 'lucide-react';
+import { ChevronRight, FileBox, Loader2, Plus, Printer, RefreshCw, Tag, Trash2, X } from 'lucide-react';
 import { api } from '../../api/client';
-import type { ProductionActiveFile, ProductionPartView, ProductionSlotNested } from '../../api/client';
+import type { LibraryTagSummary, ProductionActiveFile, ProductionPartView, ProductionSlotNested } from '../../api/client';
 import { Button } from '../Button';
+import { ScrollFadeContainer } from '../ScrollFadeContainer';
+import { BulkTagsPickerModal } from '../BulkTagsPickerModal';
 import { ConfirmModal } from '../ConfirmModal';
 import { useAuth } from '../../contexts/AuthContext';
 import { useToast } from '../../contexts/ToastContext';
@@ -102,21 +104,28 @@ function SlotCard({
   lockedParameters,
   canUpload,
   canDelete,
+  canEditTags,
   onReplace,
   onDelete,
   onPrint,
+  onEditTags,
+  onRemoveTag,
 }: {
   slot: ProductionSlotNested;
   lockedParameters: Record<string, unknown> | null;
   canUpload: boolean;
   canDelete: boolean;
+  canEditTags: boolean;
   onReplace: () => void;
   onDelete: () => void;
   onPrint?: (file: ProductionActiveFile) => void;
+  onEditTags?: (file: ProductionActiveFile) => void;
+  onRemoveTag?: (fileId: number, tagId: number) => void;
 }) {
   const { t } = useTranslation();
   const [showSpecs, setShowSpecs] = useState(false);
   const file = slot.active_file;
+  const attachedTags = file?.tags ?? [];
   const status = specStatus(slot);
   const statusLabel =
     status === 'mismatch'
@@ -157,10 +166,10 @@ function SlotCard({
               e.stopPropagation();
               onDelete();
             }}
-            className="absolute top-1.5 right-1.5 z-10 p-1 rounded-md bg-white/85 border border-black/15 text-gray-800/70 hover:text-red-700 hover:bg-white hover:border-red-300 dark:bg-black/55 dark:border-white/25 dark:text-white/75 dark:hover:text-red-400 dark:hover:bg-black/75 dark:hover:border-red-400/40 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-gray-500 dark:focus-visible:ring-white/40 transition-colors"
+            className="absolute top-1.5 right-1.5 z-10 p-1.5 rounded bg-bambu-dark-secondary/90 text-bambu-gray hover:bg-bambu-dark-tertiary hover:text-red-700 dark:hover:text-red-400 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-bambu-gray transition-colors"
             aria-label={t('fileManager.production.delete')}
           >
-            <Trash2 className="w-3.5 h-3.5" aria-hidden />
+            <Trash2 className="w-4 h-4" aria-hidden />
           </button>
         )}
       </div>
@@ -191,6 +200,46 @@ function SlotCard({
           <p className="text-[11px] text-bambu-gray leading-snug" data-testid="production-spec-summary">
             {summary.join(' · ')}
           </p>
+        )}
+        {file && (attachedTags.length > 0 || canEditTags) && (
+          <div className="flex flex-wrap gap-1">
+            {attachedTags.map((tg: LibraryTagSummary) => (
+              <span
+                key={tg.id}
+                className="inline-flex items-center max-w-full rounded-full bg-bambu-green/10 text-bambu-green text-[10px]"
+              >
+                <span className={`inline-flex items-center gap-0.5 pl-1.5 py-0.5 min-w-0 ${
+                  canEditTags && onRemoveTag ? 'rounded-l-full' : 'pr-1.5 rounded-full'
+                }`} title={tg.name}>
+                  <Tag className="w-2.5 h-2.5 flex-shrink-0" />
+                  <span className="truncate">{tg.name}</span>
+                </span>
+                {canEditTags && onRemoveTag && (
+                  <button
+                    type="button"
+                    className="pr-1 pl-0.5 py-0.5 hover:text-white rounded-r-full"
+                    onClick={() => onRemoveTag(file.id, tg.id)}
+                    aria-label={t('fileManager.tags.removeFromFileAria', { name: tg.name })}
+                    title={t('fileManager.tags.removeFromFileAria', { name: tg.name })}
+                  >
+                    <X className="w-2.5 h-2.5" />
+                  </button>
+                )}
+              </span>
+            ))}
+            {canEditTags && onEditTags && (
+              <button
+                type="button"
+                onClick={() => onEditTags(file)}
+                className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full border border-dashed border-bambu-green/70 text-bambu-green text-[11px] font-medium hover:bg-bambu-green/10 transition-colors"
+                aria-label={t('fileManager.tags.addToFileAria')}
+                title={t('fileManager.tags.fileTooltip')}
+              >
+                <Plus className="w-3 h-3" />
+                {t('fileManager.tags.title')}
+              </button>
+            )}
+          </div>
         )}
         <div className="mt-auto flex flex-col gap-2 pt-1">
           {canUpload && (
@@ -229,6 +278,7 @@ export function ProductionFolderView({
   const queryClient = useQueryClient();
   const canPrint = hasPermission('queue:create');
   const canDelete = hasAnyPermission('library:delete_own', 'library:delete_all');
+  const canEditTags = hasAnyPermission('library:update_own', 'library:update_all');
   const [showAdd, setShowAdd] = useState(false);
   const [showAddPart, setShowAddPart] = useState(false);
   const [droppedFile, setDroppedFile] = useState<File | null>(null);
@@ -242,6 +292,10 @@ export function ProductionFolderView({
   const [deleting, setDeleting] = useState(false);
   const [removingPart, setRemovingPart] = useState(false);
   const [isDragging, setIsDragging] = useState(false);
+  const [tagPickerTarget, setTagPickerTarget] = useState<{
+    fileIds: number[];
+    currentTagIds?: number[];
+  } | null>(null);
 
   const { data, isLoading, isError, refetch } = useQuery({
     queryKey: ['production-folder', folderId],
@@ -255,6 +309,23 @@ export function ProductionFolderView({
     void queryClient.invalidateQueries({ queryKey: ['production-folder', folderId] });
     void queryClient.invalidateQueries({ queryKey: ['library-files'] });
     void queryClient.invalidateQueries({ queryKey: ['library-folders'] });
+  };
+
+  const openFileTagPicker = (file: ProductionActiveFile) => {
+    setTagPickerTarget({
+      fileIds: [file.id],
+      currentTagIds: (file.tags ?? []).map((tg) => tg.id),
+    });
+  };
+
+  const handleRemoveTag = async (fileId: number, tagId: number) => {
+    try {
+      await api.bulkAssignLibraryTags([fileId], [tagId], 'remove');
+      refresh();
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      showToast(message || t('fileManager.tags.applyFailed'), 'error');
+    }
   };
 
   const handleDragOver = (e: DragEvent<HTMLDivElement>) => {
@@ -342,12 +413,12 @@ export function ProductionFolderView({
 
   return (
     <div
-      className={`flex-1 flex flex-col min-h-0 overflow-y-auto ${isDragging ? 'ring-2 ring-bambu-green rounded-lg' : ''}`}
+      className={`flex-1 flex flex-col min-h-0 overflow-hidden ${isDragging ? 'ring-2 ring-bambu-green rounded-lg' : ''}`}
       onDragOver={handleDragOver}
       onDragLeave={handleDragLeave}
       onDrop={handleDrop}
     >
-      <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 mb-6">
+      <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 mb-6 shrink-0">
         <div>
           <h2 className="text-lg font-semibold text-white">{t('fileManager.production.title')}</h2>
           <p className="text-sm text-bambu-gray">
@@ -377,7 +448,7 @@ export function ProductionFolderView({
       </div>
 
       {!hasAnySlots && (
-        <div className="flex flex-col items-center justify-center py-12 mb-6 border border-dashed border-bambu-dark-tertiary rounded-lg">
+        <div className="flex flex-col items-center justify-center py-12 mb-6 border border-dashed border-bambu-dark-tertiary rounded-lg shrink-0">
           <FileBox className="w-12 h-12 text-bambu-gray/50 mb-3" />
           <p className="text-white font-medium mb-1">{t('fileManager.production.emptyFolder')}</p>
           <p className="text-sm text-bambu-gray">{t('fileManager.production.dropToAdd')}</p>
@@ -385,54 +456,59 @@ export function ProductionFolderView({
       )}
 
       {parts.length > 0 && (
-        <div className="space-y-8">
-          {parts.map((part: ProductionPartView) => (
-            <section key={part.id}>
-              <div className="flex items-center justify-between gap-3 mb-3">
-                <div className="flex items-baseline gap-2 min-w-0">
-                  <h3 className="text-sm font-semibold text-white tracking-wide">{part.code}</h3>
-                  <span className="text-xs text-bambu-gray truncate">{part.name}</span>
+        <ScrollFadeContainer>
+          <div className="space-y-8 pb-4">
+            {parts.map((part: ProductionPartView) => (
+              <section key={part.id}>
+                <div className="flex items-center justify-between gap-3 mb-3">
+                  <div className="flex items-baseline gap-2 min-w-0">
+                    <h3 className="text-sm font-semibold text-white tracking-wide">{part.code}</h3>
+                    <span className="text-xs text-bambu-gray truncate">{part.name}</span>
+                  </div>
+                  <div className="flex items-center gap-1 shrink-0">
+                    {canUpload && (
+                      <Button variant="secondary" onClick={() => openAddFile(part.code)}>
+                        <Plus className="w-4 h-4" />
+                        {t('fileManager.production.addFileToPart')}
+                      </Button>
+                    )}
+                    {canDelete && (
+                      <button
+                        type="button"
+                        onClick={() => setRemovePartTarget(part)}
+                        className="p-1.5 rounded text-bambu-gray hover:bg-bambu-dark-tertiary hover:text-red-700 dark:hover:text-red-400 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-bambu-gray transition-colors"
+                        aria-label={t('fileManager.production.removePart')}
+                      >
+                        <Trash2 className="w-4 h-4" aria-hidden />
+                      </button>
+                    )}
+                  </div>
                 </div>
-                <div className="flex items-center gap-1 shrink-0">
-                  {canUpload && (
-                    <Button variant="secondary" onClick={() => openAddFile(part.code)}>
-                      <Plus className="w-4 h-4" />
-                      {t('fileManager.production.addFileToPart')}
-                    </Button>
-                  )}
-                  {canDelete && (
-                    <button
-                      type="button"
-                      onClick={() => setRemovePartTarget(part)}
-                      className="p-1.5 rounded-md text-bambu-gray hover:text-red-400 hover:bg-bambu-dark-tertiary"
-                      aria-label={t('fileManager.production.removePart')}
-                    >
-                      <Trash2 className="w-4 h-4" aria-hidden />
-                    </button>
-                  )}
-                </div>
-              </div>
-              {part.slots.length > 0 ? (
-                <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 xl:grid-cols-5 2xl:grid-cols-6 gap-4">
-                  {part.slots.map((slot) => (
-                    <SlotCard
-                      key={slot.id}
-                      slot={slot}
-                      lockedParameters={part.locked_parameters}
-                      canUpload={canUpload}
-                      canDelete={canDelete}
-                      onReplace={() => setReplaceSlot(slot)}
-                      onDelete={() => setDeleteTarget({ slot, part })}
-                      onPrint={canPrint ? onPrint : undefined}
-                    />
-                  ))}
-                </div>
-              ) : (
-                <p className="text-xs text-bambu-gray">{t('fileManager.production.emptyPart')}</p>
-              )}
-            </section>
-          ))}
-        </div>
+                {part.slots.length > 0 ? (
+                  <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 xl:grid-cols-5 2xl:grid-cols-6 gap-4">
+                    {part.slots.map((slot) => (
+                      <SlotCard
+                        key={slot.id}
+                        slot={slot}
+                        lockedParameters={part.locked_parameters}
+                        canUpload={canUpload}
+                        canDelete={canDelete}
+                        canEditTags={canEditTags}
+                        onReplace={() => setReplaceSlot(slot)}
+                        onDelete={() => setDeleteTarget({ slot, part })}
+                        onPrint={canPrint ? onPrint : undefined}
+                        onEditTags={openFileTagPicker}
+                        onRemoveTag={handleRemoveTag}
+                      />
+                    ))}
+                  </div>
+                ) : (
+                  <p className="text-xs text-bambu-gray">{t('fileManager.production.emptyPart')}</p>
+                )}
+              </section>
+            ))}
+          </div>
+        </ScrollFadeContainer>
       )}
 
       {showAdd && (
@@ -472,6 +548,11 @@ export function ProductionFolderView({
       {replaceSlot && (
         <ReplaceProductionFileModal
           slotId={replaceSlot.id}
+          code={parts.find((part) => part.slots.some((slot) => slot.id === replaceSlot.id))?.code ?? ''}
+          quantity={replaceSlot.quantity}
+          major={replaceSlot.major}
+          revision={replaceSlot.revision}
+          minor={replaceSlot.minor}
           currentVersion={replaceSlot.version}
           printerModel={printerModel}
           onClose={() => setReplaceSlot(null)}
@@ -532,6 +613,13 @@ export function ProductionFolderView({
           }}
         />
       )}
+
+      <BulkTagsPickerModal
+        open={tagPickerTarget !== null}
+        fileIds={tagPickerTarget?.fileIds ?? []}
+        currentTagIds={tagPickerTarget?.currentTagIds}
+        onClose={() => setTagPickerTarget(null)}
+      />
     </div>
   );
 }

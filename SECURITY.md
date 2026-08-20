@@ -2,57 +2,38 @@
 
 ## Reporting a Vulnerability
 
-The Bambuddy team takes security seriously. We appreciate your efforts to responsibly disclose your findings.
+This is a personal fork. Please **do not** report security vulnerabilities
+through public GitHub issues.
 
-### How to Report
-
-**Please DO NOT report security vulnerabilities through public GitHub.**
-
-Instead, please report them via email to:
-
-**security@bambuddy.cool**
+Use GitHub's private vulnerability reporting on **this** repository: open the
+[Security tab](https://github.com/Nicolas-Cilia/Backoffice-Printing/security)
+and select **Report a vulnerability**.
 
 ### What to Include
 
-Please include the following information in your report:
-
 - **Description** of the vulnerability
 - **Steps to reproduce** the issue
-- **Affected versions** of Bambuddy
-- **Potential impact** of the vulnerability
+- **Affected commit or version** of this repository
+- **Potential impact**
 - **Any suggested fixes** (if you have them)
 
-### What to Expect
-
-- **Acknowledgment**: We will acknowledge receipt of your report within 48 hours
-- **Assessment**: We will investigate and validate the issue within 7 days
-- **Updates**: We will keep you informed of our progress
-- **Resolution**: We aim to release a fix within 30 days for critical issues
-- **Credit**: We will credit you in our release notes (unless you prefer to remain anonymous)
-
-## Supported Versions
-
-| Version | Supported          |
-| ------- | ------------------ |
-| 0.1.x   | :white_check_mark: |
-| 0.2.x   | :white_check_mark: |
+Reports are handled as they come. There is no published response SLA.
 
 ## Security Considerations
 
 ### Network Security
 
-Bambuddy communicates with your printers over your local network using:
+This app talks to printers on the local network using:
 
-- **MQTT over TLS** (port 8883) - Encrypted printer communication
-- **FTPS** (port 990) - Encrypted file transfers
+- **MQTT over TLS** (port 8883) — encrypted printer communication
+- **FTPS** (port 990) — encrypted file transfers
 
 ### Recommendations
 
-1. **Run on trusted network**: Bambuddy should only be accessible on your local network
-2. **Use reverse proxy**: If exposing to the internet, use a reverse proxy with HTTPS
-3. **Keep updated**: Always run the latest version for security patches
-4. **Secure API keys**: Treat API keys like passwords; don't share them publicly
-5. **Developer Mode**: Use your printer's Developer Mode access code; don't share it
+1. **Run on a trusted network**: keep the app on the local network
+2. **Use a reverse proxy**: if you expose it beyond LAN, put HTTPS in front
+3. **Secure API keys**: treat them like passwords; do not share them publicly
+4. **Developer Mode**: use the printer access code; do not share it
 
 ### Known Security Features
 
@@ -63,7 +44,7 @@ Bambuddy communicates with your printers over your local network using:
 
 ## Scope
 
-The following are **in scope** for security reports:
+**In scope:**
 
 - Authentication/authorization bypasses
 - Remote code execution
@@ -73,7 +54,7 @@ The following are **in scope** for security reports:
 - Sensitive data exposure
 - Insecure direct object references
 
-The following are **out of scope**:
+**Out of scope:**
 
 - Issues in dependencies (report to the upstream project)
 - Social engineering attacks
@@ -81,12 +62,12 @@ The following are **out of scope**:
 - Denial of service (DoS) attacks
 - Issues requiring physical access to the server
 
-## Bambuddy Security Stance
+## Security Stance (CI-enforced)
 
-The following rules apply to every PR that touches authentication,
-authorization, permission gating, secret handling, or any code that
-decides whether to allow or deny an action. They are not aspirational —
-each one is enforced by a CI test that fails the build on violation.
+The following rules apply to every change that touches authentication,
+authorization, permission gating, secret handling, or any code that decides
+whether to allow or deny an action. They are not aspirational — each one is
+enforced by a CI test that fails the build on violation.
 
 ### 1. Default-deny, allowlist over denylist
 
@@ -134,7 +115,7 @@ rather than booting with a known value. CI greps the source for
 
 ### 4. Negative-path tests required for any auth change
 
-Any PR that adds or modifies an auth dependency, permission check, or
+Any change that adds or modifies an auth dependency, permission check, or
 scope flag includes tests for the negative paths:
 
 - "No credentials → 401"
@@ -149,8 +130,8 @@ tests catch *specific* regressions in the new code.
 
 ### 5. Path joins under a trusted parent use the safe-join helper
 
-Anywhere a Bambuddy code path joins a string from outside the function's
-scope (request body, query/path param, `UploadFile.filename`, ZIP
+Anywhere a code path in this repository joins a string from outside the
+function's scope (request body, query/path param, `UploadFile.filename`, ZIP
 `namelist()` entry, tarfile member, **printer FTP-listing entry**) under
 a trusted directory, the join must route through
 `backend.app.utils.safe_path.safe_join_under(parent, *parts)`. The helper
@@ -165,7 +146,7 @@ same line. CI walks **both** `backend/app/api/routes/` and
 `backend/app/services/` and fails the build on any
 ``<dir-like> / <variable>`` join without either the helper or the
 marker. The services layer is in scope because it receives values from
-the routes verbatim and from external sources Bambuddy has no control
+the routes verbatim and from external sources this app has no control
 over (the compromised-printer threat model: a malicious printer can
 serve crafted FTP-listing entries that flow straight into a path join).
 
@@ -181,9 +162,4 @@ serve crafted FTP-listing entries that flow straight into a path join).
 | 5. Safe-join under trusted parent | `test_route_path_arithmetic_is_safe_joined_or_marked` | `backend/tests/unit/test_no_unsafe_path_joins.py` |
 
 If you are adding a CI rule, update this table. If you are removing a
-CI rule, you are removing a security backstop and the PR description
-must explain why.
-
----
-
-Thank you for helping keep Bambuddy and its users safe!
+CI rule, you are removing a security backstop and must explain why.

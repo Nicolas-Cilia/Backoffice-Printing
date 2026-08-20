@@ -46,6 +46,7 @@ export function FilamentSection({
   detailsRequired,
   quantity,
   onQuantityChange,
+  identityOnly = false,
   errors,
 }: FilamentSectionProps) {
   const { t } = useTranslation();
@@ -225,7 +226,7 @@ export function FilamentSection({
   return (
     <div className="space-y-4">
       {/* Cloud status indicator */}
-      {!quickAdd && (
+      {!identityOnly && !quickAdd && (
         <div className="flex items-center gap-2 text-xs text-bambu-gray">
           {loadingCloudPresets ? (
             <><Loader2 className="w-3 h-3 animate-spin" /> {t('inventory.loadingPresets')}</>
@@ -237,8 +238,8 @@ export function FilamentSection({
         </div>
       )}
 
-      {/* Slicer Preset (autocomplete) — hidden in quick-add mode */}
-      {!quickAdd && (
+      {/* Slicer Preset (autocomplete) — hidden in quick-add / tracking identity */}
+      {!identityOnly && !quickAdd && (
         <div>
           <label className="block text-sm font-medium text-bambu-gray mb-1">
             {t('inventory.slicerPreset')}{detailsRequired && ' *'}
@@ -482,7 +483,7 @@ export function FilamentSection({
       </div>
 
       {/* Label Weight */}
-      <div>
+      {!identityOnly && <div>
         <label className="block text-sm font-medium text-bambu-gray mb-1">{t('inventory.labelWeight')}</label>
         <div className="relative">
           <input
@@ -507,10 +508,10 @@ export function FilamentSection({
           />
           <span className="absolute right-2 top-1/2 -translate-y-1/2 text-xs text-bambu-gray">g</span>
         </div>
-      </div>
+      </div>}
 
       {/* Quantity — only in quick-add mode */}
-      {quickAdd && (
+      {!identityOnly && quickAdd && (
         <div>
           <label className="block text-sm font-medium text-bambu-gray mb-1">{t('inventory.quantity')}</label>
           <input

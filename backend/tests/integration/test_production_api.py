@@ -90,7 +90,9 @@ class TestProductionAPI:
 
         sections = await async_client.get("/api/v1/library/sections")
         assert sections.status_code == 200
-        assert any(section["name"] == "Production" and section.get("kind") == "production" for section in sections.json())
+        assert any(
+            section["name"] == "Production" and section.get("kind") == "production" for section in sections.json()
+        )
 
     async def test_create_slot_then_duplicate_409(self, async_client: AsyncClient):
         boot = (await async_client.post("/api/v1/production/bootstrap")).json()
@@ -123,6 +125,66 @@ class TestProductionAPI:
         assert len(top["slots"]) == 1
         assert top["slots"][0]["id"] == slot["id"]
         assert {part["code"] for part in payload["parts"]} >= {"TOP", "BOT", "KNB", "BUT"}
+
+    async def test_create_slot_renames_unparseable_upload_to_identity(self, async_client: AsyncClient):
+        boot = (await async_client.post("/api/v1/production/bootstrap")).json()
+        x1c = next(folder for folder in boot["folders"] if folder["production_printer_model"] == "X1C")
+        files, data = _upload(
+            "13_Slot_Buide_Plate_V2(2).3mf",
+            folder_id=x1c["id"],
+            code="TOP",
+            quantity=1,
+            major=1,
+            revision=0,
+            minor=0,
+            printer="X1C",
+        )
+        created = await async_client.post("/api/v1/production/slots", files=files, data=data)
+        assert created.status_code == 200, created.text
+        slot = created.json()
+        assert slot["code"] == "TOP"
+        assert slot["quantity"] == 1
+        assert slot["version"] == "1.0.0"
+        assert slot["active_file"]["filename"] == "TOP - 1.0.0 - X1C.3mf"
+
+        qty_files, qty_data = _upload(
+            "random.gcode.3mf",
+            folder_id=x1c["id"],
+            code="TOP",
+            quantity=2,
+            major=1,
+            revision=0,
+            minor=0,
+            printer="X1C",
+        )
+        second = await async_client.post("/api/v1/production/slots", files=qty_files, data=qty_data)
+        assert second.status_code == 200, second.text
+        assert second.json()["quantity"] == 2
+        assert second.json()["active_file"]["filename"] == "TOP x2 - 1.0.0 - X1C.gcode.3mf"
+
+    async def test_replace_slot_renames_unparseable_upload_to_identity(self, async_client: AsyncClient):
+        boot = (await async_client.post("/api/v1/production/bootstrap")).json()
+        x1c = next(folder for folder in boot["folders"] if folder["production_printer_model"] == "X1C")
+        files, data = _upload("TOP - 1.0.0 - X1C.3mf", folder_id=x1c["id"])
+        created = await async_client.post("/api/v1/production/slots", files=files, data=data)
+        assert created.status_code == 200, created.text
+        slot_id = created.json()["id"]
+
+        incoming, form = _upload(
+            "random.3mf",
+            resolution="proceed",
+            code="TOP",
+            quantity=1,
+            major=1,
+            revision=1,
+            minor=0,
+            printer="X1C",
+        )
+        replaced = await async_client.post(f"/api/v1/production/slots/{slot_id}/replace", files=incoming, data=form)
+        assert replaced.status_code == 200, replaced.text
+        body = replaced.json()
+        assert body["version"] == "1.1.0"
+        assert body["active_file"]["filename"] == "TOP - 1.1.0 - X1C.3mf"
 
     async def test_list_folders_file_count_excludes_superseded(self, async_client: AsyncClient):
         boot = (await async_client.post("/api/v1/production/bootstrap")).json()
@@ -400,11 +462,7 @@ class TestProductionAPI:
         boot = (await async_client.post("/api/v1/production/bootstrap")).json()
         a1 = next(folder for folder in boot["folders"] if folder["production_printer_model"] == "A1")
         content = _3mf(
-            _config(
-                different_settings_to_system=[
-                    "fuzzy_skin_point_distance;fuzzy_skin_thickness;wall_loops"
-                ]
-            ),
+            _config(different_settings_to_system=["fuzzy_skin_point_distance;fuzzy_skin_thickness;wall_loops"]),
             extra_files={"Metadata/plate_1.gcode": "; fuzzy_skin = none\nG1 X0 Y0\n"},
         )
         files, data = _upload("TOP - 1.13.2 - A1.3mf", content, folder_id=a1["id"])
@@ -504,6 +562,34 @@ class TestProductionAPI:
         view = (await async_client.get(f"/api/v1/production/folders/{a1['id']}")).json()
         assert "TOP" not in {part["code"] for part in view["parts"]}
         assert file_id in {item["id"] for item in (await async_client.get("/api/v1/library/trash")).json()["items"]}
+
+    async def test_remove_part_route_error_is_not_masked_as_auth_unavailable(
+        self, async_client: AsyncClient, monkeypatch: pytest.MonkeyPatch
+    ):
+        """Auth-disabled File Manager must not toast the auth-probe 503 when
+        a production delete handler raises. The middleware used to wrap
+        ``call_next`` in that fail-closed except.
+        """
+        boot = (await async_client.post("/api/v1/production/bootstrap")).json()
+        a1 = next(folder for folder in boot["folders"] if folder["production_printer_model"] == "A1")
+        view = (await async_client.get(f"/api/v1/production/folders/{a1['id']}")).json()
+        knb = next(part for part in view["parts"] if part["code"] == "KNB")
+
+        async def boom(*_args, **_kwargs):
+            raise RuntimeError("simulated part-remove failure")
+
+        monkeypatch.setattr("backend.app.api.routes.production._load_production_folder", boom)
+        # BaseHTTPMiddleware re-raises unhandled route errors. The bug was
+        # converting that into a 503 "Authentication service temporarily
+        # unavailable" JSON body when auth is disabled.
+        try:
+            removed = await async_client.delete(f"/api/v1/production/folders/{a1['id']}/parts/{knb['id']}")
+        except BaseException as exc:
+            assert "Authentication service temporarily unavailable" not in str(exc)
+            assert "simulated part-remove failure" in str(exc)
+        else:
+            assert removed.status_code != 503
+            assert "Authentication service temporarily unavailable" not in removed.text
 
     async def test_second_quantity_shares_instance_contract(self, async_client: AsyncClient):
         boot = (await async_client.post("/api/v1/production/bootstrap")).json()

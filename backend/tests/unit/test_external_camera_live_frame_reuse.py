@@ -13,7 +13,7 @@ hence the ``on_frame`` callback, and hence a guard alone would have found an
 empty buffer and skipped every time.
 
 These tests cover the plumbing (raw frames reach the callback) and each consumer
-that used to compete: layer timelapse, Obico polling, and plate detection.
+that used to compete: Obico polling and plate detection.
 """
 
 from __future__ import annotations
@@ -23,7 +23,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 
 from backend.app.api.routes import camera
-from backend.app.services import external_camera, layer_timelapse
+from backend.app.services import external_camera
 from backend.app.services.obico_detection import ObicoDetectionService
 
 pytestmark = pytest.mark.asyncio
@@ -126,61 +126,6 @@ async def test_a_raising_on_frame_callback_cannot_break_the_stream():
         ]
 
     assert len(chunks) == 2, "stream stopped because the callback raised"
-
-
-# ---------------------------------------------------------------------------
-# Layer timelapse — the 0-of-87 case
-# ---------------------------------------------------------------------------
-
-
-def _session(tmp_path) -> layer_timelapse.TimelapseSession:
-    with patch.object(layer_timelapse.settings, "base_dir", tmp_path):
-        return layer_timelapse.TimelapseSession(
-            printer_id=PRINTER_ID,
-            archive_id=None,
-            camera_url="/dev/video0",
-            camera_type="usb",
-        )
-
-
-async def test_timelapse_uses_the_live_frame_instead_of_competing(tmp_path):
-    session = _session(tmp_path)
-    _attach_viewer()
-
-    with patch.object(layer_timelapse, "capture_frame", new=AsyncMock(return_value=FRESH_FRAME)) as mock_capture:
-        captured = await session.capture_layer(1)
-
-    assert captured is True, "layer capture failed with a viewer attached"
-    # Would have opened a competing handle on a single-reader device.
-    mock_capture.assert_not_called()
-    written = sorted(session.frames_dir.glob("layer_*.jpg"))
-    assert len(written) == 1
-    assert written[0].read_bytes() == LIVE_FRAME
-
-
-async def test_timelapse_skips_a_layer_rather_than_competing_on_an_empty_buffer(tmp_path):
-    session = _session(tmp_path)
-    _attach_viewer(frame=None)
-
-    with patch.object(layer_timelapse, "capture_frame", new=AsyncMock(return_value=FRESH_FRAME)) as mock_capture:
-        captured = await session.capture_layer(1)
-
-    assert captured is False
-    mock_capture.assert_not_called()
-    assert sorted(session.frames_dir.glob("layer_*.jpg")) == []
-
-
-async def test_timelapse_captures_normally_with_no_viewer(tmp_path):
-    """The unwatched path must be untouched — this is the common case."""
-    session = _session(tmp_path)
-
-    with patch.object(layer_timelapse, "capture_frame", new=AsyncMock(return_value=FRESH_FRAME)) as mock_capture:
-        captured = await session.capture_layer(1)
-
-    assert captured is True
-    mock_capture.assert_awaited_once()
-    written = sorted(session.frames_dir.glob("layer_*.jpg"))
-    assert written[0].read_bytes() == FRESH_FRAME
 
 
 # ---------------------------------------------------------------------------

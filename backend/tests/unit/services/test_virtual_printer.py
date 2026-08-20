@@ -722,7 +722,6 @@ class TestVirtualPrinterInstance:
             "default_flow_cali": "true",  # tri-state default: auto
             "default_vibration_cali": "false",  # model default: True
             "default_layer_inspect": "true",  # model default: False
-            "default_timelapse": "true",  # model default: False
         }
 
         async def fake_get_setting(_db, key):
@@ -751,7 +750,6 @@ class TestVirtualPrinterInstance:
         assert queue_item.flow_cali == "on", "default_flow_cali=true must flow through"
         assert queue_item.vibration_cali is False, "default_vibration_cali=false must flow through"
         assert queue_item.layer_inspect is True, "default_layer_inspect=true must flow through"
-        assert queue_item.timelapse is True, "default_timelapse=true must flow through"
 
     @pytest.mark.asyncio
     async def test_add_to_print_queue_falls_back_to_schema_defaults_when_unset(self, tmp_path):
@@ -811,16 +809,15 @@ class TestVirtualPrinterInstance:
         assert queue_item.flow_cali == "auto"
         assert queue_item.vibration_cali is True
         assert queue_item.layer_inspect is False
-        assert queue_item.timelapse is False
 
     @pytest.mark.asyncio
     async def test_add_to_print_queue_inherits_slicer_print_options(self, tmp_path):
-        """#1403: VP-queue items used to fall back to `default_timelapse` even
+        """#1403: VP-queue items used to fall back to `default_bed_levelling` even
         though the slicer's MQTT `project_file` command carries the user's
         actual choice. Capture-via-`on_print_command` flow lets the user's
         slicer toggle reach the queue item.
 
-        Settings here have timelapse OFF; the slicer's MQTT capture has it ON.
+        Settings here have bed_leveling ON; the slicer's MQTT capture has it OFF.
         After the fix the queue item must reflect the slicer's choice.
         """
         from backend.app.services.virtual_printer.manager import VirtualPrinterInstance
@@ -851,13 +848,12 @@ class TestVirtualPrinterInstance:
         file_path.write_bytes(b"fake3mf")
 
         # Pre-populate the capture as if MQTT `project_file` arrived already.
-        # Settings (below) deliberately have timelapse OFF — only the slicer
+        # Settings (below) deliberately have bed_leveling OFF — only the slicer
         # capture should drive the resulting queue item.
         await inst.on_print_command(
             file_path.name,
             {
                 "command": "project_file",
-                "timelapse": True,
                 "bed_leveling": False,  # Note: MQTT field is single-L `bed_leveling`
                 "flow_cali": True,
                 "vibration_cali": False,
@@ -871,7 +867,6 @@ class TestVirtualPrinterInstance:
             "default_flow_cali": "false",
             "default_vibration_cali": "true",
             "default_layer_inspect": "false",
-            "default_timelapse": "false",
         }
 
         async def fake_get_setting(_db, key):
@@ -896,7 +891,6 @@ class TestVirtualPrinterInstance:
 
         assert len(added_items) == 1
         queue_item = added_items[0]
-        assert queue_item.timelapse is True, "Slicer's timelapse=True must override settings.default_timelapse=False"
         assert queue_item.bed_levelling == "off", "Slicer's bed_leveling=False must override default_bed_levelling"
         assert queue_item.flow_cali == "on"
         assert queue_item.vibration_cali is False
@@ -939,7 +933,7 @@ class TestVirtualPrinterInstance:
 
         await inst.on_print_command(
             file_path.name,
-            {"command": "project_file", "timelapse": 1, "bed_leveling": 0, "flow_cali": 1},
+            {"command": "project_file", "vibration_cali": 1, "bed_leveling": 0, "flow_cali": 1},
         )
 
         mock_archive = MagicMock()
@@ -962,7 +956,7 @@ class TestVirtualPrinterInstance:
 
         assert len(added_items) == 1
         queue_item = added_items[0]
-        assert queue_item.timelapse is True, "integer 1 must coerce to True"
+        assert queue_item.vibration_cali is True, "integer 1 must coerce to True"
         assert queue_item.bed_levelling == "off", "integer 0 must coerce to off"
         assert queue_item.flow_cali == "on"
 
@@ -1822,7 +1816,7 @@ class TestVirtualPrinterInstance:
         # X1C-style slicer command — no nozzle fields.
         await inst.on_print_command(
             file_path.name,
-            {"command": "project_file", "timelapse": False, "bed_leveling": True},
+            {"command": "project_file", "bed_leveling": True},
         )
 
         mock_archive = MagicMock()
@@ -2444,7 +2438,6 @@ class TestVirtualPrinterInstance:
                 "command": "project_file",
                 "file": file_path.name,
                 "nozzle_mapping": [16, -1, -1, 1],
-                "timelapse": True,
                 "bed_leveling": False,
             },
         )
@@ -2455,7 +2448,6 @@ class TestVirtualPrinterInstance:
         compiled = update_stmt.compile(compile_kwargs={"literal_binds": False})
         params = dict(compiled.params)
         assert _json.loads(params["nozzle_mapping"]) == [16, -1, -1, 1]
-        assert params["timelapse"] is True
         assert params["bed_levelling"] == "off"  # MQTT bed_leveling → column bed_levelling (tri-state)
         # Recent-queue tracking dict is cleared after the patch.
         assert file_path.name not in inst._recent_queue_items
@@ -2649,7 +2641,7 @@ class TestVirtualPrinterInstance:
                 # An unrelated field so `patch` isn't empty and the UPDATE
                 # actually runs — isolates the assertion to "ams_mapping was
                 # excluded" rather than "nothing happened at all".
-                "timelapse": True,
+                "vibration_cali": True,
             },
         )
 
@@ -2659,7 +2651,7 @@ class TestVirtualPrinterInstance:
         update_call = mock_db.execute.await_args_list[2]
         compiled = update_call.args[0].compile(compile_kwargs={"literal_binds": False})
         assert "ams_mapping" not in dict(compiled.params)
-        assert dict(compiled.params)["timelapse"] is True
+        assert dict(compiled.params)["vibration_cali"] is True
 
     @pytest.mark.asyncio
     async def test_on_print_command_late_mqtt_force_color_match_archives_but_does_not_stamp(self, tmp_path):
@@ -2749,14 +2741,14 @@ class TestVirtualPrinterInstance:
                 "ams_mapping": [4, -1, 12, -1],
                 # Keeps the UPDATE non-empty so the assertion below is "the
                 # mapping was excluded", not "nothing ran".
-                "timelapse": True,
+                "vibration_cali": True,
             },
         )
 
         update_call = mock_db.execute.await_args_list[2]
         compiled = update_call.args[0].compile(compile_kwargs={"literal_binds": False})
         assert "ams_mapping" not in dict(compiled.params)
-        assert dict(compiled.params)["timelapse"] is True
+        assert dict(compiled.params)["vibration_cali"] is True
 
         assert mock_archive_row.extra_data == {
             "slicer_ams_mapping": {"mapping": [4, -1, 12, -1], "printer_id": 7},
@@ -2836,7 +2828,7 @@ class TestVirtualPrinterInstance:
                 "command": "project_file",
                 "file": file_path.name,
                 "ams_mapping": [4, -1, 12, -1],
-                "timelapse": True,
+                "vibration_cali": True,
             },
         )
 
@@ -2844,7 +2836,7 @@ class TestVirtualPrinterInstance:
         update_call = mock_db.execute.await_args_list[2]
         compiled = update_call.args[0].compile(compile_kwargs={"literal_binds": False})
         assert "ams_mapping" not in dict(compiled.params)
-        assert dict(compiled.params)["timelapse"] is True
+        assert dict(compiled.params)["vibration_cali"] is True
 
     @pytest.mark.asyncio
     async def test_add_to_print_queue_catches_mqtt_stashed_post_wait_timeout(self, tmp_path):
@@ -2904,7 +2896,6 @@ class TestVirtualPrinterInstance:
                     "command": "project_file",
                     "file": file_path.name,
                     "nozzle_mapping": [0, 16, -1, -1],
-                    "timelapse": False,
                 }
             return None
 
@@ -2941,7 +2932,6 @@ class TestVirtualPrinterInstance:
         compiled = update_stmt.compile(compile_kwargs={"literal_binds": False})
         params = dict(compiled.params)
         assert _json.loads(params["nozzle_mapping"]) == [0, 16, -1, -1]
-        assert params["timelapse"] is False
         # _recent_queue_items entry was consumed by the post-commit
         # _restamp call.
         assert file_path.name not in inst._recent_queue_items

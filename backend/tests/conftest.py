@@ -150,6 +150,7 @@ async def test_engine():
         print_queue,
         printer,
         production,
+        profile_part,
         settings,
         slot_preset,
         smart_plug,

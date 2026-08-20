@@ -245,7 +245,7 @@ Each Phase 3 step starts with an "Interested?" gate — if the user clicks `Skip
 **Anchor:** Settings → Slicer API card
 **Conditions to show:** sidecar URL not configured
 **Content:**
-- "Slice directly inside Bambuddy from MakerWorld URLs or your library — no BambuStudio needed."
+- "Slice directly inside Bambuddy from your library — no BambuStudio needed."
 - "Requires the orca-slicer-api sidecar container (separate docker-compose, link below). Bambuddy talks to it over HTTP."
 - One-line note: "Status: still maturing upstream (segfault on multi-filament 3MF being patched). Solid for single-filament / single-plate jobs today."
 **Buttons:** `Configure sidecar` → opens slicer URL field / `Skip`
@@ -259,16 +259,6 @@ Each Phase 3 step starts with an "Interested?" gate — if the user clicks `Skip
 - One-line warning (red): "Use `:ro` (read-only) unless you specifically want users uploading back to the share."
 **Buttons:** `Weiter`
 **Links:** wiki/getting-started/docker, wiki/features/library-external
-
-### Step 3.4 - MakerWorld integration
-**Anchor:** MakerWorld page (`/makerworld`)
-**Conditions to show:** `permissions.has("makerworld:view")`
-**Content:**
-- "Paste any MakerWorld URL — Bambuddy downloads the 3MF, adds it to your library."
-- One-line note: "Direct search inside the UI was cut for this release — paste the URL from the MakerWorld site."
-- "Imports respect your external-folder layout — pick where the file lands."
-**Buttons:** `Try it now` → opens MakerWorld page / `Skip`
-**Links:** wiki/features/makerworld
 
 ### Step 3.5 - Obico ML failure detection (opt-in per printer)
 **Anchor:** printer card → settings → Obico section

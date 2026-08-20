@@ -88,7 +88,7 @@ class TailscaleService:
             logger.info(
                 "Running in Docker but /var/run/tailscale/tailscaled.sock is not mounted. "
                 "Add `- /var/run/tailscale/tailscaled.sock:/var/run/tailscale/tailscaled.sock` "
-                "to docker-compose.yml (under volumes:) and run Tailscale on the host to "
+                "to your Compose file (under volumes:) and run Tailscale on the host to "
                 "expose virtual printers over your tailnet."
             )
             cls._docker_hint_logged = True

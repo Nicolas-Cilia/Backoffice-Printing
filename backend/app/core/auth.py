@@ -53,8 +53,8 @@ logger = logging.getLogger(__name__)
 #   can_read_status       → every ``*_READ`` + camera + stats + system + websocket
 #   can_queue             → queue write ops + archive reprint
 #   can_control_printer   → physical printer + smart-plug control
-#   can_manage_library    → library upload/own + MakerWorld import (separate
-#                           trust level from queue management, hence its own flag)
+#   can_manage_library    → library upload/own (separate trust level from
+#                           queue management, hence its own flag)
 #   can_manage_inventory  → spool/catalog/forecast writes + SpoolBuddy kiosk writes
 #   can_manage_maintenance→ per-printer maintenance log/reset + type-catalog CRUD
 #   admin-only            → unmapped (default-deny); covers all create/update/
@@ -97,7 +97,6 @@ _APIKEY_SCOPE_BY_PERMISSION: dict[Permission, str] = {
     # SETTINGS_READ stays allowed via read-status so SpoolBuddy kiosks keep
     # working (they need the UI-language setting via API key).
     Permission.SETTINGS_READ: "can_read_status",
-    Permission.MAKERWORLD_VIEW: "can_read_status",
     Permission.WEBSOCKET_CONNECT: "can_read_status",
     # can_queue — queue write ops + reprint (which enqueues an existing archive)
     Permission.QUEUE_CREATE: "can_queue",
@@ -115,8 +114,7 @@ _APIKEY_SCOPE_BY_PERMISSION: dict[Permission, str] = {
     Permission.PRINTERS_CLEAR_PLATE: "can_control_printer",
     Permission.SMART_PLUGS_CONTROL: "can_control_printer",
     # can_manage_library — file-manager scope (upload/rename/delete library
-    # entries + MakerWorld import which downloads files into the library).
-    # OWN and ALL ownership variants map to the same scope so the
+    # entries). OWN and ALL ownership variants map to the same scope so the
     # `require_ownership_permission` checker (which gates on `all_perm`)
     # passes the API key through. This matches `can_queue` and the
     # archives/inventory scopes — API keys have no per-row ownership identity
@@ -129,7 +127,6 @@ _APIKEY_SCOPE_BY_PERMISSION: dict[Permission, str] = {
     Permission.LIBRARY_UPDATE_ALL: "can_manage_library",
     Permission.LIBRARY_DELETE_OWN: "can_manage_library",
     Permission.LIBRARY_DELETE_ALL: "can_manage_library",
-    Permission.MAKERWORLD_IMPORT: "can_manage_library",
     # can_manage_inventory — inventory write scope. Covers the documented
     # spool/catalog/forecast write surface AND the SpoolBuddy kiosk endpoints
     # (NFC scan, scale reading, system command/update) which used

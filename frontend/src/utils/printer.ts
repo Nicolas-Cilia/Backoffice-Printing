@@ -1,3 +1,5 @@
+import { printerModelsMatch } from './productionFilename';
+
 export function getPrinterImage(model: string | null | undefined): string {
   if (!model) return '/img/printers/default.png';
   const m = model.toLowerCase().replace(/\s+/g, '');
@@ -37,6 +39,8 @@ export function isGcodeCompatible(
   const a = norm(slicedForModel);
   const b = norm(targetModel);
   if (a === b) return true;
+  // Production aliases (A1M ↔ A1 Mini, X1 Carbon ↔ X1C) are the same printer.
+  if (printerModelsMatch(slicedForModel, targetModel)) return true;
   return GCODE_COMPAT_FAMILIES.some((family) => family.has(a) && family.has(b));
 }
 

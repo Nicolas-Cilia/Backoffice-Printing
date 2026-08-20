@@ -314,18 +314,18 @@ export function ToastProvider({ children }: { children: ReactNode }) {
     <ToastContext.Provider value={{ showToast, showPersistentToast, dismissToast, setViewportSuppressed }}>
       {children}
 
-      {/* Toast Container — to the left of the bug-report bubble (bottom-4 right-4 w-12).
+      {/* Toast Container.
           The kiosk layout suppresses this entire viewport so SpoolBuddy displays stay
           free of main-app notifications.
-          Position is set via safe-area-aware calc() rather than bottom-4/right-20 so an
+          Position is set via safe-area-aware calc() rather than bottom-4/right-4 so an
           installed PWA on a notched phone clears the home indicator / landscape notch
-          (#2612): the 5rem right offset keeps clearance for the bug bubble. */}
+          (#2612). */}
       <div
         data-testid="toast-viewport"
         className={`fixed z-[60] flex flex-col items-end gap-2 ${viewportSuppressed ? 'hidden' : ''}`}
         style={{
           bottom: 'calc(1rem + env(safe-area-inset-bottom))',
-          right: 'calc(5rem + env(safe-area-inset-right))',
+          right: 'calc(1rem + env(safe-area-inset-right))',
         }}
       >
         {toasts.map((toast) => (

@@ -23,12 +23,12 @@ from backend.app.api.routes import (
     archive_purge,
     archives,
     auth,
-    bug_report,
     camera,
     camwall,
     cloud,
     discovery,
     external_links,
+    filament_tracking,
     filaments,
     firmware,
     github_backup,
@@ -43,7 +43,6 @@ from backend.app.api.routes import (
     local_backup,
     local_presets,
     maintenance,
-    makerworld,
     metrics,
     mfa,
     notification_templates,
@@ -57,6 +56,7 @@ from backend.app.api.routes import (
     printer_sensor_history,
     printers,
     production,
+    profile_parts,
     settings as settings_routes,
     slice_jobs,
     slicer_pipelines,
@@ -1041,32 +1041,6 @@ def _extract_filament_data_from_mqtt(data: dict, ams_mapping: list[int] | None =
     if colors_joined:
         result["filament_color"] = colors_joined[:200]
     return result
-
-
-def _maybe_start_layer_timelapse(printer, printer_id: int, archive_id: int) -> bool:
-    """Start a layer-timelapse session for *archive_id* when the printer has
-    an external camera configured. Returns True if a session was started.
-
-    Three call sites in on_print_start (expected-archive promotion, fallback
-    archive creation, fresh-archive creation) used to inline this same
-    if-block; the inline copies kept drifting (#1353 fixed only one of them
-    on the first pass). Centralising the conditional + call here makes the
-    contract testable in isolation and keeps the three sites locked in step.
-    """
-    if not (printer.external_camera_enabled and printer.external_camera_url):
-        return False
-    from backend.app.services.layer_timelapse import start_session
-
-    start_session(
-        printer_id,
-        archive_id,
-        printer.external_camera_url,
-        printer.external_camera_type or "mjpeg",
-        snapshot_url=printer.external_camera_snapshot_url,
-        rotation=getattr(printer, "camera_rotation", 0),
-    )
-    logging.getLogger(__name__).info("Started layer timelapse for printer %s, archive %s", printer_id, archive_id)
-    return True
 
 
 def _format_hms_error_summary(hms_errors: list[dict]) -> str | None:
@@ -2829,12 +2803,6 @@ async def on_print_start(printer_id: int, data: dict):
                 if subtask_name:
                     _active_prints[(printer_id, f"{subtask_name}.3mf")] = archive.id
 
-                # Start timelapse session if external camera is enabled (#1353).
-                # Queue / VP-dispatched prints land here in the expected-archive
-                # branch and used to skip start_session entirely — frames were
-                # never captured and the post-print stitch silently returned None.
-                _maybe_start_layer_timelapse(printer, printer_id, archive.id)
-
                 # Inject ams_mapping into usage tracker session — the session was created
                 # before expected-print promotion, so it may have ams_mapping=None when
                 # the MQTT request topic subscription failed (common on P1S/A1).
@@ -3401,8 +3369,6 @@ async def on_print_start(printer_id: int, data: dict):
 
                 logger.info("Created fallback archive %s for %s (no 3MF available)", fallback_archive.id, print_name)
 
-                _maybe_start_layer_timelapse(printer, printer_id, fallback_archive.id)
-
                 # Track as active print
                 _active_prints[(printer_id, fallback_archive.filename)] = fallback_archive.id
                 if filename:
@@ -3480,8 +3446,6 @@ async def on_print_start(printer_id: int, data: dict):
                     _active_prints[(printer_id, f"{subtask_name}.3mf")] = archive.id
 
                 logger.info("Created archive %s for %s", archive.id, downloaded_filename)
-
-                _maybe_start_layer_timelapse(printer, printer_id, archive.id)
 
                 # Record starting energy from smart plug if available (#941: persisted column)
                 await _record_energy_start(archive, printer_id, db, context="auto-archive")
@@ -5456,6 +5420,52 @@ async def on_print_complete(printer_id: int, data: dict):
                 )
                 await db.commit()
                 logger.info("[PRINT_LOG] Log entry written for archive %s", archive_id)
+
+                try:
+                    from backend.app.services.filament_tracking import record_print_usage
+                    from backend.app.utils.threemf_tools import extract_filament_usage_from_3mf
+
+                    tracking_slots: list[dict] = []
+                    tracking_status = _run_status
+                    tracking_progress = data.get("progress")
+                    if _est_full_path is not None and _est_full_path.exists():
+                        tracking_slots = extract_filament_usage_from_3mf(_est_full_path, archive.plate_id)
+                    if not tracking_slots and _run_grams:
+                        types = [
+                            part.strip() for part in (archive.filament_type or "UNKNOWN").split(",") if part.strip()
+                        ]
+                        colors = [part.strip() for part in (archive.filament_color or "").split(",") if part.strip()]
+                        count = max(len(types), len(colors), 1)
+                        each = round(float(_run_grams) / count, 1)
+                        tracking_slots = [
+                            {
+                                "type": types[i] if i < len(types) else types[-1],
+                                "color": colors[i] if i < len(colors) else (colors[-1] if colors else None),
+                                "used_g": each,
+                            }
+                            for i in range(count)
+                        ]
+                        tracking_status = "completed"
+                        tracking_progress = 100
+                    if tracking_slots:
+                        await record_print_usage(
+                            db,
+                            slots=tracking_slots,
+                            status=tracking_status,
+                            progress=tracking_progress,
+                            archive_id=archive.id,
+                            printer_id=printer_id,
+                            print_name=archive.print_name,
+                            occurred_at=archive.completed_at,
+                            ams_mapping=stored_ams_mapping,
+                        )
+                        await db.commit()
+                except Exception as track_err:
+                    logger.warning(
+                        "[FILAMENT_TRACKING] Failed to record usage for archive %s: %s",
+                        archive_id,
+                        track_err,
+                    )
     except Exception as e:
         logger.warning("[PRINT_LOG] Failed to write log entry for archive %s: %s", archive_id, e)
 
@@ -6040,45 +6050,6 @@ async def on_print_complete(printer_id: int, data: dict):
             logger.error("[PHOTO-NOTIFY] Notification sending failed: %s", e, exc_info=True)
 
     spawn_background_task(_photo_then_notify(), name="photo-then-notify")
-
-    # Stitch external camera layer timelapse if session was active
-    print_status = data.get("status", "completed")
-
-    async def _background_layer_timelapse():
-        """Stitch layer timelapse and attach to archive."""
-        from backend.app.services.layer_timelapse import cancel_session, on_print_complete as tl_complete
-
-        try:
-            if print_status == "completed":
-                logger.info("[LAYER-TL] Stitching layer timelapse for printer %s", printer_id)
-                timelapse_path = await tl_complete(printer_id)
-                if timelapse_path and archive_id:
-                    logger.info("[LAYER-TL] Attaching timelapse %s to archive %s", timelapse_path, archive_id)
-                    async with async_session() as db:
-                        service = ArchiveService(db)
-                        timelapse_data = await asyncio.to_thread(timelapse_path.read_bytes)
-                        await service.attach_timelapse(archive_id, timelapse_data, "layer_timelapse.mp4")
-                        # Clean up the temp file
-                        await asyncio.to_thread(timelapse_path.unlink, missing_ok=True)
-                        logger.info("[LAYER-TL] Layer timelapse attached successfully")
-                elif timelapse_path:
-                    # Timelapse created but no archive - just clean up
-                    await asyncio.to_thread(timelapse_path.unlink, missing_ok=True)
-            else:
-                # Print failed or cancelled - cancel timelapse session
-                cancel_session(printer_id)
-                logger.info(
-                    "[LAYER-TL] Cancelled layer timelapse for printer %s (status: %s)", printer_id, print_status
-                )
-        except Exception as e:
-            logger.warning("[LAYER-TL] Failed: %s", e)
-            # Try to cancel session on error
-            try:
-                cancel_session(printer_id)
-            except Exception:
-                pass  # Best-effort timelapse session cancellation on error
-
-    spawn_background_task(_background_layer_timelapse(), name="background-layer-timelapse")
 
     log_timing("All background tasks scheduled")
 
@@ -7013,18 +6984,12 @@ async def lifespan(app: FastAPI):
     import httpx as _httpx
 
     from backend.app.services.bambu_cloud import set_shared_http_client
-    from backend.app.services.makerworld import (
-        set_shared_http_client as set_shared_makerworld_http_client,
-    )
     from backend.app.services.orca_cloud import (
         set_shared_http_client as set_shared_orca_http_client,
     )
 
     _shared_cloud_http_client = _httpx.AsyncClient(timeout=30.0)
     set_shared_http_client(_shared_cloud_http_client)
-    # Reuse the same connection pool for MakerWorld — different host, same
-    # keep-alive pool saves a TLS handshake per request.
-    set_shared_makerworld_http_client(_shared_cloud_http_client)
     # Same for Orca Cloud — without this the per-request OrcaCloudService()
     # each spun up (and never closed) its own client, leaking sockets.
     set_shared_orca_http_client(_shared_cloud_http_client)
@@ -7061,13 +7026,9 @@ async def lifespan(app: FastAPI):
     # Rehydrate persisted awaiting-plate-clear gate (#961) so prompts survive restarts
     await printer_manager.load_awaiting_plate_clear_from_db()
 
-    # Layer change callback for external camera timelapse
+    # Layer change callback for finish-photo frame banking + first layer notification
     async def on_layer_change(printer_id: int, layer_num: int):
-        """Capture timelapse frame on layer change + first layer notification."""
-        from backend.app.services.layer_timelapse import on_layer_change as tl_layer_change
-
-        await tl_layer_change(printer_id, layer_num)
-
+        """Bank an in-print frame on layer change + send first layer notification."""
         # #1867: bank a recent in-print frame so the finish-photo path has a
         # pre-End-G-code image to use instead of a live grab of a swapped plate.
         # #2547 added `on_print_progress` as a second driver — this one alone
@@ -7354,18 +7315,6 @@ async def lifespan(app: FastAPI):
     # Start the backstop for MQTT sessions paho has stopped recovering (#2732)
     start_connection_watchdog()
 
-    # One-shot sweep for timelapse session directories orphaned by a crash
-    # or restart that happened mid-print (in-memory session tracking can't
-    # survive that, and nothing else reaps the leftover frames/output file)
-    try:
-        from backend.app.services.layer_timelapse import cleanup_orphaned_timelapse_sessions
-
-        removed = cleanup_orphaned_timelapse_sessions()
-        if removed:
-            logging.getLogger(__name__).info("Removed %d orphaned timelapse session artifact(s)", removed)
-    except Exception as e:
-        logging.getLogger(__name__).warning("Orphaned timelapse session cleanup failed: %s", e)
-
     # Start expected-print TTL eviction (prevents memory leak when prints are
     # registered but on_print_start never fires)
     start_expected_prints_cleanup()
@@ -7432,7 +7381,6 @@ async def lifespan(app: FastAPI):
 
     # Drop the shared Bambu Cloud HTTP client we registered at startup.
     set_shared_http_client(None)
-    set_shared_makerworld_http_client(None)
     set_shared_orca_http_client(None)
     await _shared_cloud_http_client.aclose()
 
@@ -7722,21 +7670,27 @@ async def auth_middleware(request, call_next):
     # probe — GHSA-6mf4-q26m-47pv: the previous fail-open path here let
     # an attacker who could force a DB exception (e.g. file-descriptor
     # exhaustion via login flood) bypass auth on every protected endpoint.
+    #
+    # ``call_next`` MUST stay outside this try. When auth is disabled the
+    # probe succeeds and the route runs; wrapping dispatch here turned
+    # every handler exception (SQLite lock, 404 HTTPException that
+    # BaseHTTPMiddleware re-raises, …) into a fake "Authentication
+    # service temporarily unavailable" 503.
     try:
         async with async_session() as db:
             from backend.app.core.auth import is_auth_enabled
 
             auth_enabled = await is_auth_enabled(db)
-
-        if not auth_enabled:
-            # Auth disabled, allow all requests
-            return await call_next(request)
     except Exception:
         logging.getLogger(__name__).exception("auth_middleware: failing closed on auth-probe error from %s", path)
         return JSONResponse(
             status_code=503,
             content={"detail": "Authentication service temporarily unavailable"},
         )
+
+    if not auth_enabled:
+        # Auth disabled, allow all requests
+        return await call_next(request)
 
     # Auth is enabled - require valid token
     auth_header = request.headers.get("Authorization")
@@ -7870,12 +7824,12 @@ async def trace_id_middleware(request, call_next):
 # API routes
 app.include_router(auth.router, prefix=app_settings.api_prefix)
 app.include_router(mfa.router, prefix=app_settings.api_prefix)
-app.include_router(bug_report.router, prefix=app_settings.api_prefix)
 app.include_router(users.router, prefix=app_settings.api_prefix)
 app.include_router(groups.router, prefix=app_settings.api_prefix)
 app.include_router(printers.router, prefix=app_settings.api_prefix)
 app.include_router(archives.router, prefix=app_settings.api_prefix)
 app.include_router(filaments.router, prefix=app_settings.api_prefix)
+app.include_router(filament_tracking.router, prefix=app_settings.api_prefix)
 app.include_router(inventory.router, prefix=app_settings.api_prefix)
 app.include_router(labels.router, prefix=app_settings.api_prefix)
 app.include_router(settings_routes.router, prefix=app_settings.api_prefix)
@@ -7902,13 +7856,13 @@ app.include_router(library_sections.router, prefix=app_settings.api_prefix)
 app.include_router(library_tags.router, prefix=app_settings.api_prefix)
 app.include_router(library_trash.router, prefix=app_settings.api_prefix)
 app.include_router(production.router, prefix=app_settings.api_prefix)
+app.include_router(profile_parts.router, prefix=app_settings.api_prefix)
 app.include_router(slice_jobs.router, prefix=app_settings.api_prefix)
 app.include_router(slicer_pipelines.router, prefix=app_settings.api_prefix)
 app.include_router(pipeline_runs.pipeline_run_create_router, prefix=app_settings.api_prefix)
 app.include_router(pipeline_runs.pipeline_run_router, prefix=app_settings.api_prefix)
 app.include_router(slicer_presets.router, prefix=app_settings.api_prefix)
 app.include_router(archive_purge.router, prefix=app_settings.api_prefix)
-app.include_router(makerworld.router, prefix=app_settings.api_prefix)
 app.include_router(api_keys.router, prefix=app_settings.api_prefix)
 app.include_router(webhook.router, prefix=app_settings.api_prefix)
 app.include_router(ams_history.router, prefix=app_settings.api_prefix)

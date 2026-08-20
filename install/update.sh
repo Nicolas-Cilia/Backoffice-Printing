@@ -7,7 +7,7 @@ BRANCH="${BRANCH:-}"
 VENV_PIP="${VENV_PIP:-$INSTALL_DIR/venv/bin/pip}"
 FRONTEND_DIR="${FRONTEND_DIR:-$INSTALL_DIR/frontend}"
 BACKUP_DIR="${BACKUP_DIR:-$INSTALL_DIR/backups}"
-BAMBUDDY_API_URL="${BAMBUDDY_API_URL:-http://127.0.0.1:8000/api/v1}"
+BAMBUDDY_API_URL="${BAMBUDDY_API_URL:-http://127.0.0.1:7474/api/v1}"
 BAMBUDDY_API_KEY="${BAMBUDDY_API_KEY:-}"
 BACKUP_MODE="${BACKUP_MODE:-auto}" # auto|require|skip
 BACKUP_KEEP_COUNT=5
@@ -138,7 +138,7 @@ downloading a ZIP or tarball from GitHub, reinstall from scratch:
 
   2. Remove the old install and reinstall via install.sh:
        sudo rm -rf $INSTALL_DIR
-       curl -fsSL https://raw.githubusercontent.com/maziggy/bambuddy/main/install/install.sh \\
+       curl -fsSL https://raw.githubusercontent.com/Nicolas-Cilia/Backoffice-Printing/main/install/install.sh \\
          -o /tmp/install.sh && sudo bash /tmp/install.sh --path $INSTALL_DIR
 
   3. Restore your data:

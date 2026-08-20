@@ -1,6 +1,7 @@
 /** Format locked production print settings for the folder-view spec summary. */
 
 export const SPEC_KEY_ORDER = [
+  'curr_bed_type',
   'layer_height',
   'initial_layer_line_width',
   'sparse_infill_density',
@@ -52,6 +53,7 @@ const INFILL_PATTERN_ALIASES: Record<string, string> = {
 const BOOL_KEYS = new Set(['enable_support', 'enable_prime_tower']);
 
 const LABEL_KEYS: Record<string, string> = {
+  curr_bed_type: 'fileManager.production.specs.bed',
   layer_height: 'fileManager.production.specs.layerHeight',
   initial_layer_line_width: 'fileManager.production.specs.initialLayerLineWidth',
   sparse_infill_density: 'fileManager.production.specs.infillDensity',
@@ -163,6 +165,43 @@ function nozzlesLabel(value: unknown, t: Translate): string {
   return String(value);
 }
 
+/** Compact alphanumeric token so "Smooth PEI" and "smooth_pei" share a map key. */
+function bedTypeCompact(value: unknown): string {
+  return String(value)
+    .trim()
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, '');
+}
+
+function bedTypeLabel(value: unknown, t: Translate): string {
+  const compact = bedTypeCompact(value);
+  if (compact === 'texturedpeiplate' || compact === 'texturedpei' || compact === 'btpte') {
+    return t('fileManager.production.specs.bedTypeTexturedPei');
+  }
+  if (compact === 'smoothpeiplate' || compact === 'smoothpei' || compact === 'btpeismooth') {
+    return t('fileManager.production.specs.bedTypeSmoothPei');
+  }
+  if (compact === 'coolplate' || compact === 'pcplate' || compact === 'btpc') {
+    return t('fileManager.production.specs.bedTypeCool');
+  }
+  if (
+    compact === 'coolplatesupertack' ||
+    compact === 'supertackplate' ||
+    compact === 'bambucoolplatesupertack' ||
+    compact === 'supertack' ||
+    compact === 'btsupertack'
+  ) {
+    return t('fileManager.production.specs.bedTypeSuperTack');
+  }
+  if (compact === 'engineeringplate' || compact === 'btep') {
+    return t('fileManager.production.specs.bedTypeEngineering');
+  }
+  if (compact === 'hightempplate' || compact === 'hotplate' || compact === 'btpei') {
+    return t('fileManager.production.specs.bedTypeHighTemp');
+  }
+  return humanizeToken(value);
+}
+
 function humanizeToken(value: unknown): string {
   const text = String(value)
     .replace(/[_-]+/g, ' ')
@@ -230,6 +269,7 @@ export function formatSpecValue(key: string, value: unknown, t: Translate): stri
   if (key === 'support_type') return supportTypeLabel(value, t);
   if (key === 'support_style') return supportStyleLabel(value, t);
   if (key === 'nozzles_used') return nozzlesLabel(value, t);
+  if (key === 'curr_bed_type') return bedTypeLabel(value, t);
   if (isInfillPatternKey(key)) return infillPatternLabel(value, t);
   if (key === 'initial_layer_line_width') return formatLineWidth(value, t);
   const number = asNumber(value);
@@ -291,6 +331,13 @@ export function compactSpecItems(specs: Record<string, unknown>, t: Translate): 
   const items: string[] = [];
   if (specs.layer_height != null) {
     items.push(formatSpecValue('layer_height', specs.layer_height, t));
+  }
+  if (specs.curr_bed_type != null) {
+    items.push(
+      t('fileManager.production.specs.summaryBed', {
+        value: formatSpecValue('curr_bed_type', specs.curr_bed_type, t),
+      }),
+    );
   }
   if (specs.sparse_infill_density != null) {
     items.push(

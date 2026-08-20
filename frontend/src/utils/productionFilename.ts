@@ -46,6 +46,28 @@ export function normalizeProductionPrinter(raw: string | null | undefined): stri
   return PRODUCTION_PRINTER_COMPACT[compactPrinter(text)] ?? text;
 }
 
+/** True when two model strings are the same printer (A1M ↔ A1 Mini, X1 Carbon ↔ X1C). */
+export function printerModelsMatch(
+  a: string | null | undefined,
+  b: string | null | undefined,
+): boolean {
+  if (!a || !b) return false;
+  const na = normalizeProductionPrinter(a);
+  const nb = normalizeProductionPrinter(b);
+  if (!na || !nb) return false;
+  return compactPrinter(na) === compactPrinter(nb);
+}
+
+/** Prefer slice metadata; fall back to a production filename's printer suffix. */
+export function resolvePrintTargetModel(
+  slicedForModel: string | null | undefined,
+  filename: string | null | undefined,
+): string | null {
+  const sliced = slicedForModel?.trim();
+  if (sliced) return sliced;
+  return parseProductionFilename(filename || '')?.printer || null;
+}
+
 export interface ParsedProductionFilename {
   code: string;
   quantity: number;
@@ -64,6 +86,41 @@ function stripProductionExtension(name: string): string {
     }
   }
   return name;
+}
+
+export function productionFileExtension(name: string): string {
+  const basename = String(name).split(/[/\\]/).pop() ?? String(name);
+  const lower = basename.toLowerCase();
+  for (const ext of STRIP_EXTENSIONS) {
+    if (lower.endsWith(ext)) return ext;
+  }
+  const dot = basename.lastIndexOf('.');
+  return dot >= 0 ? basename.slice(dot) : '';
+}
+
+export function formatProductionFilename(
+  code: string,
+  quantity: number,
+  major: number,
+  revision: number,
+  minor: number,
+  printer: string,
+): string {
+  const printerCode = normalizeProductionPrinter(printer) || printer.trim();
+  const qtyPart = quantity !== 1 ? ` x${quantity}` : '';
+  return `${code.trim().toUpperCase()}${qtyPart} - ${major}.${revision}.${minor} - ${printerCode}`;
+}
+
+export function storedProductionFilename(
+  originalName: string,
+  code: string,
+  quantity: number,
+  major: number,
+  revision: number,
+  minor: number,
+  printer: string,
+): string {
+  return `${formatProductionFilename(code, quantity, major, revision, minor, printer)}${productionFileExtension(originalName)}`;
 }
 
 export function parseProductionFilename(name: string): ParsedProductionFilename | null {
