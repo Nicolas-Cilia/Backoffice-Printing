@@ -461,4 +461,3 @@ class TestPrinterMaintenanceLogAPI:
     async def test_delete_log_entry_not_found(self, async_client: AsyncClient):
         response = await async_client.delete("/api/v1/maintenance/history/999999")
         assert response.status_code == 404
-

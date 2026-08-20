@@ -118,7 +118,9 @@ class TestLibrarySectionParts:
         assert missing.status_code == 404
 
     async def test_reorder_parts_persists_custom_grid_order(self, async_client: AsyncClient):
-        section = (await async_client.post("/api/v1/library/sections", json={"name": "Line", "kind": "production"})).json()
+        section = (
+            await async_client.post("/api/v1/library/sections", json={"name": "Line", "kind": "production"})
+        ).json()
         section_id = section["id"]
         bot = (
             await async_client.post(

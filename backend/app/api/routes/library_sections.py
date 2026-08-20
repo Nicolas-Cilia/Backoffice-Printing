@@ -339,11 +339,7 @@ async def reorder_section_parts(
     """Set the popup/grid order for every part template in this section."""
     await _load_section(db, section_id)
     rows = (
-        (
-            await db.execute(
-                select(LibrarySectionPart).where(LibrarySectionPart.section_id == section_id)
-            )
-        )
+        (await db.execute(select(LibrarySectionPart).where(LibrarySectionPart.section_id == section_id)))
         .scalars()
         .all()
     )

@@ -962,7 +962,9 @@ def _printer_live_mapping_state(printer_id: int) -> dict:
         "raw_data": raw if isinstance(raw, dict) else {},
         "last_progress": getattr(client, "_last_valid_progress", None) if client else None,
         "gcode_file": _first_print_job_name(getattr(state, "gcode_file", None)),
-        "raw_gcode_file": getattr(state, "gcode_file", None) if isinstance(getattr(state, "gcode_file", None), str) else None,
+        "raw_gcode_file": getattr(state, "gcode_file", None)
+        if isinstance(getattr(state, "gcode_file", None), str)
+        else None,
         "subtask_name": _first_print_job_name(getattr(state, "subtask_name", None)),
         "remaining_time": getattr(state, "remaining_time", None),
         "skipped_objects": getattr(state, "skipped_objects", None),
@@ -1082,9 +1084,7 @@ async def _sync_filament_color_tracking(
                 archive_id=archive_id,
                 print_name=job_name,
             )
-        progress = _print_progress_value(
-            payload, progress if progress is not None else live_state.get("progress")
-        )
+        progress = _print_progress_value(payload, progress if progress is not None else live_state.get("progress"))
         if progress is None or float(progress or 0) <= 0:
             last_valid = live_state.get("last_progress")
             if last_valid:
@@ -1132,9 +1132,7 @@ async def _sync_filament_color_tracking(
             live = get_live_run(printer_id)
             print_name = mqtt_name or (archive.print_name if archive is not None else None)
             current_archive_id = archive.id if archive is not None else archive_id
-            if not settle and should_skip_live_upsert(
-                printer_id, archive_id=current_archive_id, print_name=print_name
-            ):
+            if not settle and should_skip_live_upsert(printer_id, archive_id=current_archive_id, print_name=print_name):
                 return
             if (progress is None or float(progress or 0) <= 0) and live and live.last_progress > 0:
                 progress = live.last_progress
@@ -1196,9 +1194,7 @@ async def _sync_filament_color_tracking(
                 if scoped_plate is None and archive is not None and archive.id:
                     scoped_plate = _print_plate_ids.get(archive.id)
                 if scoped_plate is None:
-                    scoped_plate = parse_plate_id(
-                        payload.get("gcode_file") or live_state.get("raw_gcode_file")
-                    )
+                    scoped_plate = parse_plate_id(payload.get("gcode_file") or live_state.get("raw_gcode_file"))
                 archive_3mf = _archive_3mf_path(archive)
                 if archive_3mf is not None:
                     slots = slots_from_3mf_file(archive_3mf, scoped_plate)
@@ -1240,9 +1236,7 @@ async def _sync_filament_color_tracking(
                 if not slots:
                     slots = _tracking_slots_from_archive(archive, scoped_plate)
 
-            used_slot_count = len(
-                [s for s in slots if float(s.get("used_g") or s.get("used_grams") or 0) > 0]
-            )
+            used_slot_count = len([s for s in slots if float(s.get("used_g") or s.get("used_grams") or 0) > 0])
             incoming_mapping = resolve_ams_mapping(
                 ams_mapping=mapping,
                 mqtt_mapping=mqtt_mapping,
@@ -1294,18 +1288,19 @@ async def _sync_filament_color_tracking(
             trusted_3mf = bool(archive and getattr(archive, "file_path", None))
             if not record_slots and fallback_slots and (fallback_mapping or trusted_3mf):
                 record_slots = [
-                    slot
-                    for slot in fallback_slots
-                    if float(slot.get("used_g") or slot.get("used_grams") or 0) > 0
+                    slot for slot in fallback_slots if float(slot.get("used_g") or slot.get("used_grams") or 0) > 0
                 ]
                 record_progress = 100
                 if not resolved_mapping:
-                    resolved_mapping = resolve_ams_mapping(
-                        ams_mapping=mapping,
-                        mqtt_mapping=mqtt_mapping,
-                        tray_now=tray_now,
-                        slot_count=len(record_slots),
-                    ) or fallback_mapping
+                    resolved_mapping = (
+                        resolve_ams_mapping(
+                            ams_mapping=mapping,
+                            mqtt_mapping=mqtt_mapping,
+                            tray_now=tray_now,
+                            slot_count=len(record_slots),
+                        )
+                        or fallback_mapping
+                    )
             if not resolved_mapping and fallback_mapping:
                 resolved_mapping = fallback_mapping
 

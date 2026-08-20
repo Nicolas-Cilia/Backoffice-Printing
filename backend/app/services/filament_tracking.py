@@ -1076,11 +1076,7 @@ def get_live_run(printer_id: int) -> LiveTrackingRun | None:
 
 def untracked_live_runs(existing_printer_ids: set[int]) -> list[LiveTrackingRun]:
     """In-flight jobs that have no kind=printing usage rows yet."""
-    return [
-        run
-        for run in _live_runs.values()
-        if not run.settled and run.printer_id not in existing_printer_ids
-    ]
+    return [run for run in _live_runs.values() if not run.settled and run.printer_id not in existing_printer_ids]
 
 
 def cache_live_run(run: LiveTrackingRun) -> LiveTrackingRun:
@@ -1810,11 +1806,15 @@ async def record_print_usage(
     if not mapping:
         return []
     existing_run = await live_run_id_for_job(db, printer_id=printer_id, print_name=print_name)
-    run_key = existing_run or run_id or tracking_run_id(
-        archive_id=archive_id,
-        printer_id=printer_id,
-        print_name=print_name,
-        started_at=started_at or when,
+    run_key = (
+        existing_run
+        or run_id
+        or tracking_run_id(
+            archive_id=archive_id,
+            printer_id=printer_id,
+            print_name=print_name,
+            started_at=started_at or when,
+        )
     )
     created: list[FilamentColorUsage] = []
     for index, slot in enumerate(slots):
@@ -2145,8 +2145,8 @@ async def load_live_usage_rate(db: AsyncSession, as_of: datetime | None = None) 
     samples: list[LiveUsageSample] = []
     for event, bucket, archive in rows:
         live = get_live_run(event.printer_id) if event.printer_id is not None else None
-        remaining = live.remaining_seconds if live and live.remaining_seconds else printer_remaining_seconds(
-            event.printer_id
+        remaining = (
+            live.remaining_seconds if live and live.remaining_seconds else printer_remaining_seconds(event.printer_id)
         )
         progress = event.progress
         if progress is None and live is not None:
