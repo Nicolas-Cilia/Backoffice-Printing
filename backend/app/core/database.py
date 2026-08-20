@@ -4064,6 +4064,65 @@ async def run_migrations(conn):
             conn, "ALTER TABLE filament_color_usage ADD COLUMN IF NOT EXISTS estimated BOOLEAN DEFAULT false"
         )
 
+    # Migration: per-parameter mismatch notes on production slots and revisions.
+    # Section-level part templates live in library_section_parts (new table via
+    # create_all). These JSON columns attach an explanation to each mismatched
+    # contract key when a folder instance proceeds without matching the section.
+    await _safe_execute(conn, "ALTER TABLE production_slots ADD COLUMN parameter_notes JSON")
+    await _safe_execute(conn, "ALTER TABLE production_revisions ADD COLUMN parameter_notes JSON")
+    await _safe_execute(conn, "ALTER TABLE library_section_parts ADD COLUMN thumbnail_path VARCHAR(500)")
+    await _safe_execute(conn, "ALTER TABLE library_section_parts ADD COLUMN sort_order INTEGER DEFAULT 0")
+    await _backfill_section_part_sort_order(conn)
+
+
+_SECTION_PART_DEFAULT_ORDER = ("TOP", "BOT", "KNB", "BUT")
+
+
+async def _backfill_section_part_sort_order(conn) -> None:
+    """Give existing section parts a stable grid order (TOP, BOT, then others).
+
+    Only sections whose rows still share a single sort_order (all 0 after ADD
+    COLUMN) are rewritten, so a later custom arrange is left alone.
+    """
+    from collections import defaultdict
+
+    from sqlalchemy import text
+
+    if is_sqlite():
+        exists = (
+            await conn.execute(
+                text("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'library_section_parts'")
+            )
+        ).scalar_one_or_none()
+    else:
+        exists = (
+            await conn.execute(
+                text(
+                    "SELECT 1 FROM information_schema.tables "
+                    "WHERE table_schema = current_schema() AND table_name = 'library_section_parts'"
+                )
+            )
+        ).scalar_one_or_none()
+    if exists is None:
+        return
+
+    rows = (await conn.execute(text("SELECT id, section_id, code, sort_order FROM library_section_parts"))).all()
+    by_section: dict[object, list[tuple]] = defaultdict(list)
+    for part_id, section_id, code, sort_order in rows:
+        by_section[section_id].append((part_id, code, int(sort_order or 0)))
+
+    default_rank = {code: index for index, code in enumerate(_SECTION_PART_DEFAULT_ORDER)}
+    for parts in by_section.values():
+        orders = {row[2] for row in parts}
+        if len(parts) < 2 or len(orders) > 1:
+            continue
+        ranked = sorted(parts, key=lambda row: (default_rank.get(row[1], 1000), row[1], row[0]))
+        for index, (part_id, _, _) in enumerate(ranked):
+            await conn.execute(
+                text("UPDATE library_section_parts SET sort_order = :sort_order WHERE id = :id"),
+                {"sort_order": index, "id": part_id},
+            )
+
 
 async def _migrate_production_instance_folder_uniqueness(conn) -> None:
     """Widen part-instance uniqueness from (part, printer) to (part, printer, folder).

@@ -5940,6 +5940,47 @@ export const api = {
       method: 'PUT',
       body: JSON.stringify({ section_id: sectionId }),
     }),
+  getLibrarySectionParts: (sectionId: number) =>
+    request<LibrarySectionPart[]>(`/library/sections/${sectionId}/parts`),
+  createLibrarySectionPart: (sectionId: number, body: { code: string; name?: string }) =>
+    request<LibrarySectionPart>(`/library/sections/${sectionId}/parts`, {
+      method: 'POST',
+      body: JSON.stringify({ code: body.code, name: body.name ?? '' }),
+    }),
+  renameLibrarySectionPart: (sectionId: number, partId: number, name: string) =>
+    request<LibrarySectionPart>(`/library/sections/${sectionId}/parts/${partId}`, {
+      method: 'PATCH',
+      body: JSON.stringify({ name }),
+    }),
+  deleteLibrarySectionPart: (sectionId: number, partId: number) =>
+    request<void>(`/library/sections/${sectionId}/parts/${partId}`, { method: 'DELETE' }),
+  reorderLibrarySectionParts: (sectionId: number, ids: number[]) =>
+    request<LibrarySectionPart[]>(`/library/sections/${sectionId}/parts/reorder`, {
+      method: 'PUT',
+      body: JSON.stringify({ ids }),
+    }),
+  seedLibrarySectionPartParameters: async (
+    sectionId: number,
+    partId: number,
+    file: File,
+    fields: { resolution?: 'accept_baseline' } = {},
+  ) => {
+    const formData = new FormData();
+    formData.append('file', file);
+    if (fields.resolution) formData.append('resolution', fields.resolution);
+    return postFormData<LibrarySectionPart>(
+      `/library/sections/${sectionId}/parts/${partId}/parameters`,
+      formData,
+    );
+  },
+  previewLibrarySectionPartParameters: async (sectionId: number, partId: number, file: File) => {
+    const formData = new FormData();
+    formData.append('file', file);
+    return postFormData<SectionPartParameterPreview>(
+      `/library/sections/${sectionId}/parts/${partId}/parameters/preview`,
+      formData,
+    );
+  },
 
   getLibraryFiles: (
     folderId?: number | null,
@@ -5997,6 +6038,7 @@ export const api = {
       printer?: string | null;
       resolution?: 'proceed' | 'accept_baseline' | null;
       reason?: string | null;
+      parameter_notes?: Record<string, string> | null;
     } = {},
   ): Promise<ProductionSlotResponse> => {
     const formData = new FormData();
@@ -6010,6 +6052,9 @@ export const api = {
     if (fields.printer) formData.append('printer', fields.printer);
     if (fields.resolution) formData.append('resolution', fields.resolution);
     if (fields.reason) formData.append('reason', fields.reason);
+    if (fields.parameter_notes) {
+      formData.append('parameter_notes', JSON.stringify(fields.parameter_notes));
+    }
     return postFormData<ProductionSlotResponse>('/production/slots', formData);
   },
   previewCreateProductionSlot: async (
@@ -6046,6 +6091,7 @@ export const api = {
     fields: {
       resolution: 'proceed' | 'accept_baseline';
       reason?: string | null;
+      parameter_notes?: Record<string, string> | null;
       code?: string | null;
       quantity?: number | null;
       major?: number | null;
@@ -6058,6 +6104,9 @@ export const api = {
     formData.append('file', file);
     formData.append('resolution', fields.resolution);
     if (fields.reason) formData.append('reason', fields.reason);
+    if (fields.parameter_notes) {
+      formData.append('parameter_notes', JSON.stringify(fields.parameter_notes));
+    }
     if (fields.code) formData.append('code', fields.code);
     if (fields.quantity != null) formData.append('quantity', String(fields.quantity));
     if (fields.major != null) formData.append('major', String(fields.major));
@@ -6210,6 +6259,12 @@ export const api = {
     window.URL.revokeObjectURL(url);
   },
   getLibraryFileThumbnailUrl: (id: number) => withStreamToken(`${API_BASE}/library/files/${id}/thumbnail`),
+  getLibrarySectionPartThumbnailUrl: (sectionId: number, partId: number, cacheBust?: string | null) => {
+    const url = withStreamToken(`${API_BASE}/library/sections/${sectionId}/parts/${partId}/thumbnail`);
+    if (!cacheBust) return url;
+    const sep = url.includes('?') ? '&' : '?';
+    return `${url}${sep}v=${encodeURIComponent(cacheBust)}`;
+  },
   getLibraryFilePlateThumbnail: (id: number, plateIndex: number) =>
     withStreamToken(`${API_BASE}/library/files/${id}/plate-thumbnail/${plateIndex}`),
   getLibraryFileGcodeUrl: (id: number) => `${API_BASE}/library/files/${id}/gcode`,
@@ -6756,6 +6811,25 @@ export interface LibraryFolderSection {
   updated_at: string;
 }
 
+export interface LibrarySectionPart {
+  id: number;
+  section_id: number;
+  code: string;
+  name: string;
+  locked_parameters: Record<string, unknown> | null;
+  has_thumbnail: boolean;
+  instance_count: number;
+  sort_order: number;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface SectionPartParameterPreview {
+  parameter_diff: ProductionParameterDiff[];
+  has_mismatches: boolean;
+  has_existing_contract: boolean;
+}
+
 export interface LibraryFolder {
   id: number;
   name: string;
@@ -6796,6 +6870,7 @@ export interface ProductionSlotNested {
   has_overrides: boolean;
   last_mismatch: boolean | null;
   parameter_overrides?: Record<string, unknown> | null;
+  parameter_notes?: Record<string, string> | null;
 }
 
 export interface ProductionPartView {
@@ -6831,6 +6906,7 @@ export interface ProductionSlotResponse {
   folder_id: number;
   printer_model: string;
   locked_parameters: Record<string, unknown> | null;
+  parameter_notes?: Record<string, string> | null;
 }
 
 export interface ParsedProductionFilenameOut {
@@ -6848,6 +6924,7 @@ export interface ProductionParameterDiff {
   locked: unknown;
   incoming: unknown;
   match: boolean;
+  note?: string | null;
 }
 
 export interface ProductionReplacePreview {

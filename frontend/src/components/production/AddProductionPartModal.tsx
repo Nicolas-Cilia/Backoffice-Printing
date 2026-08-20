@@ -1,17 +1,23 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
+import { useQuery } from '@tanstack/react-query';
 import { useTranslation } from 'react-i18next';
 import { Loader2, X } from 'lucide-react';
 import { api } from '../../api/client';
+import type { LibrarySectionPart } from '../../api/client';
 import { Button } from '../Button';
 
 interface AddProductionPartModalProps {
   folderId: number;
+  sectionId?: number | null;
+  existingCodes?: string[];
   onClose: () => void;
   onCreated: () => void;
 }
 
 export function AddProductionPartModal({
   folderId,
+  sectionId = null,
+  existingCodes = [],
   onClose,
   onCreated,
 }: AddProductionPartModalProps) {
@@ -20,6 +26,22 @@ export function AddProductionPartModal({
   const [name, setName] = useState('');
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [addingCode, setAddingCode] = useState<string | null>(null);
+
+  const { data: sectionParts = [], isLoading: catalogLoading } = useQuery({
+    queryKey: ['library-section-parts', sectionId],
+    queryFn: () => api.getLibrarySectionParts(sectionId!),
+    enabled: sectionId != null,
+  });
+
+  const existing = useMemo(
+    () => new Set(existingCodes.map((item) => item.toUpperCase())),
+    [existingCodes],
+  );
+  const availableParts = useMemo(
+    () => sectionParts.filter((part) => !existing.has(part.code.toUpperCase())),
+    [sectionParts, existing],
+  );
 
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
@@ -32,19 +54,30 @@ export function AddProductionPartModal({
   const normalizedCode = code.trim().toUpperCase();
   const codeValid = /^[A-Z]{1,32}$/.test(normalizedCode);
 
-  const handleSubmit = async () => {
-    if (!codeValid || submitting) return;
+  const addPart = async (nextCode: string, nextName: string) => {
     setSubmitting(true);
     setError(null);
     try {
-      await api.addProductionPart(folderId, { code: normalizedCode, name: name.trim() });
+      await api.addProductionPart(folderId, { code: nextCode, name: nextName });
       onCreated();
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
       setError(t('fileManager.production.addPartFailed', { error: message }));
     } finally {
       setSubmitting(false);
+      setAddingCode(null);
     }
+  };
+
+  const handleSubmit = async () => {
+    if (!codeValid || submitting) return;
+    await addPart(normalizedCode, name.trim());
+  };
+
+  const handleCatalogClick = async (part: LibrarySectionPart) => {
+    if (submitting) return;
+    setAddingCode(part.code);
+    await addPart(part.code, part.name);
   };
 
   return (
@@ -63,6 +96,44 @@ export function AddProductionPartModal({
           </button>
         </div>
         <div className="p-4 space-y-4">
+          {sectionId != null && (
+            <div className="space-y-2">
+              <p className="text-sm text-bambu-gray">{t('fileManager.sectionParts.catalog')}</p>
+              {catalogLoading ? (
+                <div className="flex items-center gap-2 text-sm text-bambu-gray">
+                  <Loader2 className="w-4 h-4 animate-spin text-bambu-green" />
+                </div>
+              ) : availableParts.length === 0 ? (
+                <p className="text-xs text-bambu-gray">{t('fileManager.sectionParts.empty')}</p>
+              ) : (
+                <div className="space-y-1.5">
+                  {availableParts.map((part) => (
+                    <button
+                      key={part.id}
+                      type="button"
+                      disabled={submitting}
+                      onClick={() => void handleCatalogClick(part)}
+                      className="w-full text-left px-3 py-2 rounded border border-bambu-dark-tertiary bg-bambu-dark hover:border-bambu-green disabled:opacity-50"
+                    >
+                      <span className="flex items-center gap-2">
+                        {addingCode === part.code ? (
+                          <Loader2 className="w-3.5 h-3.5 animate-spin text-bambu-green" />
+                        ) : null}
+                        <span className="font-mono text-sm text-white">{part.code}</span>
+                        {part.name ? <span className="text-sm text-bambu-gray">{part.name}</span> : null}
+                      </span>
+                      {part.locked_parameters && Object.keys(part.locked_parameters).length > 0 && (
+                        <p className="text-[11px] text-bambu-gray mt-1">
+                          {t('fileManager.sectionParts.followsSectionSpec')}
+                        </p>
+                      )}
+                    </button>
+                  ))}
+                </div>
+              )}
+              <p className="text-xs text-bambu-gray pt-1">{t('fileManager.sectionParts.orCreate')}</p>
+            </div>
+          )}
           <label className="block text-sm">
             <span className="text-bambu-gray">{t('fileManager.production.code')}</span>
             <input
@@ -87,7 +158,7 @@ export function AddProductionPartModal({
               {t('fileManager.production.cancel')}
             </Button>
             <Button type="button" onClick={() => void handleSubmit()} disabled={!codeValid || submitting}>
-              {submitting ? <Loader2 className="w-4 h-4 animate-spin" /> : null}
+              {submitting && !addingCode ? <Loader2 className="w-4 h-4 animate-spin" /> : null}
               {t('fileManager.production.confirmAddPart')}
             </Button>
           </div>

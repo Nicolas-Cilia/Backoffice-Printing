@@ -1,6 +1,8 @@
 import { Component, type ReactNode, type ErrorInfo } from 'react';
 import { BrowserRouter, Routes, Route, Navigate, useLocation } from 'react-router-dom';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
+import { I18nextProvider } from 'react-i18next';
+import i18n from './i18n';
 import { Layout } from './components/Layout';
 import { PrintersPage } from './pages/PrintersPage';
 import { QueuePage } from './pages/QueuePage';
@@ -154,6 +156,7 @@ function SetupRoute({ children }: { children: React.ReactNode }) {
 function App() {
   return (
     <ErrorBoundary>
+      <I18nextProvider i18n={i18n}>
       <ToastProvider>
         <QueryClientProvider client={queryClient}>
           <AuthProvider>
@@ -229,6 +232,7 @@ function App() {
           </AuthProvider>
         </QueryClientProvider>
       </ToastProvider>
+      </I18nextProvider>
     </ErrorBoundary>
   );
 }

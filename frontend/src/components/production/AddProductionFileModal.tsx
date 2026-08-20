@@ -5,7 +5,11 @@ import { api } from '../../api/client';
 import type { ProductionPartView, ProductionReplacePreview } from '../../api/client';
 import { Button } from '../Button';
 import { parseProductionFilename, storedProductionFilename } from '../../utils/productionFilename';
-import { ProductionParameterDiffTable } from './ProductionParameterDiffTable';
+import {
+  collectParameterNotes,
+  mismatchNotesComplete,
+  ProductionParameterDiffTable,
+} from './ProductionParameterDiffTable';
 
 interface AddProductionFileModalProps {
   folderId: number;
@@ -49,6 +53,7 @@ export function AddProductionFileModal({
   const [preview, setPreview] = useState<ProductionReplacePreview | null>(null);
   const [previewing, setPreviewing] = useState(false);
   const [reason, setReason] = useState('');
+  const [parameterNotes, setParameterNotes] = useState<Record<string, string>>({});
 
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
@@ -141,6 +146,7 @@ export function AddProductionFileModal({
     setError(null);
     setPreview(null);
     setReason('');
+    setParameterNotes({});
   };
 
   const identityFields = () => ({
@@ -157,13 +163,24 @@ export function AddProductionFileModal({
     if (!file || !identityComplete || existingSlot) return;
     if (!hasContract && !confirmed) return;
     if (hasContract && preview?.has_mismatches && !resolution) return;
+    if (
+      resolution === 'proceed'
+      && preview?.has_mismatches
+      && !mismatchNotesComplete(preview.parameter_diff, parameterNotes)
+    ) {
+      return;
+    }
     setSubmitting(true);
     setError(null);
     try {
+      const notes = preview?.has_mismatches && resolution === 'proceed'
+        ? collectParameterNotes(preview.parameter_diff, parameterNotes)
+        : undefined;
       await api.createProductionSlot(file, {
         ...identityFields(),
         resolution: resolution ?? null,
         reason: reason.trim() || null,
+        parameter_notes: notes && Object.keys(notes).length > 0 ? notes : undefined,
       });
       onCreated();
     } catch (err) {
@@ -176,6 +193,9 @@ export function AddProductionFileModal({
 
   const mismatchCount = preview?.parameter_diff.filter((row) => !row.match).length ?? 0;
   const showDiffActions = Boolean(hasContract && preview?.has_mismatches);
+  const proceedNotesReady = Boolean(
+    preview && (!preview.has_mismatches || mismatchNotesComplete(preview.parameter_diff, parameterNotes)),
+  );
   const canCreateWithoutResolution = Boolean(
     file && identityComplete && !existingSlot && !submitting && (
       (!hasContract && confirmed) || (hasContract && preview && !preview.has_mismatches && !previewing)
@@ -317,7 +337,14 @@ export function AddProductionFileModal({
                   {t('fileManager.production.mismatchCount', { count: mismatchCount })}
                 </p>
               )}
-              <ProductionParameterDiffTable rows={preview.parameter_diff} />
+              <ProductionParameterDiffTable
+                rows={preview.parameter_diff}
+                notes={parameterNotes}
+                onNoteChange={(key, value) => setParameterNotes((prev) => ({ ...prev, [key]: value }))}
+              />
+              {preview.has_mismatches && !proceedNotesReady && (
+                <p className="text-sm text-amber-500">{t('fileManager.production.notesRequired')}</p>
+              )}
               {preview.has_mismatches && (
                 <label className="block text-sm">
                   <span className="text-bambu-gray">{t('fileManager.production.reason')}</span>
@@ -357,7 +384,7 @@ export function AddProductionFileModal({
                   type="button"
                   variant="secondary"
                   onClick={() => void handleCreate('proceed')}
-                  disabled={!preview || submitting || existingSlot}
+                  disabled={!preview || submitting || existingSlot || !proceedNotesReady}
                 >
                   {submitting ? <Loader2 className="w-4 h-4 animate-spin" /> : null}
                   {t('fileManager.production.proceedAnyway')}
