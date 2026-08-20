@@ -93,7 +93,7 @@ Beta tags end in `b` (example `1.1.0b`) and do **not** move `:latest`.
 
 ## 3. Where to update the version number
 
-**One place in code:** `backend/app/core/config.py`
+**One place in code:** `backend/app/core/config.py`. Frontend `package.json` is **not** the app version.
 
 ```python
 APP_VERSION = "1.0.0"

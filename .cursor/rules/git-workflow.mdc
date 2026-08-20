@@ -11,3 +11,4 @@ alwaysApply: true
 - Create PRs with: `gh pr create --repo Nicolas-Cilia/Backoffice-Printing --base dev`
 - Do not push to `main`.
 - After work is on `dev`, promoting to `main` is a separate later step. Do not invent a release process.
+- Version bumps and Docker publish: see `.cursor/rules/app-version.mdc`.
