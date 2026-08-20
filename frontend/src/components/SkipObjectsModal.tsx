@@ -212,7 +212,7 @@ export function SkipObjectsModal({ printerId, isOpen, onClose }: SkipObjectsModa
             event.stopPropagation();
             setEnlarged(true);
           }}
-          className="absolute right-2 top-2 rounded bg-black/65 p-1.5 text-white/80 hover:text-white"
+          className="absolute right-2 top-2 rounded bg-black/65 p-1.5 text-white/80 hover:text-[#fff]"
           title={t('common.expand')}
         >
           <Maximize2 className="h-4 w-4" />
@@ -367,7 +367,7 @@ export function SkipObjectsModal({ printerId, isOpen, onClose }: SkipObjectsModa
 
       {enlarged && (
         <div className="fixed inset-0 z-[60] flex items-center justify-center bg-black/90 p-8" onClick={() => setEnlarged(false)}>
-          <button type="button" onClick={() => setEnlarged(false)} className="absolute right-4 top-4 rounded p-2 text-white/70 hover:text-white">
+          <button type="button" onClick={() => setEnlarged(false)} className="absolute right-4 top-4 rounded p-2 text-white/70 hover:text-[#fff]">
             <X className="h-6 w-6" />
           </button>
           <div className="aspect-square max-h-[86vh] w-full max-w-[86vh]" onClick={(event) => event.stopPropagation()}>
