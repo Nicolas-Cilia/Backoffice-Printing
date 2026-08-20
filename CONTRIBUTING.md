@@ -195,3 +195,11 @@ Auth changes must follow the CI rules in [SECURITY.md](SECURITY.md).
 GitHub Actions (`.github/workflows/ci.yml`) runs Ruff, pytest, ESLint,
 TypeScript, Vitest, a production frontend build, Docker tests, and security
 scans. Run `./test_all.sh` locally before pushing.
+
+## Git workflow
+
+`dev` is the integration branch. `main` is protected/release.
+
+- Open pull requests against `dev`, not `main`.
+- Example: `gh pr create --repo Nicolas-Cilia/Backoffice-Printing --base dev`
+- Do not push to `main`. Promoting `dev` to `main` is a separate later step.

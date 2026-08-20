@@ -1,0 +1,13 @@
+---
+description: Open PRs against dev, never main. main is protected/release.
+alwaysApply: true
+---
+
+# Git workflow
+
+`main` is protected/release. `dev` is the integration branch.
+
+- Open PRs against `dev`, not `main`.
+- Create PRs with: `gh pr create --repo Nicolas-Cilia/Backoffice-Printing --base dev`
+- Do not push to `main`.
+- After work is on `dev`, promoting to `main` is a separate later step. Do not invent a release process.
