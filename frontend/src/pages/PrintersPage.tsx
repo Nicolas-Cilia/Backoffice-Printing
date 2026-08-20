@@ -80,6 +80,7 @@ import {
   LogOut,
   MoreHorizontal,
   SlidersHorizontal,
+  ArrowUpDown,
   Stethoscope,
   ScanEye,
   LineChart as LineChartIcon,
@@ -123,6 +124,14 @@ import { PrinterInfoModal } from '../components/PrinterInfoModal';
 import { getAmsLabel, getGlobalTrayId, getFillBarColor, getSpoolmanFillLevel, getFallbackSpoolTag, isBambuLabSpool, resolveSlotNozzleDiameter } from '../utils/amsHelpers';
 import { getPrinterImage, getWifiStrength, filterCompatibleQueueItems } from '../utils/printer';
 import { FilamentSlotCircle } from '../components/FilamentSlotCircle';
+import { SlotTrackingLabel } from '../components/SlotTrackingLabel';
+import { ArrangePrintersModal } from '../components/ArrangePrintersModal';
+import {
+  applyPrinterCustomOrder,
+  mergePrinterCustomOrder,
+  readPrinterCustomOrder,
+  writePrinterCustomOrder,
+} from '../utils/printerCustomOrder';
 import { Collapsible } from '../components/Collapsible';
 import { ConnectionDiagnosticModal, DiagnosticChecklist } from '../components/ConnectionDiagnostic';
 import { getColorName, parseFilamentColor, isLightColor } from '../utils/colors';
@@ -1104,7 +1113,7 @@ function StatusSummaryBar({ printers }: { printers: Printer[] | undefined }) {
   );
 }
 
-type SortOption = 'name' | 'status' | 'model' | 'location' | 'eta';
+type SortOption = 'name' | 'status' | 'model' | 'location' | 'eta' | 'custom';
 type ViewMode = 'expanded' | 'compact';
 
 type ToolbarDropdownOption<T extends string> = {
@@ -2077,6 +2086,8 @@ function PrinterCard({
             brand: assigned.brand,
             subtype: assigned.subtype,
             color_hex: assigned.color_hex,
+            extra_colors: assigned.extra_colors,
+            effect_type: assigned.effect_type,
           }
         : null,
       onAssign: () => setAssignTrackingModal({ amsId, trayId }),
@@ -4705,6 +4716,11 @@ function PrinterCard({
                     />
                     <div className="flex-1 h-[2px] bg-bambu-dark-tertiary" />
                   </div>
+                  {trackingAssignments.length > 0 && (
+                    <p className="text-[10px] text-bambu-gray mb-2">
+                      {t('printers.filamentsTrackingNote', 'Labels under slots show Inventory Tracking products.')}
+                    </p>
+                  )}
 
                   {/* AMS Content */}
                   <div className="flex flex-wrap gap-2">
@@ -4916,6 +4932,8 @@ function PrinterCard({
                                   fillSource,
                                 } : null;
 
+                                const slotTracking = trackingForSlot(ams.id, slotIdx);
+
                                 // Check if this specific slot is being refreshed
                                 const isRefreshing = refreshingSlot?.amsId === ams.id &&
                                   refreshingSlot?.slotId === slotIdx;
@@ -5082,7 +5100,7 @@ function PrinterCard({
                                             isAssigned: !!assignment || isBambuLabSpool(tray),
                                           };
                                         })()}
-                                        tracking={trackingForSlot(ams.id, slotIdx)}
+                                        tracking={slotTracking}
                                         configureSlot={{
                                           enabled: hasPermission('printers:control'),
                                           onConfigure: () => setConfigureSlotModal({
@@ -5104,6 +5122,7 @@ function PrinterCard({
                                     ) : (
                                       <EmptySlotHoverCard
                                         kind={emptyKind ?? undefined}
+                                        tracking={slotTracking}
                                         actions={renderAmsSlotActions({
                                           amsId: ams.id,
                                           slotId: slotIdx,
@@ -5135,6 +5154,7 @@ function PrinterCard({
                                         {slotVisual}
                                       </EmptySlotHoverCard>
                                     )}
+                                    <SlotTrackingLabel assigned={slotTracking.assigned} />
                                   </div>
                                 );
                               })}
@@ -5208,6 +5228,8 @@ function PrinterCard({
                           tagUid: tray.tag_uid || null,
                           fillSource: htFillSource,
                         } : null;
+
+                        const slotTracking = trackingForSlot(ams.id, htSlotId);
 
                         // Check if this specific slot is being refreshed
                         const isHtRefreshing = refreshingSlot?.amsId === ams.id &&
@@ -5463,7 +5485,7 @@ function PrinterCard({
                                         isAssigned: !!assignment || isBambuLabSpool(tray),
                                       };
                                     })()}
-                                    tracking={trackingForSlot(ams.id, htSlotId)}
+                                    tracking={slotTracking}
                                     configureSlot={{
                                       enabled: hasPermission('printers:control'),
                                       onConfigure: () => setConfigureSlotModal({
@@ -5485,6 +5507,7 @@ function PrinterCard({
                                 ) : (
                                   <EmptySlotHoverCard
                                     kind={emptyKind ?? undefined}
+                                    tracking={slotTracking}
                                     actions={renderAmsSlotActions({
                                       amsId: ams.id,
                                       slotId: htSlotId,
@@ -5516,6 +5539,7 @@ function PrinterCard({
                                     {slotVisual}
                                   </EmptySlotHoverCard>
                                 )}
+                                <SlotTrackingLabel assigned={slotTracking.assigned} />
                               </div>
                               {/* Stats stacked vertically: Temp on top, Humidity below */}
                               {(ams.humidity != null || ams.temp != null) && (
@@ -5620,6 +5644,7 @@ function PrinterCard({
 
                               const isEmpty = !extTray.tray_type;
                               const emptyKind = getEmptySlotKind(extTray);
+                              const slotTracking = trackingForSlot(255, slotTrayId);
                               const extSlotContent = (
                                 <div className={`w-full bg-bambu-dark-secondary rounded-lg p-1 text-center ${isEmpty ? 'opacity-50' : ''} ${isExtActive ? 'ring-2 ring-bambu-green ring-offset-1 ring-offset-bambu-dark' : ''}`}>
                                   {/* Color circle: L/R inside on dual-nozzle external (replaces
@@ -5736,7 +5761,7 @@ function PrinterCard({
                                           isAssigned: !!assignment || isBambuLabSpool(extTray),
                                         };
                                       })()}
-                                      tracking={trackingForSlot(255, slotTrayId)}
+                                      tracking={slotTracking}
                                       configureSlot={{
                                         enabled: hasPermission('printers:control'),
                                         onConfigure: () => setConfigureSlotModal({
@@ -5758,6 +5783,7 @@ function PrinterCard({
                                   ) : (
                                     <EmptySlotHoverCard
                                       kind={emptyKind ?? undefined}
+                                      tracking={slotTracking}
                                       actions={renderAmsSlotActions({
                                         amsId: 255,
                                         slotId: slotTrayId,
@@ -5789,6 +5815,7 @@ function PrinterCard({
                                       {extSlotContent}
                                     </EmptySlotHoverCard>
                                   )}
+                                  <SlotTrackingLabel assigned={slotTracking.assigned} />
                                 </div>
                               );
                             })}
@@ -7905,8 +7932,14 @@ export function PrintersPage() {
   const [showPowerDropdown, setShowPowerDropdown] = useState(false);
   const [poweringOn, setPoweringOn] = useState<number | null>(null);
   const [sortBy, setSortBy] = useState<SortOption>(() => {
-    return (localStorage.getItem('printerSortBy') as SortOption) || 'name';
+    const saved = localStorage.getItem('printerSortBy');
+    if (saved === 'name' || saved === 'status' || saved === 'model' || saved === 'location' || saved === 'eta' || saved === 'custom') {
+      return saved;
+    }
+    return readPrinterCustomOrder().length > 0 ? 'custom' : 'name';
   });
+  const [customOrder, setCustomOrder] = useState<number[]>(() => readPrinterCustomOrder());
+  const [showArrangeModal, setShowArrangeModal] = useState(false);
   const [sortAsc, setSortAsc] = useState<boolean>(() => {
     return localStorage.getItem('printerSortAsc') !== 'false';
   });
@@ -8330,6 +8363,22 @@ export function PrintersPage() {
     localStorage.setItem('printerSortBy', newSort);
   };
 
+  const handleArrangeApply = useCallback((ids: number[]) => {
+    if (ids.length > 0) {
+      const allIds = (printers ?? []).map((printer) => printer.id);
+      const merged = mergePrinterCustomOrder(ids, customOrder, allIds);
+      writePrinterCustomOrder(merged);
+      setCustomOrder(merged);
+      setSortBy('custom');
+      localStorage.setItem('printerSortBy', 'custom');
+    }
+    setShowArrangeModal(false);
+  }, [customOrder, printers]);
+
+  const handleArrangeClose = useCallback(() => {
+    setShowArrangeModal(false);
+  }, []);
+
   const toggleSortDirection = () => {
     const newAsc = !sortAsc;
     setSortAsc(newAsc);
@@ -8418,6 +8467,8 @@ export function PrintersPage() {
     const sorted = [...filteredPrinters];
 
     switch (sortBy) {
+      case 'custom':
+        return applyPrinterCustomOrder(sorted, customOrder);
       case 'name':
         sorted.sort((a, b) => a.name.localeCompare(b.name));
         break;
@@ -8481,7 +8532,7 @@ export function PrintersPage() {
     }
 
     return sorted;
-  }, [filteredPrinters, sortBy, sortAsc, queryClient]);
+  }, [filteredPrinters, sortBy, sortAsc, customOrder, queryClient]);
 
   const selectAll = useCallback(() => {
     setSelectedPrinterIds(new Set(sortedPrinters.map(p => p.id)));
@@ -8526,9 +8577,12 @@ export function PrintersPage() {
     });
   }, []);
 
-  // Group printers when sorted by location, status, or model
+  // Group printers when sorted by location, status, or model.
+  // Unknown values (including a stale printerSortBy=custom from another
+  // session before custom sort existed) must NOT return {} — that is truthy
+  // and the grouped renderer paints zero cards.
   const groupedPrinters = useMemo(() => {
-    if (sortBy === 'name' || sortBy === 'eta') return null;
+    if (sortBy !== 'location' && sortBy !== 'status' && sortBy !== 'model') return null;
 
     const groups: Record<string, typeof sortedPrinters> = {};
 
@@ -8556,6 +8610,39 @@ export function PrintersPage() {
     return groups;
     // eslint-disable-next-line react-hooks/exhaustive-deps -- classifyPrinterStatus & filterKnownHMSErrors are stable module-level functions, not reactive deps; statusCacheVersion forces recompute on WebSocket status updates
   }, [sortBy, sortedPrinters, queryClient, statusCacheVersion]);
+
+  const arrangeTitle = useMemo(() => {
+    if (groupedPrinters) {
+      const keys = sortBy === 'status'
+        ? STATUS_GROUP_ORDER.filter(k => groupedPrinters[k]?.length > 0)
+        : Object.keys(groupedPrinters);
+      if (keys.length === 1) {
+        const key = keys[0];
+        if (sortBy === 'status') return t(STATUS_GROUP_META[key]?.labelKey || key);
+        if (key === 'Ungrouped') return t('printers.ungrouped', 'Ungrouped');
+        return key;
+      }
+    }
+    const locations = [...new Set((printers ?? []).map(p => p.location).filter((loc): loc is string => Boolean(loc)))];
+    if (locations.length === 1 && (printers ?? []).every(p => p.location === locations[0])) {
+      return locations[0];
+    }
+    return t('printers.arrange.defaultGroup', 'Group 1');
+  }, [groupedPrinters, printers, sortBy, t]);
+
+  const arrangePrinters = useMemo(() => {
+    if (!printers) return [];
+    // Always list every printer. When a filter is active and there is no saved
+    // custom order yet, seed from the full printer list rather than the filtered
+    // view so hidden cards are not pinned to the end.
+    const seed =
+      customOrder.length > 0
+        ? customOrder
+        : filteredPrinters.length === printers.length
+          ? sortedPrinters.map((p) => p.id)
+          : printers.map((p) => p.id);
+    return applyPrinterCustomOrder(printers, seed).map((p) => ({ id: p.id, name: p.name, model: p.model }));
+  }, [printers, customOrder, filteredPrinters, sortedPrinters]);
 
   const toolbarRef = useRef<HTMLDivElement>(null);
   const expandedToolbarControlsRef = useRef<HTMLDivElement>(null);
@@ -8667,6 +8754,7 @@ export function PrintersPage() {
             { value: 'model', label: t('printers.sort.model') },
             { value: 'location', label: t('printers.sort.location') },
             { value: 'eta', label: t('printers.sort.eta') },
+            { value: 'custom', label: t('printers.sort.custom', 'Custom') },
           ]}
         />
         <button
@@ -8681,6 +8769,18 @@ export function PrintersPage() {
           )}
         </button>
       </div>
+
+      {printers && printers.length > 0 && (
+        <button
+          type="button"
+          onClick={() => setShowArrangeModal(true)}
+          className={`h-8 px-2 rounded-lg border bg-bambu-dark border-bambu-dark-tertiary text-white hover:bg-bambu-dark-tertiary transition-colors flex items-center gap-1.5 ${inMenu ? 'w-full justify-center text-sm font-medium' : ''}`}
+          title={t('printers.arrange.button', 'Arrange')}
+        >
+          <ArrowUpDown className="w-4 h-4" />
+          <span className={inMenu ? '' : 'text-sm font-medium'}>{t('printers.arrange.button', 'Arrange')}</span>
+        </button>
+      )}
 
       {/* Page view toggle: Cards / Cam Wall */}
       <div className={`flex h-8 items-center bg-bambu-dark rounded-lg border border-bambu-dark-tertiary ${inMenu ? 'w-full' : ''}`}>
@@ -8985,6 +9085,7 @@ export function PrintersPage() {
             return (sortAsc ? keys : [...keys].reverse());
           })().map((groupKey) => {
             const groupPrinters = groupedPrinters[groupKey];
+            if (!groupPrinters?.length) return null;
             const collapseKey = `${sortBy}:${groupKey}`;
             const isOpen = !collapsedSections[collapseKey];
 
@@ -9203,6 +9304,16 @@ export function PrintersPage() {
           })}
         />
       ))}
+
+      {showArrangeModal && (
+        <ArrangePrintersModal
+          isOpen
+          title={arrangeTitle}
+          printers={arrangePrinters}
+          onApply={handleArrangeApply}
+          onClose={handleArrangeClose}
+        />
+      )}
     </div>
   );
 }

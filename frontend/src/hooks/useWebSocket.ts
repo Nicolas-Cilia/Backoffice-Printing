@@ -379,6 +379,14 @@ export function useWebSocket() {
         debouncedInvalidate('inventory-spools');
         break;
 
+      case 'filament_tracking_updated':
+        debouncedInvalidate('filament-tracking-plan');
+        debouncedInvalidate('filament-tracking-events');
+        debouncedInvalidate('filament-tracking-printer-consumption');
+        debouncedInvalidate('filament-tracking-live-rate');
+        debouncedInvalidate('filament-tracking-assignments');
+        break;
+
       case 'unknown_tag': {
         // Unknown RFID tag detected — dispatch event for UI. The backend
         // ships the slot's current tray data alongside the event so

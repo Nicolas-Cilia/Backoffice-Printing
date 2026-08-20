@@ -95,6 +95,7 @@ class UsageEventResponse(BaseModel):
     archive_id: int | None
     printer_id: int | None
     print_name: str | None
+    estimated: bool = False
 
     class Config:
         from_attributes = True
@@ -147,3 +148,26 @@ class PrinterConsumptionResponse(BaseModel):
     printer_id: int
     name: str
     grams: float
+
+
+class LiveUsageProductResponse(BaseModel):
+    bucket_id: int
+    color_name: str
+    material: str
+    brand: str | None = None
+    subtype: str | None = None
+    extra_colors: str | None = None
+    effect_type: str | None = None
+    color_hex: str | None = None
+    grams_so_far: float
+    grams_last_hour: float
+    grams_per_hour: float
+
+
+class LiveUsageRateResponse(BaseModel):
+    grams_per_hour: float
+    grams_last_hour: float
+    grams_so_far: float
+    active_jobs: int
+    warming_up: bool = False
+    products: list[LiveUsageProductResponse]

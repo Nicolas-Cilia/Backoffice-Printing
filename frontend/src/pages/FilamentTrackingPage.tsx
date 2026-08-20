@@ -1,11 +1,11 @@
 import { useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { useTranslation } from 'react-i18next';
-import { Clock, Edit2, Loader2, Package, Plus, Save, Trash2, TrendingDown, Wallet, X } from 'lucide-react';
+import { Activity, Clock, Edit2, Loader2, Package, Plus, Save, Trash2, TrendingDown, Wallet, X } from 'lucide-react';
 import { Pie, PieChart, Cell, Tooltip, ResponsiveContainer } from 'recharts';
 import { api } from '../api/client';
 import type {
-  FilamentTrackingEvent,
+  FilamentTrackingLiveRate,
   FilamentTrackingMaterial,
   FilamentTrackingPrinterConsumption,
   FilamentTrackingStage,
@@ -21,13 +21,13 @@ import { loadRecentColors, saveRecentColor } from '../components/spool-form/util
 import { useToast } from '../contexts/ToastContext';
 import { getCurrencySymbol } from '../utils/currency';
 import { formatDateOnly } from '../utils/date';
-import { trackingProductLabel } from '../utils/filamentTracking';
+import { groupRecentUsage, trackingProductLabel, type RecentUsageJob } from '../utils/filamentTracking';
 
-function stageLabel(stage: FilamentTrackingStage): string {
-  if (stage === 'collecting') return 'Calibrating';
-  if (stage === 'day') return 'Day stage';
-  if (stage === 'week') return 'Week stage';
-  return 'Month stage';
+function stageLabel(stage: FilamentTrackingStage, t: (key: string, defaultValue: string) => string): string {
+  if (stage === 'collecting') return t('inventory.trackingStageCalibrating', 'Calibrating');
+  if (stage === 'day') return t('inventory.trackingStageDay', 'Day stage');
+  if (stage === 'week') return t('inventory.trackingStageWeek', 'Week stage');
+  return t('inventory.trackingStageMonth', 'Month stage');
 }
 
 function swatchRgba(hex: string | null | undefined): string {
@@ -45,16 +45,6 @@ function formatSpoolCount(count: number): string {
   return String(Math.round(count));
 }
 
-function formatUsageGrams(grams: number): string {
-  const abs = Math.abs(grams);
-  if (abs >= 1000) {
-    const kg = abs / 1000;
-    const value = kg % 1 === 0 ? String(kg.toFixed(0)) : kg.toLocaleString(undefined, { maximumFractionDigits: 2 });
-    return `-${value} kg`;
-  }
-  return `-${Math.round(abs)} grams`;
-}
-
 function formatConsumed(grams: number): string {
   const abs = Math.abs(grams);
   if (abs <= 0) return '0 g';
@@ -64,6 +54,18 @@ function formatConsumed(grams: number): string {
     return `${value} kg`;
   }
   return `${Math.round(abs)} g`;
+}
+
+function formatGramsPerHour(grams: number): string {
+  const abs = Math.abs(grams);
+  if (abs <= 0) return '0 g/h';
+  // kg/h only for true kilogram-scale rates. Hundreds of g/h stay g/h.
+  if (abs >= 10000) {
+    const kg = abs / 1000;
+    const value = kg % 1 === 0 ? String(kg.toFixed(0)) : kg.toLocaleString(undefined, { maximumFractionDigits: 1 });
+    return `${value} kg/h`;
+  }
+  return `${Math.round(abs)} g/h`;
 }
 
 function formatMoney(amount: number | null | undefined, symbol: string): string {
@@ -85,7 +87,7 @@ function parseLeadTimeDays(value: string): number {
   return Math.max(1, Math.min(365, parsed));
 }
 
-function rowLabel(row: Pick<FilamentTrackingMaterial, 'color_name' | 'material' | 'brand' | 'subtype'>): string {
+function rowLabel(row: Pick<FilamentTrackingMaterial, 'color_name' | 'material' | 'brand' | 'subtype' | 'extra_colors' | 'effect_type'>): string {
   return trackingProductLabel(row);
 }
 
@@ -156,11 +158,15 @@ export function FilamentTrackingPage() {
   });
   const eventsQuery = useQuery({
     queryKey: ['filament-tracking-events'],
-    queryFn: () => api.getFilamentTrackingEvents(12),
+    queryFn: () => api.getFilamentTrackingEvents(),
   });
   const printerConsumptionQuery = useQuery({
     queryKey: ['filament-tracking-printer-consumption'],
     queryFn: () => api.getFilamentTrackingPrinterConsumption(),
+  });
+  const liveRateQuery = useQuery({
+    queryKey: ['filament-tracking-live-rate'],
+    queryFn: () => api.getFilamentTrackingLiveRate(),
   });
   const settingsQuery = useQuery({
     queryKey: ['settings'],
@@ -243,6 +249,7 @@ export function FilamentTrackingPage() {
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['filament-tracking-plan'] });
       queryClient.invalidateQueries({ queryKey: ['filament-tracking-events'] });
+      queryClient.invalidateQueries({ queryKey: ['filament-tracking-printer-consumption'] });
       setPendingDelete(null);
       showToast(t('inventory.trackingStockRemoved', 'Stock removed'), 'success');
     },
@@ -253,7 +260,14 @@ export function FilamentTrackingPage() {
   const calibrating = plan?.stage === 'collecting';
   const events = eventsQuery.data ?? [];
   const printerConsumption = printerConsumptionQuery.data ?? [];
+  const liveRate = liveRateQuery.data;
   const totalPrinterGrams = printerConsumption.reduce((sum, item) => sum + item.grams, 0);
+  const recentJobs = useMemo(() => groupRecentUsage(events), [events]);
+  const printerNameById = useMemo(() => {
+    const map = new Map<number, string>();
+    for (const row of printerConsumption) map.set(row.printer_id, row.name);
+    return map;
+  }, [printerConsumption]);
   const rows = useMemo(() => plan?.materials ?? [], [plan]);
   const currencySymbol = getCurrencySymbol(settingsQuery.data?.currency || 'USD');
   const defaultCostPerKg = settingsQuery.data?.default_filament_cost ?? null;
@@ -281,11 +295,11 @@ export function FilamentTrackingPage() {
         </Button>
       </div>
 
-      <section className="grid grid-cols-2 lg:grid-cols-5 gap-3" aria-label="Filament overview">
+      <section className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-6 gap-3" aria-label="Filament overview">
         <Kpi
           label={t('inventory.trackingOnHand', 'On hand')}
           value={formatKg(plan?.total_on_hand_grams ?? 0)}
-          sub={`${rows.filter((m) => m.stock_initialized).length} ${t('inventory.trackingColors', 'colors')}`}
+          sub={`${rows.filter((m) => m.stock_initialized).length} ${t('inventory.trackingProducts', 'products')}`}
           icon={<Package className="w-4 h-4 text-bambu-green" />}
         />
         <Kpi
@@ -308,7 +322,7 @@ export function FilamentTrackingPage() {
               ? t('inventory.trackingNeedDay', 'Needs at least one day of prints')
               : plan?.total_monthly_cost_estimate != null
                 ? formatMoney(plan.total_monthly_cost_estimate, currencySymbol)
-                : stageLabel(plan?.stage ?? 'collecting')
+                : stageLabel(plan?.stage ?? 'collecting', t)
           }
         />
         <Kpi
@@ -324,13 +338,14 @@ export function FilamentTrackingPage() {
           )}
           icon={<Clock className="w-4 h-4 text-amber-400" />}
         />
+        <LiveUsageKpi rate={liveRate} />
       </section>
 
       <section className="bg-bambu-dark-secondary rounded-lg overflow-hidden">
         <div className="px-4 py-3 flex items-center justify-between border-b border-bambu-dark-tertiary">
           <div>
             <h2 className="text-white font-semibold">
-              {t('inventory.trackingStockHeading', 'Color · material stock')}
+              {t('inventory.trackingStockHeading', 'Named product stock')}
             </h2>
             <p className="text-xs text-bambu-gray mt-0.5">
               {t(
@@ -341,7 +356,7 @@ export function FilamentTrackingPage() {
           </div>
           {plan && (
             <span className="text-xs text-bambu-gray">
-              {stageLabel(plan.stage)} · {t('inventory.trackingDay', 'day')} {Math.max(plan.days_observed, 0)}
+              {stageLabel(plan.stage, t)} · {t('inventory.trackingDay', 'day')} {Math.max(plan.days_observed, 0)}
             </span>
           )}
         </div>
@@ -354,7 +369,7 @@ export function FilamentTrackingPage() {
         ) : rows.length === 0 ? (
           <div className="text-center py-16 px-4">
             <Package className="w-10 h-10 text-bambu-gray mx-auto mb-3" />
-            <p className="text-white font-medium">{t('inventory.trackingEmpty', 'No color stock yet')}</p>
+            <p className="text-white font-medium">{t('inventory.trackingEmpty', 'No product stock yet')}</p>
             <p className="text-sm text-bambu-gray mt-1 max-w-md mx-auto">
               {t(
                 'inventory.trackingEmptyHint',
@@ -406,7 +421,7 @@ export function FilamentTrackingPage() {
           <p className="text-xs text-bambu-gray mb-1">
             {t(
               'inventory.trackingByPrinterHint',
-              'Each slice is that printer’s share of all tracked usage.',
+              'Each slice is that printer’s share of tracked usage, including prints still running.',
             )}
           </p>
           {printerConsumption.length === 0 ? (
@@ -421,14 +436,21 @@ export function FilamentTrackingPage() {
         <section className="bg-bambu-dark-secondary rounded-lg p-4 flex flex-col min-h-0">
           <h2 className="text-white font-semibold mb-1">{t('inventory.trackingRecent', 'Recent usage')}</h2>
           <p className="text-xs text-bambu-gray mb-1">
-            {t('inventory.trackingRecentHint', 'Completed and failed prints feeding the average.')}
+            {t(
+              'inventory.trackingRecentHint',
+              'Estimates come from the slicer file × progress, not AMS remain%. Skip-objects still charge the full plate.',
+            )}
           </p>
-          {events.length === 0 ? (
+          {recentJobs.length === 0 ? (
             <p className="text-sm text-bambu-gray mt-3">{t('inventory.trackingNoEvents', 'No usage recorded yet.')}</p>
           ) : (
             <ul className="divide-y divide-bambu-dark-tertiary">
-              {events.map((event) => (
-                <RecentUsageRow key={event.id} event={event} />
+              {recentJobs.map((job) => (
+                <RecentUsageRow
+                  key={job.key}
+                  job={job}
+                  printerName={job.printer_id != null ? printerNameById.get(job.printer_id) : undefined}
+                />
               ))}
             </ul>
           )}
@@ -453,7 +475,7 @@ export function FilamentTrackingPage() {
           title={t('common.delete')}
           message={t(
             'inventory.trackingRemoveConfirm',
-            'Are you sure you want to delete {{name}}? This cannot be undone. Usage history for this color and material will also be removed.',
+            'Are you sure you want to delete {{name}}? This cannot be undone. Usage history for this product will also be removed.',
             { name: rowLabel(pendingDelete) },
           )}
           confirmText={t('common.delete')}
@@ -464,6 +486,81 @@ export function FilamentTrackingPage() {
         />
       )}
     </div>
+  );
+}
+
+function LiveUsageKpi({ rate }: { rate: FilamentTrackingLiveRate | undefined }) {
+  const { t } = useTranslation();
+  const products = rate?.products ?? [];
+  const gramsPerHour = rate?.grams_per_hour ?? 0;
+  const gramsLastHour = rate?.grams_last_hour ?? 0;
+  const activeJobs = rate?.active_jobs ?? 0;
+  const warmingUp = Boolean(rate?.warming_up);
+  const idle = activeJobs <= 0 && !warmingUp;
+  const headline = warmingUp ? '—' : formatGramsPerHour(gramsPerHour);
+  const sub = idle
+    ? t('inventory.trackingNoLiveUsage', 'No tracked prints running')
+    : t('inventory.trackingLastHour', '{{grams}} in the last hour', {
+        grams: formatConsumed(gramsLastHour),
+      });
+
+  return (
+    <article
+      className="relative bg-bambu-dark-secondary rounded-lg p-4 min-w-0 group"
+      tabIndex={0}
+    >
+      <div className="flex items-center gap-2 mb-1">
+        <Activity className="w-4 h-4 text-bambu-green" />
+        <span className="text-xs text-bambu-gray font-medium uppercase tracking-wide">
+          {t('inventory.trackingLiveUsage', 'Live usage')}
+        </span>
+      </div>
+      <div className="text-xl font-bold text-white">{headline}</div>
+      <div className="text-xs text-bambu-gray mt-1 truncate">{sub}</div>
+      <div className="absolute left-0 right-0 top-full z-20 mt-1 hidden group-hover:block group-focus-within:block">
+        <div className="rounded-lg border border-bambu-dark-tertiary bg-bambu-dark p-2.5 shadow-lg">
+          <p className="text-[11px] text-bambu-gray">
+            {warmingUp
+              ? t(
+                  'inventory.trackingLiveUsageWarmingHint',
+                  'Catching up on an in-progress print. Rate waits until elapsed print time is long enough to be stable.',
+                )
+              : t(
+                  'inventory.trackingLiveUsageHint',
+                  'Grams deducted from assigned products on in-progress prints. Rate is grams so far divided by elapsed print time (from print start, not first tracking write).',
+                )}
+          </p>
+          {!idle && (
+            <p className="text-xs text-bambu-gray mt-1">
+              {warmingUp
+                ? t('inventory.trackingLiveUsageWarming', 'Warming up · {{count}} running now', {
+                    count: activeJobs,
+                  })
+                : t('inventory.trackingLiveJobs', '{{count}} running now', { count: activeJobs })}
+            </p>
+          )}
+          {products.length > 0 ? (
+            <ul className="mt-1.5 space-y-1">
+              {products.map((row) => (
+                <li key={row.bucket_id} className="flex items-center justify-between gap-2 min-w-0">
+                  <span className="text-xs text-white truncate">{trackingProductLabel(row)}</span>
+                  <span className="text-xs font-semibold text-bambu-green whitespace-nowrap flex-shrink-0">
+                    {warmingUp ? '—' : formatGramsPerHour(row.grams_per_hour)}
+                  </span>
+                </li>
+              ))}
+            </ul>
+          ) : (
+            <p className="text-xs text-bambu-gray mt-1.5">
+              {t(
+                'inventory.trackingLiveUsageEmpty',
+                'When a print is deducting from assigned stock, each named product shows up here.',
+              )}
+            </p>
+          )}
+        </div>
+      </div>
+    </article>
   );
 }
 
@@ -520,6 +617,7 @@ function PrinterConsumptionChart({
   rows: FilamentTrackingPrinterConsumption[];
   totalGrams: number;
 }) {
+  const { t } = useTranslation();
   const [hoveredId, setHoveredId] = useState<number | null>(null);
   const pieRows = rows.filter((row) => row.grams > 0);
   const label = rows
@@ -575,7 +673,7 @@ function PrinterConsumptionChart({
         )}
         <div className="absolute inset-0 flex flex-col items-center justify-center text-center pointer-events-none">
           <div className="text-lg font-bold text-white leading-none">{formatConsumed(totalGrams)}</div>
-          <div className="text-[11px] text-bambu-gray mt-1">used</div>
+          <div className="text-[11px] text-bambu-gray mt-1">{t('inventory.trackingUsed', 'used')}</div>
         </div>
       </div>
       <ul className="flex-1 min-w-0 flex flex-col justify-evenly py-1">
@@ -601,42 +699,83 @@ function PrinterConsumptionChart({
   );
 }
 
-function RecentUsageRow({ event }: { event: FilamentTrackingEvent }) {
-  const title = event.print_name?.trim() || trackingProductLabel(event);
-  const date = formatDateOnly(event.occurred_at, { month: 'short', day: 'numeric' });
+function RecentUsageRow({
+  job,
+  printerName,
+}: {
+  job: RecentUsageJob;
+  printerName?: string;
+}) {
+  const { t } = useTranslation();
+  const head = job.products[0];
+  const untracked = job.products.every(
+    (product) => product.bucket_id === 0 || product.color_name === 'Unassigned',
+  );
+  const title = job.print_name?.trim() || (head && !untracked ? trackingProductLabel(head) : 'Print');
+  const date = job.occurred_at
+    ? formatDateOnly(job.occurred_at, { month: 'short', day: 'numeric' })
+    : '';
   const status =
-    event.kind !== 'completed'
-      ? event.progress != null
-        ? `${event.kind} · ${Math.round(event.progress)}%`
-        : event.kind
+    job.kind !== 'completed'
+      ? job.progress != null
+        ? `${job.kind} · ${Math.round(job.progress)}%`
+        : job.kind
       : null;
+  const materials = [...new Set(job.products.map((product) => product.material).filter(Boolean))];
   const meta = [
-    event.archive_id != null ? `#${event.archive_id}` : null,
-    event.material,
-    event.color_name,
+    printerName,
+    job.archive_id != null ? `#${job.archive_id}` : null,
+    untracked
+      ? t('inventory.trackingUnassigned', 'unassigned')
+      : job.products.length === 1
+        ? head?.material
+        : materials.length === 1
+          ? materials[0]
+          : null,
+    untracked ? null : job.products.length === 1 ? head?.color_name : null,
     date,
     status,
   ]
     .map((part) => (part || '').trim())
     .filter(Boolean)
     .join(' • ');
+  const productLine =
+    job.products.length > 1
+      ? job.products.map((product) => `${product.color_name} ${formatConsumed(product.grams)}`).join(' · ')
+      : null;
 
   return (
     <li className="flex items-center gap-3 py-3 first:pt-3">
-      <FilamentSwatch
-        rgba={swatchRgba(event.color_hex)}
-        extraColors={event.extra_colors}
-        effectType={event.effect_type}
-        subtype={event.subtype}
-        className="w-3 h-3 ring-1 ring-white/15"
-        effectSize="table"
-      />
+      <div className="flex items-center gap-0.5 flex-shrink-0">
+        {untracked
+          ? null
+          : job.products.map((product) => (
+              <FilamentSwatch
+                key={product.bucket_id}
+                rgba={swatchRgba(product.color_hex)}
+                extraColors={product.extra_colors}
+                effectType={product.effect_type}
+                subtype={product.subtype}
+                className="w-3 h-3"
+                effectSize="table"
+                title={product.color_name}
+              />
+            ))}
+      </div>
       <div className="min-w-0 flex-1">
         <div className="text-sm font-medium text-white truncate">{title}</div>
+        {productLine ? (
+          <div className="text-xs text-white/80 truncate">{productLine}</div>
+        ) : null}
         <div className="text-xs text-bambu-gray truncate">{meta}</div>
       </div>
       <span className="text-sm font-semibold text-bambu-green whitespace-nowrap">
-        {formatUsageGrams(event.grams)}
+        {formatConsumed(job.grams)}
+        {job.estimated ? (
+          <span className="ml-1 text-xs font-normal text-bambu-gray">
+            {t('inventory.trackingEstimated', 'est.')}
+          </span>
+        ) : null}
       </span>
     </li>
   );
@@ -671,7 +810,7 @@ function MaterialRow({
           <div>
             <div className="text-white font-medium">{label}</div>
             {!row.stock_initialized && (
-              <div className="text-xs text-amber-400">Set starting stock</div>
+              <div className="text-xs text-amber-400">{t('inventory.trackingSetStartingStock', 'Set starting stock')}</div>
             )}
           </div>
         </div>
@@ -680,7 +819,7 @@ function MaterialRow({
         <div>{row.stock_initialized ? formatKg(row.on_hand_grams) : '—'}</div>
         {row.stock_initialized && (
           <div className="text-xs text-bambu-gray">
-            {formatSpoolCount(row.spool_equivalent)} spools
+            {formatSpoolCount(row.spool_equivalent)} {t('inventory.spools', 'spools')}
           </div>
         )}
       </td>

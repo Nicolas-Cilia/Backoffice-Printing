@@ -3056,6 +3056,7 @@ export interface FilamentTrackingEvent {
   archive_id: number | null;
   printer_id: number | null;
   print_name: string | null;
+  estimated?: boolean;
 }
 
 export interface FilamentTrackingBucketCreate {
@@ -3076,6 +3077,29 @@ export interface FilamentTrackingPrinterConsumption {
   printer_id: number;
   name: string;
   grams: number;
+}
+
+export interface FilamentTrackingLiveUsageProduct {
+  bucket_id: number;
+  color_name: string;
+  material: string;
+  brand?: string | null;
+  subtype?: string | null;
+  extra_colors?: string | null;
+  effect_type?: string | null;
+  color_hex: string | null;
+  grams_so_far: number;
+  grams_last_hour: number;
+  grams_per_hour: number;
+}
+
+export interface FilamentTrackingLiveRate {
+  grams_per_hour: number;
+  grams_last_hour: number;
+  grams_so_far: number;
+  active_jobs: number;
+  warming_up?: boolean;
+  products: FilamentTrackingLiveUsageProduct[];
 }
 
 export interface FilamentTrackingAssignment {
@@ -5439,6 +5463,8 @@ export const api = {
     request<FilamentTrackingEvent[]>(`/filament-tracking/events?limit=${limit}`),
   getFilamentTrackingPrinterConsumption: () =>
     request<FilamentTrackingPrinterConsumption[]>('/filament-tracking/printer-consumption'),
+  getFilamentTrackingLiveRate: () =>
+    request<FilamentTrackingLiveRate>('/filament-tracking/live-rate'),
   createFilamentTrackingBucket: (data: FilamentTrackingBucketCreate) =>
     request<FilamentTrackingMaterial>('/filament-tracking/buckets', {
       method: 'POST',

@@ -4545,6 +4545,7 @@ export default {
     inPrinter: 'In Printer',
     lowStock: 'Low Stock',
     sinceTracking: 'Since tracking started',
+    trackingEstimated: 'est.',
     resetConsumedCounter: 'Reset counter',
     resetConsumedCounterTooltip: 'Zero the consumed-grams counter for this spool. Remaining weight is not changed.',
     resetConsumedCounterConfirm: 'Reset this spool\'s consumed-grams counter to 0? Future prints will track from zero again. The spool itself, its remaining weight calculation, and your settings are not changed.',

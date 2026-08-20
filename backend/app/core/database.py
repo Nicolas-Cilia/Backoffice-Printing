@@ -4056,6 +4056,14 @@ async def run_migrations(conn):
 
     await _migrate_production_instance_folder_uniqueness(conn)
 
+    # Migration: 3MF-estimated vs remain%-actual usage events.
+    if is_sqlite():
+        await _safe_execute(conn, "ALTER TABLE filament_color_usage ADD COLUMN estimated BOOLEAN DEFAULT 0")
+    else:
+        await _safe_execute(
+            conn, "ALTER TABLE filament_color_usage ADD COLUMN IF NOT EXISTS estimated BOOLEAN DEFAULT false"
+        )
+
 
 async def _migrate_production_instance_folder_uniqueness(conn) -> None:
     """Widen part-instance uniqueness from (part, printer) to (part, printer, folder).

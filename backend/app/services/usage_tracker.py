@@ -769,69 +769,20 @@ async def on_print_complete(
 async def _resolve_3mf_fallback(archive, db: AsyncSession, base_dir):
     """Try to find a 3MF file from library or a previous archive when the current archive has none.
 
-    This handles fallback archives (FTP download failed) where the 3MF may already exist
-    locally from a library upload or a previous successful print of the same file.
+    Exact basename stem only (``foo.gcode.3mf`` / ``foo.3mf`` / ``foo``). Substring
+    matches such as ``benchy`` inside ``benchy_v2`` are rejected.
     """
-    from pathlib import Path
+    from backend.app.services.filament_tracking import find_exact_named_3mf
 
-    from backend.app.models.archive import PrintArchive
-    from backend.app.models.library import LibraryFile
-
-    # Derive search name from archive filename (e.g. "benchy.3mf" or "benchy.gcode.3mf")
-    search_name = archive.filename or archive.print_name
-    if not search_name:
+    if archive is None:
         return None
-    # Normalize: strip path parts, get base name
-    search_name = search_name.split("/")[-1]
-    search_base = search_name.replace(".gcode.3mf", "").replace(".gcode", "").replace(".3mf", "")
-    if not search_base:
-        return None
-
-    # 1. Try library files matching the name (match base name at file boundary)
-    try:
-        lib_result = await db.execute(
-            LibraryFile.active()
-            .where(LibraryFile.file_path.ilike(f"%/{search_base}.%") | LibraryFile.file_path.ilike(f"{search_base}.%"))
-            .where(LibraryFile.file_path.ilike("%.3mf"))
-            .order_by(LibraryFile.created_at.desc())
-            .limit(3)
-        )
-        for lib_file in lib_result.scalars().all():
-            lib_path = Path(lib_file.file_path)
-            candidate = lib_path if lib_path.is_absolute() else base_dir / lib_file.file_path
-            if candidate.exists() and candidate.suffix == ".3mf":
-                logger.info("[UsageTracker] 3MF fallback: found library file %s for archive %s", candidate, archive.id)
-                return candidate
-    except Exception as e:
-        logger.debug("[UsageTracker] 3MF fallback: library lookup failed: %s", e)
-
-    # 2. Try previous archives with the same filename that have a valid file_path
-    try:
-        prev_result = await db.execute(
-            select(PrintArchive)
-            .where(PrintArchive.id != archive.id)
-            .where(PrintArchive.printer_id == archive.printer_id)
-            .where(PrintArchive.file_path != "")
-            .where(PrintArchive.file_path.isnot(None))
-            .where(
-                PrintArchive.filename.ilike(f"%{search_base}.%") | PrintArchive.filename.ilike(f"{search_base}.%"),
-            )
-            .order_by(PrintArchive.created_at.desc())
-            .limit(3)
-        )
-        for prev_archive in prev_result.scalars().all():
-            candidate = base_dir / prev_archive.file_path
-            if candidate.exists() and candidate.suffix == ".3mf":
-                logger.info(
-                    "[UsageTracker] 3MF fallback: found previous archive %s file for archive %s",
-                    prev_archive.id,
-                    archive.id,
-                )
-                return candidate
-    except Exception as e:
-        logger.debug("[UsageTracker] 3MF fallback: previous archive lookup failed: %s", e)
-
-    return None
+    return await find_exact_named_3mf(
+        db,
+        names=[archive.filename, archive.print_name],
+        base_dir=base_dir,
+        printer_id=getattr(archive, "printer_id", None),
+        exclude_archive_id=getattr(archive, "id", None),
+    )
 
 
 async def _find_3mf_by_filename(
@@ -840,65 +791,21 @@ async def _find_3mf_by_filename(
     db: AsyncSession,
     base_dir,
 ):
-    """Find a 3MF file by filename from library or previous archives.
+    """Find a 3MF file by exact filename stem from library or previous archives.
 
     Used when auto-archive is disabled and there's no archive_id, but we still
     need the 3MF slicer data for filament usage tracking.
     """
-    from pathlib import Path
+    from backend.app.services.filament_tracking import find_exact_named_3mf, print_job_stem
 
-    from backend.app.models.archive import PrintArchive
-    from backend.app.models.library import LibraryFile
-
-    search_name = filename.split("/")[-1] if "/" in filename else filename
-    search_base = search_name.replace(".gcode.3mf", "").replace(".gcode", "").replace(".3mf", "")
-    if not search_base:
+    if not print_job_stem(filename):
         return None
-
-    # 1. Try library files matching the name
-    try:
-        lib_result = await db.execute(
-            LibraryFile.active()
-            .where(LibraryFile.file_path.ilike(f"%/{search_base}.%") | LibraryFile.file_path.ilike(f"{search_base}.%"))
-            .where(LibraryFile.file_path.ilike("%.3mf"))
-            .order_by(LibraryFile.created_at.desc())
-            .limit(3)
-        )
-        for lib_file in lib_result.scalars().all():
-            lib_path = Path(lib_file.file_path)
-            candidate = lib_path if lib_path.is_absolute() else base_dir / lib_file.file_path
-            if candidate.exists() and candidate.suffix == ".3mf":
-                logger.info("[UsageTracker] 3MF (no-archive): found library file %s for '%s'", candidate, filename)
-                return candidate
-    except Exception as e:
-        logger.debug("[UsageTracker] 3MF (no-archive): library lookup failed: %s", e)
-
-    # 2. Try previous archives with a valid 3MF file_path
-    try:
-        prev_result = await db.execute(
-            select(PrintArchive)
-            .where(PrintArchive.printer_id == printer_id)
-            .where(PrintArchive.file_path != "")
-            .where(PrintArchive.file_path.isnot(None))
-            .where(
-                PrintArchive.filename.ilike(f"%{search_base}.%") | PrintArchive.filename.ilike(f"{search_base}.%"),
-            )
-            .order_by(PrintArchive.created_at.desc())
-            .limit(3)
-        )
-        for prev_archive in prev_result.scalars().all():
-            candidate = base_dir / prev_archive.file_path
-            if candidate.exists() and candidate.suffix == ".3mf":
-                logger.info(
-                    "[UsageTracker] 3MF (no-archive): found previous archive %s file for '%s'",
-                    prev_archive.id,
-                    filename,
-                )
-                return candidate
-    except Exception as e:
-        logger.debug("[UsageTracker] 3MF (no-archive): previous archive lookup failed: %s", e)
-
-    return None
+    return await find_exact_named_3mf(
+        db,
+        names=[filename],
+        base_dir=base_dir,
+        printer_id=printer_id,
+    )
 
 
 async def _track_from_3mf(

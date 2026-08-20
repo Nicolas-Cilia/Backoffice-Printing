@@ -413,6 +413,77 @@ describe('FilamentHoverCard', () => {
       await waitFor(() => expect(screen.queryByText('PLA Basic')).not.toBeInTheDocument());
     });
   });
+
+  describe('inventory tracking assign / change / unassign', () => {
+    const assigned = {
+      bucket_id: 10,
+      color_name: 'EasyRock White',
+      material: 'PLA',
+      brand: 'EasyRock',
+      subtype: null,
+      color_hex: 'FFFFFF',
+      extra_colors: null,
+      effect_type: null,
+    };
+
+    it('shows assign tracking when the slot has no tracking product', async () => {
+      const onAssign = vi.fn();
+      renderWithHover(
+        <FilamentHoverCard data={baseFilamentData} tracking={{ assigned: null, onAssign }}>
+          <div>trigger</div>
+        </FilamentHoverCard>,
+      );
+      vi.advanceTimersByTime(100);
+      await waitFor(() => {
+        expect(screen.getByText('Assign tracking product')).toBeInTheDocument();
+      });
+      fireEvent.click(screen.getByText('Assign tracking product'));
+      expect(onAssign).toHaveBeenCalledTimes(1);
+    });
+
+    it('shows the named product and lets the user change or unassign tracking', async () => {
+      const onAssign = vi.fn();
+      const onUnassign = vi.fn();
+      renderWithHover(
+        <FilamentHoverCard
+          data={baseFilamentData}
+          tracking={{ assigned, onAssign, onUnassign }}
+        >
+          <div>trigger</div>
+        </FilamentHoverCard>,
+      );
+      vi.advanceTimersByTime(100);
+      await waitFor(() => {
+        expect(screen.getByText('EasyRock White · EasyRock · PLA')).toBeInTheDocument();
+      });
+      fireEvent.click(screen.getByText('Change tracking product'));
+      expect(onAssign).toHaveBeenCalledTimes(1);
+    });
+
+    it('unassigns tracking without touching spool unassign', async () => {
+      const onUnassign = vi.fn();
+      const onUnassignSpool = vi.fn();
+      renderWithHover(
+        <FilamentHoverCard
+          data={baseFilamentData}
+          tracking={{ assigned, onUnassign }}
+          inventory={{
+            assignedSpool: { id: 7, material: 'PLA', brand: 'eSun', color_name: 'Black' },
+            onUnassignSpool,
+          }}
+        >
+          <div>trigger</div>
+        </FilamentHoverCard>,
+      );
+      vi.advanceTimersByTime(100);
+      await waitFor(() => {
+        expect(screen.getByText('Unassign tracking')).toBeInTheDocument();
+      });
+      fireEvent.click(screen.getByText('Unassign tracking'));
+      expect(onUnassign).toHaveBeenCalledTimes(1);
+      expect(onUnassignSpool).not.toHaveBeenCalled();
+    });
+  });
 });
 
 // EmptySlotHoverCard is the hover wrapper rendered for a physically empty
@@ -519,6 +590,60 @@ describe('EmptySlotHoverCard (#1133)', () => {
 
       expect(onAssign).toHaveBeenCalledTimes(1);
       await waitFor(() => expect(screen.queryByText(/empty/i)).not.toBeInTheDocument());
+    });
+  });
+
+  describe('inventory tracking on empty slots', () => {
+    const assigned = {
+      bucket_id: 10,
+      color_name: 'EasyRock White',
+      material: 'PLA',
+      brand: 'EasyRock',
+      subtype: null,
+      color_hex: 'FFFFFF',
+      extra_colors: null,
+      effect_type: null,
+    };
+
+    it('can assign tracking on an empty slot', async () => {
+      const onAssign = vi.fn();
+      const result = render(
+        <EmptySlotHoverCard tracking={{ assigned: null, onAssign }}>
+          <div>trigger</div>
+        </EmptySlotHoverCard>,
+      );
+      fireEvent.mouseEnter(result.container.firstElementChild as HTMLElement);
+      vi.advanceTimersByTime(100);
+      await waitFor(() => {
+        expect(screen.getByText('Assign tracking product')).toBeInTheDocument();
+      });
+      fireEvent.click(screen.getByText('Assign tracking product'));
+      expect(onAssign).toHaveBeenCalledTimes(1);
+    });
+
+    it('can change and unassign tracking on an empty slot', async () => {
+      const onAssign = vi.fn();
+      const onUnassign = vi.fn();
+      const result = render(
+        <EmptySlotHoverCard tracking={{ assigned, onAssign, onUnassign }}>
+          <div>trigger</div>
+        </EmptySlotHoverCard>,
+      );
+      fireEvent.mouseEnter(result.container.firstElementChild as HTMLElement);
+      vi.advanceTimersByTime(100);
+      await waitFor(() => {
+        expect(screen.getByText('EasyRock White · EasyRock · PLA')).toBeInTheDocument();
+      });
+      fireEvent.click(screen.getByText('Change tracking product'));
+      expect(onAssign).toHaveBeenCalledTimes(1);
+
+      fireEvent.mouseEnter(result.container.firstElementChild as HTMLElement);
+      vi.advanceTimersByTime(100);
+      await waitFor(() => {
+        expect(screen.getByText('Unassign tracking')).toBeInTheDocument();
+      });
+      fireEvent.click(screen.getByText('Unassign tracking'));
+      expect(onUnassign).toHaveBeenCalledTimes(1);
     });
   });
 });
