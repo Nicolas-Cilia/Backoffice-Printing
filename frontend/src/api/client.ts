@@ -6600,6 +6600,11 @@ export const api = {
       method: 'POST',
       body: JSON.stringify({ name, parameter_tracking: options?.parameter_tracking ?? true }),
     }),
+  renameProfilePartSection: (sectionId: number, name: string) =>
+    request<ProfilePartSectionView>(`/profile-parts/sections/${sectionId}`, {
+      method: 'PATCH',
+      body: JSON.stringify({ name }),
+    }),
   deleteProfilePartSection: (sectionId: number) =>
     request<{ success: boolean }>(`/profile-parts/sections/${sectionId}`, { method: 'DELETE' }),
   addProfilePartSlot: (sectionId: number, presetId: number, resolution?: 'proceed') =>

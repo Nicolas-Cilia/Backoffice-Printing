@@ -27,6 +27,7 @@ from backend.app.schemas.profile_part import (
     ProfilePartReplacePreview,
     ProfilePartReplaceRequest,
     ProfilePartSectionCreate,
+    ProfilePartSectionUpdate,
     ProfilePartSectionView,
     ProfilePartSlotCreate,
     ProfilePartSlotView,
@@ -457,6 +458,21 @@ async def import_into_section(
         needs_confirm=needs_confirm,
         section=_section_view(section),
     )
+
+
+@router.patch("/sections/{section_id}", response_model=ProfilePartSectionView)
+async def rename_section(
+    section_id: int,
+    body: ProfilePartSectionUpdate,
+    _: User | None = RequirePermissionIfAuthEnabled(Permission.SETTINGS_UPDATE),
+    db: AsyncSession = Depends(get_db),
+):
+    """Rename a part section. Slots and the print-settings contract are unchanged."""
+    section = await _load_section(db, section_id)
+    section.name = _normalize_section_name(body.name)
+    await db.flush()
+    await db.refresh(section)
+    return _section_view(section)
 
 
 @router.delete("/sections/{section_id}")

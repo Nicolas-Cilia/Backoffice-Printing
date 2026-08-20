@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useState, type MutableRefObject } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { useTranslation } from 'react-i18next';
-import { ChevronRight, Layers, Loader2, Plus, Trash2, Upload, X } from 'lucide-react';
+import { ChevronRight, Layers, Loader2, Pencil, Plus, Trash2, Upload, X } from 'lucide-react';
 import { ApiError, api } from '../api/client';
 import type { LocalPreset, ProfilePartReplacePreview, ProfilePartSectionView, ProfilePartSlotView } from '../api/client';
 import { useAuth } from '../contexts/AuthContext';
@@ -96,6 +96,64 @@ function NamePromptModal({
           >
             {submitting ? <Loader2 className="w-4 h-4 animate-spin" /> : null}
             {confirmLabel}
+          </Button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function RenameSectionModal({
+  initialName,
+  submitting,
+  onClose,
+  onSubmit,
+}: {
+  initialName: string;
+  submitting: boolean;
+  onClose: () => void;
+  onSubmit: (name: string) => void;
+}) {
+  const { t } = useTranslation();
+  const [name, setName] = useState(initialName);
+  const trimmed = name.trim();
+  const canSave = trimmed.length > 0 && trimmed !== initialName.trim();
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-4" onClick={onClose} role="presentation">
+      <div
+        className="bg-bambu-dark-secondary border border-bambu-dark-tertiary rounded-lg w-full max-w-sm p-4"
+        onClick={(e) => e.stopPropagation()}
+        role="dialog"
+        aria-labelledby="rename-part-section-title"
+        data-testid="rename-part-section-modal"
+      >
+        <h2 id="rename-part-section-title" className="text-sm font-semibold text-white mb-3">
+          {t('profiles.localProfiles.partSections.renameSection', 'Rename section')}
+        </h2>
+        <label className="block text-sm">
+          <span className="text-bambu-gray">{t('profiles.localProfiles.partSections.sectionName')}</span>
+          <input
+            value={name}
+            onChange={(e) => setName(e.target.value)}
+            placeholder={t('profiles.localProfiles.partSections.namePlaceholder')}
+            autoFocus
+            className="mt-1 w-full bg-bambu-dark border border-bambu-dark-tertiary rounded px-3 py-2 text-white placeholder-bambu-gray focus:outline-none focus:border-bambu-green"
+            data-testid="rename-part-section-input"
+          />
+        </label>
+        <div className="flex justify-end gap-2 mt-4">
+          <Button type="button" variant="secondary" size="sm" onClick={onClose} disabled={submitting}>
+            {t('profiles.localProfiles.cancel')}
+          </Button>
+          <Button
+            type="button"
+            size="sm"
+            disabled={!canSave || submitting}
+            data-testid="rename-part-section-save"
+            onClick={() => onSubmit(trimmed)}
+          >
+            {submitting ? <Loader2 className="w-4 h-4 animate-spin" /> : null}
+            {t('profiles.localProfiles.partSections.rename', 'Rename')}
           </Button>
         </div>
       </div>
@@ -440,6 +498,7 @@ export function ProfilePartSections({
   const queryClient = useQueryClient();
   const { showToast } = useToast();
   const [creating, setCreating] = useState(false);
+  const [renaming, setRenaming] = useState<ProfilePartSectionView | null>(null);
   const [replaceTarget, setReplaceTarget] = useState<{ slot: ProfilePartSlotView; preset: ReplacePresetRef } | null>(null);
   const [replacePreview, setReplacePreview] = useState<ProfilePartReplacePreview | null>(null);
   const [previewing, setPreviewing] = useState(false);
@@ -475,6 +534,18 @@ export function ProfilePartSections({
     },
     onError: (err: Error) => {
       showToast(t('profiles.localProfiles.partSections.createFailed', { error: err.message }), 'error');
+    },
+  });
+
+  const renameMutation = useMutation({
+    mutationFn: ({ id, name }: { id: number; name: string }) => api.renameProfilePartSection(id, name),
+    onSuccess: () => {
+      invalidate();
+      setRenaming(null);
+      showToast(t('profiles.localProfiles.partSections.toast.renamed', 'Part section renamed'));
+    },
+    onError: (err: Error) => {
+      showToast(t('profiles.localProfiles.partSections.renameFailed', { error: err.message, defaultValue: 'Could not rename section: {{error}}' }), 'error');
     },
   });
 
@@ -713,14 +784,25 @@ export function ProfilePartSections({
                   )}
                 </div>
                 {canEdit && (
-                  <button
-                    type="button"
-                    onClick={() => setDeleteSectionId(section.id)}
-                    className="p-1 text-bambu-gray hover:text-red-400"
-                    title={t('profiles.localProfiles.partSections.deleteSection')}
-                  >
-                    <Trash2 className="w-3.5 h-3.5" />
-                  </button>
+                  <div className="flex items-center gap-0.5 flex-shrink-0">
+                    <button
+                      type="button"
+                      onClick={() => setRenaming(section)}
+                      className="p-1 text-bambu-gray hover:text-white"
+                      title={t('profiles.localProfiles.partSections.renameSection', 'Rename section')}
+                      data-testid="rename-part-section"
+                    >
+                      <Pencil className="w-3.5 h-3.5" />
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => setDeleteSectionId(section.id)}
+                      className="p-1 text-bambu-gray hover:text-red-400"
+                      title={t('profiles.localProfiles.partSections.deleteSection')}
+                    >
+                      <Trash2 className="w-3.5 h-3.5" />
+                    </button>
+                  </div>
                 )}
               </div>
 
@@ -788,6 +870,17 @@ export function ProfilePartSections({
           submitting={createMutation.isPending}
           onClose={() => setCreating(false)}
           onSubmit={(name, options) => createMutation.mutate({ name, ...options })}
+        />
+      )}
+
+      {renaming && (
+        <RenameSectionModal
+          initialName={renaming.name}
+          submitting={renameMutation.isPending}
+          onClose={() => {
+            if (!renameMutation.isPending) setRenaming(null);
+          }}
+          onSubmit={(name) => renameMutation.mutate({ id: renaming.id, name })}
         />
       )}
 
