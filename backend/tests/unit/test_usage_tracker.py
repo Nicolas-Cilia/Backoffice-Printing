@@ -87,12 +87,12 @@ def _mock_db_sequential(responses):
         idx = call_count[0]
         call_count[0] += 1
         result = MagicMock()
-        if idx < len(responses):
-            result.scalar_one_or_none.return_value = responses[idx]
-        else:
-            result.scalar_one_or_none.return_value = None
+        val = responses[idx] if idx < len(responses) else None
+        result.scalar_one_or_none.return_value = val
         # For cost aggregation queries that use .scalar() instead of .scalar_one_or_none()
         result.scalar.return_value = None
+        if val is None:
+            result.scalars.return_value.all.return_value = []
         return result
 
     db.execute = mock_execute
@@ -257,9 +257,9 @@ class TestOnPrintComplete:
             last_loaded_tray=-1,
         )
 
-        # Pad 2 Nones for _find_3mf_by_filename DB queries (library + archive search),
+        # Pad 3 Nones for find_exact_named_3mf (library + named archive + leftover archive),
         # then assignment and spool for the AMS fallback path
-        db = _mock_db_sequential([None, None, assignment, spool])
+        db = _mock_db_sequential([None, None, None, assignment, spool])
 
         results = await on_print_complete(
             printer_id=1,
@@ -2198,6 +2198,7 @@ class TestFindThreemfByFilename:
         from unittest.mock import MagicMock
 
         lib_file = MagicMock()
+        lib_file.filename = "BMCU-BADGE.3mf"
         lib_file.file_path = "library/BMCU-BADGE.3mf"
 
         mock_result = MagicMock()
@@ -2210,6 +2211,7 @@ class TestFindThreemfByFilename:
         candidate = MagicMock(spec=Path)
         candidate.exists.return_value = True
         candidate.suffix = ".3mf"
+        candidate.stat.return_value.st_size = 1
         base_dir.__truediv__ = MagicMock(return_value=candidate)
 
         result = await _find_3mf_by_filename(1, "BMCU-BADGE.3mf", db, base_dir)
@@ -2240,6 +2242,8 @@ class TestFindThreemfByFilename:
         # Archive returns a match
         archive = MagicMock()
         archive.id = 35
+        archive.filename = "BMCU-BADGE.3mf"
+        archive.print_name = "BMCU-BADGE"
         archive.file_path = "archives/35/BMCU-BADGE.3mf"
         archive_result = MagicMock()
         archive_result.scalars.return_value.all.return_value = [archive]
@@ -2251,6 +2255,7 @@ class TestFindThreemfByFilename:
         candidate = MagicMock(spec=Path)
         candidate.exists.return_value = True
         candidate.suffix = ".3mf"
+        candidate.stat.return_value.st_size = 1
         base_dir.__truediv__ = MagicMock(return_value=candidate)
 
         result = await _find_3mf_by_filename(1, "BMCU-BADGE.3mf", db, base_dir)
@@ -2287,8 +2292,8 @@ class TestFindThreemfByFilename:
         # Should search for "BMCU-BADGE" base name even with path and .gcode.3mf
         await _find_3mf_by_filename(1, "/sdcard/BMCU-BADGE.gcode.3mf", db, base_dir)
 
-        # Verify the execute was called (search was attempted with stripped name)
-        assert db.execute.call_count == 2  # library + archive search
+        # library + named-archive + leftover-archive scans
+        assert db.execute.call_count == 3
 
 
 class TestTrackFrom3mfWithPreresolvedPath:
