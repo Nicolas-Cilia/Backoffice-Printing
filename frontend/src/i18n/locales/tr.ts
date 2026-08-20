@@ -4028,8 +4028,6 @@ export default {
 
   // Sponsor yüzeyi (Sistem sayfası)
   sponsors: {
-    sectionTitle: 'Bağımsız ve topluluk destekli',
-    tagline: 'Bambuddy ücretsizdir ve böyle kalır çünkü insanlar onu desteklemeyi seçer. VC yok, bulut bağımlılığı yok.',
     viewSupporters: 'Destekçileri görüntüle',
     toastPrints: 'Bambuddy ile {{count}} baskı tamamladın. Bambuddy, destekçileri sayesinde ücretsiz kalıyor.',
     toastCost: 'Bambuddy ile {{total}} kadar filament takip ettin. Projeyi bağımsız tutanları gör.',
@@ -4038,8 +4036,6 @@ export default {
     toastVersionUpdate: 'v{{version}} sürümüne güncellendi. Bambuddy, destekçileri sayesinde ücretsiz kalıyor.',
     toastBusiness: "Bambuddy'yi {{count}} yazıcıda mı çalıştırıyorsunuz? Ekipler için bir destek planı var: öncelikli düzeltmeler, faturalandırma ve geliştiriciye doğrudan erişim.",
     businessCta: 'Kurumsal Bambuddy',
-    businessTitle: 'Kurumsal Bambuddy',
-    businessTagline: '{{count}} yazıcı çalıştırıyorsunuz. Ekipler ve baskı çiftlikleri için öncelikli destek, ticari lisanslama ve faturalandırma mevcut.',
   },
 
   // Kütüphane (K Profilleri)

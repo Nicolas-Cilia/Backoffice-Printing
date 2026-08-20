@@ -4020,8 +4020,6 @@ export default {
 
   // Sponsor surface (System page)
   sponsors: {
-    sectionTitle: '獨立運作·社群支持',
-    tagline: 'Bambuddy 完全免費，並將持續免費——感謝主動支持的使用者。沒有創投，也沒有雲端綁定。',
     viewSupporters: '查看支持者',
     toastPrints: '你已經用 Bambuddy 完成了 {{count}} 次列印。Bambuddy 之所以免費，要感謝支持者。',
     toastCost: '你已經用 Bambuddy 追蹤了 {{total}} 的耗材。看看是誰讓專案保持獨立。',
@@ -4030,8 +4028,6 @@ export default {
     toastVersionUpdate: '已更新至 v{{version}}。Bambuddy 之所以免費，要感謝支持者。',
     toastBusiness: '您正在 {{count}} 台印表機上執行 Bambuddy？我們為團隊提供支援方案：優先修復、開立發票，以及與維護者的直接聯繫管道。',
     businessCta: 'Bambuddy 商業版',
-    businessTitle: 'Bambuddy 商業版',
-    businessTagline: '您正在管理 {{count}} 台印表機。我們為團隊和列印農場提供優先支援、商業授權與發票開立。',
   },
 
   // Library (K Profiles)

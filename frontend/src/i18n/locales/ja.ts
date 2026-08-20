@@ -4032,8 +4032,6 @@ export default {
 
   // Sponsor surface (System page)
   sponsors: {
-    sectionTitle: '独立・コミュニティ運営',
-    tagline: 'Bambuddyは無料で、これからも無料です。支援してくださる方々のおかげで、VCもクラウドロックインもありません。',
     viewSupporters: 'サポーター一覧',
     toastPrints: 'Bambuddyで{{count}}件の印刷を完了しました。Bambuddyは支援者のおかげで無料で提供されています。',
     toastCost: 'Bambuddyで{{total}}分のフィラメントを記録しました。プロジェクトを支えてくれている方々をご覧ください。',
@@ -4042,8 +4040,6 @@ export default {
     toastVersionUpdate: 'v{{version}}にアップデートされました。Bambuddyは支援者のおかげで無料で提供されています。',
     toastBusiness: '{{count}}台のプリンターでBambuddyを運用中ですね。チーム向けのサポートプランがあります（優先対応、請求書発行、開発者への直接窓口）。',
     businessCta: 'ビジネス向けBambuddy',
-    businessTitle: 'ビジネス向けBambuddy',
-    businessTagline: '{{count}}台のプリンターを運用中です。チームやプリントファーム向けに、優先サポート、商用ライセンス、請求書発行をご用意しています。',
   },
 
   // Library (K Profiles)
