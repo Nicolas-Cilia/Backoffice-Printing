@@ -123,6 +123,7 @@ import { PrintModal } from '../components/PrintModal';
 import { PrinterInfoModal } from '../components/PrinterInfoModal';
 import { getAmsLabel, getGlobalTrayId, getFillBarColor, getSpoolmanFillLevel, getFallbackSpoolTag, isBambuLabSpool, resolveSlotNozzleDiameter } from '../utils/amsHelpers';
 import { getPrinterImage, getWifiStrength, filterCompatibleQueueItems } from '../utils/printer';
+import { getPrinterCardChromeClass } from '../utils/printerCardChrome';
 import { FilamentSlotCircle } from '../components/FilamentSlotCircle';
 import { SlotTrackingLabel } from '../components/SlotTrackingLabel';
 import { ArrangePrintersModal } from '../components/ArrangePrintersModal';
@@ -1072,10 +1073,10 @@ function StatusSummaryBar({ printers }: { printers: Printer[] | undefined }) {
   const badges: { count: number; dot: string; label: string }[] = [
     { count: counts.printing, dot: 'bg-bambu-green animate-pulse', label: t('printers.status.printing').toLowerCase() },
     { count: counts.paused, dot: 'bg-status-warning', label: t('printers.status.paused', 'paused').toLowerCase() },
-    { count: counts.finished, dot: 'bg-blue-400', label: t('printers.status.finished', 'finished').toLowerCase() },
+    { count: counts.finished, dot: 'bg-status-ok', label: t('printers.status.finished', 'finished').toLowerCase() },
     { count: counts.idle, dot: counts.idle > 0 ? 'bg-bambu-green' : 'bg-gray-500', label: t('printers.status.available').toLowerCase() },
     { count: counts.error, dot: 'bg-status-error', label: t('printers.status.problem').toLowerCase() },
-    { count: counts.offline, dot: 'bg-gray-400', label: t('printers.status.offline').toLowerCase() },
+    { count: counts.offline, dot: 'bg-status-error', label: t('printers.status.offline').toLowerCase() },
   ];
 
   return (
@@ -1430,9 +1431,9 @@ const STATUS_GROUP_META: Record<string, { labelKey: string; dot: string }> = {
   error:    { labelKey: 'printers.status.problem',   dot: 'bg-status-error' },
   printing: { labelKey: 'printers.status.printing',  dot: 'bg-bambu-green animate-pulse' },
   paused:   { labelKey: 'printers.status.paused',    dot: 'bg-status-warning' },
-  finished: { labelKey: 'printers.status.finished',  dot: 'bg-blue-400' },
+  finished: { labelKey: 'printers.status.finished',  dot: 'bg-status-ok' },
   idle:     { labelKey: 'printers.status.idle',       dot: 'bg-bambu-green' },
-  offline:  { labelKey: 'printers.status.offline',   dot: 'bg-gray-400' },
+  offline:  { labelKey: 'printers.status.offline',   dot: 'bg-status-error' },
 };
 
 /** Classify a printer into one of the UI status buckets. */
@@ -3272,10 +3273,13 @@ function PrinterCard({
     </div>
   );
 
+  const statusBucket = classifyPrinterStatus(status);
+
   return (
     <Card
       id={`printer-card-${printer.id}`}
-      className={`relative flex h-full flex-col ${isSelected ? 'ring-2 ring-bambu-green' : ''} ${selectionMode || viewMode === 'compact' ? 'cursor-pointer' : ''}`}
+      data-printer-status={statusBucket}
+      className={`relative flex h-full flex-col transition-colors ${getPrinterCardChromeClass(statusBucket)} ${isSelected ? 'ring-2 ring-bambu-green' : ''} ${selectionMode || viewMode === 'compact' ? 'cursor-pointer' : ''}`}
       onClick={handleCardClick}
       onDragEnter={handleCardDragEnter}
       onDragOver={handleCardDragOver}
