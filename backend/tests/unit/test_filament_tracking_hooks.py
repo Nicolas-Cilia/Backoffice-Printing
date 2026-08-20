@@ -403,14 +403,10 @@ async def test_sync_does_not_reuse_stale_slots_on_new_run(db_session, printer_fa
     with patch("backend.app.main.printer_manager") as manager:
         manager.get_client.return_value = client
         manager.get_status.return_value = client.state
-        await _sync_filament_color_tracking(
-            printer.id, status="printing", progress=50, archive=first, db=db_session
-        )
+        await _sync_filament_color_tracking(printer.id, status="printing", progress=50, archive=first, db=db_session)
         await db_session.refresh(bucket)
         assert bucket.on_hand_grams == 9750
-        await _sync_filament_color_tracking(
-            printer.id, status="printing", progress=50, archive=second, db=db_session
-        )
+        await _sync_filament_color_tracking(printer.id, status="printing", progress=50, archive=second, db=db_session)
 
     await db_session.refresh(bucket)
     events = (await db_session.execute(select(FilamentColorUsage))).scalars().all()
@@ -427,15 +423,11 @@ async def test_sync_progress_regression_does_not_credit_stock(db_session, printe
     with patch("backend.app.main.printer_manager") as manager:
         manager.get_client.return_value = client
         manager.get_status.return_value = client.state
-        await _sync_filament_color_tracking(
-            printer.id, status="printing", progress=80, archive=archive, db=db_session
-        )
+        await _sync_filament_color_tracking(printer.id, status="printing", progress=80, archive=archive, db=db_session)
         await db_session.refresh(bucket)
         assert bucket.on_hand_grams == 9600
         client.state.progress = 50
-        await _sync_filament_color_tracking(
-            printer.id, status="printing", progress=50, archive=archive, db=db_session
-        )
+        await _sync_filament_color_tracking(printer.id, status="printing", progress=50, archive=archive, db=db_session)
 
     await db_session.refresh(bucket)
     events = (await db_session.execute(select(FilamentColorUsage))).scalars().all()
@@ -456,9 +448,7 @@ async def test_sync_live_after_settle_does_not_overwrite(db_session, printer_fac
         await _sync_filament_color_tracking(
             printer.id, status="completed", progress=100, archive=archive, settle=True, db=db_session
         )
-        await _sync_filament_color_tracking(
-            printer.id, status="printing", progress=90, archive=archive, db=db_session
-        )
+        await _sync_filament_color_tracking(printer.id, status="printing", progress=90, archive=archive, db=db_session)
 
     await db_session.refresh(bucket)
     events = (await db_session.execute(select(FilamentColorUsage))).scalars().all()
@@ -513,9 +503,7 @@ async def test_sync_failed_progress_zero_uses_last_valid(db_session, printer_fac
     with patch("backend.app.main.printer_manager") as manager:
         manager.get_client.return_value = client
         manager.get_status.return_value = client.state
-        await _sync_filament_color_tracking(
-            printer.id, status="printing", progress=40, archive=archive, db=db_session
-        )
+        await _sync_filament_color_tracking(printer.id, status="printing", progress=40, archive=archive, db=db_session)
         await db_session.refresh(bucket)
         assert bucket.on_hand_grams == 9800
         client.state.progress = 0
@@ -548,15 +536,11 @@ async def test_sync_no_3mf_uses_assigned_remain_snapshot(db_session, printer_fac
     with patch("backend.app.main.printer_manager") as manager:
         manager.get_client.return_value = client
         manager.get_status.return_value = client.state
-        await _sync_filament_color_tracking(
-            printer.id, status="printing", progress=10, archive=archive, db=db_session
-        )
+        await _sync_filament_color_tracking(printer.id, status="printing", progress=10, archive=archive, db=db_session)
         await db_session.refresh(bucket)
         assert bucket.on_hand_grams == 10000
         client.state.raw_data["ams"]["ams"][0]["tray"][0]["remain"] = 50
-        await _sync_filament_color_tracking(
-            printer.id, status="printing", progress=40, archive=archive, db=db_session
-        )
+        await _sync_filament_color_tracking(printer.id, status="printing", progress=40, archive=archive, db=db_session)
         await db_session.refresh(bucket)
         assert bucket.on_hand_grams == 9700
         client.state.raw_data["ams"]["ams"][0]["tray"][0]["remain"] = 20
@@ -680,9 +664,7 @@ async def test_sync_cached_slots_resolve_mapping_on_later_settle(db_session, pri
     with patch("backend.app.main.printer_manager") as manager:
         manager.get_client.return_value = client
         manager.get_status.return_value = client.state
-        await _sync_filament_color_tracking(
-            printer.id, status="printing", progress=50, archive=archive, db=db_session
-        )
+        await _sync_filament_color_tracking(printer.id, status="printing", progress=50, archive=archive, db=db_session)
         live_events = (await db_session.execute(select(FilamentColorUsage))).scalars().all()
         assert live_events == []
         assert _live_runs[printer.id].slots
@@ -785,9 +767,7 @@ async def test_sync_cancelled_and_aborted_scale_by_last_progress(db_session, pri
     with patch("backend.app.main.printer_manager") as manager:
         manager.get_client.return_value = client
         manager.get_status.return_value = client.state
-        await _sync_filament_color_tracking(
-            printer.id, status="printing", progress=40, archive=archive, db=db_session
-        )
+        await _sync_filament_color_tracking(printer.id, status="printing", progress=40, archive=archive, db=db_session)
         client.state.progress = 0
         await _sync_filament_color_tracking(
             printer.id,
@@ -828,8 +808,10 @@ async def test_sync_cancelled_and_aborted_scale_by_last_progress(db_session, pri
 
     await db_session.refresh(bucket2)
     aborted = (
-        await db_session.execute(select(FilamentColorUsage).where(FilamentColorUsage.printer_id == printer2.id))
-    ).scalars().all()
+        (await db_session.execute(select(FilamentColorUsage).where(FilamentColorUsage.printer_id == printer2.id)))
+        .scalars()
+        .all()
+    )
     assert aborted[0].kind == "aborted"
     assert aborted[0].grams == 250
     assert bucket2.on_hand_grams == 9750
@@ -846,9 +828,7 @@ async def test_sync_remain_deltas_do_not_collapse_onto_tray_now(db_session, prin
     with patch("backend.app.main.printer_manager") as manager:
         manager.get_client.return_value = client
         manager.get_status.return_value = client.state
-        await _sync_filament_color_tracking(
-            printer.id, status="printing", progress=10, archive=archive, db=db_session
-        )
+        await _sync_filament_color_tracking(printer.id, status="printing", progress=10, archive=archive, db=db_session)
         client.state.raw_data["ams"]["ams"][0]["tray"][0]["remain"] = 50
         client.state.raw_data["ams"]["ams"][0]["tray"][1]["remain"] = 20
         await _sync_filament_color_tracking(
@@ -881,9 +861,7 @@ async def test_sync_remain_mapping_deducts_observed_trays(db_session, printer_fa
     with patch("backend.app.main.printer_manager") as manager:
         manager.get_client.return_value = client
         manager.get_status.return_value = client.state
-        await _sync_filament_color_tracking(
-            printer.id, status="printing", progress=10, archive=archive, db=db_session
-        )
+        await _sync_filament_color_tracking(printer.id, status="printing", progress=10, archive=archive, db=db_session)
         client.state.raw_data["ams"]["ams"][0]["tray"][0]["remain"] = 50
         client.state.raw_data["ams"]["ams"][0]["tray"][1]["remain"] = 20
         await _sync_filament_color_tracking(
@@ -916,9 +894,7 @@ async def test_sync_remain_accumulates_tray_now_history(db_session, printer_fact
     with patch("backend.app.main.printer_manager") as manager:
         manager.get_client.return_value = client
         manager.get_status.return_value = client.state
-        await _sync_filament_color_tracking(
-            printer.id, status="printing", progress=10, archive=archive, db=db_session
-        )
+        await _sync_filament_color_tracking(printer.id, status="printing", progress=10, archive=archive, db=db_session)
         client.state.tray_now = 1
         client.state.raw_data["ams"]["ams"][0]["tray"][0]["remain"] = 50
         client.state.raw_data["ams"]["ams"][0]["tray"][1]["remain"] = 20
@@ -933,10 +909,7 @@ async def test_sync_remain_accumulates_tray_now_history(db_session, printer_fact
 
     await db_session.refresh(easyrock)
     await db_session.refresh(jade)
-    by_id = {
-        row.bucket_id: row.grams
-        for row in (await db_session.execute(select(FilamentColorUsage))).scalars().all()
-    }
+    by_id = {row.bucket_id: row.grams for row in (await db_session.execute(select(FilamentColorUsage))).scalars().all()}
     assert by_id[easyrock.id] == 300
     assert by_id[jade.id] == 600
 
@@ -991,19 +964,13 @@ async def test_sync_remain_refill_does_not_credit_stock(db_session, printer_fact
     with patch("backend.app.main.printer_manager") as manager:
         manager.get_client.return_value = client
         manager.get_status.return_value = client.state
-        await _sync_filament_color_tracking(
-            printer.id, status="printing", progress=10, archive=archive, db=db_session
-        )
+        await _sync_filament_color_tracking(printer.id, status="printing", progress=10, archive=archive, db=db_session)
         client.state.raw_data["ams"]["ams"][0]["tray"][0]["remain"] = 50
-        await _sync_filament_color_tracking(
-            printer.id, status="printing", progress=40, archive=archive, db=db_session
-        )
+        await _sync_filament_color_tracking(printer.id, status="printing", progress=40, archive=archive, db=db_session)
         await db_session.refresh(bucket)
         assert bucket.on_hand_grams == 9700
         client.state.raw_data["ams"]["ams"][0]["tray"][0]["remain"] = 90
-        await _sync_filament_color_tracking(
-            printer.id, status="printing", progress=50, archive=archive, db=db_session
-        )
+        await _sync_filament_color_tracking(printer.id, status="printing", progress=50, archive=archive, db=db_session)
 
     await db_session.refresh(bucket)
     events = (await db_session.execute(select(FilamentColorUsage))).scalars().all()
@@ -1089,6 +1056,7 @@ async def test_sync_start_after_settle_does_not_skip_same_name_reprint(db_sessio
     assert bucket.on_hand_grams == 9400
     assert _live_runs[printer.id].print_name == "panel-reprint"
 
+
 @pytest.mark.asyncio
 async def test_two_printer_live_syncs_do_not_cross_contaminate(db_session, printer_factory):
     import asyncio
@@ -1150,9 +1118,7 @@ async def test_sync_exact_library_3mf_is_gram_basis_for_reprint(db_session, prin
     printer, bucket = await _assign_white(db_session, printer_factory)
     threemf = tmp_path / "panel-reprint.3mf"
     threemf.write_bytes(b"3mf")
-    db_session.add(
-        LibraryFile(filename="panel-reprint.3mf", file_path=str(threemf), file_type="3mf", file_size=3)
-    )
+    db_session.add(LibraryFile(filename="panel-reprint.3mf", file_path=str(threemf), file_type="3mf", file_size=3))
     await db_session.commit()
     archive = _archive(printer.id, grams=500)
     archive.file_path = None
@@ -1253,9 +1219,7 @@ async def test_sync_similar_name_does_not_use_library_3mf(db_session, printer_fa
     printer, bucket = await _assign_white(db_session, printer_factory)
     threemf = tmp_path / "panel-reprint.3mf"
     threemf.write_bytes(b"3mf")
-    db_session.add(
-        LibraryFile(filename="panel-reprint.3mf", file_path=str(threemf), file_type="3mf", file_size=3)
-    )
+    db_session.add(LibraryFile(filename="panel-reprint.3mf", file_path=str(threemf), file_type="3mf", file_size=3))
     await db_session.commit()
     archive = _archive(printer.id, grams=500)
     archive.print_name = "panel-reprint-v2"
@@ -1339,10 +1303,7 @@ async def test_sync_sd_job_without_match_uses_remain_on_observed_trays(db_sessio
 
     await db_session.refresh(easyrock)
     await db_session.refresh(jade)
-    by_id = {
-        row.bucket_id: row.grams
-        for row in (await db_session.execute(select(FilamentColorUsage))).scalars().all()
-    }
+    by_id = {row.bucket_id: row.grams for row in (await db_session.execute(select(FilamentColorUsage))).scalars().all()}
     assert by_id[easyrock.id] == 300
     assert jade.id not in by_id
     assert easyrock.on_hand_grams == 9700
@@ -1452,9 +1413,7 @@ async def test_sync_settle_keeps_3mf_when_remain_also_drops(db_session, printer_
     with patch("backend.app.main.printer_manager") as manager:
         manager.get_client.return_value = client
         manager.get_status.return_value = client.state
-        await _sync_filament_color_tracking(
-            printer.id, status="printing", progress=50, archive=archive, db=db_session
-        )
+        await _sync_filament_color_tracking(printer.id, status="printing", progress=50, archive=archive, db=db_session)
         await db_session.refresh(bucket)
         assert bucket.on_hand_grams == 9750
         client.state.raw_data["ams"]["ams"][0]["tray"][0]["remain"] = 50
@@ -1511,9 +1470,7 @@ async def test_sync_skip_objects_complete_still_charges_full_plate_3mf(db_sessio
     with patch("backend.app.main.printer_manager") as manager:
         manager.get_client.return_value = client
         manager.get_status.return_value = client.state
-        await _sync_filament_color_tracking(
-            printer.id, status="printing", progress=45, archive=archive, db=db_session
-        )
+        await _sync_filament_color_tracking(printer.id, status="printing", progress=45, archive=archive, db=db_session)
         live = (await db_session.execute(select(FilamentColorUsage))).scalars().all()
         assert len(live) == 1
         assert live[0].estimated is False
@@ -1643,4 +1600,3 @@ async def test_sync_multi_plate_gcode_scopes_to_this_plate(db_session, printer_f
     assert events[0].grams == pytest.approx(59.8, abs=0.2)
     assert events[0].grams < 200
     assert events[0].estimated is False
-

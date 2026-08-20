@@ -317,9 +317,7 @@ class TestUpdatesAPI:
         body = response.json()
         assert body["latest_version"] == "9.9.9"
         assert body["update_available"] is True
-        assert body["release_url"] == (
-            "https://github.com/Nicolas-Cilia/Backoffice-Printing/releases/tag/v9.9.9"
-        )
+        assert body["release_url"] == ("https://github.com/Nicolas-Cilia/Backoffice-Printing/releases/tag/v9.9.9")
         assert APP_VERSION != "9.9.9"
 
     def test_parse_version(self):
@@ -396,9 +394,7 @@ class TestUpdatesAPI:
             # SSH URL. Every other subprocess returns successfully with no
             # output.
             if "get-url" in args and "origin" in args:
-                proc.communicate = AsyncMock(
-                    return_value=(f"git@github.com:{GITHUB_REPO}.git\n".encode(), b"")
-                )
+                proc.communicate = AsyncMock(return_value=(f"git@github.com:{GITHUB_REPO}.git\n".encode(), b""))
             else:
                 proc.communicate = AsyncMock(return_value=(b"", b""))
             proc.returncode = 0

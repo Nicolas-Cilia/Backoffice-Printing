@@ -962,9 +962,7 @@ def test_single_tray_mapping_pads_to_used_slot_id():
     assert align_mapping_to_used_slots([5], slots) == [-1, 5]
     assert mapping_tray_id(2, [5]) is None
     assert mapping_tray_id(2, align_mapping_to_used_slots([5], slots)) == 5
-    assert align_mapping_to_used_slots(
-        [0], [{"slot_id": 1, "used_g": 10}, {"slot_id": 2, "used_g": 10}]
-    ) == [0]
+    assert align_mapping_to_used_slots([0], [{"slot_id": 1, "used_g": 10}, {"slot_id": 2, "used_g": 10}]) == [0]
 
 
 def test_remain_delta_helpers_ignore_refills():
@@ -1059,14 +1057,10 @@ def test_should_skip_live_upsert_matches_exact_stems_not_substrings():
         assert should_skip_live_upsert(printer_id, archive_id=None, print_name="foo")
         assert should_skip_live_upsert(printer_id, archive_id=None, print_name="foo.3mf")
         _settled_jobs[printer_id] = (None, "panel-reprint", "run-1")
-        assert should_skip_live_upsert(
-            printer_id, archive_id=None, print_name="cache/panel-reprint.gcode.3mf"
-        )
+        assert should_skip_live_upsert(printer_id, archive_id=None, print_name="cache/panel-reprint.gcode.3mf")
         assert not should_skip_live_upsert(printer_id, archive_id=None, print_name="panel-reprint-v2")
         _settled_jobs[printer_id] = (3, "/data/Metadata/plate_1.gcode", "run-1")
-        assert not should_skip_live_upsert(
-            printer_id, archive_id=None, print_name="BOT-x2-1.8.2-X1C"
-        )
+        assert not should_skip_live_upsert(printer_id, archive_id=None, print_name="BOT-x2-1.8.2-X1C")
     finally:
         _settled_jobs.pop(printer_id, None)
 
@@ -1491,9 +1485,7 @@ async def test_mixed_assigned_and_unassigned_slots_skip_unassigned(db_session, p
     )
     db_session.add(easyrock)
     await db_session.flush()
-    db_session.add(
-        FilamentSlotAssignment(printer_id=printer.id, ams_id=0, tray_id=0, bucket_id=easyrock.id)
-    )
+    db_session.add(FilamentSlotAssignment(printer_id=printer.id, ams_id=0, tray_id=0, bucket_id=easyrock.id))
     await db_session.commit()
 
     created = await record_print_usage(
@@ -1926,9 +1918,7 @@ async def test_collapse_duplicate_printing_rows_keeps_latest_grams(db_session, p
     bucket.on_hand_grams = 10000 - 56.9 - 59.8
     await db_session.commit()
 
-    kept = await collapse_duplicate_live_usage(
-        db_session, printer_id=printer.id, print_name="BOT-x2-1.8.2-X1C"
-    )
+    kept = await collapse_duplicate_live_usage(db_session, printer_id=printer.id, print_name="BOT-x2-1.8.2-X1C")
     await db_session.commit()
     await db_session.refresh(bucket)
     events = (await db_session.execute(select(FilamentColorUsage))).scalars().all()
@@ -1944,9 +1934,7 @@ async def test_collapse_duplicate_printing_rows_keeps_latest_grams(db_session, p
 @pytest.mark.asyncio
 async def test_unmapped_minus_one_does_not_dump_onto_ext(db_session, printer_factory):
     printer, bucket = await _white_on_slot0(db_session, printer_factory)
-    db_session.add(
-        FilamentSlotAssignment(printer_id=printer.id, ams_id=255, tray_id=0, bucket_id=bucket.id)
-    )
+    db_session.add(FilamentSlotAssignment(printer_id=printer.id, ams_id=255, tray_id=0, bucket_id=bucket.id))
     await db_session.commit()
     created = await record_print_usage(
         db_session,

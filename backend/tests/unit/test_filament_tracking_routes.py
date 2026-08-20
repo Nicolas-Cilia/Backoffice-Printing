@@ -9,7 +9,9 @@ from backend.app.services.filament_tracking import LIVE_USAGE_KIND
 
 
 @pytest.mark.asyncio
-async def test_filament_tracking_plan_events_assignments_buckets(async_client: AsyncClient, printer_factory, db_session):
+async def test_filament_tracking_plan_events_assignments_buckets(
+    async_client: AsyncClient, printer_factory, db_session
+):
     empty_plan = await async_client.get("/api/v1/filament-tracking/plan")
     assert empty_plan.status_code == 200
     assert empty_plan.json()["materials"] == []
@@ -103,7 +105,9 @@ async def test_printer_consumption_includes_live_printing_grams(async_client: As
 
 
 @pytest.mark.asyncio
-async def test_filament_tracking_live_rate_and_assignment_delete(async_client: AsyncClient, printer_factory, db_session):
+async def test_filament_tracking_live_rate_and_assignment_delete(
+    async_client: AsyncClient, printer_factory, db_session
+):
     created = await async_client.post(
         "/api/v1/filament-tracking/buckets",
         json={"color_name": "Jade White", "material": "PLA", "color_hex": "FFFFFF", "on_hand_grams": 5000},
@@ -126,10 +130,14 @@ async def test_filament_tracking_live_rate_and_assignment_delete(async_client: A
     deleted = await async_client.delete(f"/api/v1/filament-tracking/assignments/{printer.id}/0/1")
     assert deleted.status_code == 200
     remaining = (
-        await db_session.execute(
-            select(FilamentSlotAssignment).where(FilamentSlotAssignment.printer_id == printer.id)
+        (
+            await db_session.execute(
+                select(FilamentSlotAssignment).where(FilamentSlotAssignment.printer_id == printer.id)
+            )
         )
-    ).scalars().all()
+        .scalars()
+        .all()
+    )
     assert remaining == []
 
     missing = await async_client.patch("/api/v1/filament-tracking/buckets/999999", json={"on_hand_grams": 1})

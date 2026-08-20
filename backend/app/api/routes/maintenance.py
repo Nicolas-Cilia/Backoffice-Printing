@@ -295,9 +295,7 @@ async def get_maintenance_types(
         .order_by(MaintenanceType.is_system.desc(), MaintenanceType.name)
     )
     if not include_hidden:
-        query = query.where(
-            or_(MaintenanceType.is_deleted.is_(False), MaintenanceType.is_deleted.is_(None))
-        )
+        query = query.where(or_(MaintenanceType.is_deleted.is_(False), MaintenanceType.is_deleted.is_(None)))
     result = await db.execute(query)
     return result.scalars().all()
 
