@@ -5,11 +5,11 @@
 #
 # Usage:
 #   Interactive:  curl -fsSL https://raw.githubusercontent.com/Nicolas-Cilia/Backoffice-Printing/main/install/install.sh -o install.sh && chmod +x install.sh && ./install.sh
-#   Unattended:   ./install.sh --path /opt/bambuddy --port 8000 --yes
+#   Unattended:   ./install.sh --path /opt/bambuddy --port 7474 --yes
 #
 # Options:
 #   --path PATH        Installation directory (default: /opt/bambuddy)
-#   --port PORT        Port to listen on (default: 8000)
+#   --port PORT        Port to listen on (default: 7474)
 #   --bind ADDRESS     Bind address: 0.0.0.0 (network) or 127.0.0.1 (local only)
 #   --tz TIMEZONE      Timezone (default: system timezone or UTC)
 #   --data-dir PATH    Data directory (default: INSTALL_PATH/data)
@@ -36,7 +36,7 @@ BOLD='\033[1m'
 
 # Default values
 DEFAULT_INSTALL_PATH="/opt/bambuddy"
-DEFAULT_PORT="8000"
+DEFAULT_PORT="7474"
 DEFAULT_BIND_ADDRESS="0.0.0.0"
 DEFAULT_LOG_LEVEL="INFO"
 DEFAULT_DEBUG="false"
@@ -151,7 +151,7 @@ show_help() {
     echo ""
     echo "Options:"
     echo "  --path PATH        Installation directory (default: /opt/bambuddy)"
-    echo "  --port PORT        Port to listen on (default: 8000)"
+    echo "  --port PORT        Port to listen on (default: 7474)"
     echo "  --bind ADDRESS     Bind address: 0.0.0.0 (network) or 127.0.0.1 (local only)"
     echo "  --tz TIMEZONE      Timezone (default: system timezone or UTC)"
     echo "  --data-dir PATH    Data directory (default: INSTALL_PATH/data)"

@@ -4,8 +4,8 @@ import path from 'path'
 import fs from 'fs'
 import type { Connect } from 'vite'
 
-// Backend port for dev server proxy (default: 8000)
-const backendPort = process.env.BACKEND_PORT || '8000'
+// Backend port for native uvicorn (default: 7474). Docker host is 8484.
+const backendPort = process.env.BACKEND_PORT || '7474'
 const backendUrl = `http://localhost:${backendPort}`
 
 // Absolute path to the gcode_viewer directory at the repo root
