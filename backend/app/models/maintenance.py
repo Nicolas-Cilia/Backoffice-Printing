@@ -23,6 +23,9 @@ class MaintenanceType(Base):
     wiki_url: Mapped[str | None] = mapped_column(String(500))  # Documentation link
     is_system: Mapped[bool] = mapped_column(Boolean, default=False)  # Pre-defined vs custom
     is_deleted: Mapped[bool] = mapped_column(Boolean, default=False)  # Hidden/removed type
+    # Hidden bucket for one-off jobs (nozzle swap, sensor, etc.) that are
+    # logged per printer without a recurring interval card.
+    is_adhoc: Mapped[bool] = mapped_column(Boolean, default=False)
     created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
 
     # Relationships
@@ -68,9 +71,13 @@ class MaintenanceHistory(Base):
 
     id: Mapped[int] = mapped_column(primary_key=True)
     printer_maintenance_id: Mapped[int] = mapped_column(ForeignKey("printer_maintenance.id", ondelete="CASCADE"))
+    printer_id: Mapped[int | None] = mapped_column(ForeignKey("printers.id", ondelete="CASCADE"), nullable=True)
     performed_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
     hours_at_maintenance: Mapped[float] = mapped_column(Float, default=0.0)
     notes: Mapped[str | None] = mapped_column(Text, nullable=True)
+    title: Mapped[str | None] = mapped_column(String(100), nullable=True)
+    part_url: Mapped[str | None] = mapped_column(String(500), nullable=True)
+    cost: Mapped[float | None] = mapped_column(Float, nullable=True)
 
     # Relationships
     printer_maintenance: Mapped["PrinterMaintenance"] = relationship(back_populates="history")

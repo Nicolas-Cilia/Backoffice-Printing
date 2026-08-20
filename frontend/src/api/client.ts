@@ -3133,6 +3133,7 @@ export interface MaintenanceType {
   icon: string | null;
   wiki_url: string | null;  // Documentation link
   is_system: boolean;
+  is_deleted?: boolean;
   created_at: string;
 }
 
@@ -3175,14 +3176,21 @@ export interface PrinterMaintenanceOverview {
   maintenance_items: MaintenanceStatus[];
   due_count: number;
   warning_count: number;
+  total_maintenance_cost?: number;
 }
 
 export interface MaintenanceHistory {
   id: number;
   printer_maintenance_id: number;
+  printer_id: number | null;
   performed_at: string;
   hours_at_maintenance: number;
   notes: string | null;
+  title: string | null;
+  part_url: string | null;
+  cost: number | null;
+  job_name: string;
+  is_custom?: boolean;
 }
 
 export interface MaintenanceSummary {
@@ -5648,7 +5656,8 @@ export const api = {
   getVersion: () => request<VersionInfo>('/updates/version'),
 
   // Maintenance
-  getMaintenanceTypes: () => request<MaintenanceType[]>('/maintenance/types'),
+  getMaintenanceTypes: (includeHidden = false) =>
+    request<MaintenanceType[]>(`/maintenance/types${includeHidden ? '?include_hidden=true' : ''}`),
   createMaintenanceType: (data: MaintenanceTypeCreate) =>
     request<MaintenanceType>('/maintenance/types', {
       method: 'POST',
@@ -5663,6 +5672,8 @@ export const api = {
     request<{ status: string }>(`/maintenance/types/${id}`, { method: 'DELETE' }),
   restoreDefaultMaintenanceTypes: () =>
     request<{ restored: number }>(`/maintenance/types/restore-defaults`, { method: 'POST' }),
+  restoreMaintenanceType: (id: number) =>
+    request<MaintenanceType>(`/maintenance/types/${id}/restore`, { method: 'POST' }),
   getMaintenanceOverview: () => request<PrinterMaintenanceOverview[]>('/maintenance/overview'),
   getPrinterMaintenance: (printerId: number) =>
     request<PrinterMaintenanceOverview>(`/maintenance/printers/${printerId}`),
@@ -5671,13 +5682,33 @@ export const api = {
       method: 'PATCH',
       body: JSON.stringify(data),
     }),
-  performMaintenance: (itemId: number, notes?: string) =>
+  performMaintenance: (itemId: number, data?: { notes?: string; part_url?: string; cost?: number }) =>
     request<MaintenanceStatus>(`/maintenance/items/${itemId}/perform`, {
       method: 'POST',
-      body: JSON.stringify({ notes }),
+      body: JSON.stringify(data ?? {}),
     }),
   getMaintenanceHistory: (itemId: number) =>
     request<MaintenanceHistory[]>(`/maintenance/items/${itemId}/history`),
+  getPrinterMaintenanceHistory: (printerId: number) =>
+    request<MaintenanceHistory[]>(`/maintenance/printers/${printerId}/history`),
+  logCustomMaintenanceJob: (
+    printerId: number,
+    data: { title: string; notes?: string; part_url?: string; cost?: number },
+  ) =>
+    request<MaintenanceHistory>(`/maintenance/printers/${printerId}/jobs`, {
+      method: 'POST',
+      body: JSON.stringify(data),
+    }),
+  updateMaintenanceHistory: (
+    historyId: number,
+    data: { notes?: string | null; part_url?: string | null; cost?: number | null; title?: string },
+  ) =>
+    request<MaintenanceHistory>(`/maintenance/history/${historyId}`, {
+      method: 'PATCH',
+      body: JSON.stringify(data),
+    }),
+  deleteMaintenanceHistory: (historyId: number) =>
+    request<{ status: string }>(`/maintenance/history/${historyId}`, { method: 'DELETE' }),
   getMaintenanceSummary: () => request<MaintenanceSummary>('/maintenance/summary'),
   setPrinterHours: (printerId: number, totalHours: number) =>
     request<{ printer_id: number; total_hours: number; archive_hours: number; offset_hours: number }>(

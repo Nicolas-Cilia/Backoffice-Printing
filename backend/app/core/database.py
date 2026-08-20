@@ -4074,6 +4074,39 @@ async def run_migrations(conn):
     await _safe_execute(conn, "ALTER TABLE library_section_parts ADD COLUMN sort_order INTEGER DEFAULT 0")
     await _backfill_section_part_sort_order(conn)
 
+    # Migration: per-printer maintenance log (cost, part link, one-off jobs).
+    if is_sqlite():
+        await _safe_execute(conn, "ALTER TABLE maintenance_types ADD COLUMN is_adhoc BOOLEAN DEFAULT 0")
+    else:
+        await _safe_execute(conn, "ALTER TABLE maintenance_types ADD COLUMN is_adhoc BOOLEAN DEFAULT false")
+    await _safe_execute(conn, "ALTER TABLE maintenance_history ADD COLUMN printer_id INTEGER")
+    await _safe_execute(conn, "ALTER TABLE maintenance_history ADD COLUMN title VARCHAR(100)")
+    await _safe_execute(conn, "ALTER TABLE maintenance_history ADD COLUMN part_url VARCHAR(500)")
+    await _safe_execute(conn, "ALTER TABLE maintenance_history ADD COLUMN cost FLOAT")
+    async with conn.begin_nested():
+        await conn.execute(
+            _sql_text(
+                "UPDATE maintenance_history SET printer_id = ("
+                "  SELECT printer_id FROM printer_maintenance"
+                "  WHERE printer_maintenance.id = maintenance_history.printer_maintenance_id"
+                ") WHERE printer_id IS NULL"
+            )
+        )
+        await conn.execute(
+            _sql_text(
+                "UPDATE maintenance_types SET is_adhoc = "
+                + ("1" if is_sqlite() else "true")
+                + " WHERE name = 'Custom job'"
+            )
+        )
+        await conn.execute(
+            _sql_text(
+                "UPDATE maintenance_types SET is_adhoc = "
+                + ("0" if is_sqlite() else "false")
+                + " WHERE is_adhoc IS NULL"
+            )
+        )
+
 
 _SECTION_PART_DEFAULT_ORDER = ("TOP", "BOT", "KNB", "BUT")
 
