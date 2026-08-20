@@ -82,7 +82,7 @@ function getIcon(iconName: string | null) {
   return iconMap[iconName] || Wrench;
 }
 
-type TFunction = (key: string, options?: string | Record<string, unknown>) => string;
+type TFunction = ReturnType<typeof useTranslation>['t'];
 
 function formatDuration(value: number, type: 'hours' | 'days', t?: TFunction): string {
   if (type === 'days') {
@@ -1516,7 +1516,11 @@ export function MaintenancePage() {
 
   const performMutation = useMutation({
     mutationFn: ({ id, fields }: { id: number; fields: JobLogFields }) =>
-      api.performMaintenance(id, { notes: fields.notes, part_url: fields.part_url, cost: fields.cost }),
+      api.performMaintenance(id, {
+        notes: fields.notes ?? undefined,
+        part_url: fields.part_url ?? undefined,
+        cost: fields.cost ?? undefined,
+      }),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['maintenanceOverview'] });
       queryClient.invalidateQueries({ queryKey: ['maintenanceSummary'] });
@@ -1532,9 +1536,9 @@ export function MaintenancePage() {
     mutationFn: ({ printerId, fields }: { printerId: number; fields: JobLogFields }) =>
       api.logCustomMaintenanceJob(printerId, {
         title: fields.title || t('maintenance.customJob', 'Custom job'),
-        notes: fields.notes,
-        part_url: fields.part_url,
-        cost: fields.cost,
+        notes: fields.notes ?? undefined,
+        part_url: fields.part_url ?? undefined,
+        cost: fields.cost ?? undefined,
       }),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['maintenanceOverview'] });
