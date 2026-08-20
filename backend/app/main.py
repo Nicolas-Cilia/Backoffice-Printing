@@ -871,6 +871,576 @@ def _get_start_ams_mapping(data: dict, archive_id: int | None) -> list[int] | No
     return stored_ams_mapping
 
 
+def _is_metadata_plate_gcode(value: str) -> bool:
+    """Firmware ``/data/Metadata/plate_N.gcode`` is not a print-job identity."""
+    name = value.replace("\\", "/").rsplit("/", 1)[-1].casefold()
+    return name.startswith("plate_") and name.endswith(".gcode") and not name.endswith(".gcode.3mf")
+
+
+def _first_print_job_name(*values) -> str | None:
+    fallback = None
+    for value in values:
+        if not isinstance(value, str) or not value.strip():
+            continue
+        if _is_metadata_plate_gcode(value):
+            fallback = fallback or value
+            continue
+        return value
+    return fallback
+
+
+def _normalized_print_name(value: str | None) -> str:
+    """Basename without 3MF/gcode suffixes, for matching SD-card vs sent jobs."""
+    from backend.app.services.filament_tracking import print_job_stem
+
+    return print_job_stem(value)
+
+
+def _archive_name_matches(archive, print_name: str | None) -> bool:
+    incoming = _normalized_print_name(print_name)
+    if not incoming or archive is None:
+        return False
+    for candidate in (getattr(archive, "print_name", None), getattr(archive, "filename", None)):
+        if _normalized_print_name(candidate) == incoming:
+            return True
+    return False
+
+
+def _active_archive_id_for_printer(printer_id: int, print_name: str | None = None) -> int | None:
+    """Bind an in-memory archive only when the MQTT job name matches.
+
+    Returning any active archive for the printer would apply a previous 3MF
+    to an SD-card print of a different file.
+    """
+    incoming = _normalized_print_name(print_name)
+    fallback = None
+    count = 0
+    for (pid, fname), archive_id in _active_prints.items():
+        if pid != printer_id:
+            continue
+        count += 1
+        fallback = archive_id
+        if incoming and _normalized_print_name(fname) == incoming:
+            return archive_id
+    if incoming:
+        return None
+    return fallback if count == 1 else None
+
+
+def _print_progress_value(data: dict | None, fallback: float | int | None = None) -> float | int | None:
+    """Prefer a non-zero progress; firmware often resets to 0 on fail/cancel."""
+    payload = data or {}
+    candidates = [payload.get("progress"), payload.get("last_progress"), fallback]
+    nonzero: list[float | int] = []
+    available: list[float | int] = []
+    for value in candidates:
+        if value is None:
+            continue
+        available.append(value)
+        try:
+            if float(value) > 0:
+                nonzero.append(value)
+        except (TypeError, ValueError):
+            continue
+    if nonzero:
+        return nonzero[0]
+    return available[0] if available else None
+
+
+def _printer_live_mapping_state(printer_id: int) -> dict:
+    """AMS mapping hints from MQTT live state (reprints, Studio/LAN sends)."""
+    client = printer_manager.get_client(printer_id)
+    state = client.state if client else printer_manager.get_status(printer_id)
+    if not state:
+        return {}
+    raw = getattr(state, "raw_data", None) or {}
+    return {
+        "mqtt_mapping": raw.get("mapping") if isinstance(raw, dict) else None,
+        "tray_now": getattr(state, "tray_now", None),
+        "progress": getattr(state, "progress", None),
+        "captured_ams_mapping": getattr(client, "_captured_ams_mapping", None) if client else None,
+        "raw_data": raw if isinstance(raw, dict) else {},
+        "last_progress": getattr(client, "_last_valid_progress", None) if client else None,
+        "gcode_file": _first_print_job_name(getattr(state, "gcode_file", None)),
+        "raw_gcode_file": getattr(state, "gcode_file", None) if isinstance(getattr(state, "gcode_file", None), str) else None,
+        "subtask_name": _first_print_job_name(getattr(state, "subtask_name", None)),
+        "remaining_time": getattr(state, "remaining_time", None),
+        "skipped_objects": getattr(state, "skipped_objects", None),
+    }
+
+
+def _archive_3mf_path(archive) -> Path | None:
+    """On-disk 3MF for this archive row, if the stored path still exists."""
+    from backend.app.services.filament_tracking import existing_3mf_path
+
+    if archive is None or not getattr(archive, "file_path", None):
+        return None
+    return existing_3mf_path(archive.file_path, app_settings.base_dir)
+
+
+def _tracking_slots_from_archive(archive, plate_id: int | None = None) -> list[dict]:
+    """Full-job slot estimates for live/complete tracking (not progress-scaled)."""
+    from backend.app.services.filament_tracking import slots_from_3mf_file
+
+    if archive is None:
+        return []
+    threemf_path = _archive_3mf_path(archive)
+    if threemf_path is not None:
+        slots = slots_from_3mf_file(
+            threemf_path, plate_id if plate_id is not None else getattr(archive, "plate_id", None)
+        )
+        if slots:
+            return slots
+    grams = archive.filament_used_grams
+    if not grams:
+        return []
+    types = [part.strip() for part in (archive.filament_type or "UNKNOWN").split(",") if part.strip()]
+    colors = [part.strip() for part in (archive.filament_color or "").split(",") if part.strip()]
+    count = max(len(types), len(colors), 1)
+    # Even-splitting a headline gram total across colors invents a mapping.
+    # Named-product tracking would then deduct the wrong products. Fall
+    # through to MQTT remain% / tray_now instead.
+    if count > 1:
+        return []
+    return [
+        {
+            "slot_id": 1,
+            "type": types[0] if types else "UNKNOWN",
+            "color": colors[0] if colors else None,
+            "used_g": round(float(grams), 1),
+        }
+    ]
+
+
+async def _sync_filament_color_tracking(
+    printer_id: int,
+    *,
+    status: str,
+    progress: float | int | None = None,
+    data: dict | None = None,
+    archive_id: int | None = None,
+    archive=None,
+    ams_mapping: list[int] | None = None,
+    plate_id: int | None = None,
+    occurred_at: datetime | None = None,
+    settle: bool = False,
+    fallback_slots: list[dict] | None = None,
+    fallback_mapping: list[int] | None = None,
+    start: bool = False,
+    db=None,
+) -> None:
+    """Live-upsert or settle named-product tracking for one printer run."""
+    from backend.app.models.archive import PrintArchive
+    from backend.app.services.filament_tracking import (
+        LiveTrackingRun,
+        abort_tracking_settle,
+        begin_tracking_settle,
+        cache_live_run,
+        clear_live_run,
+        close_open_live_usage,
+        find_exact_named_3mf,
+        finish_tracking_settle,
+        get_live_run,
+        ensure_live_job_visible,
+        mqtt_skipped_object_ids,
+        observed_print_trays,
+        partial_progress_scale,
+        prepare_live_tracking_for_start,
+        printer_tracking_lock,
+        record_print_usage,
+        resolve_ams_mapping,
+        resolve_print_started_at,
+        same_live_tracking_job,
+        should_broadcast_live_progress,
+        should_skip_live_upsert,
+        slots_from_3mf_file,
+        slots_from_remain_deltas,
+        snapshot_assigned_tray_remain,
+        tracking_run_id,
+    )
+
+    logger = logging.getLogger(__name__)
+
+    async with printer_tracking_lock(printer_id):
+        payload = data or {}
+        live_state = _printer_live_mapping_state(printer_id)
+        job_name = _first_print_job_name(
+            payload.get("subtask_name"),
+            payload.get("gcode_file"),
+            payload.get("filename"),
+            live_state.get("subtask_name"),
+            live_state.get("gcode_file"),
+        )
+        archive_id = (
+            archive_id
+            or (archive.id if archive is not None else None)
+            or _active_archive_id_for_printer(printer_id, job_name)
+        )
+        if start:
+            prepare_live_tracking_for_start(
+                printer_id,
+                archive_id=archive_id,
+                print_name=job_name,
+            )
+        progress = _print_progress_value(
+            payload, progress if progress is not None else live_state.get("progress")
+        )
+        if progress is None or float(progress or 0) <= 0:
+            last_valid = live_state.get("last_progress")
+            if last_valid:
+                progress = last_valid
+        sent_mapping = ams_mapping
+        if not sent_mapping and archive_id:
+            sent_mapping = _print_ams_mappings.get(archive_id)
+        mapping = sent_mapping or payload.get("ams_mapping") or live_state.get("captured_ams_mapping")
+        mapping = mapping or fallback_mapping
+        mqtt_mapping = None
+        raw = payload.get("raw_data")
+        if isinstance(raw, dict):
+            mqtt_mapping = raw.get("mapping")
+        mqtt_mapping = mqtt_mapping or live_state.get("mqtt_mapping")
+        tray_now = live_state.get("tray_now")
+        raw_data = raw if isinstance(raw, dict) else None
+        if not raw_data:
+            raw_data = live_state.get("raw_data") if isinstance(live_state.get("raw_data"), dict) else {}
+
+        async def _run(session):
+            nonlocal archive, archive_id, progress, mapping, sent_mapping
+            if archive is None and archive_id:
+                archive = await session.get(PrintArchive, archive_id)
+            mqtt_name = job_name
+            if archive is not None and mqtt_name and not _archive_name_matches(archive, mqtt_name):
+                archive = None
+                archive_id = None
+                sent_mapping = ams_mapping
+                mapping = (
+                    sent_mapping
+                    or payload.get("ams_mapping")
+                    or live_state.get("captured_ams_mapping")
+                    or fallback_mapping
+                )
+            if archive is None:
+                result = await session.execute(
+                    select(PrintArchive)
+                    .where(PrintArchive.printer_id == printer_id, PrintArchive.status == "printing")
+                    .order_by(PrintArchive.started_at.desc())
+                    .limit(1)
+                )
+                candidate = result.scalar_one_or_none()
+                if candidate is not None and (not mqtt_name or _archive_name_matches(candidate, mqtt_name)):
+                    archive = candidate
+            live = get_live_run(printer_id)
+            print_name = mqtt_name or (archive.print_name if archive is not None else None)
+            current_archive_id = archive.id if archive is not None else archive_id
+            if not settle and should_skip_live_upsert(
+                printer_id, archive_id=current_archive_id, print_name=print_name
+            ):
+                return
+            if (progress is None or float(progress or 0) <= 0) and live and live.last_progress > 0:
+                progress = live.last_progress
+            remaining_seconds = None
+            try:
+                remaining_minutes = live_state.get("remaining_time")
+                if remaining_minutes is not None and float(remaining_minutes) > 0:
+                    remaining_seconds = float(remaining_minutes) * 60.0
+            except (TypeError, ValueError):
+                remaining_seconds = None
+            if remaining_seconds is None and live is not None:
+                remaining_seconds = live.remaining_seconds
+            archive_print_time = getattr(archive, "print_time_seconds", None) if archive is not None else None
+            started_at = resolve_print_started_at(
+                now=datetime.now(timezone.utc),
+                occurred_at=occurred_at or datetime.now(timezone.utc),
+                archive_started_at=archive.started_at if archive is not None else None,
+                live_started_at=(
+                    live.started_at
+                    if live is not None
+                    and same_live_tracking_job(live, archive_id=current_archive_id, print_name=print_name)
+                    else None
+                ),
+                progress=progress,
+                remaining_seconds=remaining_seconds,
+                print_time_seconds=archive_print_time,
+            )
+
+            reuse_live = same_live_tracking_job(live, archive_id=current_archive_id, print_name=print_name)
+            remain_start = dict(live.remain_start) if reuse_live and live else {}
+            remain_weights = dict(live.remain_spool_grams) if reuse_live and live else {}
+            seen_trays = set(live.seen_trays) if reuse_live and live else set()
+            if reuse_live:
+                run_id = live.run_id
+                slots = list(live.slots or [])
+                resolved_mapping = list(live.ams_mapping) if live.ams_mapping else None
+            else:
+                run_id = tracking_run_id(
+                    archive_id=current_archive_id,
+                    printer_id=printer_id,
+                    print_name=print_name,
+                    started_at=started_at,
+                )
+                slots = []
+                resolved_mapping = None
+                if live is not None:
+                    clear_live_run(printer_id)
+                    live = None
+
+            snap_remain, snap_weights = await snapshot_assigned_tray_remain(session, printer_id, raw_data)
+            if snap_remain and not remain_start:
+                remain_start = snap_remain
+                remain_weights = snap_weights
+
+            if not slots:
+                scoped_plate = plate_id
+                if scoped_plate is None and archive is not None:
+                    scoped_plate = archive.plate_id
+                if scoped_plate is None and archive is not None and archive.id:
+                    scoped_plate = _print_plate_ids.get(archive.id)
+                if scoped_plate is None:
+                    scoped_plate = parse_plate_id(
+                        payload.get("gcode_file") or live_state.get("raw_gcode_file")
+                    )
+                archive_3mf = _archive_3mf_path(archive)
+                if archive_3mf is not None:
+                    slots = slots_from_3mf_file(archive_3mf, scoped_plate)
+                if not slots:
+                    lookup_names = [
+                        mqtt_name,
+                        payload.get("gcode_file"),
+                        payload.get("filename"),
+                        payload.get("subtask_name"),
+                        live_state.get("gcode_file"),
+                        live_state.get("subtask_name"),
+                    ]
+                    if archive is not None:
+                        lookup_names.extend(
+                            [
+                                getattr(archive, "print_name", None),
+                                getattr(archive, "filename", None),
+                            ]
+                        )
+                    exact_path = await find_exact_named_3mf(
+                        session,
+                        names=lookup_names,
+                        base_dir=app_settings.base_dir,
+                        printer_id=printer_id,
+                        exclude_archive_id=getattr(archive, "id", None) if archive is not None else None,
+                    )
+                    if exact_path is not None:
+                        slots = slots_from_3mf_file(exact_path, scoped_plate)
+                    if not slots:
+                        from backend.app.services.bambu_ftp import get_cached_3mf
+
+                        for name in lookup_names:
+                            cached = get_cached_3mf(printer_id, name or "")
+                            if cached is None:
+                                continue
+                            slots = slots_from_3mf_file(cached, scoped_plate)
+                            if slots:
+                                break
+                if not slots:
+                    slots = _tracking_slots_from_archive(archive, scoped_plate)
+
+            used_slot_count = len(
+                [s for s in slots if float(s.get("used_g") or s.get("used_grams") or 0) > 0]
+            )
+            incoming_mapping = resolve_ams_mapping(
+                ams_mapping=mapping,
+                mqtt_mapping=mqtt_mapping,
+                tray_now=tray_now,
+                slot_count=used_slot_count,
+            )
+            if incoming_mapping:
+                resolved_mapping = incoming_mapping
+
+            seen_trays = observed_print_trays(
+                mqtt_mapping=mqtt_mapping,
+                tray_now=tray_now,
+                previously_seen=seen_trays,
+            )
+            if resolved_mapping:
+                seen_trays = observed_print_trays(
+                    mqtt_mapping=resolved_mapping,
+                    previously_seen=seen_trays,
+                )
+
+            record_progress = progress
+            record_slots = list(slots)
+            remain_physical = False
+            # Product ledger: plate-scoped 3MF × progress. Complete = 100% of
+            # this plate even when skip-objects fired (over-deduct, not under).
+            # remain=-1 / generic filament never replaces those grams.
+            skipped = mqtt_skipped_object_ids(
+                payload,
+                raw_data,
+                live_state,
+                {"skipped_objects": live_state.get("skipped_objects")},
+            )
+            # Recent-usage "est." means skip-objects fired (full plate 3MF
+            # over-deduct). remain=-1 / untagged filament is not estimated.
+            usage_estimated = bool(skipped)
+            if not record_slots:
+                remain_slots, remain_mapping = slots_from_remain_deltas(
+                    remain_start,
+                    remain_weights,
+                    snap_remain,
+                    observed_trays=seen_trays,
+                )
+                if remain_slots:
+                    record_slots = remain_slots
+                    record_progress = 100
+                    remain_physical = True
+                    if remain_mapping:
+                        resolved_mapping = remain_mapping
+            trusted_3mf = bool(archive and getattr(archive, "file_path", None))
+            if not record_slots and fallback_slots and (fallback_mapping or trusted_3mf):
+                record_slots = [
+                    slot
+                    for slot in fallback_slots
+                    if float(slot.get("used_g") or slot.get("used_grams") or 0) > 0
+                ]
+                record_progress = 100
+                if not resolved_mapping:
+                    resolved_mapping = resolve_ams_mapping(
+                        ams_mapping=mapping,
+                        mqtt_mapping=mqtt_mapping,
+                        tray_now=tray_now,
+                        slot_count=len(record_slots),
+                    ) or fallback_mapping
+            if not resolved_mapping and fallback_mapping:
+                resolved_mapping = fallback_mapping
+
+            if not settle:
+                cache_live_run(
+                    LiveTrackingRun(
+                        run_id=run_id,
+                        printer_id=printer_id,
+                        archive_id=current_archive_id,
+                        print_name=print_name,
+                        started_at=started_at,
+                        slots=slots,
+                        ams_mapping=resolved_mapping or [],
+                        last_progress=max(float(progress or 0), float(live.last_progress if live else 0)),
+                        last_broadcast_progress=(live.last_broadcast_progress if live else -1.0),
+                        remain_start=remain_start,
+                        remain_spool_grams=remain_weights,
+                        seen_trays=seen_trays,
+                        remaining_seconds=remaining_seconds,
+                    )
+                )
+            events = []
+            if not record_slots or not resolved_mapping:
+                if settle:
+                    leftover = await close_open_live_usage(
+                        session,
+                        printer_id=printer_id,
+                        status=status,
+                        progress=progress,
+                        occurred_at=occurred_at or datetime.now(timezone.utc),
+                        archive_id=current_archive_id,
+                        print_name=print_name,
+                        grams=0.0 if partial_progress_scale(status, progress) <= 0 else None,
+                        estimated=usage_estimated,
+                    )
+                    events = leftover
+                else:
+                    visible = await ensure_live_job_visible(
+                        session,
+                        printer_id=printer_id,
+                        print_name=print_name,
+                        archive_id=current_archive_id,
+                        progress=progress,
+                        occurred_at=occurred_at or datetime.now(timezone.utc),
+                        run_id=run_id,
+                        tray_now=tray_now,
+                        estimated=usage_estimated,
+                    )
+                    if visible:
+                        events = [visible]
+            else:
+                events = await record_print_usage(
+                    session,
+                    slots=record_slots,
+                    status=status,
+                    progress=record_progress,
+                    archive_id=current_archive_id,
+                    printer_id=printer_id,
+                    print_name=print_name,
+                    occurred_at=occurred_at,
+                    ams_mapping=resolved_mapping,
+                    mqtt_mapping=None if remain_physical else mqtt_mapping,
+                    tray_now=None if remain_physical else tray_now,
+                    started_at=started_at,
+                    run_id=run_id,
+                    estimated=usage_estimated,
+                    allow_decrease=remain_physical,
+                )
+                if not events and not settle:
+                    visible = await ensure_live_job_visible(
+                        session,
+                        printer_id=printer_id,
+                        print_name=print_name,
+                        archive_id=current_archive_id,
+                        progress=progress,
+                        occurred_at=occurred_at or datetime.now(timezone.utc),
+                        run_id=run_id,
+                        tray_now=tray_now,
+                        estimated=usage_estimated,
+                    )
+                    if visible:
+                        events = [visible]
+            if settle:
+                leftover = await close_open_live_usage(
+                    session,
+                    printer_id=printer_id,
+                    status=status,
+                    progress=progress,
+                    occurred_at=occurred_at or datetime.now(timezone.utc),
+                    archive_id=current_archive_id,
+                    print_name=print_name,
+                    grams=0.0 if partial_progress_scale(status, progress) <= 0 else None,
+                    estimated=usage_estimated,
+                )
+                if leftover:
+                    events = list(events) + leftover
+            if events:
+                await session.commit()
+            run = get_live_run(printer_id)
+            should_broadcast = bool(settle)
+            if run and not settle:
+                should_broadcast = should_broadcast_live_progress(run, progress, settle=settle)
+                if should_broadcast:
+                    run.last_broadcast_progress = float(progress or 0)
+            if should_broadcast:
+                try:
+                    await ws_manager.broadcast({"type": "filament_tracking_updated", "printer_id": printer_id})
+                except Exception:
+                    pass
+
+        if settle:
+            begin_tracking_settle(printer_id)
+        try:
+            if db is not None:
+                await _run(db)
+            else:
+                async with async_session() as session:
+                    await _run(session)
+        except Exception as track_err:
+            logger.warning("[FILAMENT_TRACKING] Failed to sync usage for printer %s: %s", printer_id, track_err)
+            if settle:
+                abort_tracking_settle(printer_id)
+            return
+        if settle:
+            live = get_live_run(printer_id)
+            finish_tracking_settle(
+                printer_id,
+                archive_id=archive_id or (archive.id if archive is not None else None),
+                print_name=(archive.print_name if archive is not None else None)
+                or payload.get("subtask_name")
+                or payload.get("filename"),
+                run_id=live.run_id if live else "",
+            )
+
+
 def _get_start_plate_id(archive_id: int | None) -> int | None:
     """Resolve plate_id for print start without consuming stored direct-Print state.
 
@@ -2435,6 +3005,17 @@ async def on_print_start(printer_id: int, data: dict):
     logger = logging.getLogger(__name__)
 
     logger.info("[CALLBACK] on_print_start called for printer %s, data keys: %s", printer_id, list(data.keys()))
+
+    spawn_background_task(
+        _sync_filament_color_tracking(
+            printer_id,
+            status="printing",
+            progress=_print_progress_value(data),
+            data=data,
+            start=True,
+        ),
+        name="filament-tracking-start",
+    )
 
     # Clear any stale user-stopped flag from previous print cycles
     _user_stopped_printers.discard(printer_id)
@@ -4115,6 +4696,17 @@ async def on_print_running_observed(printer_id: int, data: dict):
     """
     logger = logging.getLogger(__name__)
 
+    spawn_background_task(
+        _sync_filament_color_tracking(
+            printer_id,
+            status="printing",
+            progress=_print_progress_value(data),
+            data=data,
+            start=True,
+        ),
+        name="filament-tracking-running",
+    )
+
     # Avoid double-capture: on_print_start may have run earlier in this
     # Bambuddy process if the print started AFTER startup and we crashed
     # later in the same session. (Realistically this can't happen — the
@@ -5196,6 +5788,26 @@ async def on_print_complete(printer_id: int, data: dict):
 
     log_timing("Filament usage tracking")
 
+    fallback_slots = None
+    fallback_mapping = None
+    if usage_results:
+        from backend.app.services.filament_tracking import tracking_slots_from_usage_results
+
+        fallback_slots, fallback_mapping = tracking_slots_from_usage_results(usage_results)
+
+    await _sync_filament_color_tracking(
+        printer_id,
+        status=data.get("status", "completed"),
+        progress=_print_progress_value(data),
+        data=data,
+        archive_id=archive_id,
+        ams_mapping=stored_ams_mapping,
+        plate_id=notify_plate_id,
+        settle=True,
+        fallback_slots=fallback_slots or None,
+        fallback_mapping=fallback_mapping,
+    )
+
     if not archive_id:
         logger.warning("Could not find archive for print complete: filename=%s, subtask=%s", filename, subtask_name)
 
@@ -5420,52 +6032,6 @@ async def on_print_complete(printer_id: int, data: dict):
                 )
                 await db.commit()
                 logger.info("[PRINT_LOG] Log entry written for archive %s", archive_id)
-
-                try:
-                    from backend.app.services.filament_tracking import record_print_usage
-                    from backend.app.utils.threemf_tools import extract_filament_usage_from_3mf
-
-                    tracking_slots: list[dict] = []
-                    tracking_status = _run_status
-                    tracking_progress = data.get("progress")
-                    if _est_full_path is not None and _est_full_path.exists():
-                        tracking_slots = extract_filament_usage_from_3mf(_est_full_path, archive.plate_id)
-                    if not tracking_slots and _run_grams:
-                        types = [
-                            part.strip() for part in (archive.filament_type or "UNKNOWN").split(",") if part.strip()
-                        ]
-                        colors = [part.strip() for part in (archive.filament_color or "").split(",") if part.strip()]
-                        count = max(len(types), len(colors), 1)
-                        each = round(float(_run_grams) / count, 1)
-                        tracking_slots = [
-                            {
-                                "type": types[i] if i < len(types) else types[-1],
-                                "color": colors[i] if i < len(colors) else (colors[-1] if colors else None),
-                                "used_g": each,
-                            }
-                            for i in range(count)
-                        ]
-                        tracking_status = "completed"
-                        tracking_progress = 100
-                    if tracking_slots:
-                        await record_print_usage(
-                            db,
-                            slots=tracking_slots,
-                            status=tracking_status,
-                            progress=tracking_progress,
-                            archive_id=archive.id,
-                            printer_id=printer_id,
-                            print_name=archive.print_name,
-                            occurred_at=archive.completed_at,
-                            ams_mapping=stored_ams_mapping,
-                        )
-                        await db.commit()
-                except Exception as track_err:
-                    logger.warning(
-                        "[FILAMENT_TRACKING] Failed to record usage for archive %s: %s",
-                        archive_id,
-                        track_err,
-                    )
     except Exception as e:
         logger.warning("[PRINT_LOG] Failed to write log entry for archive %s: %s", archive_id, e)
 
@@ -7088,6 +7654,15 @@ async def lifespan(app: FastAPI):
         client = printer_manager.get_client(printer_id)
         state = client.state if client else None
         await _maybe_bank_inprint_frame(printer_id, state.layer_num if state else 0)
+        spawn_background_task(
+            _sync_filament_color_tracking(
+                printer_id,
+                status="printing",
+                progress=percent,
+                start=True,
+            ),
+            name="filament-tracking-live",
+        )
 
     printer_manager.set_print_progress_callback(on_print_progress)
 

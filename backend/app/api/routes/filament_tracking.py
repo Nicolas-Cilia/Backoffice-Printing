@@ -20,6 +20,8 @@ from backend.app.schemas.filament_tracking import (
     BucketResponse,
     BucketStockUpdate,
     FilamentPlanResponse,
+    LiveUsageProductResponse,
+    LiveUsageRateResponse,
     MaterialPlanResponse,
     PrinterConsumptionResponse,
     SlotAssignmentCreate,
@@ -30,6 +32,8 @@ from backend.app.services.filament_tracking import (
     clamp_lead_time_days,
     get_or_create_bucket,
     identity_or_none,
+    collapse_duplicate_live_usage,
+    load_live_usage_rate,
     load_plan,
     load_printer_consumption,
     normalize_color_name,
@@ -38,6 +42,7 @@ from backend.app.services.filament_tracking import (
     normalize_hex,
     normalize_identity_part,
     normalize_material,
+    untracked_live_runs,
 )
 
 router = APIRouter(prefix="/filament-tracking", tags=["filament-tracking"])
@@ -314,6 +319,23 @@ async def list_usage_events(
     db: AsyncSession = Depends(get_db),
     _: User | None = RequirePermissionIfAuthEnabled(Permission.INVENTORY_READ),
 ):
+    printer_ids = {
+        pid
+        for (pid,) in (
+            await db.execute(
+                select(FilamentColorUsage.printer_id)
+                .where(
+                    FilamentColorUsage.kind == "printing",
+                    FilamentColorUsage.printer_id.is_not(None),
+                )
+                .distinct()
+            )
+        ).all()
+        if pid is not None
+    }
+    for pid in printer_ids:
+        await collapse_duplicate_live_usage(db, printer_id=pid)
+
     bucket = aliased(FilamentColorBucket)
     result = await db.execute(
         select(FilamentColorUsage, bucket)
@@ -341,7 +363,32 @@ async def list_usage_events(
                 archive_id=event.archive_id,
                 printer_id=event.printer_id,
                 print_name=event.print_name,
+                estimated=bool(getattr(event, "estimated", False)),
             )
+        )
+    printing_printers = {row.printer_id for row in rows if row.kind == "printing" and row.printer_id is not None}
+    for run in untracked_live_runs(printing_printers):
+        rows.insert(
+            0,
+            UsageEventResponse(
+                id=-run.printer_id,
+                bucket_id=0,
+                color_name="Unassigned",
+                material="",
+                brand=None,
+                subtype=None,
+                extra_colors=None,
+                effect_type=None,
+                color_hex=None,
+                grams=0.0,
+                occurred_at=run.started_at,
+                kind="printing",
+                progress=run.last_progress or None,
+                archive_id=run.archive_id,
+                printer_id=run.printer_id,
+                print_name=run.print_name,
+                estimated=False,
+            ),
         )
     return rows
 
@@ -355,3 +402,34 @@ async def list_printer_consumption(
         PrinterConsumptionResponse(printer_id=row.printer_id, name=row.name, grams=row.grams)
         for row in await load_printer_consumption(db)
     ]
+
+
+@router.get("/live-rate", response_model=LiveUsageRateResponse)
+async def get_live_usage_rate(
+    db: AsyncSession = Depends(get_db),
+    _: User | None = RequirePermissionIfAuthEnabled(Permission.INVENTORY_READ),
+):
+    rate = await load_live_usage_rate(db)
+    return LiveUsageRateResponse(
+        grams_per_hour=rate.grams_per_hour,
+        grams_last_hour=rate.grams_last_hour,
+        grams_so_far=rate.grams_so_far,
+        active_jobs=rate.active_jobs,
+        warming_up=rate.warming_up,
+        products=[
+            LiveUsageProductResponse(
+                bucket_id=p.bucket_id,
+                color_name=p.color_name,
+                material=p.material,
+                brand=p.brand,
+                subtype=p.subtype,
+                extra_colors=p.extra_colors,
+                effect_type=p.effect_type,
+                color_hex=p.color_hex,
+                grams_so_far=p.grams_so_far,
+                grams_last_hour=p.grams_last_hour,
+                grams_per_hour=p.grams_per_hour,
+            )
+            for p in rate.products
+        ],
+    )

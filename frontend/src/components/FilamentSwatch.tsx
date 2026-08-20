@@ -2,6 +2,7 @@ import React, { useMemo } from 'react';
 import {
   parseStops,
   buildFilamentBackground,
+  isDarkSwatchFill,
   type FilamentEffect,
   type SwatchType,
 } from './filamentSwatchHelpers';
@@ -47,6 +48,10 @@ export function FilamentSwatch({
     () => buildFilamentBackground({ effectSize, rgba, extraColors, effectType, subtype }),
     [effectSize, rgba, extraColors, effectType, subtype]
   );
+  const needsLightRing = useMemo(
+    () => isDarkSwatchFill({ rgba, extraColors, effectType }),
+    [rgba, extraColors, effectType],
+  );
   const backgroundImage = filamentBackground.backgroundImage;
   const backgroundSize = filamentBackground.backgroundSize;
 
@@ -73,7 +78,7 @@ export function FilamentSwatch({
   return (
     <span
       data-testid="filament-swatch"
-      className={`${className} ${shapeClass} border border-black/20 inline-block flex-shrink-0`}
+      className={`${className} ${shapeClass} border border-black/20 ${needsLightRing ? 'ring-1 ring-white/15' : ''} inline-block flex-shrink-0`}
       style={{ backgroundImage, backgroundSize, ...style }}
       title={computedTitle}
     />

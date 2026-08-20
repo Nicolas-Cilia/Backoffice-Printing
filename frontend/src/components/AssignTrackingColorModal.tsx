@@ -73,7 +73,7 @@ export function AssignTrackingColorModal({
       >
         <div className="flex items-center justify-between p-4 border-b border-bambu-dark-tertiary">
           <h2 className="text-lg font-semibold text-white">
-            {t('inventory.trackingAssignTitle', 'Assign tracking color')}
+            {t('inventory.trackingAssignTitle', 'Assign tracking product')}
           </h2>
           <button type="button" onClick={onClose} className="p-1 text-bambu-gray hover:text-white rounded">
             <X className="w-5 h-5" />

@@ -618,6 +618,34 @@ def extract_filament_usage_from_3mf(file_path: Path, plate_id: int | None = None
     return [dict(f) for f in extract_plate_metadata_from_3mf(file_path, plate_id).filament_usage]
 
 
+def slice_info_plate_indexes(file_path: Path) -> list[int]:
+    """1-based plate indexes listed in ``Metadata/slice_info.config``, in file order.
+
+    Empty when the file is missing, unreadable, or has no ``<plate>`` wrappers
+    (legacy root-level ``<filament>`` only). Used by tracking to refuse a
+    whole-file gram sum when the printed plate is unknown.
+    """
+    file_path = Path(file_path)
+    try:
+        with zipfile.ZipFile(file_path, "r") as zf:
+            if "Metadata/slice_info.config" not in zf.namelist():
+                return []
+            root = ET.fromstring(zf.read("Metadata/slice_info.config").decode())
+    except Exception:
+        return []
+    indexes: list[int] = []
+    for plate_elem in root.findall(".//plate"):
+        for meta in plate_elem.findall("metadata"):
+            if meta.get("key") != "index":
+                continue
+            try:
+                indexes.append(int(meta.get("value", "0")))
+            except (TypeError, ValueError):
+                pass
+            break
+    return indexes
+
+
 def extract_print_time_from_3mf(file_path: Path, plate_id: int | None = None) -> int | None:
     """Extract the slicer's predicted print time from a 3MF's slice_info.config.
 

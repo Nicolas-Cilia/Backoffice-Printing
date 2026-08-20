@@ -478,6 +478,46 @@ describe('useWebSocket hook', () => {
       vi.unstubAllGlobals();
     });
 
+    it('invalidates filament tracking queries on filament_tracking_updated', async () => {
+      vi.useFakeTimers();
+      vi.stubGlobal('requestAnimationFrame', (cb: FrameRequestCallback) => {
+        cb(0);
+        return 0;
+      });
+      const { useWebSocket } = await import('../../hooks/useWebSocket');
+
+      const invalidateSpy = vi.spyOn(queryClient, 'invalidateQueries');
+
+      renderHook(() => useWebSocket(), {
+        wrapper: createWrapper(queryClient),
+      });
+
+      const ws = await waitForWs();
+
+      act(() => {
+        ws.open();
+      });
+
+      act(() => {
+        ws.simulateMessage({ type: 'filament_tracking_updated', printer_id: 1 });
+      });
+
+      await act(async () => {
+        vi.advanceTimersByTime(5000);
+      });
+
+      expect(invalidateSpy).toHaveBeenCalledWith({ queryKey: ['filament-tracking-plan'] });
+      expect(invalidateSpy).toHaveBeenCalledWith({ queryKey: ['filament-tracking-events'] });
+      expect(invalidateSpy).toHaveBeenCalledWith({
+        queryKey: ['filament-tracking-printer-consumption'],
+      });
+      expect(invalidateSpy).toHaveBeenCalledWith({ queryKey: ['filament-tracking-live-rate'] });
+      expect(invalidateSpy).toHaveBeenCalledWith({ queryKey: ['filament-tracking-assignments'] });
+
+      vi.useRealTimers();
+      vi.unstubAllGlobals();
+    });
+
     it('handles missing_spool_assignment message without error', async () => {
       vi.stubGlobal('requestAnimationFrame', (cb: FrameRequestCallback) => {
         cb(0);

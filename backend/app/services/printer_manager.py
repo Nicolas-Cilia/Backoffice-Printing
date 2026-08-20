@@ -1050,7 +1050,7 @@ def parse_plate_id(gcode_file: str | None) -> int | None:
     Shared by the REST status route and the WebSocket push path so both agree
     on the value sent to the frontend (#881 follow-up).
     """
-    if not gcode_file:
+    if not isinstance(gcode_file, str) or not gcode_file:
         return None
     match = _PLATE_ID_RE.search(gcode_file)
     return int(match.group(1)) if match else None
