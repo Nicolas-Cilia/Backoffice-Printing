@@ -203,3 +203,9 @@ scans. Run `./test_all.sh` locally before pushing.
 - Open pull requests against `dev`, not `main`.
 - Example: `gh pr create --repo Nicolas-Cilia/Backoffice-Printing --base dev`
 - Do not push to `main`. Promoting `dev` to `main` is a separate later step.
+
+## Versioning
+
+The app version is `APP_VERSION` in `backend/app/core/config.py`, not
+`frontend/package.json`. Bump it on `main` before publishing. See
+[docs/docker-workflow.md](docs/docker-workflow.md).
