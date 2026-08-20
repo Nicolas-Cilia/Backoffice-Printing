@@ -6,7 +6,8 @@
 import { describe, it, expect } from 'vitest';
 import { screen } from '@testing-library/react';
 import { render } from '../utils';
-import { SlotTrackingLabel, amsSlotHighlightClass } from '../../components/SlotTrackingLabel';
+import { SlotTrackingLabel } from '../../components/SlotTrackingLabel';
+import { amsSlotHighlightClass } from '../../components/slotTrackingHelpers';
 
 const assigned = {
   color_name: 'White',

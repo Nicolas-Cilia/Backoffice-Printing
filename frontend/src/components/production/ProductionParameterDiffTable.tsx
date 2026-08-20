@@ -13,26 +13,6 @@ function formatDiffKey(key: string, t: (k: string, o?: Record<string, unknown>) 
   return labelKey ? t(labelKey) : key;
 }
 
-export function collectParameterNotes(
-  rows: ProductionParameterDiff[],
-  notes: Record<string, string>,
-): Record<string, string> {
-  const out: Record<string, string> = {};
-  for (const row of rows) {
-    if (row.match) continue;
-    const text = (notes[row.key] ?? '').trim();
-    if (text) out[row.key] = text;
-  }
-  return out;
-}
-
-export function mismatchNotesComplete(
-  rows: ProductionParameterDiff[],
-  notes: Record<string, string>,
-): boolean {
-  return rows.every((row) => row.match || (notes[row.key] ?? '').trim().length > 0);
-}
-
 interface ProductionParameterDiffTableProps {
   rows: ProductionParameterDiff[];
   notes?: Record<string, string>;

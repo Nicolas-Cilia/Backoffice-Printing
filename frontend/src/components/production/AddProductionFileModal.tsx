@@ -5,11 +5,8 @@ import { api } from '../../api/client';
 import type { ProductionPartView, ProductionReplacePreview } from '../../api/client';
 import { Button } from '../Button';
 import { parseProductionFilename, storedProductionFilename } from '../../utils/productionFilename';
-import {
-  collectParameterNotes,
-  mismatchNotesComplete,
-  ProductionParameterDiffTable,
-} from './ProductionParameterDiffTable';
+import { ProductionParameterDiffTable } from './ProductionParameterDiffTable';
+import { collectParameterNotes, mismatchNotesComplete } from './productionParameterNotes';
 
 interface AddProductionFileModalProps {
   folderId: number;
