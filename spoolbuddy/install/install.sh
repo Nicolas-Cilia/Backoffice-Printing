@@ -8,7 +8,7 @@
 #
 # Usage:
 #   Interactive:  curl -fsSL https://raw.githubusercontent.com/Nicolas-Cilia/Backoffice-Printing/main/spoolbuddy/install.sh -o install.sh && chmod +x install.sh && sudo ./install.sh
-#   Unattended:   sudo ./install.sh --mode spoolbuddy --bambuddy-url http://192.168.1.100:8000 --api-key bb_xxx --yes
+#   Unattended:   sudo ./install.sh --mode spoolbuddy --bambuddy-url http://192.168.1.100:7474 --api-key bb_xxx --yes
 #
 # Options:
 #   --mode MODE          Installation mode: "spoolbuddy" (companion only) or "full" (both)
@@ -17,7 +17,7 @@
 #   --bambuddy-url URL   Bambuddy server URL (required for spoolbuddy mode)
 #   --api-key KEY        Bambuddy API key (required for spoolbuddy mode)
 #   --path PATH          Installation directory (default: /opt/spoolbuddy or /opt/bambuddy)
-#   --port PORT          Bambuddy port (full mode only, default: 8000)
+#   --port PORT          Bambuddy port (full mode only, default: 7474)
 #   --ssh-pubkey KEY     Bambuddy SSH public key for remote updates
 #   --yes, -y            Non-interactive mode, accept defaults
 #   --help, -h           Show this help message
@@ -58,7 +58,7 @@ DETECTED_INSTALLER_REPO=""
 DETECTED_INSTALLER_REF=""
 BAMBUDDY_URL=""
 API_KEY=""
-BAMBUDDY_PORT="8000"
+BAMBUDDY_PORT="7474"
 NON_INTERACTIVE="false"
 REBOOT_NEEDED="false"
 KIOSK_USER=""            # auto-detected from $SUDO_USER
@@ -199,7 +199,7 @@ show_help() {
     echo "  --bambuddy-url URL   Bambuddy server URL (required for spoolbuddy mode)"
     echo "  --api-key KEY        Bambuddy API key (required for spoolbuddy mode)"
     echo "  --path PATH          Installation directory (default: /opt/spoolbuddy or /opt/bambuddy)"
-    echo "  --port PORT          Bambuddy port (full mode only, default: 8000)"
+    echo "  --port PORT          Bambuddy port (full mode only, default: 7474)"
     echo "  --ssh-pubkey KEY     Bambuddy SSH public key for remote updates"
     echo "  --yes, -y            Non-interactive mode, accept defaults"
     echo "  --help, -h           Show this help message"
@@ -209,10 +209,10 @@ show_help() {
     echo "    sudo ./install.sh"
     echo ""
     echo "  SpoolBuddy companion (unattended):"
-    echo "    sudo ./install.sh --mode spoolbuddy --bambuddy-url http://192.168.1.100:8000 --api-key bb_xxx -y"
+    echo "    sudo ./install.sh --mode spoolbuddy --bambuddy-url http://192.168.1.100:7474 --api-key bb_xxx -y"
     echo ""
     echo "  Full install (unattended):"
-    echo "    sudo ./install.sh --mode full --port 8000 -y"
+    echo "    sudo ./install.sh --mode full --port 7474 -y"
     exit 0
 }
 
@@ -1481,7 +1481,7 @@ gather_config() {
         echo ""
 
         while [[ -z "$BAMBUDDY_URL" ]]; do
-            prompt "Bambuddy server URL (e.g. http://192.168.1.100:8000)" "" BAMBUDDY_URL
+            prompt "Bambuddy server URL (e.g. http://192.168.1.100:7474)" "" BAMBUDDY_URL
             if [[ -z "$BAMBUDDY_URL" ]]; then
                 warn "Bambuddy URL is required"
             fi

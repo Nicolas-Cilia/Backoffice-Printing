@@ -39,10 +39,10 @@ pip install -r requirements-dev.txt  # pytest, ruff, bandit, etc.
 pip install pre-commit
 pre-commit install
 
-DEBUG=true uvicorn backend.app.main:app --reload --host 0.0.0.0 --port 8000 --loop asyncio
+DEBUG=true uvicorn backend.app.main:app --reload --host 0.0.0.0 --port 7474 --loop asyncio
 ```
 
-The API is at **http://localhost:8000**.
+The API is at **http://localhost:7474**.
 
 ### Frontend
 
@@ -53,7 +53,7 @@ npm run dev
 ```
 
 Vite serves the UI at **http://localhost:5173** and proxies API requests to the
-backend.
+backend on port 7474.
 
 ### Docker (alternate run path)
 
@@ -195,3 +195,17 @@ Auth changes must follow the CI rules in [SECURITY.md](SECURITY.md).
 GitHub Actions (`.github/workflows/ci.yml`) runs Ruff, pytest, ESLint,
 TypeScript, Vitest, a production frontend build, Docker tests, and security
 scans. Run `./test_all.sh` locally before pushing.
+
+## Git workflow
+
+`dev` is the integration branch. `main` is protected/release.
+
+- Open pull requests against `dev`, not `main`.
+- Example: `gh pr create --repo Nicolas-Cilia/Backoffice-Printing --base dev`
+- Do not push to `main`. Promoting `dev` to `main` is a separate later step.
+
+## Versioning
+
+The app version is `APP_VERSION` in `backend/app/core/config.py`, not
+`frontend/package.json`. Bump it on `main` before publishing. See
+[docs/docker-workflow.md](docs/docker-workflow.md).

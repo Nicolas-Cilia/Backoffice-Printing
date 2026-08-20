@@ -19,23 +19,17 @@ project. If you want the maintained, full-featured product, go there:
 
 ---
 
-## What this install is
+## Overview
 
-Backoffice Printing is a self-hosted app for a shop-floor Bambu Lab setup: live
-printer control, filament inventory, production files, and local print profiles.
+Self-hosted control for a shop-floor Bambu Lab farm: live printers, filament
+inventory, production files, and local print profiles.
 
-**Native Mac is what currently works.** The backend is a Python virtualenv plus
-**uvicorn on port 8000**. In development the frontend is **Vite on port 5173**.
-
-**Docker Compose is a first-class install path.** Images are on GHCR as
-`ghcr.io/nicolas-cilia/backoffice-printing`. Other machines `docker compose pull`
-then `up -d`. This Mac can `--build` from git while developing. Native
-(venv + uvicorn :8000, Vite :5173) still works. Details:
-[docs/docker-workflow.md](docs/docker-workflow.md).
+Run it with **Docker** (published image) or **natively** (Python + Node). Docker
+is the usual install. Native is for local development.
 
 ## Tools
 
-The sidebar in this install is: **Printers**, **Inventory**, **Queue**, **Files**,
+The sidebar: **Printers**, **Inventory**, **Queue**, **Files**,
 **Profiles**, **Maintenance**, **Stats**, **Notifications**, **Settings**.
 
 ### Printers
@@ -65,49 +59,23 @@ This is per-printer types (lubrication, belts, PTFE, and so on) with intervals i
 
 ### Stats
 
-This is totals from local print history: print count, time, filament, and cost, plus success rate, a calendar, filament trends, and a per-printer breakdown. Filter by timeframe. This is the dashboard on this install, not a separate history product.
+This is totals from local print history: print count, time, filament, and cost, plus success rate, a calendar, filament trends, and a per-printer breakdown. Filter by timeframe.
 
 ### Settings
 
 This is the rest of the local install: language, theme, default landing view, and camera options. Users and permission groups live here when authentication is on, along with SMTP / notification routing and queue dispatch options such as plate-clear. Printers themselves are added on the Printers tab; Settings is where you tune how this host behaves.
 
-## Quick Start
+## Quick start
 
 ### Requirements
 
-- Python 3.11+ and Node.js 20+ (native path)
-- Docker with Compose (Docker path)
-- A Bambu Lab printer with **Developer Mode** enabled (see below)
-- Same local network as the printer
+- A Bambu Lab printer on the same LAN, with **Developer Mode** enabled (see below)
+- **Docker:** Docker with Compose
+- **Native:** Python 3.11+ and Node.js 20+
 
-### Native (currently working)
+### Docker
 
-```bash
-git clone https://github.com/Nicolas-Cilia/Backoffice-Printing.git
-cd Backoffice-Printing
-python3 -m venv venv
-source venv/bin/activate
-pip install -r requirements.txt
-
-# Backend — http://localhost:8000
-uvicorn backend.app.main:app --host 0.0.0.0 --port 8000 --loop asyncio
-```
-
-In a second terminal, for frontend development:
-
-```bash
-cd frontend
-npm install
-npm run dev
-```
-
-Vite serves the UI at **http://localhost:5173** and proxies API calls to uvicorn.
-If the frontend has already been built (`cd frontend && npm run build`), uvicorn
-on port 8000 also serves the UI from `static/`.
-
-### Docker (intended)
-
-**Run the published image** (another PC, or this Mac on a release):
+Published images are on GHCR as `ghcr.io/nicolas-cilia/backoffice-printing`.
 
 ```bash
 git clone https://github.com/Nicolas-Cilia/Backoffice-Printing.git
@@ -116,16 +84,41 @@ docker compose pull
 docker compose up -d
 ```
 
-**Build from this git tree** (this Mac while developing):
+Open **http://localhost:8484**. The container listens on 8000; Compose publishes **8484** on the host. To use another host port, set `HOST_PORT` in `.env` and run `docker compose up -d` (no image rebuild).
+
+On Docker Desktop, LAN printer discovery does not work — add printers by IP.
+
+To build from this tree instead of pulling the image:
 
 ```bash
 docker compose up -d --build
 ```
 
-Open **http://localhost:8484**. Compose publishes host port **8484** (container still uses 8000). To use a different host port, set `HOST_PORT` in `.env` and run `docker compose up -d` — no image rebuild.
-Printer discovery will not work in that mode — add printers by IP.
+Publish, version bumps, and pull vs build: [docs/docker-workflow.md](docs/docker-workflow.md).
 
-Install, publish, and version bumps: [docs/docker-workflow.md](docs/docker-workflow.md).
+### Native
+
+```bash
+git clone https://github.com/Nicolas-Cilia/Backoffice-Printing.git
+cd Backoffice-Printing
+python3 -m venv venv
+source venv/bin/activate
+pip install -r requirements.txt
+
+# API — http://localhost:7474
+uvicorn backend.app.main:app --host 0.0.0.0 --port 7474 --loop asyncio
+```
+
+Frontend development (second terminal):
+
+```bash
+cd frontend
+npm install
+npm run dev
+```
+
+Vite serves the UI at **http://localhost:5173** and proxies API calls to uvicorn.
+After `cd frontend && npm run build`, uvicorn also serves the UI from `static/` on port 7474.
 
 ### Enabling Developer Mode
 
