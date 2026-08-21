@@ -7,7 +7,8 @@ import { screen, waitFor, within, fireEvent } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { render } from '../utils';
 import { PrintersPage } from '../../pages/PrintersPage';
-import { ArrangePrintersModal, clampArrangeDrag } from '../../components/ArrangePrintersModal';
+import { ArrangePrintersModal } from '../../components/ArrangePrintersModal';
+import { clampArrangeDrag } from '../../utils/arrangePrinters';
 import {
   applyPrinterCustomOrder,
   mergePrinterCustomOrder,
