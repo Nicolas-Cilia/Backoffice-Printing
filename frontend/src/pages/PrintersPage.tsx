@@ -124,6 +124,8 @@ import { PrinterInfoModal } from '../components/PrinterInfoModal';
 import { getAmsLabel, getGlobalTrayId, getFillBarColor, getSpoolmanFillLevel, getFallbackSpoolTag, isBambuLabSpool, resolveSlotNozzleDiameter } from '../utils/amsHelpers';
 import { getPrinterImage, getWifiStrength, filterCompatibleQueueItems } from '../utils/printer';
 import { getPrinterCardChromeClass, PRINTER_CARD_DISABLED_CONTROL } from '../utils/printerCardChrome';
+import { trackingAmsSwatchGroups, trackingHexToRgba } from '../utils/filamentTrackingSwatches';
+import { FilamentSwatch } from '../components/FilamentSwatch';
 import { FilamentSlotCircle } from '../components/FilamentSlotCircle';
 import { SlotTrackingLabel } from '../components/SlotTrackingLabel';
 import { amsSlotHighlightClass } from '../components/slotTrackingHelpers';
@@ -2980,7 +2982,7 @@ function PrinterCard({
   const getImageSize = () => {
     switch (cardSize) {
       case 1: return 'w-10 h-10';
-      case 2: return 'w-14 h-14';
+      case 2: return 'w-12 h-12';
       case 3: return 'w-16 h-16';
       case 4: return 'w-20 h-20';
       default: return 'w-14 h-14';
@@ -2989,7 +2991,7 @@ function PrinterCard({
   const getTitleSize = () => {
     switch (cardSize) {
       case 1: return 'text-base truncate';
-      case 2: return 'text-lg';
+      case 2: return 'text-base truncate';
       case 3: return 'text-xl';
       case 4: return 'text-2xl';
       default: return 'text-lg';
@@ -2998,7 +3000,7 @@ function PrinterCard({
   const getSpacing = () => {
     switch (cardSize) {
       case 1: return 'mb-2';
-      case 2: return 'mb-4';
+      case 2: return 'mb-2';
       case 3: return 'mb-5';
       case 4: return 'mb-6';
       default: return 'mb-4';
@@ -3161,7 +3163,7 @@ function PrinterCard({
         <MoreVertical className="w-4 h-4" />
       </Button>
       {showMenu && (
-        <div className="absolute left-0 bottom-full mb-2 w-48 bg-bambu-dark-secondary border border-bambu-dark-tertiary rounded-lg shadow-lg z-20">
+        <div className={`absolute w-48 bg-bambu-dark-secondary border border-bambu-dark-tertiary rounded-lg shadow-lg z-20 ${cardSize === 2 ? 'right-0 top-full mt-2' : 'left-0 bottom-full mb-2'}`}>
           <button
             className={`w-full px-4 py-2 text-left text-sm flex items-center gap-2 ${
               hasPermission('printers:update')
@@ -3280,7 +3282,7 @@ function PrinterCard({
     <Card
       id={`printer-card-${printer.id}`}
       data-printer-status={statusBucket}
-      className={`relative flex h-full flex-col transition-colors ${getPrinterCardChromeClass(statusBucket)} ${isSelected ? 'ring-2 ring-bambu-green' : ''} ${selectionMode || viewMode === 'compact' ? 'cursor-pointer' : ''}`}
+      className={`relative flex ${cardSize === 2 ? 'h-auto' : 'h-full'} flex-col transition-colors ${getPrinterCardChromeClass(statusBucket)} ${isSelected ? 'ring-2 ring-bambu-green' : ''} ${selectionMode || viewMode === 'compact' ? 'cursor-pointer' : ''}`}
       onClick={handleCardClick}
       onDragEnter={handleCardDragEnter}
       onDragOver={handleCardDragOver}
@@ -3331,12 +3333,12 @@ function PrinterCard({
           </div>
         </div>
       )}
-      <CardContent className={`${cardSize >= 3 ? 'p-5' : ''} flex flex-1 flex-col`}>
+      <CardContent className={`${cardSize === 2 ? '!p-3' : cardSize >= 3 ? 'p-5' : ''} flex ${cardSize === 2 ? '' : 'flex-1'} flex-col`}>
         {/* Header */}
         <div className={getSpacing()}>
           {/* Top row: Image, Name, Menu */}
           <div className="flex items-start justify-between gap-2">
-            <div className="flex items-center gap-3 min-w-0 flex-1">
+            <div className={`flex items-center min-w-0 flex-1 ${cardSize === 2 ? 'gap-2' : 'gap-3'}`}>
               {/* Printer Model Image */}
               <img
                 src={getPrinterImage(printer.model)}
@@ -3347,7 +3349,7 @@ function PrinterCard({
                 <div className="flex items-center justify-between gap-2">
                   <div className="flex min-w-0 items-center gap-2">
                     <h3 className={`font-semibold text-white ${getTitleSize()}`}>{printer.name}</h3>
-                    {/* Connection indicator dot for compact mode */}
+                    {/* Connection indicator dot for compact (S) mode */}
                     {viewMode === 'compact' && (() => {
                       const hmsErrors = status?.connected && status.hms_errors ? filterKnownHMSErrors(status.hms_errors) : [];
                       const hasSevere = hmsErrors.some(e => e.severity <= 2);
@@ -3371,6 +3373,15 @@ function PrinterCard({
                         />
                       );
                     })()}
+                    {cardSize === 2 && printer.is_active === false && (
+                      <span
+                        className="flex items-center gap-1 px-1.5 py-0.5 rounded-full text-[10px] bg-amber-100 dark:bg-amber-500/20 text-amber-700 dark:text-amber-400"
+                        title={t('printers.maintenance.subtitle')}
+                      >
+                        <Wrench className="w-3 h-3" />
+                        {t('printers.maintenance.pillLabel')}
+                      </span>
+                    )}
                   </div>
                   {viewMode === 'compact' && showClearPlateButton && (
                     <button
@@ -3389,9 +3400,8 @@ function PrinterCard({
                     </button>
                   )}
                 </div>
-                <p className="text-sm text-bambu-gray">
+                <p className={`${cardSize === 2 ? 'text-[11px] leading-tight' : 'text-sm'} text-bambu-gray`}>
                   {printer.model || 'Unknown Model'}
-                  {/* Nozzle Info - only in expanded */}
                   {viewMode === 'expanded' && status?.nozzles && status.nozzles[0]?.nozzle_diameter && (
                     <span className="ml-1.5 text-bambu-gray" title={status.nozzles[0].nozzle_type || 'Nozzle'}>
                       • {status.nozzles[0].nozzle_diameter}mm
@@ -3406,10 +3416,83 @@ function PrinterCard({
                 </p>
               </div>
             </div>
+            {cardSize === 2 && printerActionsMenu}
           </div>
 
-          {/* Badges row - only in expanded mode */}
-          {viewMode === 'expanded' && (
+          {/* Medium: one wrapping row of small pills — Connected + wifi/ethernet + HMS if needed */}
+          {viewMode === 'expanded' && cardSize === 2 && printer.is_active !== false && (
+            <div className="mt-1.5 flex flex-wrap items-center gap-1">
+              <span
+                className={`flex items-center gap-1 px-1.5 py-0.5 rounded-full text-[10px] ${
+                  status?.connected
+                    ? 'bg-status-ok/20 text-status-ok'
+                    : 'bg-status-error/20 text-status-error'
+                }`}
+              >
+                {status?.connected ? (
+                  <Link className="w-2.5 h-2.5" />
+                ) : (
+                  <Unlink className="w-2.5 h-2.5" />
+                )}
+                {status?.connected ? t('printers.connection.connected') : t('printers.connection.offline')}
+              </span>
+              {status?.connected && status?.wired_network && (
+                <span
+                  className="flex items-center gap-1 px-1.5 py-0.5 rounded-full text-[10px] bg-status-ok/20 text-status-ok"
+                  title={t('printers.connection.ethernet', 'Ethernet')}
+                >
+                  <Cable className="w-2.5 h-2.5" />
+                  {t('printers.connection.ethernet', 'Ethernet')}
+                </span>
+              )}
+              {status?.connected && !status?.wired_network && wifiSignal != null && (
+                <span
+                  className={`flex items-center gap-1 px-1.5 py-0.5 rounded-full text-[10px] ${
+                    wifiSignal >= -60
+                      ? 'bg-status-ok/20 text-status-ok'
+                      : wifiSignal >= -70
+                      ? 'bg-status-warning/20 text-status-warning'
+                      : 'bg-status-error/20 text-status-error'
+                  }`}
+                  title={`WiFi: ${wifiSignal} dBm - ${t(getWifiStrength(wifiSignal).labelKey)}`}
+                >
+                  <Signal className="w-2.5 h-2.5" />
+                  {wifiSignal}dBm
+                </span>
+              )}
+              {status?.connected && (() => {
+                const knownErrors = status.hms_errors ? filterKnownHMSErrors(status.hms_errors) : [];
+                if (knownErrors.length === 0) return null;
+                return (
+                  <button
+                    onClick={() => setShowHMSModal(true)}
+                    className={`flex items-center gap-1 px-1.5 py-0.5 rounded-full text-[10px] cursor-pointer hover:opacity-80 transition-opacity ${
+                      knownErrors.some(e => e.severity <= 2)
+                        ? 'bg-status-error/20 text-status-error'
+                        : 'bg-status-warning/20 text-status-warning'
+                    }`}
+                    title={t('printers.clickToViewHmsErrors')}
+                  >
+                    <AlertTriangle className="w-2.5 h-2.5" />
+                    {knownErrors.length}
+                  </button>
+                );
+              })()}
+              {!status?.connected && (
+                <button
+                  onClick={() => setShowDiagnostic(true)}
+                  className="flex items-center gap-1 px-1.5 py-0.5 rounded-full text-[10px] cursor-pointer bg-bambu-dark-tertiary text-bambu-gray hover:text-white transition-colors"
+                  title={t('diagnostic.runButton')}
+                >
+                  <Stethoscope className="w-2.5 h-2.5" />
+                  {t('diagnostic.runButton')}
+                </button>
+              )}
+            </div>
+          )}
+
+          {/* Badges row - L/XL only */}
+          {viewMode === 'expanded' && cardSize !== 2 && (
             <div className="mt-2">
               <div className="flex flex-wrap items-center gap-2">
               {/* Connection status badge (or Maintenance pill when out of service).
@@ -3690,6 +3773,23 @@ function PrinterCard({
                   {t('printers.maintenance.pillLabel')}
                 </span>
               </div>
+            ) : cardSize === 2 ? (
+              <div className="mt-1 flex items-center gap-2 rounded-lg bg-amber-50 dark:bg-amber-500/10 border border-amber-300 dark:border-amber-500/30 px-2 py-1">
+                <Wrench className="w-3.5 h-3.5 text-amber-600 dark:text-amber-400 shrink-0" />
+                <p className="min-w-0 flex-1 truncate text-xs text-amber-700 dark:text-amber-400 font-medium">
+                  {t('printers.maintenance.title')}
+                </p>
+                <Button
+                  variant="secondary"
+                  size="sm"
+                  disabled={maintenanceMutation.isPending || !hasPermission('printers:update')}
+                  onClick={() => maintenanceMutation.mutate(true)}
+                  title={!hasPermission('printers:update') ? t('printers.permission.noEdit') : undefined}
+                  className="!h-6 !min-h-6 !px-2 !py-0 text-[11px]"
+                >
+                  {t('printers.maintenance.exitButton')}
+                </Button>
+              </div>
             ) : (
               <>
                 <div className="flex items-center gap-2 mb-2">
@@ -3791,6 +3891,64 @@ function PrinterCard({
                       )}
                     </div>
                   </>
+                );
+              })()
+            ) : cardSize === 2 ? (
+              /* Medium: compact printer status with cover — not the S progress bar */
+              (() => {
+                const isActivePrint = !!(status.current_print && (status.state === 'RUNNING' || status.state === 'PAUSE'));
+                const showRetainedPrint = !isActivePrint && needsPlateClear && retainedPrintJob;
+                const printName = isActivePrint ? activePrintName : showRetainedPrint ? retainedPrintJob.name : null;
+                const coverUrl = isActivePrint ? status.cover_url : showRetainedPrint ? retainedPrintJob.coverUrl : null;
+                const progress = isActivePrint ? (status.progress || 0) : showRetainedPrint ? 100 : 0;
+                const hasEta = isActivePrint && status.remaining_time != null && status.remaining_time > 0;
+                return (
+                  <div className="mt-1.5 p-1.5 bg-bambu-dark rounded-[10px] overflow-hidden">
+                    <div className="flex items-stretch gap-2">
+                      <div data-testid="printer-print-cover">
+                        <CoverImage
+                          url={coverUrl}
+                          printName={printName || undefined}
+                          className="w-14 h-14"
+                        />
+                      </div>
+                      <div className="flex min-w-0 flex-1 flex-col justify-between py-0.5">
+                        <p className="min-w-0 truncate text-xs text-bambu-gray">
+                          {getStatusDisplay(status.state, status.stg_cur_name)}
+                        </p>
+                        <p className={`min-w-0 truncate text-xs ${printName ? 'text-white' : 'text-bambu-gray'}`}>
+                          {printName || t('printers.noActiveJob', 'No active job')}
+                        </p>
+                        <div className="flex items-center gap-2">
+                          <div className="h-1.5 min-w-0 flex-1 overflow-hidden rounded-full bg-bambu-dark-tertiary">
+                            <div
+                              className={`${isActivePrint ? (status.state === 'PAUSE' ? 'bg-status-warning' : 'bg-bambu-green') : showRetainedPrint ? 'bg-bambu-green' : 'bg-bambu-dark-tertiary'} h-1.5 rounded-full transition-all`}
+                              style={{ width: `${Math.max(0, Math.min(100, progress))}%` }}
+                            />
+                          </div>
+                          <span className={`w-9 shrink-0 text-right text-[11px] leading-none tabular-nums ${isActivePrint || showRetainedPrint ? 'text-white' : 'text-bambu-gray'}`}>
+                            {isActivePrint || showRetainedPrint ? `${Math.round(progress)}%` : '---%'}
+                          </span>
+                        </div>
+                        <div className="flex min-h-[14px] items-center gap-2 overflow-hidden text-[11px] leading-none text-bambu-gray">
+                          {hasEta && (
+                            <>
+                              <span className="flex shrink-0 items-center gap-1">
+                                <Clock className="w-3 h-3" />
+                                {formatDuration(status.remaining_time! * 60)}
+                              </span>
+                              <span
+                                className="shrink-0 font-medium text-bambu-green"
+                                title={t('printers.estimatedCompletion')}
+                              >
+                                ETA {formatETA(status.remaining_time!, timeFormat, t)}
+                              </span>
+                            </>
+                          )}
+                        </div>
+                      </div>
+                    </div>
+                  </div>
                 );
               })()
             ) : (
@@ -3917,8 +4075,8 @@ function PrinterCard({
               </>
             )}
 
-            {/* Temperatures */}
-            {status.temperatures && viewMode === 'expanded' && (() => {
+            {/* Temperatures — L/XL full tiles+fans; medium is the same chips, one compact row, no fans */}
+            {status.temperatures && viewMode === 'expanded' && cardSize >= 2 && (() => {
               // Use actual heater states from MQTT stream
               const nozzleHeating = status.temperatures.nozzle_heating || status.temperatures.nozzle_2_heating || false;
               const bedHeating = status.temperatures.bed_heating || false;
@@ -3941,7 +4099,7 @@ function PrinterCard({
               const singleNozzleSlot = rightNozzleSlot || leftNozzleSlot;
               const canUseStatusControls = status.connected && hasPermission('printers:control');
               const statusControlTitle = canUseStatusControls ? undefined : t('printers.permission.noControl');
-              const statusControlClass = `relative text-center px-2 py-1.5 bg-bambu-dark rounded-lg flex-1 flex flex-col justify-center items-center transition-colors ${
+              const statusControlClass = `relative text-center ${cardSize === 2 ? 'px-1 py-1' : 'px-2 py-1.5'} bg-bambu-dark rounded-lg flex-1 flex flex-col justify-center items-center transition-colors ${
                 canUseStatusControls ? 'cursor-pointer hover:bg-bambu-dark-tertiary' : 'cursor-default opacity-80'
               }`;
               // Chamber fan only exists on enclosed Bambu models. Open-frame
@@ -4019,13 +4177,17 @@ function PrinterCard({
 
               return (
                 <>
-                  <div className="mt-2 flex items-stretch gap-1.5 flex-wrap">
+                  <div
+                    className={`${cardSize === 2 ? 'mt-1.5 flex items-stretch gap-1' : 'mt-2 flex items-stretch gap-1.5 flex-wrap'}`}
+                    data-testid={cardSize === 2 ? 'printer-medium-temps' : undefined}
+                  >
                     {/* Nozzle temp - combined for dual nozzle */}
                     <div
                       className={statusControlClass}
                       title={statusControlTitle}
                       onClick={() => canUseStatusControls && setStatusControlMenu(statusControlMenu === 'nozzle-temp' ? null : 'nozzle-temp')}
                     >
+                      {cardSize !== 2 && (
                       <button
                         type="button"
                         className="absolute top-0.5 right-0.5 p-0.5 rounded text-bambu-gray hover:text-white hover:bg-white/10 transition-colors"
@@ -4037,7 +4199,8 @@ function PrinterCard({
                       >
                         <LineChartIcon className="w-2.5 h-2.5" />
                       </button>
-                      <HeaterThermometer className="w-3.5 h-3.5 mb-0.5" color="text-orange-400" isHeating={nozzleHeating} />
+                      )}
+                      <HeaterThermometer className={`${cardSize === 2 ? 'w-3 h-3' : 'w-3.5 h-3.5'} mb-0.5`} color="text-orange-400" isHeating={nozzleHeating} />
                       {status.temperatures.nozzle_2 !== undefined ? (
                         <>
                           <p className="text-[9px] text-bambu-gray">L / R</p>
@@ -4112,6 +4275,7 @@ function PrinterCard({
                       title={statusControlTitle}
                       onClick={() => canUseStatusControls && setStatusControlMenu(statusControlMenu === 'bed-temp' ? null : 'bed-temp')}
                     >
+                      {cardSize !== 2 && (
                       <button
                         type="button"
                         className="absolute top-0.5 right-0.5 p-0.5 rounded text-bambu-gray hover:text-white hover:bg-white/10 transition-colors"
@@ -4123,7 +4287,8 @@ function PrinterCard({
                       >
                         <LineChartIcon className="w-2.5 h-2.5" />
                       </button>
-                      <HeaterThermometer className="w-3.5 h-3.5 mb-0.5" color="text-blue-400" isHeating={bedHeating} />
+                      )}
+                      <HeaterThermometer className={`${cardSize === 2 ? 'w-3 h-3' : 'w-3.5 h-3.5'} mb-0.5`} color="text-blue-400" isHeating={bedHeating} />
                       <p className="text-[9px] text-bambu-gray">{t('printers.temperatures.bed')}</p>
                       <p className="text-[11px] text-white">
                         {Math.round(status.temperatures.bed || 0)}°C
@@ -4155,6 +4320,7 @@ function PrinterCard({
                             ? () => canUseStatusControls && setStatusControlMenu(statusControlMenu === 'chamber-temp' ? null : 'chamber-temp')
                             : undefined}
                         >
+                          {cardSize !== 2 && (
                           <button
                             type="button"
                             className="absolute top-0.5 right-0.5 p-0.5 rounded text-bambu-gray hover:text-white hover:bg-white/10 transition-colors"
@@ -4166,7 +4332,8 @@ function PrinterCard({
                           >
                             <LineChartIcon className="w-2.5 h-2.5" />
                           </button>
-                          <HeaterThermometer className="w-3.5 h-3.5 mb-0.5" color="text-green-400" isHeating={chamberHeating} />
+                          )}
+                          <HeaterThermometer className={`${cardSize === 2 ? 'w-3 h-3' : 'w-3.5 h-3.5'} mb-0.5`} color="text-green-400" isHeating={chamberHeating} />
                           <p className="text-[9px] text-bambu-gray">{t('printers.temperatures.chamber')}</p>
                           <p className="text-[11px] text-white">
                             {Math.round(status.temperatures.chamber || 0)}°C
@@ -4187,7 +4354,7 @@ function PrinterCard({
                       );
                     })()}
                     {/* Active nozzle indicator for dual-nozzle printers */}
-                    {isDualNozzle && (
+                    {cardSize !== 2 && isDualNozzle && (
                       <DualNozzleHoverCard
                         leftSlot={leftNozzleSlot}
                         rightSlot={rightNozzleSlot}
@@ -4231,10 +4398,11 @@ function PrinterCard({
                       </DualNozzleHoverCard>
                     )}
                     {/* H2C nozzle rack (tool-changer dock) — only show when rack nozzles exist (IDs >= 2) */}
-                    {status.nozzle_rack && status.nozzle_rack.some(s => s.id >= 2) && (
+                    {cardSize !== 2 && status.nozzle_rack && status.nozzle_rack.some(s => s.id >= 2) && (
                       <NozzleRackCard slots={status.nozzle_rack} filamentInfo={filamentInfo} />
                     )}
                   </div>
+                  {cardSize !== 2 && (
                   <div className="mt-2 flex items-center gap-1.5">
                     {fanItems.map(({ key, label, value, Icon, activeClass }) => {
                       const active = value > 0;
@@ -4267,6 +4435,7 @@ function PrinterCard({
                       );
                     })}
                   </div>
+                  )}
                 </>
               );
             })()}
@@ -4276,7 +4445,7 @@ function PrinterCard({
                 type="button"
                 onClick={() => clearPlateMutation.mutate()}
                 disabled={clearPlateMutation.isPending || !hasPermission('printers:clear_plate')}
-                className="mt-2 w-full inline-flex items-center justify-center gap-2 px-3 py-1.5 rounded-lg bg-yellow-100 dark:bg-yellow-500/20 border border-yellow-300 dark:border-yellow-400/40 text-yellow-700 dark:text-yellow-400 hover:bg-yellow-500/30 transition-colors text-xs font-medium disabled:opacity-50"
+                className={`${cardSize === 2 ? 'mt-1 py-1 text-[11px]' : 'mt-2 py-1.5 text-xs'} w-full inline-flex items-center justify-center gap-2 px-3 rounded-lg bg-yellow-100 dark:bg-yellow-500/20 border border-yellow-300 dark:border-yellow-400/40 text-yellow-700 dark:text-yellow-400 hover:bg-yellow-500/30 transition-colors font-medium disabled:opacity-50`}
                 title={!hasPermission('printers:clear_plate') ? t('printers.permission.noControl') : t('printers.plateStatus.markCleared')}
               >
                 {clearPlateMutation.isPending ? (
@@ -4296,22 +4465,90 @@ function PrinterCard({
               const isPrinting = isRunning || isPaused;
               const isControlBusy = stopPrintMutation.isPending || pausePrintMutation.isPending || resumePrintMutation.isPending;
               const unavailablePrintActionClass = PRINTER_CARD_DISABLED_CONTROL;
-              const iconControlClass = 'flex h-8 w-8 items-center justify-center rounded-lg text-xs font-medium transition-colors disabled:opacity-80 disabled:cursor-not-allowed';
-              const printControlClass = 'flex h-8 w-20 items-center justify-center gap-1 px-2 rounded-lg text-xs font-medium transition-colors';
+              const iconControlClass = cardSize === 2
+                ? 'flex h-7 w-7 items-center justify-center rounded-md text-xs font-medium transition-colors disabled:opacity-80 disabled:cursor-not-allowed'
+                : 'flex h-8 w-8 items-center justify-center rounded-lg text-xs font-medium transition-colors disabled:opacity-80 disabled:cursor-not-allowed';
+              const lIconControlClass = 'flex h-8 w-8 items-center justify-center rounded-lg text-xs font-medium transition-colors disabled:opacity-80 disabled:cursor-not-allowed';
+              const printControlClass = cardSize === 2
+                ? 'flex h-7 items-center justify-center gap-0.5 px-1.5 rounded-md text-[11px] font-medium transition-colors'
+                : 'flex h-8 w-20 items-center justify-center gap-1 px-2 rounded-lg text-xs font-medium transition-colors';
 
               return (
-                <div className="mt-3">
-                  {/* Section Header */}
-                  <div className="flex items-center gap-2 mb-2">
-                    <span className="text-[10px] uppercase tracking-wider text-bambu-gray font-medium">
-                      {t('printers.controls')}
-                    </span>
-                    <div className="flex-1 h-[2px] bg-bambu-dark-tertiary" />
-                  </div>
+                <div className={cardSize === 2 ? 'mt-1.5 space-y-1.5' : 'mt-3'}>
+                  {cardSize !== 2 && (
+                    <div className="flex items-center gap-2 mb-2">
+                      <span className="text-[10px] uppercase tracking-wider text-bambu-gray font-medium">
+                        {t('printers.controls')}
+                      </span>
+                      <div className="flex-1 h-[2px] bg-bambu-dark-tertiary" />
+                    </div>
+                  )}
 
-                  <div className="flex flex-wrap items-start justify-between gap-x-2 gap-y-2">
-                    {/* Left: Secondary controls */}
-                    <div className="flex flex-wrap items-center gap-2 min-w-0">
+                  {cardSize === 2 && (
+                    <div className="flex min-w-0 items-center" data-testid="printer-tracking-swatches">
+                      {(() => {
+                        const groups = trackingAmsSwatchGroups(
+                          trackingAssignments,
+                          (amsData ?? []).filter((ams) => ams.tray.length > 1),
+                        );
+                        if (groups.length === 0) {
+                          return (
+                            <span className="text-[10px] text-bambu-gray">
+                              {t('printers.trackingNone', 'None')}
+                            </span>
+                          );
+                        }
+                        return (
+                          <div className="flex items-center gap-2">
+                            {groups.map((group) => (
+                              <div
+                                key={group.amsId}
+                                className="grid grid-cols-4 gap-1"
+                                data-testid="tracking-ams-group"
+                              >
+                                {group.slots.map((slot) => {
+                                  const slotLabel = t('printers.trackingSlot', 'Slot {{n}}', { n: slot.trayId + 1 });
+                                  if (slot.kind === 'empty') {
+                                    return (
+                                      <span
+                                        key={slot.trayId}
+                                        data-testid="tracking-slot-empty"
+                                        title={`${slotLabel} — ${t('printers.trackingUnassigned', 'Not tracking')}`}
+                                        className="relative flex h-3.5 w-3.5 items-center justify-center rounded-full border border-bambu-gray/60 bg-bambu-dark"
+                                      >
+                                        <X className="h-2.5 w-2.5 text-bambu-gray" strokeWidth={3} />
+                                      </span>
+                                    );
+                                  }
+                                  return (
+                                    <span
+                                      key={slot.trayId}
+                                      data-testid="tracking-slot-tracked"
+                                      title={slot.color_name ? `${slotLabel} — ${slot.color_name}` : slotLabel}
+                                      className="inline-flex"
+                                    >
+                                      <FilamentSwatch
+                                        rgba={trackingHexToRgba(slot.color_hex)}
+                                        extraColors={slot.extra_colors}
+                                        effectType={slot.effect_type}
+                                        subtype={slot.subtype}
+                                        className="h-3.5 w-3.5"
+                                        effectSize="table"
+                                      />
+                                    </span>
+                                  );
+                                })}
+                              </div>
+                            ))}
+                          </div>
+                        );
+                      })()}
+                    </div>
+                  )}
+
+                  <div className={`flex items-center gap-x-2 gap-y-1 ${cardSize === 2 ? 'flex-wrap justify-between' : 'flex-wrap justify-between items-start'}`}>
+                    {/* Light, motion, plate detection, and speed on M and L; airduct stays model-gated */}
+                    <div className={`flex flex-wrap items-center min-w-0 ${cardSize === 2 ? 'gap-1' : 'gap-2'}`}>
                       <button
                         onClick={() => chamberLightMutation.mutate(!status.chamber_light)}
                         disabled={!status.connected || chamberLightMutation.isPending || !hasPermission('printers:control')}
@@ -4549,7 +4786,7 @@ function PrinterCard({
                         <button
                           onClick={handleTogglePlateDetection}
                           disabled={!status.connected || plateDetectionMutation.isPending || !hasPermission('printers:update')}
-                          className={`${iconControlClass} rounded-r-none ${
+                          className={`${lIconControlClass} rounded-r-none ${
                             printer.plate_detection_enabled
                               ? 'bg-green-50 dark:bg-green-500/10 text-green-700 dark:text-green-400 hover:bg-green-500/20'
                               : 'bg-bambu-dark text-bambu-gray hover:bg-bambu-dark-tertiary hover:text-white'
@@ -4587,7 +4824,7 @@ function PrinterCard({
                             data-testid="speed-control"
                             onClick={() => setShowSpeedMenu(showSpeedMenu === printer.id ? null : printer.id)}
                             disabled={!isPrinting || !hasPermission('printers:control')}
-                            className={`${iconControlClass} ${
+                            className={`${lIconControlClass} ${
                               isPrinting
                                 ? 'bg-amber-50 dark:bg-amber-500/10 text-amber-700 dark:text-amber-400 hover:bg-amber-500/20'
                                 : 'bg-bambu-dark text-bambu-gray cursor-not-allowed'
@@ -4630,7 +4867,28 @@ function PrinterCard({
                     </div>
 
                     {/* Right: Print Control Buttons */}
-                    <div className="ml-auto flex items-center justify-end gap-2 flex-shrink-0">
+                    <div className={`ml-auto flex items-center justify-end flex-shrink-0 ${cardSize === 2 ? 'gap-1' : 'gap-2'}`}>
+                      {(() => {
+                        const startUnavailable = isPrinting || isControlBusy || !status.connected || !hasPermission('printers:files');
+                        return (
+                      <button
+                        type="button"
+                        onClick={() => setShowFileManager(true)}
+                        disabled={startUnavailable}
+                        className={`
+                          ${printControlClass}
+                          ${startUnavailable
+                            ? unavailablePrintActionClass
+                            : 'bg-bambu-green/20 text-bambu-green hover:bg-bambu-green/30'
+                          }
+                        `}
+                        title={!hasPermission('printers:files') ? t('printers.permission.noFiles') : t('printers.startPrint', 'Start')}
+                      >
+                        <Play className="w-3 h-3" />
+                        {t('printers.startPrint', 'Start')}
+                      </button>
+                        );
+                      })()}
                       {/* Pause/Resume button */}
                       {(() => {
                         const pauseUnavailable = !isPrinting || isControlBusy || !hasPermission('printers:control');
@@ -4683,7 +4941,7 @@ function PrinterCard({
             })()}
 
             {/* AMS Units - 2-Column Grid Layout */}
-            {(amsData?.length > 0 || status.vt_tray.length > 0) && viewMode === 'expanded' && (() => {
+            {(amsData?.length > 0 || status.vt_tray.length > 0) && viewMode === 'expanded' && cardSize >= 3 && (() => {
               // Separate regular AMS (4-tray) from HT AMS (1-tray)
               const regularAms = amsData.filter(ams => ams.tray.length > 1);
               const htAms = amsData.filter(ams => ams.tray.length === 1);
@@ -5821,7 +6079,7 @@ function PrinterCard({
         {/* Bottom block (power row + action bar). Wrapped together so the
             power row hugs the action bar at the card bottom instead of
             floating up when there's less filament content above. */}
-        {viewMode === 'expanded' && (
+        {viewMode === 'expanded' && cardSize !== 2 && (
           <div className="mt-auto">
         {smartPlug && (
           <div className="pt-3">
@@ -5921,7 +6179,7 @@ function PrinterCard({
         )}
 
         {/* Connection Info & Actions */}
-        <div className="pt-4">
+        <div className={cardSize === 2 ? 'pt-2' : 'pt-4'}>
             <div className="mb-3 h-[2px] bg-bambu-dark-tertiary" />
             <div className="flex items-center justify-between gap-2">
               {printerActionsMenu}
@@ -8378,10 +8636,10 @@ export function PrintersPage() {
   const getGridClasses = () => {
     switch (cardSize) {
       case 1: return 'grid-cols-1 sm:grid-cols-2 md:grid-cols-3 lg:grid-cols-4 xl:grid-cols-5'; // S: many small cards
-      case 2: return 'grid-cols-1 md:grid-cols-2 xl:grid-cols-3'; // M: medium cards
+      case 2: return 'grid-cols-1 sm:grid-cols-2 lg:grid-cols-4'; // M: four across on laptop/desktop
       case 3: return 'grid-cols-1 lg:grid-cols-2'; // L: large cards, 2 columns max
       case 4: return 'grid-cols-1'; // XL: single column, full width
-      default: return 'grid-cols-1 md:grid-cols-2 xl:grid-cols-3';
+      default: return 'grid-cols-1 sm:grid-cols-2 lg:grid-cols-4';
     }
   };
 
@@ -9112,7 +9370,7 @@ export function PrintersPage() {
                   </h2>
                 }
               >
-                <div className={`grid gap-4 ${cardSize >= 3 ? 'gap-6' : ''} ${getGridClasses()}`}>
+                <div className={`grid ${cardSize === 2 ? 'gap-3 items-start' : 'gap-4'} ${cardSize >= 3 ? 'gap-6' : ''} ${getGridClasses()}`}>
                   {groupPrinters.map((printer) => (
                     <PrinterCard
                       key={printer.id}
@@ -9164,7 +9422,7 @@ export function PrintersPage() {
         </div>
       ) : (
         /* Regular grid view */
-        <div className={`grid gap-4 ${cardSize >= 3 ? 'gap-6' : ''} ${getGridClasses()}`}>
+        <div className={`grid ${cardSize === 2 ? 'gap-3 items-start' : 'gap-4'} ${cardSize >= 3 ? 'gap-6' : ''} ${getGridClasses()}`}>
           {sortedPrinters.map((printer) => (
             <PrinterCard
               key={printer.id}

@@ -2,7 +2,7 @@
  * Tests for the PrintersPage component.
  */
 
-import { describe, it, expect, beforeEach } from 'vitest';
+import { describe, it, expect, beforeEach, vi } from 'vitest';
 import { screen, waitFor, fireEvent, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { render } from '../utils';
@@ -69,6 +69,12 @@ const selectToolbarDropdownOption = async (triggerName: RegExp, optionName: RegE
   await user.click(screen.getByRole('button', { name: triggerName }));
   await user.click(await screen.findByRole('button', { name: optionName }));
 };
+
+function useLargePrinterCards() {
+  vi.mocked(localStorage.getItem).mockImplementation((key) =>
+    key === 'printerCardSize' ? '3' : null,
+  );
+}
 
 describe('PrintersPage', () => {
   beforeEach(() => {
@@ -176,6 +182,10 @@ describe('PrintersPage', () => {
   });
 
   describe('temperature display', () => {
+    beforeEach(() => {
+      useLargePrinterCards();
+    });
+
     it('shows nozzle temperature', async () => {
       render(<PrintersPage />);
 
@@ -186,7 +196,7 @@ describe('PrintersPage', () => {
     });
 
     it('sets left and right nozzle temperatures from the nozzle selector', async () => {
-      localStorage.setItem('printerCardSize', '2');
+      localStorage.setItem('printerCardSize', '3');
       const temperatureRequests: Array<{ target: string | null; nozzle: string | null }> = [];
       const dualNozzlePrinter = { ...mockPrinters[0], model: 'H2D', nozzle_count: 2 };
       const dualNozzleStatus = {
@@ -246,6 +256,10 @@ describe('PrintersPage', () => {
   });
 
   describe('fan badges', () => {
+    beforeEach(() => {
+      useLargePrinterCards();
+    });
+
     // Chamber fan only exists on enclosed Bambu models. Open-frame printers
     // (A1, A1 Mini, A2L, P1P) have no chamber fan — the firmware reports
     // big_fan2_speed as 0 there and the widget would be dead UI.
@@ -436,6 +450,10 @@ describe('PrintersPage', () => {
   });
 
   describe('printer actions', () => {
+    beforeEach(() => {
+      useLargePrinterCards();
+    });
+
     it('has action buttons', async () => {
       render(<PrintersPage />);
 
@@ -731,6 +749,10 @@ describe('PrintersPage', () => {
   });
 
   describe('nozzle rack card', () => {
+    beforeEach(() => {
+      useLargePrinterCards();
+    });
+
     const h2cStatus = {
       ...mockPrinterStatus,
       nozzle_rack: [
@@ -842,6 +864,10 @@ describe('PrintersPage', () => {
   });
 
   describe('firmware version badge', () => {
+    beforeEach(() => {
+      useLargePrinterCards();
+    });
+
     const firmwareUpToDate = {
       printer_id: 1,
       current_version: '01.09.00.00',
@@ -1320,7 +1346,9 @@ vi.mock('../../components/FilamentHoverCard', async (importOriginal) => {
 describe('PrintersPage Phase 13 — EmptySlotHoverCard onAssignSpool wiring', () => {
   beforeEach(() => {
     phase13EmptySlotProps.length = 0;
-    localStorage.removeItem('printerCardSize');
+    vi.mocked(localStorage.getItem).mockImplementation((key) =>
+      key === 'printerCardSize' ? '3' : null,
+    );
 
     server.use(
       http.get('/api/v1/printers/', () => HttpResponse.json(mockPrinters)),
@@ -1431,7 +1459,9 @@ describe('PrintersPage Phase 13 — EmptySlotHoverCard onAssignSpool wiring', ()
 describe('PrintersPage Phase 14 — Local-Branch BL-detection symmetry', () => {
   beforeEach(() => {
     phase14HoverCardProps.length = 0;
-    localStorage.removeItem('printerCardSize');
+    vi.mocked(localStorage.getItem).mockImplementation((key) =>
+      key === 'printerCardSize' ? '3' : null,
+    );
 
     server.use(
       http.get('/api/v1/printers/', () => HttpResponse.json(mockPrinters)),

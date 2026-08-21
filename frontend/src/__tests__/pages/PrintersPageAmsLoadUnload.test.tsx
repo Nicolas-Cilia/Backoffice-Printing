@@ -8,7 +8,7 @@
  * appear in document.body before clicking Load / Unload.
  */
 
-import { describe, it, expect, beforeEach } from 'vitest';
+import { describe, it, expect, beforeEach, vi } from 'vitest';
 import { screen, waitFor, fireEvent } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { render } from '../utils';
@@ -100,6 +100,9 @@ async function hoverSlot(slot: Element) {
 
 describe('PrintersPage - AMS load/unload (#891)', () => {
   beforeEach(() => {
+    vi.mocked(localStorage.getItem).mockImplementation((key) =>
+      key === 'printerCardSize' ? '3' : null,
+    );
     server.use(
       http.get('/api/v1/printers/', () => HttpResponse.json([mockPrinter])),
       http.get('/api/v1/queue/', () => HttpResponse.json([])),
