@@ -617,4 +617,73 @@ describe('Filament tracking tab', () => {
       );
     });
   });
+
+  it('asks for confirmation before resetting tracking data and keeps the stock table', async () => {
+    const user = userEvent.setup();
+    let resetCalled = false;
+    server.use(
+      http.get('/api/v1/filament-tracking/plan', () => HttpResponse.json(planPayload())),
+      http.post('/api/v1/filament-tracking/reset-usage', () => {
+        resetCalled = true;
+        return HttpResponse.json({ status: 'ok', deleted: 4 });
+      }),
+    );
+
+    window.history.pushState({}, '', '/inventory?tab=tracking');
+    render(<InventoryPageRouter />);
+
+    await user.click(await screen.findByRole('button', { name: 'Reset tracking' }));
+    expect(await screen.findByRole('heading', { name: 'Reset tracking data?' })).toBeInTheDocument();
+    expect(screen.getByText(/This permanently erases observed usage/)).toBeInTheDocument();
+    expect(screen.getByText(/Named products, on-hand stock/)).toBeInTheDocument();
+    expect(screen.getByText(/This cannot be undone/)).toBeInTheDocument();
+
+    await user.click(screen.getByRole('button', { name: 'Cancel' }));
+    expect(screen.queryByRole('heading', { name: 'Reset tracking data?' })).not.toBeInTheDocument();
+    expect(resetCalled).toBe(false);
+    expect(screen.getByText('White · PLA')).toBeInTheDocument();
+
+    await user.click(screen.getByRole('button', { name: 'Reset tracking' }));
+    await user.click(screen.getByRole('button', { name: 'Erase tracking data' }));
+    await waitFor(() => {
+      expect(resetCalled).toBe(true);
+    });
+    expect(screen.getByText('White · PLA')).toBeInTheDocument();
+  });
+
+  it('invalidates usage queries after resetting tracking data', async () => {
+    const user = userEvent.setup();
+    const queryClient = createTestQueryClient();
+    const invalidateSpy = vi.spyOn(queryClient, 'invalidateQueries');
+    server.use(
+      http.get('/api/v1/filament-tracking/plan', () => HttpResponse.json(planPayload())),
+      http.post('/api/v1/filament-tracking/reset-usage', () =>
+        HttpResponse.json({ status: 'ok', deleted: 1 }),
+      ),
+    );
+
+    window.history.pushState({}, '', '/inventory?tab=tracking');
+    render(
+      <QueryClientProvider client={queryClient}>
+        <FilamentTrackingPage />
+      </QueryClientProvider>,
+    );
+
+    await user.click(await screen.findByRole('button', { name: 'Reset tracking' }));
+    await user.click(screen.getByRole('button', { name: 'Erase tracking data' }));
+
+    await waitFor(() => {
+      const keys = invalidateSpy.mock.calls
+        .map((call) => (call[0] as { queryKey?: readonly unknown[] })?.queryKey?.[0])
+        .filter(Boolean);
+      expect(keys).toEqual(
+        expect.arrayContaining([
+          'filament-tracking-plan',
+          'filament-tracking-events',
+          'filament-tracking-printer-consumption',
+          'filament-tracking-live-rate',
+        ]),
+      );
+    });
+  });
 });

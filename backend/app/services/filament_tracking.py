@@ -10,7 +10,7 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Literal
 
-from sqlalchemy import func, or_, select
+from sqlalchemy import delete, func, or_, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -1890,6 +1890,23 @@ async def ensure_live_job_visible(
     if event:
         await db.flush()
     return event
+
+
+async def reset_usage_history(db: AsyncSession, *, as_of: datetime | None = None) -> int:
+    """Erase observed printer usage without touching product stock or assignments.
+
+    Deletes every ``filament_color_usage`` row (completed prints, live samples,
+    failed/cancelled grams) and restarts calibration clocks so grams/hour,
+    printer totals, and purchase-plan rates start from zero. Named products,
+    on-hand grams, costs, lead times, and slot assignments stay.
+    """
+    now = _as_utc(as_of or datetime.now(timezone.utc))
+    result = await db.execute(delete(FilamentColorUsage))
+    deleted = int(result.rowcount or 0)
+    buckets = list((await db.execute(select(FilamentColorBucket))).scalars().all())
+    for bucket in buckets:
+        bucket.tracking_started_at = now
+    return deleted
 
 
 async def load_plan(db: AsyncSession) -> PurchasePlan:
