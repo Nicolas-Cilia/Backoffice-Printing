@@ -14,7 +14,7 @@ import {
   useSortable,
   verticalListSortingStrategy,
 } from '@dnd-kit/sortable';
-import { CSS } from '@dnd-kit/utilities';
+import { CSS, type Transform } from '@dnd-kit/utilities';
 import { ChevronsUpDown, X } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
 import { getPrinterImage } from '../utils/printer';
@@ -23,10 +23,10 @@ import { Card, CardContent } from './Card';
 import { Button } from './Button';
 
 export function clampArrangeDrag(
-  transform: { x: number; y: number; scaleX?: number; scaleY?: number },
+  transform: Transform,
   dragging: { top: number; bottom: number } | null | undefined,
   list: { top: number; bottom: number } | null | undefined,
-) {
+): Transform {
   if (!dragging || !list) {
     return { ...transform, x: 0 };
   }
