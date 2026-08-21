@@ -38,9 +38,15 @@ interface FileUploadModalProps {
   accept?: string;
   /** Pre-seed the modal with files (e.g. from a page-wide drop) on first mount. */
   initialFiles?: File[];
+  /** Render as a panel without overlay/header — used inside StartPrintModal. */
+  embedded?: boolean;
+  /** Override the small hint under the drop zone (defaults to all file types). */
+  dropZoneHint?: string;
+  /** Allow selecting multiple files. Default true; Start-print uses false. */
+  multiple?: boolean;
 }
 
-export function FileUploadModal({ folderId, onClose, onUploadComplete, onFileUploaded, autoUpload, validateFile, accept, initialFiles }: FileUploadModalProps) {
+export function FileUploadModal({ folderId, onClose, onUploadComplete, onFileUploaded, autoUpload, validateFile, accept, initialFiles, embedded, dropZoneHint, multiple = true }: FileUploadModalProps) {
   const { t } = useTranslation();
   const [files, setFiles] = useState<UploadFile[]>([]);
   const [isDragging, setIsDragging] = useState(false);
@@ -103,6 +109,14 @@ export function FileUploadModal({ folderId, onClose, onUploadComplete, onFileUpl
             setIsUploading(false);
             return;
           }
+          // Start-print / single-file mode: stop after the first successful upload
+          // so we don't orphan additional files while the parent switches panels.
+          if (!multiple) {
+            setIsUploading(false);
+            onUploadComplete();
+            onClose();
+            return;
+          }
         }
       } catch (err) {
         updateFileStatus(uf.file, {
@@ -129,8 +143,12 @@ export function FileUploadModal({ folderId, onClose, onUploadComplete, onFileUpl
 
   const addFiles = (newFiles: File[]) => {
     setUploadError(null);
+    let filesToAdd = newFiles;
+    if (!multiple && filesToAdd.length > 1) {
+      filesToAdd = filesToAdd.slice(0, 1);
+    }
     if (validateFile) {
-      for (const file of newFiles) {
+      for (const file of filesToAdd) {
         const error = validateFile(file);
         if (error) {
           setUploadError(error);
@@ -138,15 +156,15 @@ export function FileUploadModal({ folderId, onClose, onUploadComplete, onFileUpl
         }
       }
     }
-    const toUpload: UploadFile[] = newFiles.map((file) => ({
+    const toUpload: UploadFile[] = filesToAdd.map((file) => ({
       file,
       status: 'pending' as const,
       isZip: file.name.toLowerCase().endsWith('.zip'),
       is3mf: file.name.toLowerCase().endsWith('.3mf'),
     }));
-    setFiles((prev) => [...prev, ...toUpload]);
+    setFiles((prev) => (multiple ? [...prev, ...toUpload] : toUpload));
 
-    if (autoUpload && newFiles.length > 0) {
+    if (autoUpload && filesToAdd.length > 0) {
       uploadFiles(toUpload);
     }
   };
@@ -173,41 +191,49 @@ export function FileUploadModal({ folderId, onClose, onUploadComplete, onFileUpl
   const pendingCount = files.filter((f) => f.status === 'pending').length;
   const allDone = files.length > 0 && pendingCount === 0 && !isUploading;
 
-  return (
-    <div className="fixed inset-0 bg-black/70 flex items-center justify-center z-50 p-4">
-      <div className="bg-bambu-dark-secondary rounded-lg w-full max-w-lg border border-bambu-dark-tertiary">
-        <div className="p-4 border-b border-bambu-dark-tertiary flex items-center justify-between">
-          <h2 className="text-lg font-semibold text-white">{t('fileManager.uploadFiles')}</h2>
-          <button onClick={onClose} className="p-1 hover:bg-bambu-dark rounded">
-            <X className="w-5 h-5 text-bambu-gray" />
-          </button>
-        </div>
-
-        <div className="p-4 space-y-4">
-          {/* Drop Zone */}
+  const dropZone = (
           <div
             onDragOver={handleDragOver}
             onDragLeave={handleDragLeave}
             onDrop={handleDrop}
             onClick={() => fileInputRef.current?.click()}
-            className={`border-2 border-dashed rounded-lg p-8 text-center cursor-pointer transition-colors ${
+            data-testid={embedded ? 'start-print-dropzone' : undefined}
+            className={`border-2 border-dashed rounded-xl ${embedded ? 'p-8 sm:p-10 flex-1 h-full min-h-[14rem] flex flex-col items-center justify-center' : 'p-8'} text-center cursor-pointer transition-colors ${
               isDragging
                 ? 'border-bambu-green bg-bambu-green/10'
-                : 'border-bambu-dark-tertiary hover:border-bambu-green/50'
+                : 'border-bambu-dark-tertiary hover:border-bambu-green/50 bg-bambu-dark-secondary/40'
             }`}
           >
-            <Upload className={`w-10 h-10 mx-auto mb-3 ${isDragging ? 'text-bambu-green' : 'text-bambu-gray'}`} />
+            <Upload className={`${embedded ? 'w-14 h-14' : 'w-10 h-10'} mx-auto mb-3 ${isDragging ? 'text-bambu-green' : 'text-bambu-gray'}`} />
             <p className="text-white font-medium">
               {isDragging ? t('fileManager.dropFilesHere') : t('fileManager.dragDropFiles')}
             </p>
             <p className="text-sm text-bambu-gray mt-1">{t('fileManager.orClickToBrowse')}</p>
-            <p className="text-xs text-bambu-gray/70 mt-2">{t('fileManager.allFileTypesSupported')}</p>
+            <p className="text-xs text-bambu-gray/70 mt-2">{dropZoneHint ?? t('fileManager.allFileTypesSupported')}</p>
+            {embedded && (
+              <Button
+                type="button"
+                className="mt-5"
+                onClick={(e) => {
+                  e.stopPropagation();
+                  fileInputRef.current?.click();
+                }}
+              >
+                <Upload className="w-4 h-4 mr-2" />
+                {t('common.upload')}
+              </Button>
+            )}
           </div>
+  );
+
+  const uploadBody = (
+        <div className={embedded ? 'flex-1 flex flex-col gap-4 min-h-0' : 'p-4 space-y-4'}>
+          {dropZone}
 
           <input
             ref={fileInputRef}
             type="file"
-            multiple
+            multiple={multiple}
             accept={accept}
             className="hidden"
             onChange={handleFileSelect}
@@ -353,11 +379,15 @@ export function FileUploadModal({ folderId, onClose, onUploadComplete, onFileUpl
             </div>
           )}
         </div>
+  );
 
+  const footer = (
         <div className="p-4 border-t border-bambu-dark-tertiary flex justify-end gap-2">
-          <Button variant="secondary" onClick={onClose}>
-            {t('common.cancel')}
-          </Button>
+          {!embedded && (
+            <Button variant="secondary" onClick={onClose}>
+              {t('common.cancel')}
+            </Button>
+          )}
           {!allDone && (
             <Button
               onClick={() => uploadFiles(files)}
@@ -377,6 +407,28 @@ export function FileUploadModal({ folderId, onClose, onUploadComplete, onFileUpl
             </Button>
           )}
         </div>
+  );
+
+  if (embedded) {
+    return (
+      <div className="flex flex-col h-full min-h-0">
+        {uploadBody}
+        {!autoUpload && footer}
+      </div>
+    );
+  }
+
+  return (
+    <div className="fixed inset-0 bg-black/70 flex items-center justify-center z-50 p-4">
+      <div className="bg-bambu-dark-secondary rounded-lg w-full max-w-lg border border-bambu-dark-tertiary">
+        <div className="p-4 border-b border-bambu-dark-tertiary flex items-center justify-between">
+          <h2 className="text-lg font-semibold text-white">{t('fileManager.uploadFiles')}</h2>
+          <button onClick={onClose} className="p-1 hover:bg-bambu-dark rounded">
+            <X className="w-5 h-5 text-bambu-gray" />
+          </button>
+        </div>
+        {uploadBody}
+        {footer}
       </div>
     </div>
   );

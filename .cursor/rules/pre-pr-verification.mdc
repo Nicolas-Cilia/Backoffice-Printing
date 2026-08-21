@@ -1,0 +1,57 @@
+---
+description: Verify merge + local CI before commit/push/PR; watch checks until green.
+alwaysApply: true
+---
+
+# Pre-PR verification
+
+Before **commit** (when user asks to commit/PR) and especially before **push** / **PR create**, complete this gate. Do not skip.
+
+## 1. Fetch & merge-base with `origin/dev`
+
+```bash
+git fetch origin
+```
+
+- Ensure the branch is not behind `origin/dev` in a conflicting way: merge or rebase `origin/dev` as appropriate for the branch.
+- Dry conflict check, e.g. `git merge-tree $(git merge-base HEAD origin/dev) HEAD origin/dev`, or merge `origin/dev` and resolve.
+- **Zero conflict markers** before opening a PR.
+
+## 2. Local CI mirrors (match `.github/workflows/`)
+
+Run what changed; prefer full suite when unsure. Source of truth: `ci.yml` + `security.yml`.
+
+**Frontend** (any `frontend/` change):
+
+```bash
+cd frontend && npm run lint && npx tsc --noEmit && npm run test:run
+```
+
+(`test:run` already runs Vitest + `check:i18n`. Run `npm run build` if build-related.)
+
+**Backend** (any Python / `backend/` / requirements change):
+
+```bash
+ruff check backend/ && ruff format --check backend/
+cd backend && python -m pytest tests/ --tb=short -q
+```
+
+(Use the `ruff==` pin from `requirements-dev.txt`.)
+
+**Leftovers:** if relevant, grep for `DEMO ONLY` / debug-only markers and remove before PR.
+
+Docker / Trivy full scans are optional locally; still treat failing **Trivy** / **Security Audit** / required checks on the PR as blockers (fix or document with evidence).
+
+## 3. After push / PR open: watch checks
+
+```bash
+gh pr checks
+# or: gh run list --branch "$(git branch --show-current)"
+```
+
+- Poll until settled. Do **not** declare done/merge-ready until checks are **green**, OR failures are proven **pre-existing on `dev`** with evidence (link/run on `dev`).
+- Investigate Trivy, Security Audit, and any required check — fix or document.
+
+## 4. PR base
+
+Open PRs against **`dev`**, not `main` — see `.cursor/rules/git-workflow.mdc`.

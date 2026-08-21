@@ -59,6 +59,9 @@ export function PrintModal({
   onClose,
   onSuccess,
   cleanupLibraryAfterDispatch,
+  embedded = false,
+  onSubmittingChange,
+  onFilamentWarningChange,
 }: PrintModalProps) {
   const { t } = useTranslation();
   const queryClient = useQueryClient();
@@ -393,7 +396,6 @@ export function PrintModal({
     queryFn: () => api.getPrinterStatus(effectivePrinterId!),
     enabled: !!effectivePrinterId,
   });
-
   // Single-printer flow: gate prefer_lowest on this printer's backup state.
   // Multi-printer flow gates per-printer inside the hook (different printers
   // may have different backup states), so we pass the raw setting down.
@@ -639,14 +641,32 @@ export function PrintModal({
     }
   }, [settings?.per_printer_mapping_expanded, selectedPrinters, initialExpandApplied, multiPrinterMapping]);
 
-  // Close on Escape key
+  // Close on Escape — skip when embedded (StartPrintModal owns Escape) or submitting.
   useEffect(() => {
+    if (embedded) return;
     const handleKeyDown = (e: KeyboardEvent) => {
       if (e.key === 'Escape' && !isSubmitting) onClose();
     };
     window.addEventListener('keydown', handleKeyDown);
     return () => window.removeEventListener('keydown', handleKeyDown);
-  }, [onClose, isSubmitting]);
+  }, [onClose, isSubmitting, embedded]);
+
+  useEffect(() => {
+    onSubmittingChange?.(isSubmitting);
+  }, [isSubmitting, onSubmittingChange]);
+
+  useEffect(() => {
+    onFilamentWarningChange?.(!!filamentWarningItems && filamentWarningItems.length > 0);
+  }, [filamentWarningItems, onFilamentWarningChange]);
+
+  // Parent shell (StartPrintModal) blocks close while these are true. If we unmount
+  // mid-warning (e.g. Change file) without clearing, X/Escape/backdrop stay dead.
+  useEffect(() => {
+    return () => {
+      onFilamentWarningChange?.(false);
+      onSubmittingChange?.(false);
+    };
+  }, [onFilamentWarningChange, onSubmittingChange]);
 
   const isMultiPlate = platesData?.is_multi_plate ?? false;
   const plates = platesData?.plates ?? [];
@@ -727,6 +747,7 @@ export function PrintModal({
 
   const handleSubmit = async (e?: React.FormEvent, options?: { skipFilamentCheck?: boolean }) => {
     e?.preventDefault();
+    if (isSubmitting) return;
 
     if (
       !options?.skipFilamentCheck &&
@@ -1223,6 +1244,355 @@ export function PrintModal({
     return selectedPrinters.some(id => printers.find(p => p.id === id)?.nozzle_count === 2);
   }, [assignmentMode, targetModel, printers, selectedPrinters, DUAL_NOZZLE_MODELS]);
 
+  const filamentWarningModal = filamentWarningItems && filamentWarningItems.length > 0 ? (
+    <ConfirmModal
+      title={t('printModal.insufficientFilamentTitle')}
+      message={filamentWarningMessage}
+      confirmText={t('printModal.printAnyway')}
+      cancelText={t('common.cancel')}
+      variant="warning"
+      overlayZIndex={embedded ? 'z-[70]' : undefined}
+      isLoading={isSubmitting}
+      onConfirm={() => {
+        if (isSubmitting) return;
+        setFilamentWarningItems(null);
+        void handleSubmit(undefined, { skipFilamentCheck: true });
+      }}
+      onCancel={() => {
+        if (isSubmitting) return;
+        setFilamentWarningItems(null);
+      }}
+    />
+  ) : null;
+
+  const formBody = (
+    <form onSubmit={handleSubmit} className={embedded ? 'p-3 sm:p-4 space-y-4' : 'p-4 space-y-4'}>
+      {/* Archive name — compact when embedded (parent panel shows preview) */}
+      {!embedded && (
+        <p className="text-sm text-bambu-gray">
+          <span className="block text-bambu-gray mb-1">Print Job</span>
+          <span className="text-white font-medium truncate block">{archiveName}</span>
+        </p>
+      )}
+
+      {/* Build-plate badge for the selected (or sole) plate — surfaced
+          early so the user knows which plate to mount before scheduling
+          (#1281). PlateSelector renders its own per-plate badges for
+          multi-plate files; this badge covers the single-plate case and
+          the multi-plate case where exactly one plate is selected. */}
+      {(() => {
+        if (!plates.length) return null;
+        const target = selectedPlate != null
+          ? plates.find(p => p.index === selectedPlate)
+          : plates[0];
+        const bed = getBedTypeInfo(target?.bed_type);
+        if (!bed) return null;
+        return (
+          <p className="flex items-center gap-1.5 text-xs text-bambu-gray" title={bed.label}>
+            <img src={bed.icon} alt="" className="w-4 h-4 object-contain flex-shrink-0" />
+            <span className="truncate">{bed.label}</span>
+          </p>
+        );
+      })()}
+
+      {/* Plate selection - first so users know filament requirements before selecting printers */}
+      <PlateSelector
+        plates={plates}
+        isMultiPlate={isMultiPlate}
+        selectedPlates={selectedPlates}
+        onToggle={(plateIndex) => {
+          setSelectedPlates(prev => {
+            const next = new Set(prev);
+            if (!isEditing) {
+              // Multi-select: toggle the plate
+              if (next.has(plateIndex)) {
+                next.delete(plateIndex);
+              } else {
+                next.add(plateIndex);
+              }
+            } else {
+              // Single-select: replace selection
+              next.clear();
+              next.add(plateIndex);
+            }
+            return next;
+          });
+        }}
+        onSelectAll={!isEditing ? () => setSelectedPlates(new Set(plates.map(p => p.index))) : undefined}
+        onDeselectAll={!isEditing ? () => setSelectedPlates(new Set()) : undefined}
+        multiSelect={!isEditing}
+      />
+
+      {/* Printer selection with per-printer mapping — hidden when printer is pre-selected via props */}
+      {!initialSelectedPrinterIds?.length && (
+        <PrinterSelector
+          printers={printers || []}
+          selectedPrinterIds={selectedPrinters}
+          onMultiSelect={setSelectedPrinters}
+          isLoading={loadingPrinters}
+          allowMultiple={true}
+          showInactive={mode === 'edit-queue-item'}
+          disableBusy={mode !== 'edit-queue-item'}
+          printerMappingResults={multiPrinterMapping.printerResults}
+          // The per-printer tray editor inside the selector maps one filament
+          // list onto each printer. Several plates have several lists, and a
+          // fan-out across printers ships no mapping at all (the scheduler maps
+          // each plate against the printer it picks), so the editor would be
+          // collecting tray choices it then throws away. Withhold its input.
+          filamentReqs={isMultiPlateSelection ? undefined : effectiveFilamentReqs}
+          onAutoConfigurePrinter={multiPrinterMapping.autoConfigurePrinter}
+          onUpdatePrinterConfig={multiPrinterMapping.updatePrinterConfig}
+          assignmentMode={assignmentMode}
+          onAssignmentModeChange={setAssignmentMode}
+          targetModel={targetModel}
+          onTargetModelChange={setTargetModel}
+          targetLocation={targetLocation}
+          onTargetLocationChange={setTargetLocation}
+          slicedForModel={slicedForModel}
+        />
+      )}
+
+      {/* Filament override - shown in model mode when filament requirements are available */}
+      {showFilamentOverride && !isMultiPlateSelection && effectiveFilamentReqs && (
+        <FilamentOverride
+          filamentReqs={effectiveFilamentReqs}
+          availableFilaments={availableFilaments!}
+          overrides={filamentOverrides}
+          onChange={setFilamentOverrides}
+          forceColorMatch={forceColorMatch}
+          onForceColorMatchChange={(slotId, value) =>
+            setForceColorMatch((prev) => ({ ...prev, [slotId]: value }))
+          }
+        />
+      )}
+
+      {/* Filament override, one panel per selected plate. `effectiveFilamentReqs`
+          is keyed on `selectedPlate`, which is null as soon as two plates are
+          picked, so a multi-plate selection used to render this panel from
+          whatever the whole-file query had left in the cache — the union of every
+          plate's filaments, or nothing at all once the plates query was warm and
+          the whole-file query therefore never ran, which is why the section
+          vanished on the second open of the dialog (#2552). */}
+      {showFilamentOverride && isMultiPlateSelection && selectedPlateIds.map((plateId, idx) => {
+        const plate = plates.find((p) => p.index === plateId);
+        const plateReqs = perPlateReqs.get(plateId);
+        if (!plateReqs) return null;
+        return (
+          <FilamentOverride
+            key={plateId}
+            plateLabel={plate?.name || t('printModal.plateN', 'Plate {{n}}', { n: plateId })}
+            showHint={idx === 0}
+            filamentReqs={plateReqs}
+            availableFilaments={availableFilaments!}
+            overrides={filamentOverrides}
+            onChange={setFilamentOverrides}
+            forceColorMatch={forceColorMatch}
+            onForceColorMatchChange={(slotId, value) =>
+              setForceColorMatch((prev) => ({ ...prev, [slotId]: value }))
+            }
+          />
+        );
+      })}
+
+      {/* Compatibility warning when sliced model doesn't match selected printer */}
+      {slicedForModel && assignmentMode === 'printer' && selectedPrinters.length === 1 && (() => {
+        const selectedPrinter = printers?.find(p => p.id === selectedPrinters[0]);
+        if (selectedPrinter?.model && !printerModelsMatch(slicedForModel, selectedPrinter.model) && slicedForModel !== selectedPrinter.model) {
+          return (
+            <div className="p-3 mb-2 bg-yellow-50 dark:bg-yellow-500/10 border border-yellow-300 dark:border-yellow-500/30 rounded-lg flex items-center gap-2">
+              <AlertTriangle className="w-4 h-4 text-yellow-600 dark:text-yellow-400 flex-shrink-0" />
+              <span className="text-sm text-yellow-700 dark:text-yellow-400">
+                File was sliced for {slicedForModel}, but printing on {selectedPrinter.model}
+              </span>
+            </div>
+          );
+        }
+        return null;
+      })()}
+
+      {/* Warning when archive data couldn't be loaded */}
+      {archiveDataMissing && (
+        <div className="flex items-start gap-2 p-3 mb-2 bg-orange-50 dark:bg-orange-500/10 border border-orange-300 dark:border-orange-500/30 rounded-lg text-sm">
+          <AlertCircle className="w-4 h-4 text-orange-600 dark:text-orange-400 mt-0.5 flex-shrink-0" />
+          <p className="text-orange-700 dark:text-orange-400">
+            Archive data unavailable. The source file may have been deleted. Filament mapping is disabled.
+          </p>
+        </div>
+      )}
+
+      {/* A selected plate whose filaments could not be read cannot be mapped and
+          cannot carry its forced colours, so it is not queued silently — say so
+          and hold the button until the plate is deselected. */}
+      {perPlateReqsFailed && (
+        <div className="flex items-start gap-2 p-3 mb-2 bg-orange-50 dark:bg-orange-500/10 border border-orange-300 dark:border-orange-500/30 rounded-lg text-sm">
+          <AlertCircle className="w-4 h-4 text-orange-600 dark:text-orange-400 mt-0.5 flex-shrink-0" />
+          <p className="text-orange-700 dark:text-orange-400">
+            {t(
+              'printModal.plateFilamentsUnreadable',
+              "The filaments of a selected plate could not be read, so it can't be mapped. Deselect it to queue the others.",
+            )}
+          </p>
+        </div>
+      )}
+
+      {/* Filament mapping - only show when single printer selected */}
+      {showFilamentMapping && !archiveDataMissing && selectedPrinters.length === 1 && (
+        <FilamentMapping
+          printerId={effectivePrinterId!}
+          filamentReqs={effectiveFilamentReqs}
+          manualMappings={manualMappings}
+          onManualMappingChange={setManualMappings}
+          defaultExpanded={!!initialSelectedPrinterIds?.length || (settings?.per_printer_mapping_expanded ?? false)}
+          currencySymbol={currencySymbol}
+          defaultCostPerKg={defaultCostPerKg}
+          forceColorMatch={forceColorMatch}
+          onForceColorMatchChange={(slotId, value) =>
+            setForceColorMatch((prev) => ({ ...prev, [slotId]: value }))
+          }
+          archiveAmsMapping={archiveSlicerAmsMapping}
+        />
+      )}
+
+      {/* Filament mapping, one panel per selected plate — each plate is its
+          own print with its own slots, so it gets its own AMS mapping. */}
+      {showPerPlateFilamentMapping && !archiveDataMissing && selectedPlateIds.map((plateId) => {
+        const plate = plates.find((p) => p.index === plateId);
+        const plateReqs = perPlateReqs.get(plateId);
+        if (!plateReqs) return null;
+        return (
+          <FilamentMapping
+            key={plateId}
+            printerId={effectivePrinterId!}
+            plateLabel={plate?.name || t('printModal.plateN', 'Plate {{n}}', { n: plateId })}
+            filamentReqs={plateReqs}
+            manualMappings={manualMappingsByPlate[plateId] ?? {}}
+            onManualMappingChange={(mappings) =>
+              setManualMappingsByPlate((prev) => ({ ...prev, [plateId]: mappings }))
+            }
+            defaultExpanded={false}
+            currencySymbol={currencySymbol}
+            defaultCostPerKg={defaultCostPerKg}
+            forceColorMatch={forceColorMatch}
+            onForceColorMatchChange={(slotId, value) =>
+              setForceColorMatch((prev) => ({ ...prev, [slotId]: value }))
+            }
+            archiveAmsMapping={archiveSlicerAmsMapping}
+          />
+        );
+      })}
+
+      {/* Print options */}
+      {(mode === 'create' || effectivePrinterCount > 0 || (assignmentMode === 'model' && targetModel)) && (
+        <PrintOptionsPanel
+          options={printOptions}
+          onChange={setPrintOptions}
+          defaultExpanded={!!initialSelectedPrinterIds?.length || embedded}
+          showDualNozzleOptions={showDualNozzleOptions}
+          compact={embedded}
+        />
+      )}
+
+      {/* Quantity — create multiple copies (batch). Hidden for multi-printer selection. */}
+      {mode !== 'edit-queue-item' && (assignmentMode === 'model' || selectedPrinters.length <= 1) && (
+        <div className={`flex items-center gap-3 ${embedded ? 'pt-1' : ''}`}>
+          <label htmlFor="printQuantity" className="text-sm text-bambu-gray whitespace-nowrap">
+            {t('queue.quantity', 'Quantity')}
+          </label>
+          <input
+            id="printQuantity"
+            type="number"
+            min={1}
+            max={999}
+            value={quantity}
+            onChange={(e) => setQuantity(Math.max(1, Math.min(999, parseInt(e.target.value) || 1)))}
+            className="w-20 px-2 py-1 text-sm bg-bambu-dark border border-bambu-dark-tertiary rounded text-white focus:outline-none focus:ring-1 focus:ring-bambu-green"
+          />
+          {quantity > 1 && (
+            <span className="text-xs text-bambu-gray">
+              {t('queue.quantityHint', 'Creates {{count}} queue items', { count: quantity })}
+            </span>
+          )}
+        </div>
+      )}
+
+      {/* Schedule options */}
+      <ScheduleOptionsPanel
+        options={scheduleOptions}
+        onChange={setScheduleOptions}
+        dateFormat={settings?.date_format || 'system'}
+        timeFormat={settings?.time_format || 'system'}
+        canControlPrinter={hasPermission('printers:control')}
+        showStagger={!isEditing && assignmentMode === 'printer' && selectedPrinters.length > 1}
+        printerCount={selectedPrinters.length}
+        hasGcodeSnippets={!!settings?.gcode_snippets}
+        compact={embedded}
+      />
+
+      {/* Error message */}
+      {updateQueueMutation.isError && (
+        <div className="mb-4 p-3 bg-red-100 dark:bg-red-500/20 border border-red-500/50 rounded-lg text-sm text-red-700 dark:text-red-400">
+          {(updateQueueMutation.error as Error)?.message || 'Failed to complete operation'}
+        </div>
+      )}
+
+      {/* Waiting for the printer's AMS status: submitting now would map
+          against zero known trays and dispatch to the empty external feed (#2589). */}
+      {assignmentMode === 'printer' && selectedPrinters.length === 1 && printerStatusLoading && (
+        <div className="mb-4 p-3 bg-blue-100 dark:bg-blue-500/20 border border-blue-500/50 rounded-lg text-sm text-blue-700 dark:text-blue-400 flex items-center gap-2">
+          <Loader2 className="w-4 h-4 animate-spin" />
+          {t('printModal.waitingForAmsStatus', {
+            printer: printers?.find((p) => p.id === effectivePrinterId)?.name ?? '',
+          })}
+        </div>
+      )}
+
+      {/* Actions */}
+      <div className="flex gap-3 pt-2 sticky bottom-0 bg-bambu-dark-secondary/95 backdrop-blur-sm pb-1 -mb-1">
+        <Button
+          type="button"
+          variant="secondary"
+          onClick={onClose}
+          className="flex-1"
+          disabled={isSubmitting || (!!filamentWarningItems && filamentWarningItems.length > 0)}
+        >
+          {embedded ? t('printers.changeFile', 'Change file') : t('common.cancel')}
+        </Button>
+        <Button
+          type="submit"
+          disabled={!canSubmit}
+          className="flex-1"
+        >
+          {isPending ? (
+            <>
+              <Loader2 className="w-4 h-4 animate-spin" />
+              {modalConfig.loadingText}
+            </>
+          ) : (
+            <>
+              <SubmitIcon className="w-4 h-4" />
+              {modalConfig.submitText}
+            </>
+          )}
+        </Button>
+      </div>
+    </form>
+  );
+
+  if (embedded) {
+    return (
+      <div
+        data-testid="print-modal-embedded"
+        className="flex h-full min-h-0 flex-col bg-bambu-dark-secondary"
+        onClick={(e) => e.stopPropagation()}
+      >
+        <div className="flex-1 min-h-0 overflow-y-auto">
+          {formBody}
+        </div>
+        {filamentWarningModal}
+      </div>
+    );
+  }
+
   return (
     <div
       className="fixed inset-0 bg-black/70 flex items-center justify-center z-50 p-4"
@@ -1244,323 +1614,11 @@ export function PrintModal({
             </Button>
           </div>
 
-          <form onSubmit={handleSubmit} className="p-4 space-y-4">
-            {/* Archive name */}
-            <p className="text-sm text-bambu-gray">
-              <span className="block text-bambu-gray mb-1">Print Job</span>
-              <span className="text-white font-medium truncate block">{archiveName}</span>
-            </p>
-
-            {/* Build-plate badge for the selected (or sole) plate — surfaced
-                early so the user knows which plate to mount before scheduling
-                (#1281). PlateSelector renders its own per-plate badges for
-                multi-plate files; this badge covers the single-plate case and
-                the multi-plate case where exactly one plate is selected. */}
-            {(() => {
-              if (!plates.length) return null;
-              const target = selectedPlate != null
-                ? plates.find(p => p.index === selectedPlate)
-                : plates[0];
-              const bed = getBedTypeInfo(target?.bed_type);
-              if (!bed) return null;
-              return (
-                <p className="flex items-center gap-1.5 text-xs text-bambu-gray -mt-2" title={bed.label}>
-                  <img src={bed.icon} alt="" className="w-4 h-4 object-contain flex-shrink-0" />
-                  <span className="truncate">{bed.label}</span>
-                </p>
-              );
-            })()}
-
-            {/* Plate selection - first so users know filament requirements before selecting printers */}
-            <PlateSelector
-              plates={plates}
-              isMultiPlate={isMultiPlate}
-              selectedPlates={selectedPlates}
-              onToggle={(plateIndex) => {
-                setSelectedPlates(prev => {
-                  const next = new Set(prev);
-                  if (!isEditing) {
-                    // Multi-select: toggle the plate
-                    if (next.has(plateIndex)) {
-                      next.delete(plateIndex);
-                    } else {
-                      next.add(plateIndex);
-                    }
-                  } else {
-                    // Single-select: replace selection
-                    next.clear();
-                    next.add(plateIndex);
-                  }
-                  return next;
-                });
-              }}
-              onSelectAll={!isEditing ? () => setSelectedPlates(new Set(plates.map(p => p.index))) : undefined}
-              onDeselectAll={!isEditing ? () => setSelectedPlates(new Set()) : undefined}
-              multiSelect={!isEditing}
-            />
-
-            {/* Printer selection with per-printer mapping — hidden when printer is pre-selected via props */}
-            {!initialSelectedPrinterIds?.length && (
-              <PrinterSelector
-                printers={printers || []}
-                selectedPrinterIds={selectedPrinters}
-                onMultiSelect={setSelectedPrinters}
-                isLoading={loadingPrinters}
-                allowMultiple={true}
-                showInactive={mode === 'edit-queue-item'}
-                disableBusy={mode !== 'edit-queue-item'}
-                printerMappingResults={multiPrinterMapping.printerResults}
-                // The per-printer tray editor inside the selector maps one filament
-                // list onto each printer. Several plates have several lists, and a
-                // fan-out across printers ships no mapping at all (the scheduler maps
-                // each plate against the printer it picks), so the editor would be
-                // collecting tray choices it then throws away. Withhold its input.
-                filamentReqs={isMultiPlateSelection ? undefined : effectiveFilamentReqs}
-                onAutoConfigurePrinter={multiPrinterMapping.autoConfigurePrinter}
-                onUpdatePrinterConfig={multiPrinterMapping.updatePrinterConfig}
-                assignmentMode={assignmentMode}
-                onAssignmentModeChange={setAssignmentMode}
-                targetModel={targetModel}
-                onTargetModelChange={setTargetModel}
-                targetLocation={targetLocation}
-                onTargetLocationChange={setTargetLocation}
-                slicedForModel={slicedForModel}
-              />
-            )}
-
-            {/* Filament override - shown in model mode when filament requirements are available */}
-            {showFilamentOverride && !isMultiPlateSelection && effectiveFilamentReqs && (
-              <FilamentOverride
-                filamentReqs={effectiveFilamentReqs}
-                availableFilaments={availableFilaments!}
-                overrides={filamentOverrides}
-                onChange={setFilamentOverrides}
-                forceColorMatch={forceColorMatch}
-                onForceColorMatchChange={(slotId, value) =>
-                  setForceColorMatch((prev) => ({ ...prev, [slotId]: value }))
-                }
-              />
-            )}
-
-            {/* Filament override, one panel per selected plate. `effectiveFilamentReqs`
-                is keyed on `selectedPlate`, which is null as soon as two plates are
-                picked, so a multi-plate selection used to render this panel from
-                whatever the whole-file query had left in the cache — the union of every
-                plate's filaments, or nothing at all once the plates query was warm and
-                the whole-file query therefore never ran, which is why the section
-                vanished on the second open of the dialog (#2552). */}
-            {showFilamentOverride && isMultiPlateSelection && selectedPlateIds.map((plateId, idx) => {
-              const plate = plates.find((p) => p.index === plateId);
-              const plateReqs = perPlateReqs.get(plateId);
-              if (!plateReqs) return null;
-              return (
-                <FilamentOverride
-                  key={plateId}
-                  plateLabel={plate?.name || t('printModal.plateN', 'Plate {{n}}', { n: plateId })}
-                  showHint={idx === 0}
-                  filamentReqs={plateReqs}
-                  availableFilaments={availableFilaments!}
-                  overrides={filamentOverrides}
-                  onChange={setFilamentOverrides}
-                  forceColorMatch={forceColorMatch}
-                  onForceColorMatchChange={(slotId, value) =>
-                    setForceColorMatch((prev) => ({ ...prev, [slotId]: value }))
-                  }
-                />
-              );
-            })}
-
-            {/* Compatibility warning when sliced model doesn't match selected printer */}
-            {slicedForModel && assignmentMode === 'printer' && selectedPrinters.length === 1 && (() => {
-              const selectedPrinter = printers?.find(p => p.id === selectedPrinters[0]);
-              if (selectedPrinter?.model && !printerModelsMatch(slicedForModel, selectedPrinter.model) && slicedForModel !== selectedPrinter.model) {
-                return (
-                  <div className="p-3 mb-2 bg-yellow-50 dark:bg-yellow-500/10 border border-yellow-300 dark:border-yellow-500/30 rounded-lg flex items-center gap-2">
-                    <AlertTriangle className="w-4 h-4 text-yellow-600 dark:text-yellow-400 flex-shrink-0" />
-                    <span className="text-sm text-yellow-700 dark:text-yellow-400">
-                      File was sliced for {slicedForModel}, but printing on {selectedPrinter.model}
-                    </span>
-                  </div>
-                );
-              }
-              return null;
-            })()}
-
-            {/* Warning when archive data couldn't be loaded */}
-            {archiveDataMissing && (
-              <div className="flex items-start gap-2 p-3 mb-2 bg-orange-50 dark:bg-orange-500/10 border border-orange-300 dark:border-orange-500/30 rounded-lg text-sm">
-                <AlertCircle className="w-4 h-4 text-orange-600 dark:text-orange-400 mt-0.5 flex-shrink-0" />
-                <p className="text-orange-700 dark:text-orange-400">
-                  Archive data unavailable. The source file may have been deleted. Filament mapping is disabled.
-                </p>
-              </div>
-            )}
-
-            {/* A selected plate whose filaments could not be read cannot be mapped and
-                cannot carry its forced colours, so it is not queued silently — say so
-                and hold the button until the plate is deselected. */}
-            {perPlateReqsFailed && (
-              <div className="flex items-start gap-2 p-3 mb-2 bg-orange-50 dark:bg-orange-500/10 border border-orange-300 dark:border-orange-500/30 rounded-lg text-sm">
-                <AlertCircle className="w-4 h-4 text-orange-600 dark:text-orange-400 mt-0.5 flex-shrink-0" />
-                <p className="text-orange-700 dark:text-orange-400">
-                  {t(
-                    'printModal.plateFilamentsUnreadable',
-                    "The filaments of a selected plate could not be read, so it can't be mapped. Deselect it to queue the others.",
-                  )}
-                </p>
-              </div>
-            )}
-
-            {/* Filament mapping - only show when single printer selected */}
-            {showFilamentMapping && !archiveDataMissing && selectedPrinters.length === 1 && (
-              <FilamentMapping
-                printerId={effectivePrinterId!}
-                filamentReqs={effectiveFilamentReqs}
-                manualMappings={manualMappings}
-                onManualMappingChange={setManualMappings}
-                defaultExpanded={!!initialSelectedPrinterIds?.length || (settings?.per_printer_mapping_expanded ?? false)}
-                currencySymbol={currencySymbol}
-                defaultCostPerKg={defaultCostPerKg}
-                forceColorMatch={forceColorMatch}
-                onForceColorMatchChange={(slotId, value) =>
-                  setForceColorMatch((prev) => ({ ...prev, [slotId]: value }))
-                }
-                archiveAmsMapping={archiveSlicerAmsMapping}
-              />
-            )}
-
-            {/* Filament mapping, one panel per selected plate — each plate is its
-                own print with its own slots, so it gets its own AMS mapping. */}
-            {showPerPlateFilamentMapping && !archiveDataMissing && selectedPlateIds.map((plateId) => {
-              const plate = plates.find((p) => p.index === plateId);
-              const plateReqs = perPlateReqs.get(plateId);
-              if (!plateReqs) return null;
-              return (
-                <FilamentMapping
-                  key={plateId}
-                  printerId={effectivePrinterId!}
-                  plateLabel={plate?.name || t('printModal.plateN', 'Plate {{n}}', { n: plateId })}
-                  filamentReqs={plateReqs}
-                  manualMappings={manualMappingsByPlate[plateId] ?? {}}
-                  onManualMappingChange={(mappings) =>
-                    setManualMappingsByPlate((prev) => ({ ...prev, [plateId]: mappings }))
-                  }
-                  defaultExpanded={false}
-                  currencySymbol={currencySymbol}
-                  defaultCostPerKg={defaultCostPerKg}
-                  forceColorMatch={forceColorMatch}
-                  onForceColorMatchChange={(slotId, value) =>
-                    setForceColorMatch((prev) => ({ ...prev, [slotId]: value }))
-                  }
-                  archiveAmsMapping={archiveSlicerAmsMapping}
-                />
-              );
-            })}
-
-            {/* Print options */}
-            {(mode === 'create' || effectivePrinterCount > 0 || (assignmentMode === 'model' && targetModel)) && (
-              <PrintOptionsPanel
-                options={printOptions}
-                onChange={setPrintOptions}
-                defaultExpanded={!!initialSelectedPrinterIds?.length}
-                showDualNozzleOptions={showDualNozzleOptions}
-              />
-            )}
-
-            {/* Quantity — create multiple copies (batch). Hidden for multi-printer selection. */}
-            {mode !== 'edit-queue-item' && (assignmentMode === 'model' || selectedPrinters.length <= 1) && (
-              <div className="flex items-center gap-3">
-                <label htmlFor="printQuantity" className="text-sm text-bambu-gray whitespace-nowrap">
-                  {t('queue.quantity', 'Quantity')}
-                </label>
-                <input
-                  id="printQuantity"
-                  type="number"
-                  min={1}
-                  max={999}
-                  value={quantity}
-                  onChange={(e) => setQuantity(Math.max(1, Math.min(999, parseInt(e.target.value) || 1)))}
-                  className="w-20 px-2 py-1 text-sm bg-bambu-dark border border-bambu-dark-tertiary rounded text-white focus:outline-none focus:ring-1 focus:ring-bambu-green"
-                />
-                {quantity > 1 && (
-                  <span className="text-xs text-bambu-gray">
-                    {t('queue.quantityHint', 'Creates {{count}} queue items', { count: quantity })}
-                  </span>
-                )}
-              </div>
-            )}
-
-            {/* Schedule options */}
-            <ScheduleOptionsPanel
-              options={scheduleOptions}
-              onChange={setScheduleOptions}
-              dateFormat={settings?.date_format || 'system'}
-              timeFormat={settings?.time_format || 'system'}
-              canControlPrinter={hasPermission('printers:control')}
-              showStagger={!isEditing && assignmentMode === 'printer' && selectedPrinters.length > 1}
-              printerCount={selectedPrinters.length}
-              hasGcodeSnippets={!!settings?.gcode_snippets}
-            />
-
-            {/* Error message */}
-            {updateQueueMutation.isError && (
-              <div className="mb-4 p-3 bg-red-100 dark:bg-red-500/20 border border-red-500/50 rounded-lg text-sm text-red-700 dark:text-red-400">
-                {(updateQueueMutation.error as Error)?.message || 'Failed to complete operation'}
-              </div>
-            )}
-
-            {/* Waiting for the printer's AMS status: submitting now would map
-                against zero known trays and dispatch to the empty external feed (#2589). */}
-            {assignmentMode === 'printer' && selectedPrinters.length === 1 && printerStatusLoading && (
-              <div className="mb-4 p-3 bg-blue-100 dark:bg-blue-500/20 border border-blue-500/50 rounded-lg text-sm text-blue-700 dark:text-blue-400 flex items-center gap-2">
-                <Loader2 className="w-4 h-4 animate-spin" />
-                {t('printModal.waitingForAmsStatus', {
-                  printer: printers?.find((p) => p.id === effectivePrinterId)?.name ?? '',
-                })}
-              </div>
-            )}
-
-            {/* Actions */}
-            <div className="flex gap-3 pt-2">
-              <Button type="button" variant="secondary" onClick={onClose} className="flex-1" disabled={isSubmitting}>
-                Cancel
-              </Button>
-              <Button
-                type="submit"
-                disabled={!canSubmit}
-                className="flex-1"
-              >
-                {isPending ? (
-                  <>
-                    <Loader2 className="w-4 h-4 animate-spin" />
-                    {modalConfig.loadingText}
-                  </>
-                ) : (
-                  <>
-                    <SubmitIcon className="w-4 h-4" />
-                    {modalConfig.submitText}
-                  </>
-                )}
-              </Button>
-            </div>
-          </form>
+          {formBody}
         </CardContent>
       </Card>
 
-      {filamentWarningItems && filamentWarningItems.length > 0 && (
-        <ConfirmModal
-          title={t('printModal.insufficientFilamentTitle')}
-          message={filamentWarningMessage}
-          confirmText={t('printModal.printAnyway')}
-          cancelText={t('common.cancel')}
-          variant="warning"
-          onConfirm={() => {
-            setFilamentWarningItems(null);
-            void handleSubmit(undefined, { skipFilamentCheck: true });
-          }}
-          onCancel={() => setFilamentWarningItems(null)}
-        />
-      )}
+      {filamentWarningModal}
     </div>
   );
 }
