@@ -54,6 +54,31 @@ docker compose pull
 docker compose up -d
 ```
 
+### In-app updates (optional)
+
+Settings → Updates can pull and recreate the container when the host Docker
+socket is mounted into the app container. This is **off by default** because
+access to `docker.sock` is equivalent to root on the host.
+
+In `docker-compose.yml`, uncomment:
+
+```yaml
+volumes:
+  - /var/run/docker.sock:/var/run/docker.sock
+```
+
+Then `docker compose up -d` again. The entrypoint detects the socket, adds its
+group to the app process, and Settings shows **Install Update** when
+**authentication is also enabled** (docker.sock is equivalent to root on the
+host — in-app update is refused while auth is off).
+
+Without the socket mount (or without auth), Settings still shows the honest
+host command:
+
+`docker compose pull && docker compose up -d`
+
+Home Assistant addons never use this path — Supervisor owns addon updates.
+
 ---
 
 ## 2. Publish a new image (from `main`)

@@ -531,7 +531,7 @@ describe('SettingsPage', () => {
       expect(screen.queryByRole('button', { name: /install update/i })).not.toBeInTheDocument();
     });
 
-    it('shows the docker-compose snippet for Docker (non-HA) deployments', async () => {
+    it('shows the docker-compose snippet for Docker (non-HA) deployments without a socket', async () => {
       await renderWithUpdateCheck({
         update_available: true,
         current_version: '0.2.4',
@@ -542,6 +542,7 @@ describe('SettingsPage', () => {
         published_at: '2099-01-01T00:00:00Z',
         is_docker: true,
         is_ha_addon: false,
+        docker_self_update: false,
         update_method: 'docker',
       });
 
@@ -550,6 +551,26 @@ describe('SettingsPage', () => {
       });
       expect(screen.queryByText(/Home Assistant Supervisor/i)).not.toBeInTheDocument();
       expect(screen.queryByRole('button', { name: /install update/i })).not.toBeInTheDocument();
+      expect(screen.getByText(/docker\.sock/i)).toBeInTheDocument();
+    });
+
+    it('shows Install Update when Docker self-update via socket is available', async () => {
+      await renderWithUpdateCheck({
+        update_available: true,
+        current_version: '0.2.4',
+        latest_version: '0.2.5',
+        release_name: '0.2.5',
+        release_notes: '',
+        release_url: 'https://example.invalid/r',
+        published_at: '2099-01-01T00:00:00Z',
+        is_docker: true,
+        is_ha_addon: false,
+        docker_self_update: true,
+        update_method: 'docker',
+      });
+
+      expect(await screen.findByRole('button', { name: /install update/i })).toBeInTheDocument();
+      expect(screen.queryByText('docker compose pull && docker compose up -d')).not.toBeInTheDocument();
     });
 
     it('shows the installer-download link for Windows installer installs', async () => {
