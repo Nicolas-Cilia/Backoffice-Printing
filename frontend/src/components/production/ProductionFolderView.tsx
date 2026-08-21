@@ -199,12 +199,12 @@ function SlotCard({
         )}
         <div className="mt-auto flex flex-col gap-2 pt-1">
           {canUpload && (
-            <Button onClick={onReplace} className="w-full">
+            <Button variant="secondary" onClick={onReplace} className="w-full">
               {t('fileManager.production.replace')}
             </Button>
           )}
           {onPrint && file && isSlicedFilename(file.filename) && (
-            <Button variant="secondary" onClick={() => onPrint(file)} className="w-full">
+            <Button variant="blue" onClick={() => onPrint(file)} className="w-full">
               <Printer className="w-4 h-4" />
               {t('fileManager.production.print')}
             </Button>
