@@ -666,9 +666,12 @@ function PrinterConsumptionChart({
     .map((row) => `${row.name} ${formatConsumed(row.grams)}`)
     .join(', ');
   return (
-    <div className="flex-1 min-h-[10.5rem] flex items-stretch gap-6 mt-3 overflow-visible">
+    // items-start + fixed chart size: avoid stretch/aspect-square feedback that
+    // blew the page height. No justify-evenly — that spaced legend rows apart
+    // when the grid cell stretched to match "Recent usage".
+    <div className="flex items-start gap-6 mt-3 overflow-visible">
       <div
-        className="relative flex-shrink-0 h-full min-h-[10.5rem] min-w-[10.5rem] max-h-full aspect-square max-w-[50%] overflow-visible printer-share-chart"
+        className="relative flex-shrink-0 size-[10.5rem] overflow-visible printer-share-chart"
         role="img"
         aria-label={totalGrams > 0 ? label : 'No usage recorded'}
       >
@@ -718,11 +721,11 @@ function PrinterConsumptionChart({
           <div className="text-[11px] text-bambu-gray mt-1">{t('inventory.trackingUsed', 'used')}</div>
         </div>
       </div>
-      <ul className="flex-1 min-w-0 flex flex-col justify-evenly py-1">
+      <ul className="flex-1 min-w-0 flex flex-col gap-1.5 py-0.5 max-h-[14rem] overflow-y-auto">
         {rows.map((row) => (
           <li
             key={row.printer_id}
-            className={`flex items-center gap-2 text-sm min-w-0 transition-opacity ${
+            className={`flex items-center gap-2 text-sm leading-5 min-w-0 transition-opacity ${
               hoveredId != null && hoveredId !== row.printer_id ? 'opacity-40' : ''
             }`}
           >
