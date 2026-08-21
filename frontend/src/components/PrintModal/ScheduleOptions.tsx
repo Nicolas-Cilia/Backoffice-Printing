@@ -28,6 +28,7 @@ export function ScheduleOptionsPanel({
   showStagger = false,
   printerCount = 0,
   hasGcodeSnippets = false,
+  compact = false,
 }: ScheduleOptionsProps) {
   const { t } = useTranslation();
   const [dateValue, setDateValue] = useState('');
@@ -123,45 +124,53 @@ export function ScheduleOptionsPanel({
   };
 
   return (
-    <div className="space-y-4">
+    <div className={compact ? 'space-y-3' : 'space-y-4'} data-testid={compact ? 'schedule-options-compact' : undefined}>
       {/* Schedule type */}
       <div>
-        <label className="block text-sm text-bambu-gray mb-2">{t('printModal.whenToPrint')}</label>
-        <div className="flex gap-2">
+        <label className={`block text-bambu-gray mb-2 ${compact ? 'text-[10px] uppercase tracking-wider font-medium' : 'text-sm'}`}>
+          {t('printModal.whenToPrint')}
+        </label>
+        <div className={`flex ${compact ? 'gap-1' : 'gap-2'}`}>
           <button
             type="button"
-            className={`flex-1 px-2 py-2 rounded-lg border text-sm flex items-center justify-center gap-1.5 transition-colors ${
+            className={`flex-1 rounded-lg border flex items-center justify-center transition-colors ${
+              compact ? 'px-1.5 py-1.5 text-xs gap-1' : 'px-2 py-2 text-sm gap-1.5'
+            } ${
               options.scheduleType === 'asap'
                 ? 'bg-bambu-green border-bambu-green text-white'
                 : 'bg-bambu-dark border-bambu-dark-tertiary text-bambu-gray hover:text-white'
             }`}
             onClick={() => handleScheduleTypeChange('asap')}
           >
-            <Clock className="w-4 h-4" />
+            <Clock className={compact ? 'w-3.5 h-3.5' : 'w-4 h-4'} />
             {t('printModal.asap')}
           </button>
           <button
             type="button"
-            className={`flex-1 px-2 py-2 rounded-lg border text-sm flex items-center justify-center gap-1.5 transition-colors ${
+            className={`flex-1 rounded-lg border flex items-center justify-center transition-colors ${
+              compact ? 'px-1.5 py-1.5 text-xs gap-1' : 'px-2 py-2 text-sm gap-1.5'
+            } ${
               options.scheduleType === 'queue'
                 ? 'bg-bambu-green border-bambu-green text-white'
                 : 'bg-bambu-dark border-bambu-dark-tertiary text-bambu-gray hover:text-white'
             }`}
             onClick={() => handleScheduleTypeChange('queue')}
           >
-            <ListOrdered className="w-4 h-4" />
+            <ListOrdered className={compact ? 'w-3.5 h-3.5' : 'w-4 h-4'} />
             {t('printModal.queue')}
           </button>
           <button
             type="button"
-            className={`flex-1 px-2 py-2 rounded-lg border text-sm flex items-center justify-center gap-1.5 transition-colors ${
+            className={`flex-1 rounded-lg border flex items-center justify-center transition-colors ${
+              compact ? 'px-1.5 py-1.5 text-xs gap-1' : 'px-2 py-2 text-sm gap-1.5'
+            } ${
               options.scheduleType === 'scheduled'
                 ? 'bg-bambu-green border-bambu-green text-white'
                 : 'bg-bambu-dark border-bambu-dark-tertiary text-bambu-gray hover:text-white'
             }`}
             onClick={() => handleScheduleTypeChange('scheduled')}
           >
-            <Calendar className="w-4 h-4" />
+            <Calendar className={compact ? 'w-3.5 h-3.5' : 'w-4 h-4'} />
             {t('printModal.schedule')}
           </button>
         </div>
@@ -359,14 +368,16 @@ export function ScheduleOptionsPanel({
         </div>
       )}
 
-      {/* Help text */}
-      <p className="text-xs text-bambu-gray">
-        {options.scheduleType === 'asap'
-          ? t('printModal.helpAsap')
-          : options.scheduleType === 'scheduled'
-          ? t('printModal.helpSchedule')
-          : t('printModal.helpQueue')}
-      </p>
+      {/* Help text — skip in compact side panel to reduce clutter */}
+      {!compact && (
+        <p className="text-xs text-bambu-gray">
+          {options.scheduleType === 'asap'
+            ? t('printModal.helpAsap')
+            : options.scheduleType === 'scheduled'
+            ? t('printModal.helpSchedule')
+            : t('printModal.helpQueue')}
+        </p>
+      )}
     </div>
   );
 }

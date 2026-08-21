@@ -1707,3 +1707,107 @@ describe('printer card status chrome', () => {
     expect(document.getElementById('printer-card-1')?.className).toContain('printer-card-tinted');
   });
 });
+
+describe('start print combined modal', () => {
+  const mockLibraryFolders = [
+    {
+      id: 10,
+      name: 'Functional Parts',
+      parent_id: null,
+      archive_id: null,
+      archive_name: null,
+      is_external: false,
+      external_path: null,
+      external_readonly: false,
+      section_id: null,
+      production_printer_model: null,
+      parameter_tracking: false,
+      file_count: 1,
+      latest_activity_at: null,
+      children: [],
+    },
+  ];
+  const mockLibraryFiles = [
+    {
+      id: 42,
+      folder_id: null,
+      is_external: false,
+      filename: 'benchy.gcode.3mf',
+      file_type: 'gcode.3mf',
+      file_size: 1048576,
+      thumbnail_path: null,
+      print_count: 0,
+      duplicate_count: 0,
+      created_by_id: null,
+      created_by_username: null,
+      created_at: '2024-01-01T00:00:00Z',
+      fs_modified_at: null,
+      print_name: 'Benchy',
+      print_time_seconds: 3600,
+      filament_used_grams: 12,
+      sliced_for_model: 'X1C',
+    },
+  ];
+
+  beforeEach(() => {
+    localStorage.removeItem('printerCardSize');
+    server.use(
+      http.get('/api/v1/printers/', () => HttpResponse.json(mockPrinters)),
+      http.get('/api/v1/printers/:id/status', () => HttpResponse.json(mockPrinterStatus)),
+      http.get('/api/v1/settings/ui-preferences', () =>
+        HttpResponse.json({
+          ams_humidity_good: 40,
+          ams_humidity_fair: 60,
+          ams_temp_good: 30,
+          ams_temp_fair: 35,
+          require_plate_clear: true,
+        }),
+      ),
+      http.get('/api/v1/library/folders', () => HttpResponse.json(mockLibraryFolders)),
+      http.get('/api/v1/library/files', () => HttpResponse.json(mockLibraryFiles)),
+    );
+  });
+
+  it('opens a combined file-manager and upload modal from Print on large cards', async () => {
+    useLargePrinterCards();
+    const user = userEvent.setup();
+    render(<PrintersPage />);
+
+    const card = await waitFor(() => {
+      const el = document.getElementById('printer-card-1');
+      expect(el).toBeTruthy();
+      return el!;
+    });
+    await user.click(await within(card).findByRole('button', { name: 'Print' }));
+
+    const modal = await screen.findByTestId('start-print-modal');
+    expect(modal).toHaveTextContent('Start print on X1 Carbon');
+    expect(within(modal).getByTestId('start-print-library')).toBeInTheDocument();
+    expect(within(modal).getByPlaceholderText(/search files/i)).toBeInTheDocument();
+    expect(within(modal).getByText('Functional Parts')).toBeInTheDocument();
+    expect(within(modal).getByText('Benchy')).toBeInTheDocument();
+    expect(within(modal).getByTestId('start-print-dropzone')).toBeInTheDocument();
+    expect(within(modal).getByText(/Supported: \.gcode, \.gcode\.3mf/i)).toBeInTheDocument();
+  });
+
+  it('opens the same combined modal from Start on medium cards', async () => {
+    vi.mocked(localStorage.getItem).mockImplementation((key) =>
+      key === 'printerCardSize' ? '2' : null,
+    );
+    const user = userEvent.setup();
+    render(<PrintersPage />);
+
+    const card = await waitFor(() => {
+      const el = document.getElementById('printer-card-1');
+      expect(el).toBeTruthy();
+      return el!;
+    });
+    await user.click(await within(card).findByRole('button', { name: 'Start' }));
+
+    const modal = await screen.findByTestId('start-print-modal');
+    expect(modal).toHaveTextContent('Start print on X1 Carbon');
+    expect(within(modal).getByTestId('start-print-library')).toBeInTheDocument();
+    expect(within(modal).getByTestId('start-print-dropzone')).toBeInTheDocument();
+  });
+});
+

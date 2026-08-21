@@ -15,6 +15,7 @@ import { http, HttpResponse } from 'msw';
 import { render } from '../utils';
 import { server } from '../mocks/server';
 import { FilamentMapping } from '../../components/PrintModal/FilamentMapping';
+import { buildAmsUnitViews } from '../../components/PrintModal/amsUnitViews';
 import type { PrinterStatus } from '../../api/client';
 
 const mockFilamentReqs = {
@@ -91,24 +92,23 @@ describe('FilamentMapping — FTS routing', () => {
       />,
     );
 
-    // Both PLA and PETG slots must appear in the dropdown despite ams_extruder_map
-    // being empty and the requirement asking for nozzle 1. Without the FTS guard
-    // the dropdown would render only the "-- Select slot --" placeholder.
+    // Both PLA and PETG slots must appear in the AMS spool grid despite
+    // ams_extruder_map being empty and the requirement asking for nozzle 1.
     await waitFor(() => {
-      expect(screen.getByText(/Bambu PLA/)).toBeInTheDocument();
+      expect(screen.getByRole('button', { name: /Bambu PLA/ })).toBeInTheDocument();
     });
-    expect(screen.getByText(/Bambu PETG/)).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: /Bambu PETG/ })).toBeInTheDocument();
 
     // The slot currently fed into a track gets an [L]/[R] badge. AMS-0 slot 1
     // (global tray ID 1) is in fila_switch.in_slots[1], whose track terminates
-    // at extruder 1 → the LEFT-nozzle short label appears in that option.
-    const petgOption = screen.getByText(/Bambu PETG/);
-    expect(petgOption.textContent).toMatch(/\[L\]/);
+    // at extruder 1 → the LEFT-nozzle short label appears on that spool.
+    const petgSlot = screen.getByRole('button', { name: /Bambu PETG/ });
+    expect(petgSlot.getAttribute('aria-label')).toMatch(/\[L\]/);
 
     // AMS-0 slot 0 (global tray ID 0) is NOT currently fed into any track —
     // FTS routes it on demand, so no badge.
-    const plaOption = screen.getByText(/Bambu PLA/);
-    expect(plaOption.textContent).not.toMatch(/\[[LR]\]/);
+    const plaSlot = screen.getByRole('button', { name: /Bambu PLA/ });
+    expect(plaSlot.getAttribute('aria-label')).not.toMatch(/\[[LR]\]/);
   });
 
   it('renders the per-slot force-color-match checkbox in printer mode (#1717)', async () => {
@@ -231,9 +231,9 @@ describe('FilamentMapping — FTS routing', () => {
     // Both slots must STILL appear so the user can pick them — explicitly the
     // cross-extruder scenario the #1722 fix unblocks.
     await waitFor(() => {
-      expect(screen.getByText(/Bambu PLA/)).toBeInTheDocument();
+      expect(screen.getByRole('button', { name: /Bambu PLA/ })).toBeInTheDocument();
     });
-    expect(screen.getByText(/Bambu PETG/)).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: /Bambu PETG/ })).toBeInTheDocument();
   });
 
   it('renders sub-brand + material-disambiguated colour on the required side (#1718)', async () => {
@@ -339,5 +339,72 @@ describe('FilamentMapping — FTS routing', () => {
     // the grams with it.
     expect(name).not.toBe(grams);
     expect(grams.parentElement).toBe(name.parentElement);
+  });
+
+  it('resolves sparse AMS trays by id only (no index fallback)', () => {
+    const status = createStatus({
+      ams: [
+        {
+          id: 0,
+          // Two trays with non-contiguous ids — length > 1 so not treated as AMS-HT.
+          // Index 0 must not receive tray id 2 via a positional fallback.
+          tray: [
+            { id: 2, tray_type: 'PETG', tray_color: '00FF00', tray_info_idx: 'GFG00', tray_sub_brands: 'Bambu PETG' },
+            { id: 3, tray_type: 'PLA', tray_color: 'FF0000', tray_info_idx: 'GFA00', tray_sub_brands: 'Bambu PLA' },
+          ],
+        },
+      ],
+    });
+    const units = buildAmsUnitViews(status, []);
+    expect(units[0].trays).toHaveLength(4);
+    expect(units[0].trays[0].tray).toBeNull();
+    expect(units[0].trays[1].tray).toBeNull();
+    expect(units[0].trays[2].tray?.tray_type).toBe('PETG');
+    expect(units[0].trays[3].tray?.tray_type).toBe('PLA');
+  });
+
+  it('opens an AMS spool picker from a multi-material mapping chip', async () => {
+    server.use(
+      http.get('/api/v1/printers/:id/status', () =>
+        HttpResponse.json(
+          createStatus({
+            fila_switch: null,
+            ams_extruder_map: {},
+          }),
+        ),
+      ),
+    );
+
+    const onManualMappingChange = vi.fn();
+    render(
+      <FilamentMapping
+        printerId={1}
+        filamentReqs={{
+          filaments: [
+            { slot_id: 1, type: 'PLA', color: '#FF0000', used_grams: 10, used_meters: 3 },
+            { slot_id: 2, type: 'PETG', color: '#00FF00', used_grams: 10, used_meters: 3 },
+          ],
+        }}
+        manualMappings={{}}
+        onManualMappingChange={onManualMappingChange}
+        currencySymbol="$"
+        defaultCostPerKg={0}
+        defaultExpanded
+      />,
+    );
+
+    await waitFor(() => {
+      expect(screen.getByTestId('filament-mapping-summary')).toBeInTheDocument();
+    });
+    expect(screen.getByTestId('ams-spool-overview')).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole('button', { name: /PLA/i }));
+    expect(await screen.findByTestId('ams-material-picker')).toBeInTheDocument();
+    expect(screen.getByText(/Choose which extruder\/color to use for Material 1/i)).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole('button', { name: /Bambu PETG/ }));
+    expect(onManualMappingChange).toHaveBeenCalled();
+    const last = onManualMappingChange.mock.calls.at(-1)?.[0] as Record<number, number>;
+    expect(last[1]).toBe(1); // PETG is tray id 1
   });
 });
