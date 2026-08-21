@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import {
   DndContext,
   PointerSensor,
@@ -6,6 +6,7 @@ import {
   useSensor,
   useSensors,
   type DragEndEvent,
+  type Modifier,
 } from '@dnd-kit/core';
 import {
   SortableContext,
@@ -13,13 +14,30 @@ import {
   useSortable,
   verticalListSortingStrategy,
 } from '@dnd-kit/sortable';
-import { CSS } from '@dnd-kit/utilities';
+import { CSS, type Transform } from '@dnd-kit/utilities';
 import { ChevronsUpDown, X } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
 import { getPrinterImage } from '../utils/printer';
 import { movePrinterInOrder } from '../utils/printerCustomOrder';
 import { Card, CardContent } from './Card';
 import { Button } from './Button';
+
+export function clampArrangeDrag(
+  transform: Transform,
+  dragging: { top: number; bottom: number } | null | undefined,
+  list: { top: number; bottom: number } | null | undefined,
+): Transform {
+  if (!dragging || !list) {
+    return { ...transform, x: 0 };
+  }
+  const yMin = list.top - dragging.top;
+  const yMax = list.bottom - dragging.bottom;
+  return {
+    ...transform,
+    x: 0,
+    y: Math.min(Math.max(transform.y, yMin), yMax),
+  };
+}
 
 export type ArrangePrinterItem = {
   id: number;
@@ -37,9 +55,11 @@ interface ArrangePrintersModalProps {
 
 function SortablePrinterRow({
   printer,
+  position,
   onMoveBy,
 }: {
   printer: ArrangePrinterItem;
+  position: number;
   onMoveBy: (delta: number) => void;
 }) {
   const { t } = useTranslation();
@@ -53,7 +73,7 @@ function SortablePrinterRow({
   } = useSortable({ id: printer.id });
 
   const style = {
-    transform: CSS.Transform.toString(transform),
+    transform: CSS.Transform.toString(transform ? { ...transform, x: 0 } : null),
     transition,
   };
 
@@ -68,13 +88,20 @@ function SortablePrinterRow({
           : 'border-bambu-dark-tertiary bg-bambu-dark'
       }`}
     >
+      <span
+        data-testid="arrange-position"
+        className="inline-flex h-7 min-w-7 shrink-0 items-center justify-center rounded-md border border-bambu-green/40 bg-bambu-green/15 px-1.5 font-mono text-xs font-semibold tabular-nums text-bambu-green"
+        aria-label={t('printers.arrange.position', 'Position {{n}}', { n: position })}
+      >
+        {position}
+      </span>
       <img
         src={getPrinterImage(printer.model)}
         alt=""
         className="h-8 w-8 shrink-0 object-contain"
       />
       <span className="min-w-0 flex-1 truncate text-sm font-medium text-white">
-        #{printer.id} {printer.name}
+        {printer.name}
       </span>
       <button
         type="button"
@@ -110,7 +137,14 @@ export function ArrangePrintersModal({
   const { t } = useTranslation();
   const [items, setItems] = useState<ArrangePrinterItem[]>(printers);
   const itemsRef = useRef(items);
+  const listRef = useRef<HTMLDivElement>(null);
   itemsRef.current = items;
+
+  const restrictToList = useCallback<Modifier>(
+    ({ transform, draggingNodeRect, activeNodeRect }) =>
+      clampArrangeDrag(transform, draggingNodeRect ?? activeNodeRect, listRef.current?.getBoundingClientRect()),
+    [],
+  );
 
   useEffect(() => {
     if (isOpen) setItems(printers);
@@ -154,7 +188,7 @@ export function ArrangePrintersModal({
         role="dialog"
         aria-modal="true"
         aria-labelledby="arrange-printers-title"
-        className="w-full max-w-md max-h-[80vh] flex flex-col"
+        className="w-full max-w-md max-h-[80vh] flex flex-col overflow-hidden"
         onClick={(event) => event.stopPropagation()}
       >
         <CardContent className="flex min-h-0 flex-col p-5">
@@ -172,13 +206,22 @@ export function ArrangePrintersModal({
             </button>
           </div>
 
-          <DndContext sensors={sensors} collisionDetection={closestCenter} onDragEnd={handleDragEnd}>
+          <DndContext
+            sensors={sensors}
+            collisionDetection={closestCenter}
+            modifiers={[restrictToList]}
+            onDragEnd={handleDragEnd}
+          >
             <SortableContext items={items.map((printer) => printer.id)} strategy={verticalListSortingStrategy}>
-              <div className="min-h-0 flex-1 space-y-2 overflow-y-auto pr-1">
-                {items.map((printer) => (
+              <div
+                ref={listRef}
+                className="min-h-0 flex-1 space-y-2 overflow-x-hidden overflow-y-auto pr-1"
+              >
+                {items.map((printer, index) => (
                   <SortablePrinterRow
                     key={printer.id}
                     printer={printer}
+                    position={index + 1}
                     onMoveBy={(delta) => {
                       setItems((prev) => movePrinterInOrder(prev, printer.id, delta));
                     }}
