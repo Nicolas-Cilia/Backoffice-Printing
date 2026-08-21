@@ -8,7 +8,7 @@
  * Standard (100%), Sport (124%), Ludicrous (166%)).
  */
 
-import { describe, it, expect, beforeEach } from 'vitest';
+import { describe, it, expect, beforeEach, vi } from 'vitest';
 import { screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { render } from '../utils';
@@ -72,6 +72,9 @@ const mockIdleStatus = {
 
 describe('PrintersPage - Print Speed Control', () => {
   beforeEach(() => {
+    vi.mocked(localStorage.getItem).mockImplementation((key) =>
+      key === 'printerCardSize' ? '3' : null,
+    );
     server.use(
       http.get('/api/v1/printers/', () => {
         return HttpResponse.json(mockPrinters);
@@ -272,6 +275,27 @@ describe('PrintersPage - Print Speed Control', () => {
       await waitFor(() => {
         expect(capturedMode).toBe(mode);
       });
+    });
+  });
+
+  describe('medium card', () => {
+    beforeEach(() => {
+      vi.mocked(localStorage.getItem).mockImplementation((key) =>
+        key === 'printerCardSize' ? '2' : null,
+      );
+    });
+
+    it('shows the speed-control gauge on cardSize 2', async () => {
+      server.use(
+        http.get('/api/v1/printers/:id/status', () => {
+          return HttpResponse.json(mockIdleStatus);
+        })
+      );
+
+      render(<PrintersPage />);
+
+      expect(await screen.findByTestId('speed-control')).toBeInTheDocument();
+      expect(screen.getByTitle('Plate check disabled - Click to enable')).toBeInTheDocument();
     });
   });
 });

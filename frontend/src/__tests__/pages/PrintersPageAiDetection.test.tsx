@@ -65,7 +65,9 @@ const mockPrinterStatus = {
 
 describe('PrintersPage AI detection badge (#1546)', () => {
   beforeEach(() => {
-    localStorage.removeItem('printerCardSize');
+    vi.mocked(localStorage.getItem).mockImplementation((key) =>
+      key === 'printerCardSize' ? '3' : null,
+    );
 
     server.use(
       http.get('/api/v1/printers/', () => HttpResponse.json(mockPrinters)),

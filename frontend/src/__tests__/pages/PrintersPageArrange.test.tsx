@@ -8,6 +8,7 @@ import userEvent from '@testing-library/user-event';
 import { render } from '../utils';
 import { PrintersPage } from '../../pages/PrintersPage';
 import { ArrangePrintersModal } from '../../components/ArrangePrintersModal';
+import { clampArrangeDrag } from '../../utils/arrangePrinters';
 import {
   applyPrinterCustomOrder,
   mergePrinterCustomOrder,
@@ -94,6 +95,23 @@ describe('printer custom order helpers', () => {
   });
 });
 
+describe('clampArrangeDrag', () => {
+  const row = { top: 100, bottom: 140 };
+  const list = { top: 80, bottom: 200 };
+
+  it('zeros horizontal movement', () => {
+    expect(clampArrangeDrag({ x: 400, y: 10, scaleX: 1, scaleY: 1 }, row, list).x).toBe(0);
+  });
+
+  it('does not let a row travel past the bottom of the list', () => {
+    expect(clampArrangeDrag({ x: 0, y: 500, scaleX: 1, scaleY: 1 }, row, list).y).toBe(60);
+  });
+
+  it('does not let a row travel past the top of the list', () => {
+    expect(clampArrangeDrag({ x: 0, y: -500, scaleX: 1, scaleY: 1 }, row, list).y).toBe(-20);
+  });
+});
+
 describe('ArrangePrintersModal', () => {
   it('opens with printers and applies keyboard reorder on close', async () => {
     const user = userEvent.setup();
@@ -114,11 +132,16 @@ describe('ArrangePrintersModal', () => {
 
     const dialog = screen.getByRole('dialog');
     expect(within(dialog).getByText('Group 1')).toBeInTheDocument();
-    expect(within(dialog).getByText('#1 X1 Carbon')).toBeInTheDocument();
-    expect(within(dialog).getByText('#2 P1S Backup')).toBeInTheDocument();
+    expect(within(dialog).getByText('X1 Carbon')).toBeInTheDocument();
+    expect(within(dialog).getByText('P1S Backup')).toBeInTheDocument();
+    expect(within(screen.getByTestId('arrange-printer-1')).getByTestId('arrange-position')).toHaveTextContent('1');
+    expect(within(screen.getByTestId('arrange-printer-2')).getByTestId('arrange-position')).toHaveTextContent('2');
 
     const handles = within(dialog).getAllByRole('button', { name: 'Reorder' });
     fireEvent.keyDown(handles[0], { key: 'ArrowDown' });
+
+    expect(within(screen.getByTestId('arrange-printer-2')).getByTestId('arrange-position')).toHaveTextContent('1');
+    expect(within(screen.getByTestId('arrange-printer-1')).getByTestId('arrange-position')).toHaveTextContent('2');
 
     await user.click(within(dialog).getByRole('button', { name: 'Done' }));
     expect(onApply).toHaveBeenCalledWith([2, 1]);
@@ -229,13 +252,17 @@ describe('PrintersPage arrange', () => {
 
     const dialog = await screen.findByRole('dialog');
     expect(within(dialog).getByText('Group 1')).toBeInTheDocument();
-    expect(within(dialog).getByText('#2 P1S Backup')).toBeInTheDocument();
-    expect(within(dialog).getByText('#1 X1 Carbon')).toBeInTheDocument();
+    expect(within(dialog).getByText('P1S Backup')).toBeInTheDocument();
+    expect(within(dialog).getByText('X1 Carbon')).toBeInTheDocument();
+    expect(within(screen.getByTestId('arrange-printer-2')).getByTestId('arrange-position')).toHaveTextContent('1');
+    expect(within(screen.getByTestId('arrange-printer-1')).getByTestId('arrange-position')).toHaveTextContent('2');
 
     const handles = within(dialog).getAllByRole('button', { name: 'Reorder' });
     fireEvent.keyDown(handles[0], { key: 'ArrowDown' });
     await waitFor(() => {
       expect(arrangeRowIds(dialog)).toEqual(['arrange-printer-1', 'arrange-printer-2']);
+      expect(within(screen.getByTestId('arrange-printer-1')).getByTestId('arrange-position')).toHaveTextContent('1');
+      expect(within(screen.getByTestId('arrange-printer-2')).getByTestId('arrange-position')).toHaveTextContent('2');
     });
     fireEvent.click(within(dialog).getByRole('button', { name: 'Done' }));
 

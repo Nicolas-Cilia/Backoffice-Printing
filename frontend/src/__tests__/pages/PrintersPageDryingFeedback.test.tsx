@@ -134,6 +134,9 @@ async function startDrying(user: ReturnType<typeof userEvent.setup>) {
 
 describe('PrintersPage - AMS drying feedback (#2533)', () => {
   beforeEach(() => {
+    vi.mocked(localStorage.getItem).mockImplementation((key) =>
+      key === 'printerCardSize' ? '3' : null,
+    );
     mockShowToast.mockClear();
     server.use(
       http.get('/api/v1/printers/', () => HttpResponse.json([mockPrinter])),
@@ -231,6 +234,9 @@ describe('PrintersPage - AMS drying feedback (#2533)', () => {
 
 describe('PrintersPage - screen-only AMS drying (#2533)', () => {
   beforeEach(() => {
+    vi.mocked(localStorage.getItem).mockImplementation((key) =>
+      key === 'printerCardSize' ? '3' : null,
+    );
     mockShowToast.mockClear();
     server.use(
       http.get('/api/v1/printers/', () => HttpResponse.json([mockPrinter])),

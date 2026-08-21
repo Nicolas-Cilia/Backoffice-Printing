@@ -4,7 +4,7 @@
  * FilamentHoverCard `trackingForSlot` — no second assignment source.
  */
 
-import { describe, it, expect, beforeEach } from 'vitest';
+import { describe, it, expect, beforeEach, vi } from 'vitest';
 import { screen, waitFor, fireEvent } from '@testing-library/react';
 import { render } from '../utils';
 import { PrintersPage } from '../../pages/PrintersPage';
@@ -112,7 +112,9 @@ const externalAssignment = {
 
 describe('PrintersPage — FILAMENTS tracking labels', () => {
   beforeEach(() => {
-    localStorage.removeItem('printerCardSize');
+    vi.mocked(localStorage.getItem).mockImplementation((key) =>
+      key === 'printerCardSize' ? '3' : null,
+    );
     server.use(
       http.get('/api/v1/printers/', () => HttpResponse.json([mockPrinter])),
       http.get('/api/v1/printers/:id/status', () => HttpResponse.json(mockStatus)),
@@ -284,5 +286,58 @@ describe('PrintersPage — FILAMENTS tracking labels', () => {
     expect(tile?.className).toContain('ring-1');
     expect(tile?.className).not.toContain('ring-offset');
     expect(tile?.className).not.toContain('ring-2');
+  });
+
+  it('shows tracking color swatches on medium cards instead of the filaments grid', async () => {
+    vi.mocked(localStorage.getItem).mockImplementation((key) =>
+      key === 'printerCardSize' ? '2' : null,
+    );
+    server.use(
+      http.get('/api/v1/filament-tracking/assignments', () =>
+        HttpResponse.json([amsAssignment, externalAssignment]),
+      ),
+    );
+
+    render(<PrintersPage />);
+
+    const row = await screen.findByTestId('printer-tracking-swatches');
+    expect(row).toBeInTheDocument();
+    expect(screen.queryByText('Tracking')).not.toBeInTheDocument();
+    expect(screen.queryByText('Status')).not.toBeInTheDocument();
+    expect(screen.queryByText('Controls')).not.toBeInTheDocument();
+    expect(screen.getAllByTestId('tracking-slot-tracked')).toHaveLength(1);
+    expect(screen.getAllByTestId('tracking-slot-empty')).toHaveLength(3);
+    expect(screen.queryByText('Filaments')).not.toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Start' })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Pause' })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Stop' })).toBeInTheDocument();
+    expect(document.getElementById('printer-card-1')?.className).toContain('h-auto');
+    expect(document.getElementById('printer-card-1')?.className).not.toContain('h-full');
+  });
+
+  it('keeps untracked AMS slots in order as crossed-out circles', async () => {
+    vi.mocked(localStorage.getItem).mockImplementation((key) =>
+      key === 'printerCardSize' ? '2' : null,
+    );
+    server.use(
+      http.get('/api/v1/filament-tracking/assignments', () =>
+        HttpResponse.json([
+          amsAssignment,
+          { ...amsAssignment, id: 4, tray_id: 2, color_name: 'Red', color_hex: 'FF0000' },
+          { ...amsAssignment, id: 5, tray_id: 3, color_name: 'Green', color_hex: '00FF00' },
+        ]),
+      ),
+    );
+
+    render(<PrintersPage />);
+
+    const group = await screen.findByTestId('tracking-ams-group');
+    const slots = group.querySelectorAll('[data-testid="tracking-slot-tracked"], [data-testid="tracking-slot-empty"]');
+    expect([...slots].map((el) => el.getAttribute('data-testid'))).toEqual([
+      'tracking-slot-tracked',
+      'tracking-slot-empty',
+      'tracking-slot-tracked',
+      'tracking-slot-tracked',
+    ]);
   });
 });

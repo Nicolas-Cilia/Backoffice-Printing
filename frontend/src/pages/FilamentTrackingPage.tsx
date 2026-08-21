@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { useTranslation } from 'react-i18next';
-import { Activity, Clock, Edit2, Loader2, Package, Plus, Save, Trash2, TrendingDown, Wallet, X } from 'lucide-react';
+import { Activity, Clock, Edit2, Eraser, Loader2, Package, Plus, Save, Trash2, TrendingDown, Wallet, X } from 'lucide-react';
 import { Pie, PieChart, Cell, Tooltip, ResponsiveContainer } from 'recharts';
 import { api } from '../api/client';
 import type {
@@ -151,6 +151,7 @@ export function FilamentTrackingPage() {
     { mode: 'add' } | { mode: 'edit'; row: FilamentTrackingMaterial } | null
   >(null);
   const [pendingDelete, setPendingDelete] = useState<FilamentTrackingMaterial | null>(null);
+  const [pendingReset, setPendingReset] = useState(false);
 
   const planQuery = useQuery({
     queryKey: ['filament-tracking-plan'],
@@ -256,6 +257,19 @@ export function FilamentTrackingPage() {
     onError: (err: Error) => showToast(err.message, 'error'),
   });
 
+  const resetUsageMutation = useMutation({
+    mutationFn: () => api.resetFilamentTrackingUsage(),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['filament-tracking-plan'] });
+      queryClient.invalidateQueries({ queryKey: ['filament-tracking-events'] });
+      queryClient.invalidateQueries({ queryKey: ['filament-tracking-printer-consumption'] });
+      queryClient.invalidateQueries({ queryKey: ['filament-tracking-live-rate'] });
+      setPendingReset(false);
+      showToast(t('inventory.trackingResetUsageDone', 'Tracking data reset'), 'success');
+    },
+    onError: (err: Error) => showToast(err.message, 'error'),
+  });
+
   const plan = planQuery.data;
   const calibrating = plan?.stage === 'collecting';
   const events = eventsQuery.data ?? [];
@@ -289,10 +303,23 @@ export function FilamentTrackingPage() {
             )}
           </p>
         </div>
-        <Button onClick={() => setStockModal({ mode: 'add' })}>
-          <Plus className="w-4 h-4" />
-          {t('inventory.trackingAddStock', 'Add stock')}
-        </Button>
+        <div className="flex flex-wrap items-center gap-2 shrink-0">
+          <Button
+            variant="danger"
+            onClick={() => setPendingReset(true)}
+            title={t(
+              'inventory.trackingResetUsageHint',
+              'Permanently erase observed usage, printer totals, and grams-per-hour rates. Stock is kept.',
+            )}
+          >
+            <Eraser className="w-4 h-4" />
+            {t('inventory.trackingResetUsage', 'Reset tracking')}
+          </Button>
+          <Button onClick={() => setStockModal({ mode: 'add' })}>
+            <Plus className="w-4 h-4" />
+            {t('inventory.trackingAddStock', 'Add stock')}
+          </Button>
+        </div>
       </div>
 
       <section className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-6 gap-3" aria-label="Filament overview">
@@ -483,6 +510,21 @@ export function FilamentTrackingPage() {
           isLoading={deleteMutation.isPending}
           onConfirm={() => deleteMutation.mutate(pendingDelete.bucket_id)}
           onCancel={() => setPendingDelete(null)}
+        />
+      )}
+
+      {pendingReset && (
+        <ConfirmModal
+          title={t('inventory.trackingResetUsageTitle', 'Reset tracking data?')}
+          message={t(
+            'inventory.trackingResetUsageMessage',
+            'This permanently erases observed usage, printer consumption totals, grams-per-hour rates, and recent print history.\n\nNamed products, on-hand stock, and which products are assigned to printer slots are not changed.\n\nThis cannot be undone.',
+          )}
+          confirmText={t('inventory.trackingResetUsageConfirm', 'Erase tracking data')}
+          variant="danger"
+          isLoading={resetUsageMutation.isPending}
+          onConfirm={() => resetUsageMutation.mutate()}
+          onCancel={() => setPendingReset(false)}
         />
       )}
     </div>
