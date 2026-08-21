@@ -105,7 +105,7 @@ function AmsSpoolGrid({
         const typeOk =
           !highlightCompatibleType ||
           isEmpty ||
-          filamentTypesCompatible(loaded?.type ?? slot.tray?.tray_type, highlightCompatibleType);
+          filamentTypesCompatible(loaded?.type ?? slot.tray?.tray_type ?? undefined, highlightCompatibleType);
         const caption = spoolCaption(loaded, slot.tray);
         const remainingWeight = loaded ? trayRemainingWeightMap.get(loaded.globalTrayId) : null;
         const ftsTarget = ftsInstalled && loaded ? ftsExtruderForSlot(loaded.globalTrayId) : null;
