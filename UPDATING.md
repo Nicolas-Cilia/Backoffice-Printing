@@ -22,6 +22,12 @@ docker compose pull
 docker compose up -d
 ```
 
+**Optional in-app update:** if you mount `/var/run/docker.sock` into the
+container **and** enable authentication (see `docs/docker-workflow.md`),
+Settings → Updates → **Install Update** pulls the published GHCR image and
+recreates the container. Without the socket (or with auth off), Settings only
+shows the compose commands above.
+
 **If your `docker-compose.yml` is older than 0.2.3,** also refresh it from the
 repo — recent releases added `cap_add: NET_BIND_SERVICE`, extra virtual-printer
 ports for bridge mode, and an optional Postgres block:

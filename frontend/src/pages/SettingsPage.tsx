@@ -799,7 +799,10 @@ export function SettingsPage() {
   const applyUpdateMutation = useMutation({
     mutationFn: api.applyUpdate,
     onSuccess: (data) => {
-      if (data.is_ha_addon || data.is_docker || data.is_windows_installer) {
+      if (data.is_ha_addon || data.is_windows_installer) {
+        showToast(data.message, 'error');
+      } else if (data.is_docker && !data.success) {
+        // Socket not mounted (or discovery failed) — host-side instructions.
         showToast(data.message, 'error');
       } else {
         refetchUpdateStatus();
@@ -2655,14 +2658,43 @@ export function SettingsPage() {
                           {t('settings.updateViaHomeAssistant')}
                         </p>
                       </div>
+                    ) : updateCheck?.is_docker && updateCheck?.docker_self_update ? (
+                      <div className="mt-3 space-y-2">
+                        <p className="text-sm text-bambu-gray">
+                          {t(
+                            'settings.dockerSelfUpdateHint',
+                            'Pulls the published image and recreates this container. The app will restart briefly.',
+                          )}
+                        </p>
+                        <Button
+                          onClick={() => applyUpdateMutation.mutate()}
+                          disabled={applyUpdateMutation.isPending}
+                        >
+                          {applyUpdateMutation.isPending ? (
+                            <Loader2 className="w-4 h-4 animate-spin" />
+                          ) : (
+                            <Download className="w-4 h-4" />
+                          )}
+                          {t('settings.installUpdate', 'Install Update')}
+                        </Button>
+                      </div>
                     ) : updateCheck?.is_docker ? (
                       <div className="mt-3 p-3 bg-bambu-dark-tertiary rounded-lg">
                         <p className="text-sm text-bambu-gray mb-2">
-                          {t('settings.updateViaDocker', 'Update via Docker Compose:')}
+                          {t(
+                            'settings.updateViaDocker',
+                            'Docker socket is not mounted. Update on the host with:',
+                          )}
                         </p>
                         <code className="block text-xs bg-bambu-dark p-2 rounded text-bambu-green font-mono">
                           docker compose pull && docker compose up -d
                         </code>
+                        <p className="text-xs text-bambu-gray mt-2">
+                          {t(
+                            'settings.dockerSelfUpdateEnableHint',
+                            'To enable in-app updates, mount /var/run/docker.sock and turn on authentication (see docs/docker-workflow.md).',
+                          )}
+                        </p>
                       </div>
                     ) : updateCheck?.update_method === 'windows_installer' ? (
                       <div className="mt-3 p-3 bg-bambu-dark-tertiary rounded-lg">

@@ -43,14 +43,60 @@ class TestUpdatesAPI:
         with (
             patch("backend.app.api.routes.updates._is_ha_addon", return_value=False),
             patch("backend.app.api.routes.updates._is_docker_environment", return_value=True),
+            patch("backend.app.api.routes.updates.is_docker_socket_available", return_value=False),
         ):
             response = await async_client.post("/api/v1/updates/apply")
         result = response.json()
         assert result["success"] is False
         assert result["is_docker"] is True
         assert result.get("is_ha_addon") is not True
-        # Docker message tells the user to docker compose, not HA.
-        assert "Docker Compose" in result["message"]
+        assert result.get("docker_self_update") is False
+        # Without a socket, tell the user to docker compose (or enable the mount).
+        assert "docker compose pull" in result["message"]
+        assert "docker.sock" in result["message"]
+
+    @pytest.mark.asyncio
+    async def test_apply_update_docker_self_update_starts(self, async_client: AsyncClient):
+        with (
+            patch("backend.app.api.routes.updates._is_ha_addon", return_value=False),
+            patch("backend.app.api.routes.updates._is_docker_environment", return_value=True),
+            patch("backend.app.api.routes.updates.is_docker_socket_available", return_value=True),
+            patch(
+                "backend.app.api.routes.updates.is_auth_enabled",
+                new_callable=AsyncMock,
+                return_value=True,
+            ),
+            patch(
+                "backend.app.api.routes.updates._discover_target_release",
+                new_callable=AsyncMock,
+                return_value="v1.2.0",
+            ),
+            patch("backend.app.api.routes.updates._perform_docker_update", new_callable=AsyncMock) as perform,
+        ):
+            response = await async_client.post("/api/v1/updates/apply")
+        result = response.json()
+        assert result["success"] is True
+        assert result["is_docker"] is True
+        assert result["docker_self_update"] is True
+        perform.assert_awaited_once_with("1.2.0")
+
+    @pytest.mark.asyncio
+    async def test_apply_update_docker_requires_auth(self, async_client: AsyncClient):
+        with (
+            patch("backend.app.api.routes.updates._is_ha_addon", return_value=False),
+            patch("backend.app.api.routes.updates._is_docker_environment", return_value=True),
+            patch("backend.app.api.routes.updates.is_docker_socket_available", return_value=True),
+            patch(
+                "backend.app.api.routes.updates.is_auth_enabled",
+                new_callable=AsyncMock,
+                return_value=False,
+            ),
+        ):
+            response = await async_client.post("/api/v1/updates/apply")
+        result = response.json()
+        assert result["success"] is False
+        assert result["docker_self_update"] is False
+        assert "authentication" in result["message"].lower()
 
     @pytest.mark.asyncio
     async def test_apply_update_ha_addon_rejection(self, async_client: AsyncClient):
@@ -199,12 +245,61 @@ class TestUpdatesAPI:
             patch.object(_httpx, "AsyncClient", _FakeClient),
             patch("backend.app.api.routes.updates._is_ha_addon", return_value=False),
             patch("backend.app.api.routes.updates._is_docker_environment", return_value=True),
+            patch("backend.app.api.routes.updates.is_docker_socket_available", return_value=False),
         ):
             response = await async_client.get("/api/v1/updates/check")
         body = response.json()
         assert body["is_ha_addon"] is False
         assert body["is_docker"] is True
         assert body["update_method"] == "docker"
+        assert body["docker_self_update"] is False
+
+    @pytest.mark.asyncio
+    async def test_check_docker_self_update_when_socket_available(self, async_client: AsyncClient):
+        import httpx as _httpx
+
+        fake_release = {
+            "tag_name": "v999.9.9",
+            "name": "Far Future Release",
+            "body": "",
+            "html_url": "https://example.invalid/r",
+            "published_at": "2099-01-01T00:00:00Z",
+        }
+
+        class _Resp:
+            status_code = 200
+
+            def raise_for_status(self):
+                return None
+
+            def json(self):
+                return [fake_release]
+
+        class _FakeClient:
+            async def __aenter__(self):
+                return self
+
+            async def __aexit__(self, *_):
+                return None
+
+            async def get(self, *_, **__):
+                return _Resp()
+
+        with (
+            patch.object(_httpx, "AsyncClient", _FakeClient),
+            patch("backend.app.api.routes.updates._is_ha_addon", return_value=False),
+            patch("backend.app.api.routes.updates._is_docker_environment", return_value=True),
+            patch("backend.app.api.routes.updates.is_docker_socket_available", return_value=True),
+            patch(
+                "backend.app.api.routes.updates.is_auth_enabled",
+                new_callable=AsyncMock,
+                return_value=True,
+            ),
+        ):
+            response = await async_client.get("/api/v1/updates/check")
+        body = response.json()
+        assert body["update_method"] == "docker"
+        assert body["docker_self_update"] is True
 
     @pytest.mark.asyncio
     async def test_check_backs_off_after_github_rate_limit(self, async_client: AsyncClient):

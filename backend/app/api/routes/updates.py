@@ -13,12 +13,17 @@ from fastapi import APIRouter, BackgroundTasks, Depends
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from backend.app.core.auth import RequirePermissionIfAuthEnabled
+from backend.app.core.auth import RequirePermissionIfAuthEnabled, is_auth_enabled
 from backend.app.core.config import APP_VERSION, GITHUB_REPO, settings
 from backend.app.core.database import get_db
 from backend.app.core.permissions import Permission
 from backend.app.models.settings import Settings
 from backend.app.models.user import User
+from backend.app.services.docker_self_update import (
+    DockerSelfUpdateError,
+    is_docker_socket_available,
+    perform_docker_self_update,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -542,6 +547,10 @@ async def check_for_updates(
             is_docker = _is_docker_environment()
             is_ha_addon = _is_ha_addon()
             is_windows_installer = _is_windows_installer_install()
+            # Opt-in self-update: socket mounted + auth enabled (sock ≈ root).
+            # HA addons never self-update (Supervisor owns lifecycle).
+            auth_on = await is_auth_enabled(db)
+            docker_self_update = bool(is_docker and not is_ha_addon and is_docker_socket_available() and auth_on)
             installer_download_url: str | None = None
             if is_ha_addon:
                 update_method = "ha_addon"
@@ -563,6 +572,7 @@ async def check_for_updates(
                 "is_docker": is_docker,
                 "is_ha_addon": is_ha_addon,
                 "is_windows_installer": is_windows_installer,
+                "docker_self_update": docker_self_update,
                 "update_method": update_method,
                 "installer_download_url": installer_download_url,
             }
@@ -617,6 +627,48 @@ async def _discover_target_release(db: AsyncSession) -> str | None:
 
     picked = _pick_release(releases, include_beta)
     return picked.get("tag_name") if picked else None
+
+
+async def _set_update_progress(progress: int, message: str) -> None:
+    global _update_status
+    _update_status = {
+        "status": "downloading" if progress < 80 else "installing",
+        "progress": progress,
+        "message": message,
+        "error": None,
+    }
+
+
+async def _perform_docker_update(target_version: str) -> None:
+    """Pull the published image and hand off container recreate via docker.sock."""
+    global _update_status
+
+    try:
+        await perform_docker_self_update(target_version, on_progress=_set_update_progress)
+        # Stay in "installing" until the helper stops this process — marking
+        # "complete" early would allow a second /apply to race the recreate.
+        _update_status = {
+            "status": "installing",
+            "progress": 99,
+            "message": "Restarting container with the new image...",
+            "error": None,
+        }
+    except DockerSelfUpdateError as exc:
+        logger.error("Docker self-update failed: %s", exc)
+        _update_status = {
+            "status": "error",
+            "progress": 0,
+            "message": "Docker update failed",
+            "error": str(exc),
+        }
+    except Exception as exc:
+        logger.exception("Docker self-update failed unexpectedly: %s", exc)
+        _update_status = {
+            "status": "error",
+            "progress": 0,
+            "message": "Docker update failed",
+            "error": "Docker update failed unexpectedly",
+        }
 
 
 async def _perform_update(target_ref: str):
@@ -891,15 +943,60 @@ async def apply_update(
             ),
         }
     if _is_docker_environment():
+        if not is_docker_socket_available():
+            return {
+                "success": False,
+                "is_docker": True,
+                "docker_self_update": False,
+                "message": (
+                    "Docker socket is not available inside this container, so "
+                    "in-app updates cannot pull images. On the host run: "
+                    "docker compose pull && docker compose up -d. "
+                    "To enable in-app updates, mount /var/run/docker.sock "
+                    "(see docs/docker-workflow.md)."
+                ),
+            }
+
+        # docker.sock ≈ host root — refuse unauthenticated apply.
+        if not await is_auth_enabled(db):
+            return {
+                "success": False,
+                "is_docker": True,
+                "docker_self_update": False,
+                "message": (
+                    "In-app Docker updates require authentication to be enabled "
+                    "(Settings → Users / Auth). Mounting docker.sock without "
+                    "auth would let anyone on the network recreate containers."
+                ),
+            }
+
+        target_ref = await _discover_target_release(db)
+        if target_ref is None:
+            return {
+                "success": False,
+                "is_docker": True,
+                "docker_self_update": True,
+                "message": (
+                    "Could not determine a release to install. Either GitHub is "
+                    "unreachable or no release matches your update channel "
+                    "(check the include_beta_updates setting)."
+                ),
+            }
+
+        target_version = target_ref.lstrip("v")
+        background_tasks.add_task(_perform_docker_update, target_version)
+        _update_status = {
+            "status": "downloading",
+            "progress": 10,
+            "message": "Starting Docker image update...",
+            "error": None,
+        }
         return {
-            "success": False,
+            "success": True,
             "is_docker": True,
-            "message": (
-                "Docker installations cannot be updated in-app. "
-                "Pull the published image via Docker Compose: "
-                "docker compose pull && docker compose up -d. "
-                "Or rebuild from git: git pull && docker compose up -d --build"
-            ),
+            "docker_self_update": True,
+            "message": "Docker update started",
+            "status": _update_status,
         }
     if _is_windows_installer_install():
         # The installer layout has no ``.git`` and no bundled ``git.exe`` —

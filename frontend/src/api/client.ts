@@ -3138,6 +3138,8 @@ export interface UpdateCheckResult {
   is_docker?: boolean;
   is_ha_addon?: boolean;
   is_windows_installer?: boolean;
+  /** True when /var/run/docker.sock is mounted and reachable for in-app pull/recreate. */
+  docker_self_update?: boolean;
   update_method?: 'docker' | 'git' | 'ha_addon' | 'windows_installer';
   installer_download_url?: string | null;
 }
@@ -5684,7 +5686,7 @@ export const api = {
   getVersion: () => request<VersionInfo>('/updates/version'),
   checkForUpdates: () => request<UpdateCheckResult>('/updates/check'),
   applyUpdate: () =>
-    request<{ success: boolean; message: string; status?: UpdateStatus; is_docker?: boolean; is_ha_addon?: boolean; is_windows_installer?: boolean }>('/updates/apply', {
+    request<{ success: boolean; message: string; status?: UpdateStatus; is_docker?: boolean; is_ha_addon?: boolean; is_windows_installer?: boolean; docker_self_update?: boolean }>('/updates/apply', {
       method: 'POST',
     }),
   getUpdateStatus: () => request<UpdateStatus>('/updates/status'),

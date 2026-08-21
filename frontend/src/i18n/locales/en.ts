@@ -2551,7 +2551,7 @@ export default {
     checkNow: 'Check now',
     updateAvailableVersion: 'Update available: v{{version}}',
     releaseNotes: 'Release Notes',
-    updateViaDocker: 'Update via Docker Compose:',
+    updateViaDocker: 'Docker socket is not mounted. Update on the host with:',
     updateViaHomeAssistant: 'Updates are managed by the Home Assistant Supervisor. Open Settings → Add-ons → Bambuddy in Home Assistant to install the new version.',
     updateViaWindowsInstaller: 'Windows installations are updated by re-running the installer. Download the new version below — your data, settings and printers are preserved.',
     downloadWindowsInstaller: 'Download installer for v{{version}}',
