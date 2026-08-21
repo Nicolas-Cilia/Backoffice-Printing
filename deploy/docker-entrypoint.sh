@@ -98,14 +98,25 @@ fi
 # drop to PUID:PGID the default socket mode (root:docker 660) would deny
 # access unless the process keeps the socket's group as a supplementary
 # group. Detect the socket GID and pass it via setpriv when available.
+#
+# Note: util-linux ``setpriv`` treats ``--clear-groups`` and ``--groups``
+# as mutually exclusive on some builds (Docker Desktop / Debian), so we
+# only pass ``--groups``. Mac Docker Desktop often owns the socket as
+# gid 0 (root) — skip creating a fake group for that case.
 SUPP_GROUPS="${PGID}"
 if [ -S /var/run/docker.sock ]; then
     SOCK_GID="$(stat -c '%g' /var/run/docker.sock 2>/dev/null || true)"
     if [ -n "${SOCK_GID}" ]; then
-        if ! getent group "${SOCK_GID}" >/dev/null 2>&1; then
-            groupadd -g "${SOCK_GID}" dockersock 2>/dev/null || true
+        if [ "${SOCK_GID}" != "0" ] && [ "${SOCK_GID}" != "${PGID}" ]; then
+            if ! getent group "${SOCK_GID}" >/dev/null 2>&1; then
+                groupadd -g "${SOCK_GID}" dockersock 2>/dev/null || true
+            fi
+            SUPP_GROUPS="${PGID},${SOCK_GID}"
+        elif [ "${SOCK_GID}" = "0" ]; then
+            # Root-owned socket (common on Docker Desktop). Keep gid 0 as a
+            # supplementary group so mode 660 still allows access after drop.
+            SUPP_GROUPS="${PGID},0"
         fi
-        SUPP_GROUPS="${PGID},${SOCK_GID}"
         echo "[entrypoint] docker.sock detected (gid ${SOCK_GID}); enabling in-app Docker updates"
     fi
 fi
@@ -114,6 +125,7 @@ fi
 # (cap_net_bind_service=+ep, set in the Dockerfile) survive the uid
 # switch, so binding to :322 / :990 still works post-drop.
 if [ "${SUPP_GROUPS}" != "${PGID}" ] && command -v setpriv >/dev/null 2>&1; then
-    exec setpriv --reuid="${PUID}" --regid="${PGID}" --clear-groups --groups="${SUPP_GROUPS}" "$@"
+    # Do not combine --clear-groups with --groups (mutually exclusive).
+    exec setpriv --reuid="${PUID}" --regid="${PGID}" --groups="${SUPP_GROUPS}" "$@"
 fi
 exec gosu "${PUID}:${PGID}" "$@"
