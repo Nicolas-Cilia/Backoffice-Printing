@@ -550,6 +550,31 @@ describe('Filament tracking tab', () => {
     expect(within(section).getByText('12 g')).toBeInTheDocument();
   });
 
+  it('keeps the by-printer legend compact instead of spacing rows evenly', async () => {
+    const printers = Array.from({ length: 14 }, (_, i) => ({
+      printer_id: i + 1,
+      name: `Printer #${i + 1}`,
+      grams: i < 3 ? (3 - i) * 5 : 0,
+    }));
+    server.use(
+      http.get('/api/v1/filament-tracking/plan', () => HttpResponse.json(planPayload())),
+      http.get('/api/v1/filament-tracking/printer-consumption', () => HttpResponse.json(printers)),
+      http.get('/api/v1/filament-tracking/events', () => HttpResponse.json([])),
+    );
+
+    window.history.pushState({}, '', '/inventory?tab=tracking');
+    render(<InventoryPageRouter />);
+
+    const heading = await screen.findByRole('heading', { name: 'Consumption by printer' });
+    const section = heading.closest('section') as HTMLElement;
+    expect(await within(section).findByText('Printer #1')).toBeInTheDocument();
+    const legend = within(section).getByText('Printer #1').closest('ul') as HTMLElement;
+    expect(legend.className).not.toMatch(/justify-evenly/);
+    expect(legend.className).toMatch(/gap-1\.5/);
+    expect(legend.className).toMatch(/max-h-\[14rem]/);
+    expect(legend.className).toMatch(/overflow-y-auto/);
+  });
+
   it('shows named product rows instead of a collapsed color · material family', async () => {
     const easyRockWhite = {
       ...whitePlaRow,
