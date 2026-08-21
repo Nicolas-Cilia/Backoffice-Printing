@@ -263,7 +263,9 @@ export function PrinterSelector({
     const status = printerStatusMap.get(printerId);
     if (!status) return false; // Unknown state — don't block
     if (!status.connected) return true;
-    if (status.awaiting_plate_clear) return true;
+    // IDLE / FINISH / FAILED are selectable. `awaiting_plate_clear` only
+    // delays auto-dispatch (ASAP may wait); it must not bury Finished printers
+    // under "Currently printing" or block File Manager / queue selection.
     return !AVAILABLE_STATES.has(status.state ?? '');
   };
 
@@ -276,9 +278,15 @@ export function PrinterSelector({
     if (state === 'RUNNING') return status.stg_cur_name || 'Printing';
     if (state === 'PREPARE') return 'Preparing';
     if (state === 'PAUSE') return 'Paused';
-    if (state === 'IDLE') return 'Idle';
-    if (state === 'FINISH') return 'Finished';
-    if (state === 'FAILED') return 'Failed';
+    if (state === 'IDLE') {
+      return status.awaiting_plate_clear ? 'Idle — clear plate' : 'Idle';
+    }
+    if (state === 'FINISH') {
+      return status.awaiting_plate_clear ? 'Finished — clear plate' : 'Finished';
+    }
+    if (state === 'FAILED') {
+      return status.awaiting_plate_clear ? 'Failed — clear plate' : 'Failed';
+    }
     return state;
   };
 
