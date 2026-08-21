@@ -23,6 +23,7 @@ from backend.app.services.filament_tracking import (
     infer_elapsed_seconds,
     live_usage_window,
     load_live_usage_rate,
+    load_plan,
     load_printer_consumption,
     mapping_tray_id,
     mqtt_skipped_object_ids,
@@ -39,6 +40,7 @@ from backend.app.services.filament_tracking import (
     record_print_usage,
     remain_delta_grams,
     remain_has_coverage,
+    reset_usage_history,
     resolve_ams_mapping,
     resolve_print_started_at,
     same_live_tracking_job,
@@ -365,6 +367,62 @@ async def test_print_usage_subtracts_assigned_product_only(db_session, printer_f
     assert created[0].bucket_id == easyrock.id
     assert easyrock.on_hand_grams == 9500
     assert jade.on_hand_grams == 8000
+
+
+@pytest.mark.asyncio
+async def test_reset_usage_history_keeps_stock_and_assignments(db_session, printer_factory):
+    printer = await printer_factory()
+    started = datetime(2026, 1, 1, tzinfo=timezone.utc)
+    bucket = FilamentColorBucket(
+        color_name="White",
+        material="PLA",
+        color_hex="FFFFFF",
+        on_hand_grams=9000,
+        spool_weight_grams=1000,
+        stock_initialized=True,
+        tracking_started_at=started,
+        cost_per_kg=20,
+        lead_time_days=7,
+    )
+    db_session.add(bucket)
+    await db_session.flush()
+    db_session.add(FilamentSlotAssignment(printer_id=printer.id, ams_id=0, tray_id=0, bucket_id=bucket.id))
+    db_session.add(
+        FilamentColorUsage(
+            bucket_id=bucket.id,
+            grams=250,
+            kind="completed",
+            printer_id=printer.id,
+            print_name="Benchy",
+            source_key="test:reset-usage",
+        )
+    )
+    await db_session.commit()
+
+    reset_at = datetime(2026, 8, 20, tzinfo=timezone.utc)
+    deleted = await reset_usage_history(db_session, as_of=reset_at)
+    await db_session.commit()
+
+    assert deleted == 1
+    usages = (await db_session.execute(select(FilamentColorUsage))).scalars().all()
+    assert usages == []
+    await db_session.refresh(bucket)
+    assert bucket.on_hand_grams == 9000
+    assert bucket.color_name == "White"
+    assert bucket.cost_per_kg == 20
+    started_at = bucket.tracking_started_at
+    assert started_at is not None
+    if started_at.tzinfo is None:
+        started_at = started_at.replace(tzinfo=timezone.utc)
+    assert started_at == reset_at
+    assignments = (await db_session.execute(select(FilamentSlotAssignment))).scalars().all()
+    assert len(assignments) == 1
+    consumption = await load_printer_consumption(db_session)
+    by_id = {row.printer_id: row.grams for row in consumption}
+    assert by_id[printer.id] == 0
+    plan = await load_plan(db_session)
+    assert plan.total_observed_usage_grams == 0
+    assert plan.total_on_hand_grams == 9000
 
 
 @pytest.mark.asyncio

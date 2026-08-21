@@ -9,6 +9,7 @@ from sqlalchemy.orm import aliased
 from backend.app.core.auth import RequirePermissionIfAuthEnabled
 from backend.app.core.database import get_db
 from backend.app.core.permissions import Permission
+from backend.app.core.websocket import ws_manager
 from backend.app.models.filament_tracking import (
     FilamentColorBucket,
     FilamentColorUsage,
@@ -42,6 +43,7 @@ from backend.app.services.filament_tracking import (
     normalize_hex,
     normalize_identity_part,
     normalize_material,
+    reset_usage_history,
     untracked_live_runs,
 )
 
@@ -311,6 +313,21 @@ async def delete_slot_assignment(
     await db.delete(assignment)
     await db.commit()
     return {"status": "ok"}
+
+
+@router.post("/reset-usage")
+async def reset_filament_tracking_usage(
+    db: AsyncSession = Depends(get_db),
+    _: User | None = RequirePermissionIfAuthEnabled(Permission.INVENTORY_DELETE),
+):
+    """Permanently erase observed usage, printer totals, and live rates.
+
+    Named products, on-hand stock, and slot assignments are kept.
+    """
+    deleted = await reset_usage_history(db)
+    await db.commit()
+    await ws_manager.broadcast({"type": "filament_tracking_updated"})
+    return {"status": "ok", "deleted": deleted}
 
 
 @router.get("/events", response_model=list[UsageEventResponse])

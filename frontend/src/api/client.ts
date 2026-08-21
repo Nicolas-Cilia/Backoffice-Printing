@@ -5527,6 +5527,8 @@ export const api = {
     }),
   deleteFilamentTrackingBucket: (id: number) =>
     request<{ status: string }>(`/filament-tracking/buckets/${id}`, { method: 'DELETE' }),
+  resetFilamentTrackingUsage: () =>
+    request<{ status: string; deleted: number }>('/filament-tracking/reset-usage', { method: 'POST' }),
   getFilamentTrackingAssignments: (printerId?: number) =>
     request<FilamentTrackingAssignment[]>(
       printerId != null

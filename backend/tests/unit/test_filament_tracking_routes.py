@@ -4,7 +4,7 @@ import pytest
 from httpx import AsyncClient
 from sqlalchemy import select
 
-from backend.app.models.filament_tracking import FilamentColorUsage, FilamentSlotAssignment
+from backend.app.models.filament_tracking import FilamentColorBucket, FilamentColorUsage, FilamentSlotAssignment
 from backend.app.services.filament_tracking import LIVE_USAGE_KIND
 
 
@@ -142,3 +142,68 @@ async def test_filament_tracking_live_rate_and_assignment_delete(
 
     missing = await async_client.patch("/api/v1/filament-tracking/buckets/999999", json={"on_hand_grams": 1})
     assert missing.status_code == 404
+
+
+@pytest.mark.asyncio
+async def test_reset_usage_erases_printer_stats_not_stock(async_client: AsyncClient, printer_factory, db_session):
+    created = await async_client.post(
+        "/api/v1/filament-tracking/buckets",
+        json={
+            "color_name": "EasyRock White",
+            "material": "PLA",
+            "color_hex": "#FFFFFF",
+            "on_hand_grams": 10000,
+            "spool_weight_grams": 1000,
+            "cost_per_kg": 22,
+        },
+    )
+    assert created.status_code == 200
+    bucket = created.json()
+    printer = await printer_factory()
+    assigned = await async_client.post(
+        "/api/v1/filament-tracking/assignments",
+        json={"printer_id": printer.id, "ams_id": 0, "tray_id": 0, "bucket_id": bucket["id"]},
+    )
+    assert assigned.status_code == 200
+    db_session.add(
+        FilamentColorUsage(
+            bucket_id=bucket["id"],
+            grams=180,
+            kind="completed",
+            printer_id=printer.id,
+            print_name="Benchy",
+            source_key="test:reset-route",
+        )
+    )
+    await db_session.commit()
+
+    reset = await async_client.post("/api/v1/filament-tracking/reset-usage")
+    assert reset.status_code == 200
+    assert reset.json()["status"] == "ok"
+    assert reset.json()["deleted"] >= 1
+
+    events = await async_client.get("/api/v1/filament-tracking/events")
+    assert events.status_code == 200
+    assert not any(row["print_name"] == "Benchy" or row["grams"] == 180 for row in events.json())
+
+    consumption = await async_client.get("/api/v1/filament-tracking/printer-consumption")
+    assert consumption.status_code == 200
+    by_id = {row["printer_id"]: row["grams"] for row in consumption.json()}
+    assert by_id[printer.id] == 0
+
+    plan = await async_client.get("/api/v1/filament-tracking/plan")
+    assert plan.status_code == 200
+    body = plan.json()
+    assert body["total_observed_usage_grams"] == 0
+    assert body["total_on_hand_grams"] == 10000
+    assert any(row["color_name"] == "EasyRock White" and row["on_hand_grams"] == 10000 for row in body["materials"])
+
+    assignments = await async_client.get(f"/api/v1/filament-tracking/assignments?printer_id={printer.id}")
+    assert assignments.status_code == 200
+    assert len(assignments.json()) == 1
+
+    db_session.expire_all()
+    stock = await db_session.get(FilamentColorBucket, bucket["id"])
+    assert stock is not None
+    assert stock.on_hand_grams == 10000
+    assert stock.cost_per_kg == 22
