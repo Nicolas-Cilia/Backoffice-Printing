@@ -746,6 +746,19 @@ export default {
     dropNotPrintable: 'Only .gcode and .gcode.3mf files can be printed',
     dropToPrint: 'Drop to print',
     cannotPrint: 'Printer busy',
+    startPrintOn: 'Start print on {{name}}',
+    yourFiles: 'Your files',
+    printableTypesHint: 'Supported: .gcode, .gcode.3mf',
+    uploadToPrintHint:
+      'Drop a printable file here, or pick one from Your files — print options open in this panel.',
+    pickFromLibraryHint: 'Pick a printable file from Your files — print options open in this panel.',
+    saveToYourFiles: 'Save to your files',
+    saveToYourFilesHint:
+      'Off by default — the upload is only used for this print and is not kept in Unfiled.',
+    saveLocation: 'Save location',
+    changeFile: 'Change file',
+    printOptionsAdvanced: 'Advanced options',
+    noPrinterSelected: 'No printer selected',
   },
 
   // Archives page
@@ -4727,6 +4740,13 @@ export default {
     useArchiveMapping: 'Mapping',
     useArchiveMappingTooltip: 'Select every slot from the AMS mapping saved with this archive (from the slicer), instead of matching by type/color.',
     clickToChangeSlot: 'Click to change slot assignment',
+    clickMaterialToMap: 'Click a material to choose AMS slot',
+    chooseMaterialSlot: 'Choose which extruder/color to use for Material {{n}}',
+    mustMapMaterials: 'Must select/map materials',
+    unmappedSlot: '—',
+    emptySlot: 'Empty',
+    noAmsSlots: 'No AMS or external spools reported by this printer.',
+    useAutoMatch: 'Use auto-match',
     reRead: 'Re-read',
     plateN: 'Plate {{n}}',
     plateFilamentsUnreadable: 'The filaments of a selected plate could not be read, so it can\'t be mapped. Deselect it to queue the others.',

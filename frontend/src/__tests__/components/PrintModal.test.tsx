@@ -1717,14 +1717,16 @@ describe('PrintModal — per-plate filament mapping (#2551 follow-up)', () => {
 
     // Force plate 1's slot 1 onto the black tray (1) instead of the auto-matched red (0).
     await user.click(screen.getByText(/Filament Mapping — Plate 1/));
-    const traySelects = await waitFor(() => {
-      const found = screen.getAllByRole('combobox').filter((el) =>
-        Array.from((el as HTMLSelectElement).options).some((o) => o.value === '1'),
-      );
-      if (found.length === 0) throw new Error('no tray select rendered');
-      return found;
+    const blackSpool = await waitFor(() => {
+      const grids = screen.getAllByTestId('ams-spool-grid');
+      expect(grids.length).toBeGreaterThan(0);
+      const black = grids[0].querySelectorAll('button')[1];
+      if (!black || (black as HTMLButtonElement).disabled) {
+        throw new Error('black tray spool button not ready');
+      }
+      return black as HTMLButtonElement;
     });
-    await user.selectOptions(traySelects[0], '1');
+    await user.click(blackSpool);
 
     // Now move the job to the other printer.
     await user.click(screen.getByText('X1 Carbon')); // deselect
@@ -2092,5 +2094,33 @@ describe('PrintModal — specific-printer model filter and busy disable', () => 
     await waitFor(() => {
       expect(screen.getByRole('button', { name: /^print$/i })).toBeEnabled();
     });
+  });
+
+  it('clears parent submitting and filament-warning flags on unmount', async () => {
+    const onSubmittingChange = vi.fn();
+    const onFilamentWarningChange = vi.fn();
+
+    const { unmount } = render(
+      <PrintModal
+        mode="create"
+        archiveId={1}
+        archiveName="Test Print"
+        embedded
+        onClose={mockOnClose}
+        onSubmittingChange={onSubmittingChange}
+        onFilamentWarningChange={onFilamentWarningChange}
+      />,
+    );
+
+    await waitFor(() => {
+      expect(screen.getByTestId('print-modal-embedded')).toBeInTheDocument();
+    });
+
+    onSubmittingChange.mockClear();
+    onFilamentWarningChange.mockClear();
+    unmount();
+
+    expect(onSubmittingChange).toHaveBeenCalledWith(false);
+    expect(onFilamentWarningChange).toHaveBeenCalledWith(false);
   });
 });

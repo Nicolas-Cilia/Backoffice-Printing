@@ -73,6 +73,20 @@ describe('FileUploadModal', () => {
       render(<FileUploadModal {...defaultProps} />);
       expect(screen.getByText(/All file types supported/i)).toBeInTheDocument();
     });
+
+    it('renders as an embedded panel with a custom drop-zone hint', () => {
+      render(
+        <FileUploadModal
+          {...defaultProps}
+          embedded
+          dropZoneHint="Supported: .gcode, .gcode.3mf"
+        />,
+      );
+      expect(screen.queryByRole('heading', { name: 'Upload Files' })).not.toBeInTheDocument();
+      expect(screen.queryByRole('button', { name: 'Cancel' })).not.toBeInTheDocument();
+      expect(screen.getByText('Supported: .gcode, .gcode.3mf')).toBeInTheDocument();
+      expect(screen.getByTestId('start-print-dropzone')).toBeInTheDocument();
+    });
   });
 
   describe('file selection', () => {

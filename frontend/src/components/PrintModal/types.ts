@@ -38,6 +38,15 @@ export interface PrintModalProps {
   /** Delete the LibraryFile after dispatch — used by the Printers-page Direct-Print flow
    *  so transient uploads don't linger in File Manager. Only applies to library-file prints. */
   cleanupLibraryAfterDispatch?: boolean;
+  /**
+   * Render as an in-panel form (no fullscreen overlay). Used by StartPrintModal
+   * so print options fill the right column instead of opening a second popup.
+   */
+  embedded?: boolean;
+  /** Notify parent when submit is in flight (blocks shell close / Escape). */
+  onSubmittingChange?: (submitting: boolean) => void;
+  /** Notify parent when the filament-warning confirm dialog is open (nested Escape). */
+  onFilamentWarningChange?: (open: boolean) => void;
 }
 
 /**
@@ -242,6 +251,8 @@ export interface PrintOptionsProps {
   /** Show the dual-nozzle-only options (nozzle offset calibration). Default false.
    *  Pass true when at least one selected printer is dual-nozzle. */
   showDualNozzleOptions?: boolean;
+  /** Compact 2×2 checkboxes + Advanced extras only (Start-print side panel). */
+  compact?: boolean;
 }
 
 /**
@@ -262,4 +273,6 @@ export interface ScheduleOptionsProps {
   printerCount?: number;
   /** Whether G-code snippets are configured in settings */
   hasGcodeSnippets?: boolean;
+  /** Tighter layout for Start-print side panel. */
+  compact?: boolean;
 }

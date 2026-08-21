@@ -118,8 +118,8 @@ import { useToast } from '../contexts/ToastContext';
 import { ChamberLight } from '../components/icons/ChamberLight';
 import { PlateClearedIcon } from '../components/icons/PlateClearedIcon';
 import { SkipObjectsModal, SkipObjectsIcon } from '../components/SkipObjectsModal';
-import { FileUploadModal } from '../components/FileUploadModal';
 import { PrintModal } from '../components/PrintModal';
+import { StartPrintModal } from '../components/StartPrintModal';
 import { PrinterInfoModal } from '../components/PrinterInfoModal';
 import { getAmsLabel, getGlobalTrayId, getFillBarColor, getSpoolmanFillLevel, getFallbackSpoolTag, isBambuLabSpool, resolveSlotNozzleDiameter } from '../utils/amsHelpers';
 import { getPrinterImage, getWifiStrength, filterCompatibleQueueItems } from '../utils/printer';
@@ -1872,11 +1872,16 @@ function PrinterCard({
   const [bedJogStep, setBedJogStep] = useState<number>(10);
   const [showResumeConfirm, setShowResumeConfirm] = useState(false);
   const [showSkipObjectsModal, setShowSkipObjectsModal] = useState(false);
-  const [showUploadForPrint, setShowUploadForPrint] = useState(false);
+  const [showStartPrint, setShowStartPrint] = useState(false);
   const [showPrinterInfo, setShowPrinterInfo] = useState(false);
   const [showDiagnostic, setShowDiagnostic] = useState(false);
   const closePrinterInfo = useCallback(() => setShowPrinterInfo(false), []);
-  const [printAfterUpload, setPrintAfterUpload] = useState<{ id: number; filename: string } | null>(null);
+  const [printAfterUpload, setPrintAfterUpload] = useState<{
+    id: number;
+    filename: string;
+    cleanup?: boolean;
+    slicedForModel?: string | null;
+  } | null>(null);
   // AMS drying popover state: which AMS unit has the popover open
   const [dryingPopoverAmsId, setDryingPopoverAmsId] = useState<number | null>(null);
   const [dryingPopoverModuleType, setDryingPopoverModuleType] = useState<string>('n3f');
@@ -3060,7 +3065,7 @@ function PrinterCard({
         return;
       }
 
-      setPrintAfterUpload({ id: result.id, filename: result.filename });
+      setPrintAfterUpload({ id: result.id, filename: result.filename, cleanup: true });
     } catch {
       showToast(t('common.uploadFailed', 'Upload failed'), 'error');
     } finally {
@@ -4869,11 +4874,11 @@ function PrinterCard({
                     {/* Right: Print Control Buttons */}
                     <div className={`ml-auto flex items-center justify-end flex-shrink-0 ${cardSize === 2 ? 'gap-1' : 'gap-2'}`}>
                       {(() => {
-                        const startUnavailable = isPrinting || isControlBusy || !status.connected || !hasPermission('printers:files');
+                        const startUnavailable = isPrinting || isControlBusy || !status.connected || !hasPermission('queue:create');
                         return (
                       <button
                         type="button"
-                        onClick={() => setShowFileManager(true)}
+                        onClick={() => setShowStartPrint(true)}
                         disabled={startUnavailable}
                         className={`
                           ${printControlClass}
@@ -4882,7 +4887,7 @@ function PrinterCard({
                             : 'bg-bambu-green/20 text-bambu-green hover:bg-bambu-green/30'
                           }
                         `}
-                        title={!hasPermission('printers:files') ? t('printers.permission.noFiles') : t('printers.startPrint', 'Start')}
+                        title={!hasPermission('queue:create') ? t('fileManager.noPermissionAddToQueue') : t('printers.startPrint', 'Start')}
                       >
                         <Play className="w-3 h-3" />
                         {t('printers.startPrint', 'Start')}
@@ -6226,14 +6231,12 @@ function PrinterCard({
                 {isConnected && status?.state !== 'RUNNING' && status?.state !== 'PAUSE' && (
                   <Button
                     size="sm"
-                    onClick={() => setShowUploadForPrint(true)}
-                    disabled={!hasPermission('library:upload') || !hasPermission('queue:create')}
+                    onClick={() => setShowStartPrint(true)}
+                    disabled={!hasPermission('queue:create')}
                     title={
-                      !hasPermission('library:upload')
-                        ? t('fileManager.noPermissionUpload')
-                        : !hasPermission('queue:create')
-                          ? t('fileManager.noPermissionAddToQueue')
-                          : t('common.print')
+                      !hasPermission('queue:create')
+                        ? t('fileManager.noPermissionAddToQueue')
+                        : t('common.print')
                     }
                     className={`${footerActionButtonClass} !bg-bambu-green hover:!bg-bambu-green/80 !text-white`}
                   >
@@ -6257,43 +6260,28 @@ function PrinterCard({
         />
       )}
 
-      {/* Upload for Print Modal */}
-      {showUploadForPrint && (
-        <FileUploadModal
-          folderId={null}
-          onClose={() => setShowUploadForPrint(false)}
-          onUploadComplete={() => {}}
-          autoUpload
-          accept=".gcode,.3mf"
-          validateFile={(file) => {
-            const lower = file.name.toLowerCase();
-            if (!lower.endsWith('.gcode') && !lower.includes('.gcode.')) {
-              return t('printers.dropNotPrintable', 'Only .gcode and .gcode.3mf files can be printed');
-            }
-          }}
-          onFileUploaded={(uploadedFile) => {
-            // Check printer compatibility if sliced_for_model is available in metadata
-            const slicedFor = (uploadedFile.metadata as Record<string, unknown>)?.sliced_for_model as string | undefined;
-            const printerModel = mapModelCode(printer.model);
-            if (slicedFor && printerModel && slicedFor.toLowerCase() !== printerModel.toLowerCase()) {
-              api.deleteLibraryFile(uploadedFile.id).catch(() => {});
-              return t('printers.incompatibleFile', 'This file was sliced for {{slicedFor}}, but this printer is a {{printerModel}}', { slicedFor, printerModel });
-            }
-            setPrintAfterUpload({ id: uploadedFile.id, filename: uploadedFile.filename });
-          }}
+      {/* Start print: library picker + upload, then PrintModal */}
+      {showStartPrint && (
+        <StartPrintModal
+          printerName={printer.name}
+          printerModel={mapModelCode(printer.model) || null}
+          printerId={printer.id}
+          onClose={() => setShowStartPrint(false)}
+          onSuccess={() => setShowStartPrint(false)}
         />
       )}
 
-      {/* Print Modal (after upload) */}
+      {/* Print Modal after drag-and-drop upload onto the card */}
       {printAfterUpload && (
         <PrintModal
           mode="create"
           libraryFileId={printAfterUpload.id}
           archiveName={printAfterUpload.filename}
+          slicedForModel={printAfterUpload.slicedForModel}
           initialSelectedPrinterIds={[printer.id]}
           onClose={() => setPrintAfterUpload(null)}
           onSuccess={() => setPrintAfterUpload(null)}
-          cleanupLibraryAfterDispatch
+          cleanupLibraryAfterDispatch={printAfterUpload.cleanup}
         />
       )}
 

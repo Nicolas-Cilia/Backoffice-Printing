@@ -1,17 +1,166 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
-import { Circle, Check, AlertTriangle, RefreshCw, ChevronDown, ChevronUp, Palette } from 'lucide-react';
+import { Circle, Check, AlertTriangle, RefreshCw, ChevronDown, ChevronUp, Palette, X } from 'lucide-react';
 import { api } from '../../api/client';
-import { useFilamentMapping } from '../../hooks/useFilamentMapping';
-import { getGlobalTrayId, effectivePreferLowest } from '../../utils/amsHelpers';
+import type { AMSTray } from '../../api/client';
+import { useFilamentMapping, type FilamentComparison, type LoadedFilament } from '../../hooks/useFilamentMapping';
+import {
+  filamentTypesCompatible,
+  getGlobalTrayId,
+  effectivePreferLowest,
+  normalizeColor,
+} from '../../utils/amsHelpers';
 import { getColorName } from '../../utils/colors';
+import { SpoolIcon } from '../spoolbuddy/SpoolIcon';
 import { useFilamentLabels } from './useFilamentLabels';
+import { buildAmsUnitViews, type AmsUnitView } from './amsUnitViews';
 import type { FilamentMappingProps } from './types';
+
+function unitMiniIcon(unit: AmsUnitView, selected: boolean) {
+  const colors = unit.trays
+    .map((t) => t.loaded?.color ?? (t.tray?.tray_color ? normalizeColor(t.tray.tray_color) : null))
+    .filter(Boolean) as string[];
+  return (
+    <span
+      className={`inline-flex h-7 w-7 items-center justify-center rounded border transition-colors ${
+        selected
+          ? 'border-bambu-green bg-bambu-green/15 text-bambu-green'
+          : 'border-bambu-gray/40 text-bambu-gray hover:border-bambu-gray hover:text-white'
+      }`}
+      title={unit.label}
+    >
+      {colors.length === 0 ? (
+        <span className="text-[9px] font-semibold leading-none">
+          {unit.isExternal ? 'Ext' : unit.label.replace(/^AMS-?/, '').replace(/^HT-/, 'H')}
+        </span>
+      ) : (
+        <span className="grid grid-cols-2 gap-px p-0.5 w-full h-full">
+          {(colors.length === 1 ? [colors[0], colors[0], colors[0], colors[0]] : colors.slice(0, 4)).map(
+            (c, i) => (
+              <span key={i} className="rounded-[1px]" style={{ backgroundColor: c }} />
+            ),
+          )}
+        </span>
+      )}
+    </span>
+  );
+}
+
+function spoolCaption(loaded: LoadedFilament | undefined, tray: AMSTray | null): string {
+  if (loaded) {
+    const type = loaded.traySubBrands || loaded.type;
+    return `${loaded.colorName} ${type}`.trim();
+  }
+  if (tray?.tray_type) {
+    const color = normalizeColor(tray.tray_color);
+    return `${getColorName(color)} ${tray.tray_sub_brands || tray.tray_type}`.trim();
+  }
+  return '';
+}
+
+interface AmsSpoolGridProps {
+  unit: AmsUnitView;
+  selectedGlobalTrayId: number | null | undefined;
+  highlightCompatibleType?: string;
+  onSelect: (globalTrayId: number) => void;
+  ftsExtruderForSlot: (globalTrayId: number) => number | null;
+  ftsInstalled: boolean;
+  trayRemainingWeightMap: Map<number, number | null>;
+  leftNozzle: string;
+  rightNozzle: string;
+  remainingShort: (grams: number) => string;
+}
+
+function AmsSpoolGrid({
+  unit,
+  selectedGlobalTrayId,
+  highlightCompatibleType,
+  onSelect,
+  ftsExtruderForSlot,
+  ftsInstalled,
+  trayRemainingWeightMap,
+  leftNozzle,
+  rightNozzle,
+  remainingShort,
+}: AmsSpoolGridProps) {
+  const { t } = useTranslation();
+  const cols = unit.isHt || unit.trays.length <= 1 ? 1 : Math.min(4, unit.trays.length);
+
+  return (
+    <div
+      className={`grid gap-2 ${cols === 1 ? 'grid-cols-1 max-w-[5.5rem]' : 'grid-cols-2 sm:grid-cols-4'}`}
+      data-testid="ams-spool-grid"
+    >
+      {unit.trays.map((slot) => {
+        const loaded = slot.loaded;
+        const isEmpty = !loaded && (!slot.tray?.tray_type || slot.tray.tray_type === '');
+        const color = loaded?.color ?? (slot.tray?.tray_color ? normalizeColor(slot.tray.tray_color) : '#808080');
+        const globalTrayId = loaded
+          ? loaded.globalTrayId
+          : unit.isExternal
+            ? (slot.tray?.id ?? 254)
+            : getGlobalTrayId(unit.amsId, slot.trayId, false);
+        const selected = selectedGlobalTrayId === globalTrayId;
+        const typeOk =
+          !highlightCompatibleType ||
+          isEmpty ||
+          filamentTypesCompatible(loaded?.type ?? slot.tray?.tray_type ?? undefined, highlightCompatibleType);
+        const caption = spoolCaption(loaded, slot.tray);
+        const remainingWeight = loaded ? trayRemainingWeightMap.get(loaded.globalTrayId) : null;
+        const ftsTarget = ftsInstalled && loaded ? ftsExtruderForSlot(loaded.globalTrayId) : null;
+        const ftsBadge =
+          ftsTarget == null ? '' : ` [${ftsTarget === 1 ? leftNozzle : rightNozzle}]`;
+
+        return (
+          <button
+            key={`${unit.key}-${slot.trayId}`}
+            type="button"
+            disabled={isEmpty}
+            onClick={() => {
+              if (!isEmpty) onSelect(globalTrayId);
+            }}
+            className={`relative flex flex-col items-center gap-1 rounded-lg p-1.5 text-center transition-all ${
+              isEmpty
+                ? 'cursor-default opacity-40'
+                : typeOk
+                  ? 'hover:bg-white/5 cursor-pointer'
+                  : 'opacity-35 hover:opacity-55 cursor-pointer'
+            } ${selected ? 'ring-2 ring-bambu-green bg-bambu-green/10' : 'ring-1 ring-transparent'}`}
+            title={
+              isEmpty
+                ? t('printModal.emptySlot', 'Empty')
+                : `${caption}${remainingWeight != null ? remainingShort(remainingWeight) : ''}${ftsBadge}`
+            }
+            aria-label={
+              isEmpty
+                ? t('printModal.emptySlot', 'Empty')
+                : `#${slot.slotNumber} ${caption}${ftsBadge}`
+            }
+            aria-pressed={selected}
+          >
+            <span className="absolute top-0.5 left-1 text-[9px] text-bambu-gray/80 font-medium">
+              #{slot.slotNumber}
+            </span>
+            {ftsBadge && (
+              <span className="absolute top-0.5 right-1 text-[8px] font-bold text-bambu-green leading-none">
+                {ftsBadge.trim()}
+              </span>
+            )}
+            <SpoolIcon color={isEmpty ? '#666' : color} isEmpty={isEmpty} size={40} />
+            <span className="text-[10px] leading-tight text-white/80 line-clamp-2 w-full min-h-[1.5rem]">
+              {isEmpty ? t('printModal.emptySlot', 'Empty') : caption || loaded?.type || '—'}
+            </span>
+          </button>
+        );
+      })}
+    </div>
+  );
+}
 
 /**
  * Filament mapping UI for comparing required filaments with loaded AMS slots.
- * Shows auto-matched and manually overridden slot assignments.
+ * SimplyPrint-style visual AMS spool picker (Bambuddy tokens).
  */
 export function FilamentMapping({
   printerId,
@@ -30,26 +179,15 @@ export function FilamentMapping({
   const queryClient = useQueryClient();
   const [isRefreshing, setIsRefreshing] = useState(false);
   const [isExpanded, setIsExpanded] = useState(defaultExpanded);
-  // "Mapping" toggle (only shown when the archive has a saved slicer pick):
-  // ON selects every slot straight from `archiveAmsMapping`, bypassing the
-  // type/color auto-match entirely — same mechanism as a manual per-slot
-  // pick (`manualMappings`), just applied to every required slot at once.
-  // OFF removes exactly those overrides so the panel falls back to its
-  // normal auto-match, without touching any *other* manual picks the user
-  // made by hand.
+  const [activeUnitKey, setActiveUnitKey] = useState<string | null>(null);
+  const [pickingSlotId, setPickingSlotId] = useState<number | null>(null);
   const [usingArchiveMapping, setUsingArchiveMapping] = useState(false);
-  // Which slot IDs the ON branch below actually wrote into manualMappings —
-  // so OFF can undo exactly those and leave any *other* manual pick the user
-  // made by hand (before or after pressing the button) untouched.
   const appliedSlotIdsRef = useRef<number[]>([]);
 
-  // Reset the toggle whenever the saved mapping it would apply changes — a
-  // different printer, plate selection, or archive entirely. Without this
-  // the button can read ON (green) from a previous printer/archive/plate
-  // even though it was never pressed against the mapping currently in scope.
   useEffect(() => {
     setUsingArchiveMapping(false);
     appliedSlotIdsRef.current = [];
+    setPickingSlotId(null);
   }, [archiveAmsMapping, plateLabel, printerId]);
 
   const toggleArchiveMapping = () => {
@@ -68,9 +206,6 @@ export function FilamentMapping({
     const appliedSlotIds: number[] = [];
     for (const req of filamentReqs.filaments) {
       const idx = req.slot_id - 1;
-      // A negative value (e.g. the external spool sentinel) means the
-      // slicer didn't resolve this filament to an AMS tray — leave that
-      // slot's existing auto-match/manual pick alone rather than clearing it.
       if (req.slot_id > 0 && idx >= 0 && idx < archiveAmsMapping.length && archiveAmsMapping[idx] >= 0) {
         next[req.slot_id] = archiveAmsMapping[idx];
         appliedSlotIds.push(req.slot_id);
@@ -81,22 +216,17 @@ export function FilamentMapping({
     setUsingArchiveMapping(true);
   };
 
-  // Fetch printer status
   const { data: printerStatus } = useQuery({
     queryKey: ['printer-status', printerId],
     queryFn: () => api.getPrinterStatus(printerId),
     enabled: !!printerId,
   });
-
   const { data: assignments } = useQuery({
     queryKey: ['spool-assignments', printerId],
     queryFn: () => api.getAssignments(printerId),
     enabled: !!printerId,
   });
 
-  // Settings + inventory map drive the same prefer-lowest + AMS-backup gate
-  // the dispatcher uses (#1766). Without this, the per-slot dropdown's
-  // auto-suggestion could disagree with what actually gets dispatched.
   const { data: settings } = useQuery({
     queryKey: ['settings'],
     queryFn: api.getSettings,
@@ -124,11 +254,6 @@ export function FilamentMapping({
   const { loadedFilaments, filamentComparison, hasTypeMismatch, hasColorMismatch } =
     useFilamentMapping(filamentReqs, printerStatus, manualMappings, gatedPreferLowest, inventoryByTrayId);
 
-  // Per-slot sub-brand + material-disambiguated colour labels (#1718). Same
-  // shared hook the model-mode FilamentOverride uses so both panels render
-  // the same sliced-3MF identity. Falls back to the raw type / generic
-  // colour bucket when the SKU is unknown or the by-material lookup hasn't
-  // resolved — never blanks out the required row.
   const filamentLabels = useFilamentLabels(filamentReqs?.filaments);
 
   const trayCostMap = useMemo(() => {
@@ -172,15 +297,38 @@ export function FilamentMapping({
 
   const hasAnyCost = useMemo(
     () => Array.from(trayCostMap.values()).some((v) => v != null && v > 0),
-    [trayCostMap]
+    [trayCostMap],
   );
   const hasFilamentReqs = filamentReqs?.filaments && filamentReqs.filaments.length > 0;
   const isDualNozzle = filamentReqs?.filaments?.some((f) => f.nozzle_id != null) ?? false;
+  const isMultiMaterial = (filamentReqs?.filaments?.length ?? 0) > 1;
+  const mappingIncomplete = filamentComparison.some((item) => !item.loaded);
 
-  // Filament Track Switch: when installed, AMS-to-extruder mapping is dynamic
-  // (any slot can be routed to either extruder), so the per-nozzle dropdown
-  // filter is suppressed. fila_switch.in_slots[track] = currently fed slot,
-  // fila_switch.out_extruders[track] = extruder that track terminates at. See #1162.
+  const amsUnits = useMemo(
+    () => (printerStatus ? buildAmsUnitViews(printerStatus, loadedFilaments) : []),
+    [printerStatus, loadedFilaments],
+  );
+
+  useEffect(() => {
+    if (amsUnits.length === 0) {
+      setActiveUnitKey(null);
+      return;
+    }
+    setActiveUnitKey((prev) => {
+      if (prev && amsUnits.some((u) => u.key === prev)) return prev;
+      return amsUnits[0].key;
+    });
+  }, [amsUnits]);
+
+  // Clear picker when the slot no longer exists (plate/reqs change).
+  useEffect(() => {
+    if (pickingSlotId == null) return;
+    const stillPresent = filamentComparison.some((i) => i.slot_id === pickingSlotId);
+    if (!stillPresent) setPickingSlotId(null);
+  }, [pickingSlotId, filamentComparison]);
+
+  const activeUnit = amsUnits.find((u) => u.key === activeUnitKey) ?? amsUnits[0];
+
   const ftsInstalled = printerStatus?.fila_switch?.installed === true;
   const ftsExtruderForSlot = (globalTrayId: number): number | null => {
     const fs = printerStatus?.fila_switch;
@@ -190,50 +338,119 @@ export function FilamentMapping({
     return fs.out_extruders[track] ?? null;
   };
 
-  // Don't render if no filament requirements
-  if (!hasFilamentReqs) {
+  if (!hasFilamentReqs || !printerStatus) {
     return null;
   }
 
-  // Don't render until we have printer status to do the comparison
-  if (!printerStatus) {
-    return null;
-  }
-
-  // Determine status indicator color
   const statusColor = hasTypeMismatch
-    ? '#f97316' // orange
+    ? '#f97316'
     : hasColorMismatch
-    ? '#facc15' // yellow
-    : '#00ae42'; // green
+      ? '#facc15'
+      : '#00ae42';
 
-  const handleSlotChange = (slotId: number, value: string) => {
-    if (slotId > 0) {
-      if (value === '') {
-        // Clear manual override
-        const next = { ...manualMappings };
-        delete next[slotId];
-        onManualMappingChange(next);
-      } else {
-        onManualMappingChange({
-          ...manualMappings,
-          [slotId]: parseInt(value, 10),
-        });
-      }
+  const handleSlotPick = (fileSlotId: number, globalTrayId: number) => {
+    if (fileSlotId <= 0) return;
+    onManualMappingChange({
+      ...manualMappings,
+      [fileSlotId]: globalTrayId,
+    });
+    if (isMultiMaterial) {
+      setPickingSlotId(null);
     }
+  };
+
+  const handleClearManual = (fileSlotId: number) => {
+    if (fileSlotId <= 0) return;
+    const next = { ...manualMappings };
+    delete next[fileSlotId];
+    onManualMappingChange(next);
   };
 
   const handleRefresh = async () => {
     setIsRefreshing(true);
     try {
-      // Request fresh data from printer via MQTT pushall command
       await api.refreshPrinterStatus(printerId);
-      // Wait a moment for printer to respond, then refetch
       await new Promise((r) => setTimeout(r, 500));
       await queryClient.refetchQueries({ queryKey: ['printer-status', printerId] });
     } finally {
       setIsRefreshing(false);
     }
+  };
+
+  const leftNozzle = t('printModal.leftNozzle');
+  const rightNozzle = t('printModal.rightNozzle');
+  const remainingShort = (grams: number) =>
+    t('printModal.slotRemainingShort', {
+      grams,
+      defaultValue: ` - ${grams}g left`,
+    });
+
+  const pickingItem: FilamentComparison | undefined =
+    pickingSlotId != null ? filamentComparison.find((i) => i.slot_id === pickingSlotId) : undefined;
+  const pickingIndex =
+    pickingSlotId != null ? filamentComparison.findIndex((i) => i.slot_id === pickingSlotId) : -1;
+
+  const renderUnitSwitcher = () => {
+    if (amsUnits.length <= 1) return null;
+    return (
+      <div className="flex items-center gap-1.5 flex-wrap" data-testid="ams-unit-switcher">
+        {amsUnits.map((unit) => (
+          <button
+            key={unit.key}
+            type="button"
+            onClick={() => setActiveUnitKey(unit.key)}
+            className="rounded focus:outline-none focus-visible:ring-1 focus-visible:ring-bambu-green"
+            aria-pressed={unit.key === activeUnit?.key}
+            aria-label={unit.label}
+          >
+            {unitMiniIcon(unit, unit.key === activeUnit?.key)}
+          </button>
+        ))}
+      </div>
+    );
+  };
+
+  const renderSpoolPicker = (
+    targetSlotId: number,
+    selectedGlobalTrayId: number | null | undefined,
+    compatibleType?: string,
+  ) => {
+    if (!activeUnit) {
+      return (
+        <p className="text-xs text-bambu-gray">
+          {t('printModal.noAmsSlots', 'No AMS or external spools reported by this printer.')}
+        </p>
+      );
+    }
+    return (
+      <div className="space-y-2">
+        <div className="flex items-center justify-between gap-2">
+          <span className="text-xs text-bambu-gray font-medium">{activeUnit.label}</span>
+          {renderUnitSwitcher()}
+        </div>
+        <AmsSpoolGrid
+          unit={activeUnit}
+          selectedGlobalTrayId={selectedGlobalTrayId}
+          highlightCompatibleType={compatibleType}
+          onSelect={(gtid) => handleSlotPick(targetSlotId, gtid)}
+          ftsExtruderForSlot={ftsExtruderForSlot}
+          ftsInstalled={ftsInstalled}
+          trayRemainingWeightMap={trayRemainingWeightMap}
+          leftNozzle={leftNozzle}
+          rightNozzle={rightNozzle}
+          remainingShort={remainingShort}
+        />
+        {manualMappings[targetSlotId] !== undefined && (
+          <button
+            type="button"
+            onClick={() => handleClearManual(targetSlotId)}
+            className="text-[11px] text-bambu-gray hover:text-white underline-offset-2 hover:underline"
+          >
+            {t('printModal.useAutoMatch', 'Use auto-match')}
+          </button>
+        )}
+      </div>
+    );
   };
 
   return (
@@ -244,7 +461,11 @@ export function FilamentMapping({
         className="flex items-center gap-2 text-sm text-bambu-gray hover:text-white transition-colors w-full"
       >
         <Circle className="w-4 h-4" fill={statusColor} stroke="none" />
-        <span>{plateLabel ? `${t('printModal.filamentMapping')} — ${plateLabel}` : t('printModal.filamentMapping')}</span>
+        <span>
+          {plateLabel
+            ? `${t('printModal.filamentMapping')} — ${plateLabel}`
+            : t('printModal.filamentMapping')}
+        </span>
         {hasTypeMismatch ? (
           <span className="text-xs text-orange-700 dark:text-orange-400">(Type not found)</span>
         ) : hasColorMismatch ? (
@@ -260,10 +481,14 @@ export function FilamentMapping({
       </button>
 
       {isExpanded && (
-        <div className="mt-2 bg-bambu-dark rounded-lg p-3 space-y-2">
-          <div className="flex items-center justify-between mb-2">
-            <span className="text-xs text-bambu-gray">{t('printModal.clickToChangeSlot')}</span>
-            <div className="flex items-center gap-1.5">
+        <div className="mt-2 bg-bambu-dark rounded-lg p-3 space-y-3 relative">
+          <div className="flex items-center justify-between gap-2">
+            <span className="text-xs text-bambu-gray">
+              {isMultiMaterial
+                ? t('printModal.clickMaterialToMap', 'Click a material to choose AMS slot')
+                : t('printModal.clickToChangeSlot')}
+            </span>
+            <div className="flex items-center gap-1.5 shrink-0">
               {archiveAmsMapping && (
                 <button
                   type="button"
@@ -290,118 +515,173 @@ export function FilamentMapping({
               </button>
             </div>
           </div>
-          {filamentComparison.map((item, idx) => {
-            // #1717: surface the same per-slot force-color-match checkbox here
-            // that FilamentOverride exposes for model-mode dispatch. The
-            // scheduler honors the flag in both modes; only the UI was missing.
-            const slotId = item.slot_id ?? 0;
-            const canForceMatch = slotId > 0 && onForceColorMatchChange != null;
-            // #1718: same sub-brand + colour resolution as FilamentOverride.
-            // Indexing is safe because ``useFilamentLabels`` mirrors the input
-            // array shape; defensive fallback covers the empty-reqs render
-            // path that shouldn't reach here anyway.
-            const { resolvedName, colorLabel } = filamentLabels[idx] ?? { resolvedName: item.type, colorLabel: getColorName(item.color) };
-            return (
-            <div key={idx} className="space-y-1">
-              <div
-                className="grid items-center gap-2 text-xs"
-                style={{ gridTemplateColumns: '16px minmax(70px, 1fr) auto 2fr 16px' }}
-              >
-                {/* Required color */}
-                <span title={`Required: ${resolvedName} - ${colorLabel}`}>
-                  <Circle className="w-3 h-3" fill={item.color} stroke={item.color} />
-                </span>
-                {/* Required type + grams + nozzle badge. Only the name
-                    truncates; the gram usage is pinned (shrink-0) so it never
-                    clips on narrow/mobile widths (#2669). */}
-                <span className="text-white flex items-center gap-1 min-w-0">
-                  {isDualNozzle && item.nozzle_id != null && (
+
+          {/* Multi-material mapping summary chips */}
+          {isMultiMaterial && (
+            <div className="flex flex-wrap gap-2" data-testid="filament-mapping-summary">
+              {filamentComparison.map((item, idx) => {
+                const { resolvedName, colorLabel } = filamentLabels[idx] ?? {
+                  resolvedName: item.type,
+                  colorLabel: getColorName(item.color),
+                };
+                const mapped = item.loaded;
+                const incomplete = !mapped;
+                return (
+                  <button
+                    key={item.slot_id ?? idx}
+                    type="button"
+                    onClick={() => setPickingSlotId(item.slot_id)}
+                    className={`flex flex-col items-center gap-0.5 rounded-md px-1.5 py-1 min-w-[3.25rem] border transition-colors ${
+                      pickingSlotId === item.slot_id
+                        ? 'border-bambu-green bg-bambu-green/10'
+                        : incomplete
+                          ? 'border-orange-500/50 bg-orange-500/5'
+                          : 'border-bambu-gray/30 hover:border-bambu-gray'
+                    }`}
+                    title={t('printModal.chooseMaterialSlot', 'Choose which extruder/color to use for Material {{n}}', {
+                      n: idx + 1,
+                    })}
+                    aria-label={`${resolvedName} ${colorLabel}`}
+                  >
                     <span
-                      className="inline-flex items-center justify-center w-3.5 h-3.5 rounded text-[9px] font-bold leading-none bg-bambu-gray/20 text-bambu-gray shrink-0"
-                      title={item.nozzle_id === 1 ? t('printModal.leftNozzleTooltip') : t('printModal.rightNozzleTooltip')}
-                    >
-                      {item.nozzle_id === 1 ? t('printModal.leftNozzle') : t('printModal.rightNozzle')}
+                      className="w-7 h-7 rounded-sm border border-white/20"
+                      style={{ backgroundColor: item.color || '#808080' }}
+                    />
+                    <span className="text-[10px] text-white truncate max-w-[4.5rem]" title={resolvedName}>
+                      {item.type}
                     </span>
+                    <span
+                      className={`text-[10px] font-medium ${
+                        incomplete ? 'text-orange-400' : 'text-bambu-green'
+                      }`}
+                    >
+                      {mapped
+                        ? mapped.label
+                        : t('printModal.unmappedSlot', '—')}
+                    </span>
+                  </button>
+                );
+              })}
+            </div>
+          )}
+
+          {mappingIncomplete && (
+            <p className="text-xs text-orange-400 flex items-center gap-1">
+              <AlertTriangle className="w-3 h-3 shrink-0" />
+              {t('printModal.mustMapMaterials', 'Must select/map materials')}
+            </p>
+          )}
+
+          {/* Single-material: required row + inline AMS grid */}
+          {!isMultiMaterial &&
+            filamentComparison.map((item, idx) => {
+              const slotId = item.slot_id ?? 0;
+              const canForceMatch = slotId > 0 && onForceColorMatchChange != null;
+              const { resolvedName, colorLabel } = filamentLabels[idx] ?? {
+                resolvedName: item.type,
+                colorLabel: getColorName(item.color),
+              };
+              return (
+                <div key={idx} className="space-y-2">
+                  <div className="flex items-center gap-2 text-xs min-w-0">
+                    <span title={`Required: ${resolvedName} - ${colorLabel}`}>
+                      <Circle className="w-3 h-3" fill={item.color} stroke={item.color} />
+                    </span>
+                    <span className="text-white flex items-center gap-1 min-w-0 flex-1">
+                      {isDualNozzle && item.nozzle_id != null && (
+                        <span
+                          className="inline-flex items-center justify-center w-3.5 h-3.5 rounded text-[9px] font-bold leading-none bg-bambu-gray/20 text-bambu-gray shrink-0"
+                          title={
+                            item.nozzle_id === 1
+                              ? t('printModal.leftNozzleTooltip')
+                              : t('printModal.rightNozzleTooltip')
+                          }
+                        >
+                          {item.nozzle_id === 1 ? leftNozzle : rightNozzle}
+                        </span>
+                      )}
+                      <span className="truncate min-w-0" title={resolvedName}>
+                        {resolvedName}
+                      </span>
+                      <span className="text-bambu-gray shrink-0 whitespace-nowrap">
+                        ({item.used_grams}g)
+                      </span>
+                    </span>
+                    {item.status === 'match' ? (
+                      <Check className="w-3 h-3 text-bambu-green shrink-0" />
+                    ) : item.status === 'type_only' ? (
+                      <span title="Same type, different color">
+                        <AlertTriangle className="w-3 h-3 text-yellow-600 dark:text-yellow-400 shrink-0" />
+                      </span>
+                    ) : (
+                      <span title="Filament type not loaded">
+                        <AlertTriangle className="w-3 h-3 text-orange-600 dark:text-orange-400 shrink-0" />
+                      </span>
+                    )}
+                  </div>
+                  {renderSpoolPicker(slotId, item.loaded?.globalTrayId, item.type)}
+                  {canForceMatch && (
+                    <label className="inline-flex items-center gap-1.5 text-xs text-bambu-gray cursor-pointer select-none">
+                      <input
+                        type="checkbox"
+                        checked={forceColorMatch?.[slotId] ?? false}
+                        onChange={(e) => onForceColorMatchChange(slotId, e.target.checked)}
+                        className="accent-bambu-green w-3 h-3"
+                      />
+                      <Palette className="w-3 h-3" />
+                      {t('printModal.forceColorMatch')}
+                    </label>
                   )}
-                  <span className="truncate min-w-0" title={resolvedName}>{resolvedName}</span>
-                  <span className="text-bambu-gray shrink-0 whitespace-nowrap">({item.used_grams}g)</span>
-                </span>
-                {/* Arrow */}
-                <span className="text-bambu-gray">→</span>
-                {/* Slot selector dropdown */}
-                <select
-                  value={item.loaded?.globalTrayId ?? ''}
-                  onChange={(e) => handleSlotChange(slotId, e.target.value)}
-                  className={`flex-1 px-2 py-1 rounded border text-xs bg-bambu-dark-secondary focus:outline-none focus:ring-1 focus:ring-bambu-green ${
-                    item.status === 'match'
-                      ? 'border-bambu-green/50 text-bambu-green'
-                      : item.status === 'type_only'
-                      ? 'border-yellow-500 dark:border-yellow-400/50 text-yellow-700 dark:text-yellow-400'
-                      : 'border-orange-500 dark:border-orange-400/50 text-orange-700 dark:text-orange-400'
-                  } ${item.isManual ? 'ring-1 ring-blue-400/50' : ''}`}
-                  title={item.isManual ? 'Manually selected' : 'Auto-matched'}
+                </div>
+              );
+            })}
+
+          {/* Multi-material: AMS picker when a chip is active */}
+          {isMultiMaterial && pickingItem && pickingSlotId != null && (
+            <div
+              className="rounded-lg border border-bambu-gray/40 bg-bambu-dark-secondary p-3 space-y-2 shadow-lg"
+              data-testid="ams-material-picker"
+              role="dialog"
+              aria-label={t(
+                'printModal.chooseMaterialSlot',
+                'Choose which extruder/color to use for Material {{n}}',
+                { n: pickingIndex + 1 },
+              )}
+            >
+              <div className="flex items-start justify-between gap-2">
+                <div className="min-w-0">
+                  <p className="text-xs font-medium text-white">
+                    {t(
+                      'printModal.chooseMaterialSlot',
+                      'Choose which extruder/color to use for Material {{n}}',
+                      { n: pickingIndex + 1 },
+                    )}
+                  </p>
+                  <p className="text-[11px] text-bambu-gray truncate mt-0.5">
+                    {(filamentLabels[pickingIndex]?.resolvedName ?? pickingItem.type) +
+                      ' · ' +
+                      (filamentLabels[pickingIndex]?.colorLabel ?? getColorName(pickingItem.color))}
+                    {isDualNozzle && pickingItem.nozzle_id != null && (
+                      <> · {pickingItem.nozzle_id === 1 ? leftNozzle : rightNozzle}</>
+                    )}
+                  </p>
+                </div>
+                <button
+                  type="button"
+                  onClick={() => setPickingSlotId(null)}
+                  className="text-bambu-gray hover:text-white p-0.5"
+                  aria-label={t('common.close', 'Close')}
                 >
-                  <option value="" className="bg-bambu-dark text-bambu-gray">
-                    -- Select slot --
-                  </option>
-                  {/*
-                    #1722: every loaded slot is offered for every filament row,
-                    regardless of which extruder the slot is wired to. Before this
-                    change a slot was only listed when its extruder matched the
-                    filament's slicer-assigned nozzle (item.nozzle_id), which
-                    locked users out of cross-extruder picks even when they'd
-                    intentionally loaded the required filament into the "other"
-                    AMS. The L/R badge on the filament row still tells the user
-                    what the slicer planned; the dropdown now trusts the user to
-                    pick based on their physical setup. Printer firmware accepts
-                    or rejects the ams_mapping at start-print — failure is loud,
-                    not silent.
-                  */}
-                  {loadedFilaments.map((f) => {
-                      const remainingWeight = trayRemainingWeightMap.get(f.globalTrayId);
-                      const remainingLabel = remainingWeight != null
-                        ? t('printModal.slotRemainingShort', {
-                            grams: remainingWeight,
-                            defaultValue: ` - ${remainingWeight}g left`,
-                          })
-                        : '';
-                      // FTS routing badge: if this slot is currently fed into an FTS
-                      // track, show the destination extruder. Idle (not-loaded) slots
-                      // get no badge — they can be routed to either extruder on demand.
-                      const ftsTargetExtruder = ftsInstalled
-                        ? ftsExtruderForSlot(f.globalTrayId)
-                        : null;
-                      const ftsBadge =
-                        ftsTargetExtruder == null
-                          ? ''
-                          : ` [${ftsTargetExtruder === 1 ? t('printModal.leftNozzle') : t('printModal.rightNozzle')}]`;
-                      return (
-                        <option key={f.globalTrayId} value={f.globalTrayId} className="bg-bambu-dark text-white">
-                          {f.label}: {f.traySubBrands || f.type} ({f.colorName}){remainingLabel}{ftsBadge}
-                        </option>
-                      );
-                  })}
-                </select>
-                {/* Status icon */}
-                {item.status === 'match' ? (
-                  <Check className="w-3 h-3 text-bambu-green" />
-                ) : item.status === 'type_only' ? (
-                  <span title="Same type, different color">
-                    <AlertTriangle className="w-3 h-3 text-yellow-600 dark:text-yellow-400" />
-                  </span>
-                ) : (
-                  <span title="Filament type not loaded">
-                    <AlertTriangle className="w-3 h-3 text-orange-600 dark:text-orange-400" />
-                  </span>
-                )}
+                  <X className="w-4 h-4" />
+                </button>
               </div>
-              {/* Force Color Match checkbox — matches FilamentOverride's layout. */}
-              {canForceMatch && (
-                <label className="inline-flex items-center gap-1.5 text-xs text-bambu-gray cursor-pointer select-none pl-5">
+              {renderSpoolPicker(pickingSlotId, pickingItem.loaded?.globalTrayId, pickingItem.type)}
+              {onForceColorMatchChange != null && pickingSlotId > 0 && (
+                <label className="inline-flex items-center gap-1.5 text-xs text-bambu-gray cursor-pointer select-none">
                   <input
                     type="checkbox"
-                    checked={forceColorMatch?.[slotId] ?? false}
-                    onChange={(e) => onForceColorMatchChange(slotId, e.target.checked)}
+                    checked={forceColorMatch?.[pickingSlotId] ?? false}
+                    onChange={(e) => onForceColorMatchChange(pickingSlotId, e.target.checked)}
                     className="accent-bambu-green w-3 h-3"
                   />
                   <Palette className="w-3 h-3" />
@@ -409,8 +689,55 @@ export function FilamentMapping({
                 </label>
               )}
             </div>
-            );
-          })}
+          )}
+
+          {/* Multi-material closed: compact read-only AMS layout for context */}
+          {isMultiMaterial && pickingSlotId == null && activeUnit && (
+            <div className="space-y-2 pt-1 border-t border-bambu-gray/20">
+              <div className="flex items-center justify-between gap-2">
+                <span className="text-xs text-bambu-gray font-medium">{activeUnit.label}</span>
+                {renderUnitSwitcher()}
+              </div>
+              <div
+                className={`grid gap-2 pointer-events-none ${
+                  activeUnit.isHt || activeUnit.trays.length <= 1
+                    ? 'grid-cols-1 max-w-[5.5rem]'
+                    : 'grid-cols-2 sm:grid-cols-4'
+                }`}
+                data-testid="ams-spool-overview"
+                aria-hidden
+              >
+                {activeUnit.trays.map((slot) => {
+                  const loaded = slot.loaded;
+                  const isEmpty = !loaded && (!slot.tray?.tray_type || slot.tray.tray_type === '');
+                  const color =
+                    loaded?.color ??
+                    (slot.tray?.tray_color ? normalizeColor(slot.tray.tray_color) : '#808080');
+                  const caption = spoolCaption(loaded, slot.tray);
+                  const mappedHere =
+                    loaded != null &&
+                    filamentComparison.some(
+                      (item) => item.loaded?.globalTrayId === loaded.globalTrayId,
+                    );
+                  return (
+                    <div
+                      key={`${activeUnit.key}-ov-${slot.trayId}`}
+                      className={`flex flex-col items-center gap-1 rounded-lg p-1.5 ${
+                        mappedHere ? 'ring-1 ring-bambu-green/60' : ''
+                      } ${isEmpty ? 'opacity-40' : ''}`}
+                    >
+                      <SpoolIcon color={isEmpty ? '#666' : color} isEmpty={isEmpty} size={36} />
+                      <span className="text-[9px] text-bambu-gray">#{slot.slotNumber}</span>
+                      <span className="text-[10px] leading-tight text-white/70 line-clamp-2 w-full text-center">
+                        {isEmpty ? t('printModal.emptySlot', 'Empty') : caption}
+                      </span>
+                    </div>
+                  );
+                })}
+              </div>
+            </div>
+          )}
+
           <div className="text-xs text-bambu-gray">
             {t('printModal.totalCost')}{' '}
             <span className="text-white">
@@ -418,7 +745,9 @@ export function FilamentMapping({
             </span>
           </div>
           {hasTypeMismatch && (
-            <p className="text-xs text-orange-700 dark:text-orange-400 mt-2">Required filament type not found in printer.</p>
+            <p className="text-xs text-orange-700 dark:text-orange-400">
+              Required filament type not found in printer.
+            </p>
           )}
         </div>
       )}
