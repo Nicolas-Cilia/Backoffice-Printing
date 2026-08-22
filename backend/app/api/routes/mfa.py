@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import base64
 import hashlib
+import hmac
 import io
 import logging
 import os
@@ -424,21 +425,25 @@ def _assert_totp_not_replayed(totp_obj: pyotp.TOTP, totp_record: UserTOTP, code:
     """Raise HTTP 400 if this TOTP code was already accepted in its time window.
 
     M3 fix: store the counter of the *accepted* code rather than the current
-    wall-clock counter.  With valid_window=1, pyotp accepts codes from the
-    previous 30-second step.  Using timecode(now) would store the wrong counter
-    when the previous-window code is accepted, allowing immediate replay.
+    wall-clock counter.  With ``valid_window=1``, pyotp accepts codes from the
+    previous/next 30-second step.  Storing ``timecode(now)`` when a skewed-
+    window code is accepted lets a replay succeed after the clock crosses the
+    next step boundary (main CI flake on ``test_totp_replay_rejected_on_verify``).
+
+    Important: ``TOTP.at(n)`` treats ``n`` as a *unix timestamp*, not a
+    time-step counter.  Matching must use ``generate_otp(counter)``.
     """
-    # Determine which time-step the accepted code belongs to.
     now = datetime.now(timezone.utc)
+    current_counter = totp_obj.timecode(now)
     accepted_counter: int | None = None
-    for offset in (0, -1):  # current window first, then previous
-        candidate_time = now.timestamp() + offset * totp_obj.interval
-        candidate_counter = totp_obj.timecode(datetime.fromtimestamp(candidate_time, tz=timezone.utc))
-        if totp_obj.at(candidate_counter) == code:
+    # Mirror pyotp.verify(..., valid_window=1): current, previous, and next step.
+    for offset in (0, -1, 1):
+        candidate_counter = current_counter + offset
+        if hmac.compare_digest(totp_obj.generate_otp(candidate_counter), code):
             accepted_counter = candidate_counter
             break
     if accepted_counter is None:
-        accepted_counter = totp_obj.timecode(now)  # fallback (should not happen after verify())
+        accepted_counter = current_counter  # fallback (should not happen after verify())
 
     totp_record.accept_counter(accepted_counter)
 
