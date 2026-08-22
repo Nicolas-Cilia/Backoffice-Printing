@@ -91,8 +91,7 @@ import {
 
 // Aliased: lucide-react already exports a `Link` icon into this module.
 import { Link as RouterLink, useNavigate } from 'react-router-dom';
-import { api, discoveryApi, firmwareApi, ApiError } from '../api/client';
-import { CoverImage } from '../components/CoverImage';
+import { api, discoveryApi, firmwareApi, withStreamToken, ApiError } from '../api/client';
 import { formatDateOnly, formatETA, formatDuration, parseUTCDate } from '../utils/date';
 import type { Printer, PrinterCreate, PrinterStatus, AMSUnit, DiscoveredPrinter, FirmwareUpdateInfo, FirmwareUploadStatus, LinkedSpoolInfo, SpoolAssignment, HMSError, InventorySpool, SmartPlug, PrinterDiagnosticResult } from '../api/client';
 import { Card, CardContent } from '../components/Card';
@@ -899,6 +898,81 @@ function getEmptySlotKind(tray: { tray_type?: string | null; state?: number | nu
 // within a couple of seconds; 30s covers the slowest observed push cadence
 // without leaving the user waiting on a verdict.
 const DRY_START_CONFIRM_MS = 30_000;
+
+
+function CoverImage({
+  url,
+  printName,
+  className = 'w-20 h-20',
+  radiusClass = 'rounded-lg',
+}: {
+  url: string | null;
+  printName?: string;
+  className?: string;
+  radiusClass?: string;
+}) {
+  const { t } = useTranslation();
+  const [loaded, setLoaded] = useState(false);
+  const [error, setError] = useState(false);
+  const [showOverlay, setShowOverlay] = useState(false);
+
+  // Cache-bust the image URL when the print name changes so the browser
+  // fetches the new cover instead of serving the stale cached image.
+  const cacheBustedUrl = useMemo(() => {
+    if (!url) return null;
+    const sep = url.includes('?') ? '&' : '?';
+    return withStreamToken(`${url}${sep}v=${encodeURIComponent(printName || Date.now().toString())}`);
+  }, [url, printName]);
+
+  // Reset loaded/error state when the image URL changes
+  useEffect(() => {
+    setLoaded(false);
+    setError(false);
+  }, [cacheBustedUrl]);
+
+  return (
+    <>
+      <div
+        className={`${className} flex-shrink-0 ${radiusClass} overflow-hidden bg-bambu-dark-tertiary flex items-center justify-center ${cacheBustedUrl && loaded ? 'cursor-pointer' : ''}`}
+        onClick={() => cacheBustedUrl && loaded && setShowOverlay(true)}
+      >
+        {cacheBustedUrl && !error ? (
+          <>
+            <img
+              src={cacheBustedUrl}
+              alt={t('printers.printPreview')}
+              className={`w-full h-full object-cover ${loaded ? 'block' : 'hidden'}`}
+              onLoad={() => setLoaded(true)}
+              onError={() => setError(true)}
+            />
+            {!loaded && <Box className="w-8 h-8 text-bambu-gray" />}
+          </>
+        ) : (
+          <Box className="w-8 h-8 text-bambu-gray" />
+        )}
+      </div>
+
+      {/* Cover Image Overlay */}
+      {showOverlay && cacheBustedUrl && (
+        <div
+          className="fixed inset-0 bg-black/80 flex items-center justify-center z-50 p-8"
+          onClick={() => setShowOverlay(false)}
+        >
+          <div className="relative max-w-2xl max-h-full">
+            <img
+              src={cacheBustedUrl}
+              alt={t('printers.printPreview')}
+              className="max-w-full max-h-[80vh] rounded-lg shadow-2xl"
+            />
+            {printName && (
+              <p className="text-white text-center mt-4 text-lg">{printName}</p>
+            )}
+          </div>
+        </div>
+      )}
+    </>
+  );
+}
 
 interface PrinterMaintenanceInfo {
   due_count: number;
