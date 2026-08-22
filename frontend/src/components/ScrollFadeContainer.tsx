@@ -4,6 +4,8 @@ const OVERFLOW_THRESHOLD_PX = 8;
 
 interface ScrollFadeContainerProps extends HTMLAttributes<HTMLDivElement> {
   children: ReactNode;
+  /** Tailwind `from-*` class matching the pane background (default: page dark). */
+  fadeFromClassName?: string;
 }
 
 /**
@@ -14,6 +16,7 @@ interface ScrollFadeContainerProps extends HTMLAttributes<HTMLDivElement> {
 export function ScrollFadeContainer({
   children,
   className = '',
+  fadeFromClassName = 'from-bambu-dark',
   ...props
 }: ScrollFadeContainerProps) {
   const ref = useRef<HTMLDivElement>(null);
@@ -72,7 +75,7 @@ export function ScrollFadeContainer({
       <div
         data-testid="scroll-more-fade"
         aria-hidden
-        className={`pointer-events-none absolute inset-x-0 bottom-0 h-16 bg-gradient-to-t from-bambu-dark to-transparent transition-opacity duration-200 ${
+        className={`pointer-events-none absolute inset-x-0 bottom-0 h-16 bg-gradient-to-t ${fadeFromClassName} to-transparent transition-opacity duration-200 ${
           showFade ? 'opacity-100' : 'opacity-0'
         }`}
       />

@@ -13,6 +13,11 @@ import type {
 import { Button } from '../components/Button';
 import { ConfirmModal } from '../components/ConfirmModal';
 import { FilamentSwatch } from '../components/FilamentSwatch';
+import { ScrollFadeContainer } from '../components/ScrollFadeContainer';
+import {
+  RING_GAP_ANGLE,
+  ringCornerRadiusForSlice,
+} from './filamentTrackingChart';
 import { ColorSection } from '../components/spool-form/ColorSection';
 import { FilamentSection } from '../components/spool-form/FilamentSection';
 import { DEFAULT_BRANDS, MATERIALS } from '../components/spool-form/constants';
@@ -107,9 +112,6 @@ const PRINTER_SLICE_COLORS = [
 function printerSliceColor(printerId: number): string {
   return PRINTER_SLICE_COLORS[Math.abs(printerId) % PRINTER_SLICE_COLORS.length];
 }
-
-const RING_CORNER = 6;
-const RING_GAP_ANGLE = 3;
 
 export function InventorySectionTabs({
   tab,
@@ -440,12 +442,12 @@ export function FilamentTrackingPage() {
         )}
       </section>
 
-      <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
-        <section className="bg-bambu-dark-secondary rounded-lg p-4 flex flex-col min-h-0">
-          <h2 className="text-white font-semibold mb-1">
+      <div className="grid grid-cols-1 lg:grid-cols-2 gap-4 lg:items-stretch">
+        <section className="bg-bambu-dark-secondary rounded-lg p-4 flex flex-col min-h-0 lg:h-[22rem]">
+          <h2 className="text-white font-semibold mb-1 shrink-0">
             {t('inventory.trackingByPrinter', 'Consumption by printer')}
           </h2>
-          <p className="text-xs text-bambu-gray mb-1">
+          <p className="text-xs text-bambu-gray mb-1 shrink-0">
             {t(
               'inventory.trackingByPrinterHint',
               'Each slice is that printer’s share of tracked usage, including prints still running.',
@@ -460,9 +462,9 @@ export function FilamentTrackingPage() {
           )}
         </section>
 
-        <section className="bg-bambu-dark-secondary rounded-lg p-4 flex flex-col min-h-0">
-          <h2 className="text-white font-semibold mb-1">{t('inventory.trackingRecent', 'Recent usage')}</h2>
-          <p className="text-xs text-bambu-gray mb-1">
+        <section className="bg-bambu-dark-secondary rounded-lg p-4 flex flex-col min-h-0 lg:h-[22rem]">
+          <h2 className="text-white font-semibold mb-1 shrink-0">{t('inventory.trackingRecent', 'Recent usage')}</h2>
+          <p className="text-xs text-bambu-gray mb-1 shrink-0">
             {t(
               'inventory.trackingRecentHint',
               'Estimates come from the slicer file × progress, not AMS remain%. Skip-objects still charge the full plate.',
@@ -471,15 +473,17 @@ export function FilamentTrackingPage() {
           {recentJobs.length === 0 ? (
             <p className="text-sm text-bambu-gray mt-3">{t('inventory.trackingNoEvents', 'No usage recorded yet.')}</p>
           ) : (
-            <ul className="divide-y divide-bambu-dark-tertiary">
-              {recentJobs.map((job) => (
-                <RecentUsageRow
-                  key={job.key}
-                  job={job}
-                  printerName={job.printer_id != null ? printerNameById.get(job.printer_id) : undefined}
-                />
-              ))}
-            </ul>
+            <ScrollFadeContainer className="mt-3" fadeFromClassName="from-bambu-dark-secondary">
+              <ul className="divide-y divide-bambu-dark-tertiary">
+                {recentJobs.map((job) => (
+                  <RecentUsageRow
+                    key={job.key}
+                    job={job}
+                    printerName={job.printer_id != null ? printerNameById.get(job.printer_id) : undefined}
+                  />
+                ))}
+              </ul>
+            </ScrollFadeContainer>
           )}
         </section>
       </div>
@@ -662,16 +666,15 @@ function PrinterConsumptionChart({
   const { t } = useTranslation();
   const [hoveredId, setHoveredId] = useState<number | null>(null);
   const pieRows = rows.filter((row) => row.grams > 0);
+  const pieTotal = pieRows.reduce((sum, row) => sum + row.grams, 0);
   const label = rows
     .map((row) => `${row.name} ${formatConsumed(row.grams)}`)
     .join(', ');
   return (
-    // items-start + fixed chart size: avoid stretch/aspect-square feedback that
-    // blew the page height. No justify-evenly — that spaced legend rows apart
-    // when the grid cell stretched to match "Recent usage".
-    <div className="flex items-start gap-6 mt-3 overflow-visible">
+    // Equal-height card body: chart stays fixed; legend scrolls with fade.
+    <div className="flex items-stretch gap-6 mt-3 min-h-0 flex-1 overflow-hidden">
       <div
-        className="relative flex-shrink-0 size-[10.5rem] overflow-visible printer-share-chart"
+        className="relative flex-shrink-0 self-center size-[10.5rem] overflow-visible printer-share-chart"
         role="img"
         aria-label={totalGrams > 0 ? label : 'No usage recorded'}
       >
@@ -687,7 +690,7 @@ function PrinterConsumptionChart({
                 innerRadius="62%"
                 outerRadius="95%"
                 paddingAngle={pieRows.length > 1 ? RING_GAP_ANGLE : 0}
-                cornerRadius={RING_CORNER}
+                cornerRadius={0}
                 startAngle={90}
                 endAngle={-270}
                 stroke="none"
@@ -702,6 +705,7 @@ function PrinterConsumptionChart({
                   <Cell
                     key={row.printer_id}
                     fill={printerSliceColor(row.printer_id)}
+                    cornerRadius={ringCornerRadiusForSlice(row.grams, pieTotal, pieRows.length)}
                     style={{ cursor: 'pointer', outline: 'none' }}
                   />
                 ))}
@@ -721,25 +725,27 @@ function PrinterConsumptionChart({
           <div className="text-[11px] text-bambu-gray mt-1">{t('inventory.trackingUsed', 'used')}</div>
         </div>
       </div>
-      <ul className="flex-1 min-w-0 flex flex-col gap-1.5 py-0.5 max-h-[14rem] overflow-y-auto">
-        {rows.map((row) => (
-          <li
-            key={row.printer_id}
-            className={`flex items-center gap-2 text-sm leading-5 min-w-0 transition-opacity ${
-              hoveredId != null && hoveredId !== row.printer_id ? 'opacity-40' : ''
-            }`}
-          >
-            <span
-              className="w-2.5 h-2.5 rounded-full flex-shrink-0"
-              style={{ backgroundColor: printerSliceColor(row.printer_id) }}
-            />
-            <span className="text-white truncate min-w-0 flex-1">{row.name}</span>
-            <span className="text-bambu-gray whitespace-nowrap flex-shrink-0">
-              {formatConsumed(row.grams)}
-            </span>
-          </li>
-        ))}
-      </ul>
+      <ScrollFadeContainer fadeFromClassName="from-bambu-dark-secondary">
+        <ul className="flex flex-col gap-1.5 py-0.5 pr-1">
+          {rows.map((row) => (
+            <li
+              key={row.printer_id}
+              className={`flex items-center gap-2 text-sm leading-5 min-w-0 transition-opacity ${
+                hoveredId != null && hoveredId !== row.printer_id ? 'opacity-40' : ''
+              }`}
+            >
+              <span
+                className="w-2.5 h-2.5 rounded-full flex-shrink-0"
+                style={{ backgroundColor: printerSliceColor(row.printer_id) }}
+              />
+              <span className="text-white truncate min-w-0 flex-1">{row.name}</span>
+              <span className="text-bambu-gray whitespace-nowrap flex-shrink-0">
+                {formatConsumed(row.grams)}
+              </span>
+            </li>
+          ))}
+        </ul>
+      </ScrollFadeContainer>
     </div>
   );
 }
