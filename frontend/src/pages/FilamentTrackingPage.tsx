@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
+import { useEffect, useMemo, useRef, useState, type ComponentProps, type ReactNode } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { useTranslation } from 'react-i18next';
 import { Activity, Clock, Edit2, Eraser, Loader2, Package, Plus, Save, Trash2, TrendingDown, Wallet, X } from 'lucide-react';
@@ -701,14 +701,16 @@ function PrinterConsumptionChart({
                 }}
                 onMouseLeave={() => setHoveredId(null)}
               >
-                {pieRows.map((row) => (
-                  <Cell
-                    key={row.printer_id}
-                    fill={printerSliceColor(row.printer_id)}
-                    cornerRadius={ringCornerRadiusForSlice(row.grams, pieTotal, pieRows.length)}
-                    style={{ cursor: 'pointer', outline: 'none' }}
-                  />
-                ))}
+                {pieRows.map((row) => {
+                  // Recharts honors Cell cornerRadius at runtime; typings omit it.
+                  const cellProps = {
+                    key: row.printer_id,
+                    fill: printerSliceColor(row.printer_id),
+                    cornerRadius: ringCornerRadiusForSlice(row.grams, pieTotal, pieRows.length),
+                    style: { cursor: 'pointer' as const, outline: 'none' },
+                  };
+                  return <Cell {...(cellProps as ComponentProps<typeof Cell>)} />;
+                })}
               </Pie>
               <Tooltip
                 content={<PrinterSliceTooltip />}
