@@ -237,7 +237,10 @@ describe('ProductionFolderView', () => {
     render(<ProductionFolderView folderId={9} printerModel="X1C" canUpload />);
 
     const deleteControl = await screen.findByRole('button', { name: 'Delete' });
-    expect(screen.getByRole('button', { name: 'Replace' })).toBeInTheDocument();
+    const replaceBtn = screen.getByRole('button', { name: 'Replace' });
+    expect(replaceBtn).toBeInTheDocument();
+    expect(replaceBtn.className).toContain('bg-bambu-dark-tertiary');
+    expect(replaceBtn.className).not.toContain('bg-bambu-green');
     expect(deleteControl).toBeInTheDocument();
     expect(deleteControl.className).toContain('bg-bambu-dark-secondary/90');
     expect(deleteControl.className).toContain('text-bambu-gray');

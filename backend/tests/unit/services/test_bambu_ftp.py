@@ -1045,6 +1045,21 @@ class TestAsyncWrappers:
         assert local.read_bytes() == b"second path"
 
     @pytest.mark.asyncio
+    async def test_download_file_try_paths_all_missing_raises(self, patch_ftp_port, tmp_path):
+        """All-path 550 miss raises FileNotOnPrinterError (definitive, cacheable)."""
+        from backend.app.services.bambu_ftp import FileNotOnPrinterError
+
+        local = tmp_path / "gone.bin"
+        with pytest.raises(FileNotOnPrinterError):
+            await download_file_try_paths_async(
+                "127.0.0.1",
+                "12345678",
+                ["/cache/missing_a.bin", "/cache/missing_b.bin"],
+                local,
+                printer_model="X1C",
+            )
+
+    @pytest.mark.asyncio
     async def test_list_files_async_success(self, patch_ftp_port):
         """list_files_async returns file list."""
         server = patch_ftp_port

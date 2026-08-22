@@ -6,6 +6,7 @@ import { http, HttpResponse } from 'msw';
 import { render, createTestQueryClient } from '../utils';
 import InventoryPageRouter from '../../pages/InventoryPage';
 import { FilamentTrackingPage } from '../../pages/FilamentTrackingPage';
+import { ringCornerRadiusForSlice } from '../../pages/filamentTrackingChart';
 import { server } from '../mocks/server';
 
 const whitePlaRow = {
@@ -550,7 +551,7 @@ describe('Filament tracking tab', () => {
     expect(within(section).getByText('12 g')).toBeInTheDocument();
   });
 
-  it('keeps the by-printer legend compact instead of spacing rows evenly', async () => {
+  it('keeps equal-height cards with a fade-scrolling by-printer legend', async () => {
     const printers = Array.from({ length: 14 }, (_, i) => ({
       printer_id: i + 1,
       name: `Printer #${i + 1}`,
@@ -567,12 +568,25 @@ describe('Filament tracking tab', () => {
 
     const heading = await screen.findByRole('heading', { name: 'Consumption by printer' });
     const section = heading.closest('section') as HTMLElement;
+    expect(section.className).toMatch(/lg:h-\[22rem]/);
     expect(await within(section).findByText('Printer #1')).toBeInTheDocument();
     const legend = within(section).getByText('Printer #1').closest('ul') as HTMLElement;
     expect(legend.className).not.toMatch(/justify-evenly/);
     expect(legend.className).toMatch(/gap-1\.5/);
-    expect(legend.className).toMatch(/max-h-\[14rem]/);
-    expect(legend.className).toMatch(/overflow-y-auto/);
+    expect(within(section).getByTestId('scroll-fade-scroller')).toBeInTheDocument();
+    expect(within(section).getByTestId('scroll-more-fade')).toBeInTheDocument();
+
+    const recentHeading = screen.getByRole('heading', { name: 'Recent usage' });
+    const recentSection = recentHeading.closest('section') as HTMLElement;
+    expect(recentSection.className).toMatch(/lg:h-\[22rem]/);
+  });
+
+  it('drops pie cornerRadius on tiny slices so caps are not square', () => {
+    // 2 g of 100 g ≈ 7° after gaps — below MIN_SLICE_ANGLE_FOR_CORNER
+    expect(ringCornerRadiusForSlice(2, 100, 3)).toBe(0);
+    // 40 g of 100 g is large enough for rounded caps
+    expect(ringCornerRadiusForSlice(40, 100, 3)).toBe(6);
+    expect(ringCornerRadiusForSlice(100, 100, 1)).toBe(6);
   });
 
   it('shows named product rows instead of a collapsed color · material family', async () => {

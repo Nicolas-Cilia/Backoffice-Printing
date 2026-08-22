@@ -613,6 +613,7 @@ class TestPrintersAPI:
         from unittest.mock import AsyncMock, MagicMock, patch
 
         from backend.app.api.routes.printers import _cover_404_cache, _cover_cache
+        from backend.app.services.bambu_ftp import FileNotOnPrinterError
         from backend.app.services.bambu_mqtt import PrinterState
 
         printer = await printer_factory()
@@ -626,7 +627,7 @@ class TestPrintersAPI:
         state.subtask_name = "OrphanPrint"
         state.gcode_file = "OrphanPrint.3mf"
 
-        ftp_mock = AsyncMock(return_value=False)
+        ftp_mock = AsyncMock(side_effect=FileNotOnPrinterError("none of 8 paths found"))
 
         with (
             patch("backend.app.api.routes.printers.printer_manager") as mock_pm,
@@ -640,11 +641,99 @@ class TestPrintersAPI:
 
         assert r1.status_code == 404
         assert r2.status_code == 404
-        # First call retries internally; second call must short-circuit before FTP.
-        first_call_count = ftp_mock.await_count
-        assert first_call_count >= 1
-        # Second request didn't add to the count: the negative cache held.
-        assert ftp_mock.await_count == first_call_count
+        # First call records the definitive miss; second must short-circuit
+        # before FTP (#1420). Transient False (timeout/connect) must NOT
+        # negative-cache — see test_cover_transient_ftp_miss_not_cached.
+        assert ftp_mock.await_count == 1
+
+    @pytest.mark.asyncio
+    @pytest.mark.integration
+    async def test_cover_transient_ftp_miss_not_cached(self, async_client: AsyncClient, printer_factory, db_session):
+        """FTP timeout / connect failure returns False — must be 503 without
+        entering the negative cache, so a later request can still succeed once
+        contention clears (farm dashboard cover flake)."""
+        from unittest.mock import AsyncMock, MagicMock, patch
+
+        from backend.app.api.routes.printers import _cover_404_cache, _cover_cache
+        from backend.app.services.bambu_mqtt import PrinterState
+
+        printer = await printer_factory()
+
+        _cover_cache.pop(printer.id, None)
+        _cover_404_cache.pop(printer.id, None)
+
+        state = PrinterState()
+        state.connected = True
+        state.state = "RUNNING"
+        state.subtask_name = "BusyPrint"
+        state.gcode_file = "BusyPrint.3mf"
+
+        # Three False returns for the internal retry loop (max_retries=2 → 3 tries)
+        # on the first HTTP request, then one more for the second HTTP request.
+        ftp_mock = AsyncMock(return_value=False)
+
+        with (
+            patch("backend.app.api.routes.printers.printer_manager") as mock_pm,
+            patch("backend.app.api.routes.printers.download_file_try_paths_async", ftp_mock),
+        ):
+            mock_pm.get_status = MagicMock(return_value=state)
+            mock_pm.is_awaiting_plate_clear = MagicMock(return_value=False)
+
+            r1 = await async_client.get(f"/api/v1/printers/{printer.id}/cover")
+            first_count = ftp_mock.await_count
+            r2 = await async_client.get(f"/api/v1/printers/{printer.id}/cover")
+
+        assert r1.status_code == 503
+        assert r2.status_code == 503
+        assert first_count >= 1
+        # Second request must re-attempt FTP (not short-circuit via 404 cache).
+        assert ftp_mock.await_count > first_count
+        assert printer.id not in _cover_404_cache or not _cover_404_cache[printer.id]
+
+    @pytest.mark.asyncio
+    @pytest.mark.integration
+    async def test_cover_soft_404_clears_when_cached_3mf_appears(
+        self, async_client: AsyncClient, printer_factory, db_session, tmp_path
+    ):
+        """Early FileNotOnPrinter soft-miss must not stick after archive FTP lands."""
+        import zipfile
+        from unittest.mock import AsyncMock, MagicMock, patch
+
+        from backend.app.api.routes.printers import _cover_404_cache, _cover_cache
+        from backend.app.services.bambu_ftp import FileNotOnPrinterError, cache_3mf_download
+        from backend.app.services.bambu_mqtt import PrinterState
+
+        printer = await printer_factory()
+        _cover_cache.pop(printer.id, None)
+        _cover_404_cache.pop(printer.id, None)
+
+        state = PrinterState()
+        state.connected = True
+        state.state = "RUNNING"
+        state.subtask_name = "LateCache"
+        state.gcode_file = "LateCache.3mf"
+
+        ftp_mock = AsyncMock(side_effect=FileNotOnPrinterError("all paths 550"))
+
+        with (
+            patch("backend.app.api.routes.printers.printer_manager") as mock_pm,
+            patch("backend.app.api.routes.printers.download_file_try_paths_async", ftp_mock),
+        ):
+            mock_pm.get_status = MagicMock(return_value=state)
+            mock_pm.is_awaiting_plate_clear = MagicMock(return_value=False)
+
+            r1 = await async_client.get(f"/api/v1/printers/{printer.id}/cover")
+            assert r1.status_code == 404
+
+            threemf_path = tmp_path / "LateCache.3mf"
+            with zipfile.ZipFile(threemf_path, "w") as zf:
+                zf.writestr("Metadata/plate_1.png", b"LATE_PNG")
+            cache_3mf_download(printer.id, "LateCache.3mf", threemf_path)
+
+            r2 = await async_client.get(f"/api/v1/printers/{printer.id}/cover")
+
+        assert r2.status_code == 200
+        assert r2.content == b"LATE_PNG"
 
     @pytest.mark.asyncio
     @pytest.mark.integration
