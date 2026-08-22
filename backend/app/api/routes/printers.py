@@ -1,7 +1,6 @@
 import asyncio
 import logging
 import re
-import time
 import zipfile
 
 from fastapi import APIRouter, Depends, HTTPException, Query
@@ -43,7 +42,6 @@ from backend.app.schemas.printer import (
     PrintOptionsResponse,
 )
 from backend.app.services.bambu_ftp import (
-    FileNotOnPrinterError,
     cache_3mf_download,
     delete_file_async,
     download_file_bytes_async,
@@ -463,11 +461,9 @@ async def get_printer_status(
             connected=False,
         )
 
-    # Determine cover URL if there's an active print (including paused).
-    # Prefer subtask_name (what /cover downloads by); gcode_file alone is enough
-    # to advertise a cover URL when MQTT delivered the path first.
+    # Determine cover URL if there's an active print (including paused)
     cover_url = None
-    if state.state in ("RUNNING", "PAUSE") and (state.subtask_name or state.gcode_file):
+    if state.state in ("RUNNING", "PAUSE") and state.gcode_file:
         cover_url = f"/api/v1/printers/{printer_id}/cover"
 
     # Convert HMS errors to response format
@@ -1030,15 +1026,11 @@ async def diagnose_printer(
 # different plates always fetch a fresh thumbnail without needing plate in the key.
 _cover_cache: dict[int, dict[tuple[str, str], bytes]] = {}
 
-# Negative cache (#1420): when a cover lookup fails, remember it so the next
-# request short-circuits instead of re-hammering FTP. Values are either:
-#   None  — permanent miss (3MF present but had no thumbnail PNG)
-#   float — soft miss expiry (monotonic); FileNotOnPrinterError can race with
-#           print-start uploads, so these expire and also clear early when
-#           get_cached_3mf later has the file.
+# Negative cache (#1420): when a cover lookup exhausts every FTP path with 550
+# (file sliced on SD card, not on printer storage), remember the failure so the
+# next request short-circuits to 404 instead of re-hammering FTP 8 paths deep.
 # Cleared on print start alongside _cover_cache.
-_cover_404_cache: dict[int, dict[tuple[str, str], float | None]] = {}
-COVER_SOFT_404_TTL_S = 45.0
+_cover_404_cache: dict[int, set[tuple[str, str]]] = {}
 
 # In-flight cover downloads, keyed by (printer_id, subtask_name, view_key) (#2572).
 # The farm dashboard mounts a cover tile per printer card, so several browsers
@@ -1054,65 +1046,6 @@ def clear_cover_cache(printer_id: int) -> None:
     """Clear cached cover images for a printer. Call on print start to avoid stale thumbnails."""
     _cover_cache.pop(printer_id, None)
     _cover_404_cache.pop(printer_id, None)
-
-
-def _cover_candidate_filenames(subtask_name: str) -> list[str]:
-    """Build possible on-printer 3MF filenames from a subtask / gcode stem."""
-    possible_filenames: list[str] = []
-    if subtask_name.endswith(".3mf"):
-        possible_filenames.append(subtask_name)
-    else:
-        possible_filenames.append(f"{subtask_name}.gcode.3mf")
-        possible_filenames.append(f"{subtask_name}.3mf")
-
-    if " " in subtask_name:
-        normalized = subtask_name.replace(" ", "_")
-        if normalized.endswith(".3mf"):
-            possible_filenames.append(normalized)
-        else:
-            possible_filenames.append(f"{normalized}.gcode.3mf")
-            possible_filenames.append(f"{normalized}.3mf")
-    return possible_filenames
-
-
-def _resolve_cover_subtask_name(state) -> str | None:
-    """Prefer MQTT subtask_name; fall back to basename of gcode_file."""
-    if state.subtask_name:
-        return state.subtask_name
-    gcode_file = getattr(state, "gcode_file", None) or ""
-    if not gcode_file:
-        return None
-    base = gcode_file.rsplit("/", 1)[-1]
-    for suffix in (".gcode.3mf", ".3mf", ".gcode"):
-        if base.lower().endswith(suffix):
-            return base[: -len(suffix)]
-    return base or None
-
-
-def _cached_3mf_available(printer_id: int, subtask_name: str) -> bool:
-    return any(get_cached_3mf(printer_id, name) for name in _cover_candidate_filenames(subtask_name))
-
-
-def _is_cover_404_cached(printer_id: int, cache_key: tuple[str, str], subtask_name: str) -> bool:
-    entries = _cover_404_cache.get(printer_id)
-    if not entries or cache_key not in entries:
-        return False
-    # Archive / print-start may have landed the 3MF after our soft miss.
-    if _cached_3mf_available(printer_id, subtask_name):
-        entries.pop(cache_key, None)
-        return False
-    expiry = entries[cache_key]
-    if expiry is None:
-        return True
-    if time.monotonic() < expiry:
-        return True
-    entries.pop(cache_key, None)
-    return False
-
-
-def _remember_cover_404(printer_id: int, cache_key: tuple[str, str], *, permanent: bool) -> None:
-    expiry = None if permanent else time.monotonic() + COVER_SOFT_404_TTL_S
-    _cover_404_cache.setdefault(printer_id, {})[cache_key] = expiry
 
 
 @router.get("/{printer_id}/cover")
@@ -1150,9 +1083,8 @@ async def get_printer_cover(
     if not state:
         raise HTTPException(404, "Printer not connected")
 
-    # Prefer subtask_name; fall back to gcode_file basename when MQTT delivered
-    # the path first (cover_url is advertised from either field).
-    subtask_name = _resolve_cover_subtask_name(state)
+    # Use subtask_name as the 3MF filename (gcode_file is the path inside the 3MF)
+    subtask_name = state.subtask_name
     if not subtask_name:
         raise HTTPException(404, f"No subtask_name in printer state (state={state.state})")
 
@@ -1180,9 +1112,10 @@ async def get_printer_cover(
     if printer_id in _cover_cache and cache_key in _cover_cache[printer_id]:
         return Response(content=_cover_cache[printer_id][cache_key], media_type="image/png")
 
-    # Negative-cache short-circuit (#1420): soft misses expire / clear when a
-    # cached 3MF appears; permanent misses stay until print start.
-    if _is_cover_404_cached(printer_id, cache_key, subtask_name):
+    # Negative-cache short-circuit (#1420): if a prior lookup for this same
+    # subtask + view already failed, don't replay 8 FTP retries on every page
+    # refresh. _cover_404_cache is cleared on print start.
+    if printer_id in _cover_404_cache and cache_key in _cover_404_cache[printer_id]:
         raise HTTPException(404, f"No cover available for '{subtask_name}' (cached)")
 
     # Coalesce concurrent downloads for the same cover (#2572). The positive and
@@ -1199,7 +1132,7 @@ async def get_printer_cover(
             pass
         if printer_id in _cover_cache and cache_key in _cover_cache[printer_id]:
             return Response(content=_cover_cache[printer_id][cache_key], media_type="image/png")
-        if _is_cover_404_cached(printer_id, cache_key, subtask_name):
+        if printer_id in _cover_404_cache and cache_key in _cover_404_cache[printer_id]:
             raise HTTPException(404, f"No cover available for '{subtask_name}' (cached)")
         # Leader finished without filling either cache (a transient 503) — fall
         # through and try the download ourselves.
@@ -1232,7 +1165,25 @@ async def _produce_cover_image(
     failure (filling ``_cover_404_cache`` for the definitive 404s). Does no DB
     work — the caller already released the pooled connection before this runs.
     """
-    possible_filenames = _cover_candidate_filenames(subtask_name)
+    # Build possible 3MF filenames from subtask_name
+    # Bambu printers may store files as "name.gcode.3mf" (sliced via Bambu Studio)
+    # or just "name.3mf" (uploaded directly)
+    possible_filenames = []
+    if subtask_name.endswith(".3mf"):
+        possible_filenames.append(subtask_name)
+    else:
+        # Try both naming patterns
+        possible_filenames.append(f"{subtask_name}.gcode.3mf")
+        possible_filenames.append(f"{subtask_name}.3mf")
+
+    # Also try with spaces converted to underscores (Bambu Studio may normalize filenames)
+    if " " in subtask_name:
+        normalized = subtask_name.replace(" ", "_")
+        if normalized.endswith(".3mf"):
+            possible_filenames.append(normalized)
+        else:
+            possible_filenames.append(f"{normalized}.gcode.3mf")
+            possible_filenames.append(f"{normalized}.3mf")
 
     # Build list of all remote paths to try
     remote_paths = []
@@ -1271,12 +1222,7 @@ async def _produce_cover_image(
             f"Trying to download cover for '{subtask_name}' from {printer.ip_address} (trying {len(remote_paths)} paths)"
         )
 
-        # Retry logic for transient FTP failures. Only definitive "not on
-        # printer" misses (FileNotOnPrinterError after every path returned 550)
-        # may enter the negative cache — connect failures / timeouts used to
-        # return False and get permanently 404-cached for the whole print,
-        # which left farm dashboards stuck on wireframe placeholders until
-        # the next print cleared the cache.
+        # Retry logic for transient FTP failures
         max_retries = 2
         last_error = None
 
@@ -1291,14 +1237,6 @@ async def _produce_cover_image(
                 )
                 if downloaded:
                     break
-            except FileNotOnPrinterError as e:
-                # Soft-remember: print-start may still be uploading / archive
-                # flow may land the file shortly. Permanent only for "no PNG".
-                _remember_cover_404(printer_id, cache_key, permanent=False)
-                raise HTTPException(
-                    404,
-                    f"Could not download 3MF file for '{subtask_name}' from printer {printer.ip_address}. Tried: {possible_filenames}",
-                ) from e
             except Exception as e:
                 last_error = e
                 if attempt < max_retries:
@@ -1311,12 +1249,12 @@ async def _produce_cover_image(
             raise HTTPException(503, f"FTP download temporarily unavailable: {last_error}")
 
         if not downloaded:
-            # Transient: connect failed, timeout, or non-550 path errors.
-            # Do NOT negative-cache — a later request may succeed once FTP
-            # contention clears or the 3MF finishes writing to storage.
+            # Remember this failure so subsequent requests for the same print
+            # skip the 8-path FTP fan-out (#1420).
+            _cover_404_cache.setdefault(printer_id, set()).add(cache_key)
             raise HTTPException(
-                503,
-                f"FTP download temporarily unavailable for '{subtask_name}' on {printer.ip_address}",
+                404,
+                f"Could not download 3MF file for '{subtask_name}' from printer {printer.ip_address}. Tried: {possible_filenames}",
             )
 
         # Share the fresh download with the archive flow.
@@ -1417,7 +1355,7 @@ async def _produce_cover_image(
                         _cover_cache[printer_id][(subtask_name, view_key)] = image_data
                         return image_data
 
-            _remember_cover_404(printer_id, cache_key, permanent=True)
+            _cover_404_cache.setdefault(printer_id, set()).add(cache_key)
             raise HTTPException(404, "No thumbnail found in 3MF file")
         finally:
             zf.close()
