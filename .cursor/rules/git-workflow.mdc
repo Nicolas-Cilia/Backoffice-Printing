@@ -11,5 +11,5 @@ alwaysApply: true
 - Create PRs with: `gh pr create --repo Nicolas-Cilia/Backoffice-Printing --base dev`
 - Do not push to `main`.
 - After work is on `dev`, promoting to `main` is a separate later step. Do not invent a release process.
-- Before commit/push/PR: follow `.cursor/rules/pre-pr-verification.mdc` (merge-base with `origin/dev`, local CI mirrors, watch `gh pr checks`).
+- Before commit/push/PR: follow `.cursor/rules/pre-pr-three-agent-review.mdc` (3 Task subagents → fix → re-check) and `.cursor/rules/pre-pr-verification.mdc` (merge-base with `origin/dev`, local CI mirrors, watch `gh pr checks`).
 - Version bumps and Docker publish: see `.cursor/rules/app-version.mdc`.
