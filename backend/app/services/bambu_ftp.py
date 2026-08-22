@@ -1038,6 +1038,16 @@ async def download_file_try_paths_async(
 ) -> bool:
     """Try downloading a file from multiple paths using a single connection.
 
+    Returns:
+        True on success.
+
+    Raises:
+        FileNotOnPrinterError: connect succeeded and every candidate path
+            returned 550. Callers may treat this as a definitive miss
+            (safe to negative-cache). Transient failures — connect refused,
+            transport errors, executor timeout — return False instead so
+            callers do **not** permanently cache a 404 (#cover farm flake).
+
     Args:
         socket_timeout: FTP socket timeout for slow connections (e.g., A1 printers)
         printer_model: Printer model for A1-specific workarounds
@@ -1061,12 +1071,18 @@ async def download_file_try_paths_async(
             # FileNotOnPrinterError signals "try the next path", not "give up" —
             # this function's whole purpose is to walk a list of candidates
             # over one connection. Only a real transport error should bubble.
+            saw_not_found = False
             for remote_path in remote_paths:
                 try:
                     if client.download_to_file(remote_path, local_path):
                         return True
                 except FileNotOnPrinterError:
+                    saw_not_found = True
                     continue
+            if saw_not_found:
+                raise FileNotOnPrinterError(f"none of {len(remote_paths)} paths found on {ip_address}")
+            # Connected but every path returned a non-550 failure (0-byte,
+            # transport error, etc.) — treat as transient, not a definitive miss.
             return False
         finally:
             client.disconnect()
