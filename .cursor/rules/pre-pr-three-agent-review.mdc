@@ -1,0 +1,48 @@
+---
+description: Before commit/push/PR, run 3 independent review agents; fix findings; re-check.
+alwaysApply: true
+---
+
+# Pre-PR three-agent review
+
+Before **commit** (when the user asks to commit), and before **push** / **PR create**, run this gate. Do not skip. Complements — does not replace — `.cursor/rules/pre-pr-verification.mdc` and `.cursor/rules/git-workflow.mdc`.
+
+## 0. Refresh base first
+
+```bash
+git fetch origin
+```
+
+Scope = uncommitted changes **and** branch diff vs PR base (default `origin/dev`).
+
+## 1. Launch 3 independent checks
+
+In parallel, launch **3** Task subagents (prefer Task; do not substitute a single self-review). Distinct focuses on the **same** scoped change set:
+
+| Agent | Focus |
+|-------|--------|
+| 1 | Merge conflicts / divergence vs `origin/dev` (or PR base); conflict markers; broken merge-base |
+| 2 | Likely CI breaks in the diff (lint, typecheck, tests, format) — flag risk; actual runs are §3 |
+| 3 | Bugs / regressions / obvious problems (logic, security, missing tests, leftovers) |
+
+Each must review the actual diff and report findings or explicitly "no issues."
+
+## 2. Fix, then re-check
+
+- If **any** agent reports problems: fix them.
+- After fixes, **re-run the 3-agent check** before commit **and** again before push/PR if more fixes landed.
+- Do not commit / push / open a PR while known findings remain.
+
+## 3. Still run existing gates
+
+Also complete `.cursor/rules/pre-pr-verification.mdc`:
+
+1. Merge-base / conflict check vs `origin/dev`
+2. Local CI mirrors for changed areas (run the commands — agents alone are not enough)
+3. After push/PR: watch `gh pr checks` until green (or prove pre-existing on `dev`)
+
+## 4. PR base
+
+Open PRs against **`dev`**, not `main` — see `.cursor/rules/git-workflow.mdc`.
+
+Do not invent a release process.
