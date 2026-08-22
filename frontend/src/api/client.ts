@@ -67,24 +67,13 @@ export function getAuthToken(): string | null {
 // Stream token for image/video URLs loaded via <img>/<video> tags
 // (these can't send Authorization headers, so a query param token is used)
 let streamToken: string | null = null;
-type StreamTokenListener = (token: string | null) => void;
-const streamTokenListeners = new Set<StreamTokenListener>();
 
 export function setStreamToken(token: string | null) {
   streamToken = token;
-  streamTokenListeners.forEach((listener) => listener(token));
 }
 
 export function getStreamToken(): string | null {
   return streamToken;
-}
-
-/** Subscribe to stream-token changes (e.g. CoverImage must rebuild src after login). */
-export function subscribeStreamToken(listener: StreamTokenListener): () => void {
-  streamTokenListeners.add(listener);
-  return () => {
-    streamTokenListeners.delete(listener);
-  };
 }
 
 /** Append the stream token to a URL if available (for <img>/<video> src). */
