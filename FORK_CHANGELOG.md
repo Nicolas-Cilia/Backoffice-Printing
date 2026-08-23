@@ -39,6 +39,32 @@ rounded caps.
   geometric proof test against Recharts' actual corner-rounding formula, not a UI
   screenshot.
 
+## 2026-08-23: Gzip compression for JSON and SPA bundle
+
+Found during a full-project performance audit: the standard deploy exposes uvicorn
+directly (no reverse proxy layer), and nothing in the app compressed responses — every
+JSON payload and the multi-megabyte frontend bundle crossed the wire raw. Measured on a
+live instance: `/openapi.json` 981 KB → 126 KB, the main JS chunk 8.4 MB → 2.3 MB.
+
+`PathAwareGZipMiddleware` wraps starlette's `GZipMiddleware` (minimum size 1 KB, zlib
+level 6) with a deterministic path bypass for routes where gzip is useless or harmful:
+camera MJPEG streams and the SSE color-sync feed (per-chunk latency for zero gain),
+thumbnails/covers/photos/timelapse (already-compressed bytes, Range semantics), and
+file downloads (3MF/zip containers, keep `Content-Length` for progress bars). It is
+registered before the `@app.middleware` decorators so it runs innermost, seeing each
+route's real `Content-Length` — outermost placement sat behind the BaseHTTPMiddleware
+layers and force-gzipped even 20-byte health checks. Verified end-to-end against a
+running instance: large JSON gzipped with accurate `Content-Length` and
+`Vary: Accept-Encoding`, tiny JSON left identity, excluded media paths untouched.
+
+### Changes
+
+- `backend/app/core/compression.py`: new — path-aware gzip middleware and exclusion list.
+- `backend/app/main.py`: register `PathAwareGZipMiddleware` innermost, before the
+  middleware decorators.
+- `backend/tests/unit/test_gzip_compression.py`: new — compression, minimum-size,
+  identity, and exclusion contracts.
+
 ## 2026-08-19: GitHub docs rewritten for this fork
 
 Fork plan entry #7. The five GitHub community tabs now describe this personal rework
