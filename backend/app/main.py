@@ -77,6 +77,7 @@ from backend.app.api.routes import (
 )
 from backend.app.api.routes.maintenance import _get_printer_maintenance_internal, ensure_default_types
 from backend.app.api.routes.support import init_debug_logging
+from backend.app.core.compression import PathAwareGZipMiddleware
 from backend.app.core.config import APP_VERSION, settings as app_settings
 from backend.app.core.database import async_session, engine, init_db
 from backend.app.core.tasks import spawn_background_task
@@ -7973,6 +7974,20 @@ app = FastAPI(
     version=APP_VERSION,
     lifespan=lifespan,
 )
+
+# Response compression. Registered BEFORE the @app.middleware decorators
+# below, which under Starlette's LIFO stacking makes it the INNERMOST
+# layer — it sees each route's real Content-Length, so minimum_size can
+# skip tiny bodies and buffered responses keep an accurate Content-Length
+# after compression. (Outermost placement would sit behind the
+# BaseHTTPMiddleware layers, which re-stream bodies without a length and
+# would force gzip onto every response, 20-byte health checks included.)
+# The layers above only add headers and pass the gzipped body through.
+# The standard deploy exposes uvicorn directly (no reverse proxy), so this
+# is the only place JSON and the SPA bundle can get compressed. Streaming
+# and media routes (camera MJPEG, SSE, thumbnails, downloads) bypass gzip
+# by path — see backend.app.core.compression for the rationale per group.
+app.add_middleware(PathAwareGZipMiddleware)
 
 
 # =============================================================================
