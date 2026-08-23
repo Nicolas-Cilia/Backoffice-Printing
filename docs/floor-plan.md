@@ -228,16 +228,26 @@ mode).
 
 **Screen:**
 
-- After printer scan: **printer name**
+- After printer scan: **printer name**, plus **"open Nm"** / **"open Nh"**
+  elapsed-time indicator next to it (session `opened_at` is already stored
+  server-side per §8, so this is a pure read—no new tracking, no polling, no
+  auto-close). Harmless and unremarkable while an operator is actively
+  clearing a bed (open 2m); becomes the exact stale-session signal when it
+  isn't (open 14h), without any timeout/detection logic behind it.
 - After each part scan: **part model** (job’s `print_name` / print name from archive)
 - Optional: part count this session
 
 **Ignores:** `BBF-`, `BBX-`, filament SKUs, other station QRs without closing.
 
-**Forgotten close (not in v1):** Session stays open. Next printer scan closes
-leftover session (same printer = one extra scan; different printer = closes and
-opens). Risk: part scans without printer scan attach to stale session—training:
-always printer first.
+**Forgotten close:** No auto-close and no notification in v1—next printer
+scan closes the leftover session (same printer = one extra scan; different
+printer = closes and opens). The elapsed-time indicator above is the only
+v1 mitigation: it makes a stale session visible to whoever's next at that
+screen (or checking from the office), rather than fixing it automatically.
+Risk without that indicator: part scans without a printer scan first attach
+to whatever session happens to be open, however old—training: always printer
+first. Full detection/warnings (e.g. flagging it elsewhere in the app, not
+just on the scan screen itself) stay out of v1 (§11).
 
 ### 5.5 Cleanup
 
@@ -405,7 +415,7 @@ Ship in thin vertical slices. **Pistol test** at every gate before the next phas
 | **5** | Move → WIP | Move → SKUs → WIP QR → storage down, WIP up (`move_out`/`move_in` rows, one transaction). Abandoned move (switch to non-WIP station) discards the queue and shows the cancellation message. |
 | **6** | Point print debit at WIP | Finish print on assigned product → WIP kg down (`consume` row, existing tracking hooks). |
 | **7** | Printer QRs in Codes + harvest printer bind | Print `BBP-…`. Scan → printer name + latest finished job. |
-| **8** | Harvest part linking | Printer → `BBD-` parts → printer close. DB: parts → correct archive. Same-printer rescan closes only (never reopens against a stale plate—see §5.4). |
+| **8** | Harvest part linking + elapsed-time indicator | Printer → `BBD-` parts → printer close. DB: parts → correct archive. Same-printer rescan closes only (never reopens against a stale plate—see §5.4). Leave a session open, reload the page—elapsed time shown next to the printer name and increases correctly. |
 | **9** | Cleanup defects | Part → defect / rework / multi / other. Trash vs rework. Harvest codes ignored. |
 
 **Suggested branch strategy:** one feature branch (`feat/floor-stations`) with
@@ -424,7 +434,10 @@ those layers.
 - Auto-close harvest plate by object count from slice
 - Timeout-as-close for any session
 - Queue of unlabeled finished jobs (label while clearing bed)
-- Forgotten-close detection / warnings
+- Forgotten-close **detection**: no auto-close, no notifications, no alerts
+  surfaced anywhere outside the scan screen itself (§5.4's elapsed-time
+  indicator is passive display only—reading an existing timestamp, not new
+  detection/warning logic—and stays in v1)
 - Cleanup station tallies (“4 horizontal today”)
 - Failure analytics / printer defect reports UI
 - Minus QR on WIP
@@ -443,10 +456,6 @@ those layers.
 - Exact `BBS-` payload strings for each station type
 - Whether harvest requires scanning Harvest station QR before first printer QR
 - Display of storage/WIP kg on Filaments page vs Floor-only
-- Forgotten-close mitigation short of full timeout-close (§11 defers
-  detection entirely; a cheap middle ground—an on-screen "still open: Printer
-  X, opened Nh ago" banner with no auto-close logic—was raised during design
-  review but not decided)
 
 ---
 
