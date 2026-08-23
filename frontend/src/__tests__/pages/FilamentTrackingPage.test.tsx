@@ -6,7 +6,7 @@ import { http, HttpResponse } from 'msw';
 import { render, createTestQueryClient } from '../utils';
 import InventoryPageRouter from '../../pages/InventoryPage';
 import { FilamentTrackingPage } from '../../pages/FilamentTrackingPage';
-import { ringCornerRadiusForSlice } from '../../pages/filamentTrackingChart';
+import { RING_CORNER, ringCornerRadiusForArc, ringCornerRadiusForSlice } from '../../pages/filamentTrackingChart';
 import { server } from '../mocks/server';
 
 const whitePlaRow = {
@@ -581,12 +581,38 @@ describe('Filament tracking tab', () => {
     expect(recentSection.className).toMatch(/lg:h-\[22rem]/);
   });
 
-  it('drops pie cornerRadius on tiny slices so caps are not square', () => {
-    // 2 g of 100 g ≈ 7° after gaps — below MIN_SLICE_ANGLE_FOR_CORNER
-    expect(ringCornerRadiusForSlice(2, 100, 3)).toBe(0);
-    // 40 g of 100 g is large enough for rounded caps
-    expect(ringCornerRadiusForSlice(40, 100, 3)).toBe(6);
-    expect(ringCornerRadiusForSlice(100, 100, 1)).toBe(6);
+  it('keeps rounded caps on tiny slices by shrinking cornerRadius instead of zeroing it', () => {
+    // 2 g of 100 g ≈ 7° after gaps — used to snap to 0 and render square caps
+    const tiny = ringCornerRadiusForSlice(2, 100, 3);
+    expect(tiny).toBeGreaterThan(0);
+    expect(tiny).toBeLessThan(RING_CORNER);
+    // 40 g of 100 g is large enough for the full rounding
+    expect(ringCornerRadiusForSlice(40, 100, 3)).toBe(RING_CORNER);
+    expect(ringCornerRadiusForSlice(100, 100, 1)).toBe(RING_CORNER);
+    // Zero-value slices stay at 0 (they are filtered out of the pie anyway)
+    expect(ringCornerRadiusForSlice(0, 100, 3)).toBe(0);
+  });
+
+  it('never exceeds the arc Recharts needs to round both corners of a slice', () => {
+    // Recharts' Sector falls back to a square-edged path when the two corner
+    // tangents consume more arc than the slice has. The binding edge is the
+    // inner ring: each corner needs asin(cr / (innerRadius + cr)) degrees.
+    // The rendered inner radius is ≈ 49px ((168px − 2·5px margin) / 2 × 62%).
+    const RENDERED_INNER_RADIUS_PX = 48.98;
+    let previous = 0;
+    for (let arc = 0.5; arc <= 30; arc += 0.5) {
+      const cr = ringCornerRadiusForArc(arc);
+      expect(cr).toBeGreaterThan(0);
+      expect(cr).toBeLessThanOrEqual(RING_CORNER);
+      const cornerArcDegrees =
+        2 * Math.asin(cr / (RENDERED_INNER_RADIUS_PX + cr)) * (180 / Math.PI);
+      expect(cornerArcDegrees).toBeLessThanOrEqual(arc);
+      // Monotonic: a wider slice never gets less rounding than a narrower one
+      expect(cr).toBeGreaterThanOrEqual(previous);
+      previous = cr;
+    }
+    expect(ringCornerRadiusForArc(180)).toBe(RING_CORNER);
+    expect(ringCornerRadiusForArc(0)).toBe(0);
   });
 
   it('shows named product rows instead of a collapsed color · material family', async () => {
