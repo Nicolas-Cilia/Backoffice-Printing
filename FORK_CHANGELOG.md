@@ -3,6 +3,42 @@
 Changes made in this fork on top of upstream Bambuddy. Upstream's own release notes stay
 in `CHANGELOG.md`. Planned work lives in `FORK_PLAN.md`.
 
+## 2026-08-23: Filament tracking donut rings keep rounded caps on small slices
+
+User-reported bug from a full-project audit: on Filament Tracking's "Consumption by
+printer" donut, slices below a fixed 18° threshold got `cornerRadius: 0` and rendered
+with square caps instead of round ones. The old fix (a hard threshold) traded "square
+caps on tiny slices" for "square caps on tiny slices below 18°" — same failure, smaller
+range.
+
+Root cause: Recharts' `Sector` spends `asin(cornerRadius / (innerRadius ± cornerRadius))`
+degrees of arc rounding each corner (`getTangentCircle` in its `Sector.js`). When a
+slice's arc can't fit both corners at the requested radius, `getSectorWithCorner`
+silently falls back to a square-edged path — there is no partial rounding built in.
+`ringCornerRadiusForArc` now solves that inequality for the largest `cornerRadius` the
+slice's arc actually supports (bounded by the chart's known ~49px inner ring radius) and
+shrinks smoothly toward it instead of snapping to 0, so every nonzero slice keeps fully
+rounded caps.
+
+### Changes
+
+- `frontend/src/pages/filamentTrackingChart.ts`: replaced the `MIN_SLICE_ANGLE_FOR_CORNER`
+  threshold with `ringCornerRadiusForArc`, a geometric clamp derived from Recharts' own
+  corner-tangent formula.
+- `frontend/src/__tests__/pages/FilamentTrackingPage.test.tsx`: replaced the threshold
+  test with one asserting tiny slices get `0 < cornerRadius < RING_CORNER` (not 0), plus a
+  geometric invariant test that the chosen radius never exceeds what the slice's arc can
+  fit, checked across the full 0.5°–30° range against the rendered chart's known inner
+  radius.
+
+### Verified
+
+- Frontend: full vitest suite (2685 tests, 197 files) passes; `tsc --noEmit` and eslint
+  clean on touched files; production `vite build` succeeds.
+- Not re-verified visually in a browser — the fix is a pure function change backed by a
+  geometric proof test against Recharts' actual corner-rounding formula, not a UI
+  screenshot.
+
 ## 2026-08-23: Gzip compression for JSON and SPA bundle
 
 Found during a full-project performance audit: the standard deploy exposes uvicorn
