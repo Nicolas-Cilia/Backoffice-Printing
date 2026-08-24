@@ -4445,6 +4445,26 @@ async def seed_default_groups():
                 logger.info("Added printers:clear_plate to group '%s' (has printers:control)", group.name)
         await session.commit()
 
+        # Backfill: floor:scan for groups that already do bench work.
+        # The Floor feature (docs/floor-plan.md) is new, so no upgrading
+        # install has a group carrying this permission — without a backfill
+        # the scan page would 403 for every non-admin until an administrator
+        # granted it by hand, which is a silent "the new feature is broken"
+        # rather than a visible one. Keyed off printers:control because
+        # claiming a station is the same kind of shop-floor work as running a
+        # printer; a Viewer-tier group has neither and correctly stays out.
+        # Additive and idempotent, like the clear_plate backfill above.
+        result = await session.execute(select(Group))
+        for group in result.scalars().all():
+            if (
+                group.permissions
+                and "printers:control" in group.permissions
+                and "floor:scan" not in group.permissions
+            ):
+                group.permissions = [*group.permissions, "floor:scan"]
+                logger.info("Added floor:scan to group '%s' (has printers:control)", group.name)
+        await session.commit()
+
         # Backfill: sync the Administrators system group to ALL_PERMISSIONS.
         # Administrators' contract is full access to every feature — fresh
         # installs get that via DEFAULT_GROUPS["Administrators"]["permissions"]

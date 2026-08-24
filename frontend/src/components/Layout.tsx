@@ -287,6 +287,10 @@ export function Layout() {
       profiles: 'kprofiles:read',
       maintenance: 'maintenance:read',
       inventory: 'inventory:read',
+      // Every floor endpoint requires floor:scan, so without this gate a user
+      // lacking it would see the nav item and hit 403s on arrival. Seeded to
+      // Administrators and Operators; a Viewer-tier group loses the entry.
+      floor: 'floor:scan',
       files: ['library:read', 'library:read_own', 'library:read_all'],
       settings: 'settings:read',
       // The user-email-preferences API requires notifications:user_email, so
