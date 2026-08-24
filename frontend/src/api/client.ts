@@ -1253,6 +1253,16 @@ export interface SpoolCatalogEntry {
   is_default: boolean;
 }
 
+/** A scannable floor station (docs/floor-plan.md §5). `payload` is the exact
+ *  string its QR encodes — round-trip it when requesting labels so the printed
+ *  code can't drift from the one the backend resolves on a scan. */
+export interface FloorStation {
+  slug: string;
+  payload: string;
+  name: string;
+  description: string;
+}
+
 export interface StorageLocation {
   id: number;
   name: string;
@@ -5416,6 +5426,26 @@ export const api = {
     const headers: Record<string, string> = { 'Content-Type': 'application/json' };
     if (authToken) headers['Authorization'] = `Bearer ${authToken}`;
     const response = await fetch(`${API_BASE}/spoolman/labels`, {
+      method: 'POST',
+      headers,
+      body: JSON.stringify(data),
+    });
+    if (!response.ok) {
+      const error = await response.json().catch(() => ({}));
+      throw new Error(error.detail || `HTTP ${response.status}`);
+    }
+    return response.blob();
+  },
+  // ── Floor codes (docs/floor-plan.md §3.3) ──────────────────────────────
+  getFloorStations: () => request<FloorStation[]>('/floor/stations'),
+  printFloorStationLabels: async (data: {
+    payloads: string[];
+    width_mm: number;
+    height_mm: number;
+  }): Promise<Blob> => {
+    const headers: Record<string, string> = { 'Content-Type': 'application/json' };
+    if (authToken) headers['Authorization'] = `Bearer ${authToken}`;
+    const response = await fetch(`${API_BASE}/floor/labels/stations`, {
       method: 'POST',
       headers,
       body: JSON.stringify(data),

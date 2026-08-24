@@ -6,10 +6,6 @@
  * `/floor/scan` URL directly so they never see a picker on reload (§2.1).
  * This page exists so someone navigating normally has any way to *reach*
  * `/floor/codes` at all — before it existed nothing in the app linked there.
- *
- * Codes (label printing, SKU registration) isn't built yet — the button
- * stays disabled until that phase ships, rather than linking to a route
- * that doesn't exist.
  */
 import { useTranslation } from 'react-i18next';
 import { useNavigate } from 'react-router-dom';
@@ -51,20 +47,15 @@ export function FloorLandingPage() {
         </article>
 
         <article className="bg-bambu-dark-secondary rounded-lg p-6 flex flex-col">
-          <QrCode className="w-8 h-8 text-bambu-gray mb-3" aria-hidden="true" />
-          <div className="flex items-center gap-2">
-            <h2 className="text-white font-semibold text-lg">{t('floor.landingCodesTitle', 'Codes')}</h2>
-            <span className="text-[11px] uppercase tracking-wide text-bambu-gray bg-bambu-dark-tertiary rounded px-1.5 py-0.5">
-              {t('floor.landingComingSoon', 'Coming soon')}
-            </span>
-          </div>
+          <QrCode className="w-8 h-8 text-bambu-green mb-3" aria-hidden="true" />
+          <h2 className="text-white font-semibold text-lg">{t('floor.landingCodesTitle', 'Codes')}</h2>
           <p className="text-sm text-bambu-gray mt-1 flex-1">
             {t(
               'floor.landingCodesDescription',
-              'Print station, printer, and error QR labels, and register filament SKUs.',
+              'Print the station, printer, and error QR labels the floor scans.',
             )}
           </p>
-          <Button className="mt-4 self-start" variant="secondary" disabled>
+          <Button className="mt-4 self-start" onClick={() => navigate('/floor/codes')}>
             {t('floor.landingCodesAction', 'Open Codes')}
           </Button>
         </article>

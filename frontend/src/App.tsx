@@ -25,6 +25,7 @@ import { NotificationsPage } from './pages/NotificationsPage';
 import { GCodeViewerPage } from './pages/GCodeViewerPage';
 import { FloorScanPage } from './pages/FloorScanPage';
 import { FloorLandingPage } from './pages/FloorLandingPage';
+import { FloorCodesPage } from './pages/FloorCodesPage';
 import { useWebSocket } from './hooks/useWebSocket';
 import { usePrintProgressTitle } from './hooks/usePrintProgressTitle';
 import { useStreamTokenSync } from './hooks/useCameraStreamToken';
@@ -229,6 +230,7 @@ function App() {
                       so they never see the picker on reload (§2.1). */}
                   <Route path="floor" element={<FloorLandingPage />} />
                   <Route path="floor/scan" element={<FloorScanPage />} />
+                  <Route path="floor/codes" element={<FloorCodesPage />} />
                   <Route path="external/:id" element={<ExternalLinkPage />} />
                   <Route path="camera-tokens" element={<Navigate to="/settings?tab=apikeys#card-camera-tokens" replace />} />
                 </Route>
