@@ -417,7 +417,7 @@ Ship in thin vertical slices. **Pistol test** at every gate before the next phas
 | Phase | Build | Test gate (manual + pistol) |
 | --- | --- | --- |
 | **0** | Floor sidebar item (→ `/floor` landing page, Scan/Codes picker) + `/floor/scan` shell (always-focused input, status text). Codes button on the picker disabled/"coming soon" until Codes exists. | Type garbage → error. Page stable. Sidebar → `/floor` shows the picker; Scan navigates to the shell; Codes is visibly disabled, not a dead link. |
-| **1** | Station entities + print station QR (`BBS-…`) for WIP, + Storage, Move | Print one QR. Scan → correct station/mode. Scan again → closed. Other station → switch. |
+| **1** | **1a:** Minimal Codes — Station labels tab only (`BBS-…`, print/preview/size picker), reachable from the `/floor` picker's now-enabled Codes button. **1b:** Station entities + station open/close/switch handling in `/floor/scan` for WIP, + Storage, Move. 1a is a hard prerequisite for 1b's own test gate—there is no other way to get a printable `BBS-` QR. | Print one QR (via 1a's Codes). Scan → correct station/mode. Scan again → closed. Other station → switch. |
 | **2** | `filament_stock_movements` ledger + derived `storage_grams`/`wip_grams` on `FilamentColorBucket`; migrate `on_hand_grams` readers (Filament Tracking cover/order-in/monthly-estimate math) to the derived sum; existing Add/Edit stock modal writes a `manual_adjust` row instead of `on_hand_grams` directly | Existing Filament Tracking page behaves identically for a user typing stock by hand—cover days, order-in, monthly estimate unchanged for a bucket with no Floor activity yet. `on_hand_grams` column removed or frozen; nothing else in the app still writes it directly. |
 | **3** | SKU registration on filament tracking product | Register real box/spool barcode → product + kg. |
 | **4** | + Storage receive | + Storage → SKU → storage kg up (via `receive` ledger row). Unknown SKU → error. Close session. |
@@ -428,8 +428,13 @@ Ship in thin vertical slices. **Pistol test** at every gate before the next phas
 | **9** | Cleanup defects | Part → defect / rework / multi / other. Trash vs rework. Harvest codes ignored. |
 
 **Suggested branch strategy:** one feature branch (`feat/floor-stations`) with
-sequential commits per phase, or sub-branches merged in order. Codes UI polish
-(size picker, error editor) can trail phase 1 once minimal print works.
+sequential commits per phase, or sub-branches merged in order. Codes ships
+in slices tied to whichever phase first needs that tab to be printable —
+Station labels with phase 1 (§10 row above), Printer labels with phase 7
+(harvest needs a printable `BBP-…`). Error labels and general Codes polish
+(size picker refinement, error-type editor) aren't a hard dependency of any
+single phase and can trail once cleanup (phase 9) needs `BBF-…`/`BBX-…`
+printed for its own pistol test.
 
 **CI:** frontend lint/tsc/tests + backend ruff/pytest for each phase touching
 those layers.
@@ -512,7 +517,7 @@ the target design.
 | # | Phase | Status | Branch/PR |
 | --- | --- | --- | --- |
 | 0 | Floor sidebar + `/floor` landing picker + `/floor/scan` shell | In progress (PR open) | `feat/floor-stations-p0-scan-shell`, [PR #89](https://github.com/Nicolas-Cilia/Backoffice-Printing/pull/89) |
-| 1 | Station entities + `BBS-` QR (WIP, + Storage, Move) | Not started | — |
+| 1 | 1a: minimal Codes (Station labels). 1b: station entities + `BBS-` QR (WIP, + Storage, Move) | Not started | — |
 | 2 | `filament_stock_movements` ledger + derived storage/WIP + `on_hand_grams` migration | Not started | — |
 | 3 | SKU registration (office) | Not started | — |
 | 4 | + Storage receive | Not started | — |
@@ -583,7 +588,7 @@ manual clicking every time, so every phase starts from the same known state:
 | Phase | Automated tests | Pistol test gate |
 | --- | --- | --- |
 | 0 | Component test: renders, hidden input keeps focus | Type garbage → error, page stable |
-| 1 | Integration: station open/close/switch API | Print 1 QR. Scan → correct mode. Scan again → closed. |
+| 1 | Integration: station open/close/switch API. Component: Codes Station-labels tab renders a printable `BBS-…` QR (preview + size picker) | Print 1 QR from Codes. Scan → correct mode. Scan again → closed. |
 | 2 | Unit: ledger math, derived-sum correctness. Regression: existing Filament Tracking cover/order-in numbers unchanged for a bucket with no Floor activity | None (pure backend) |
 | 3 | Integration: SKU registration → product + kg mapping | Register 1 real barcode |
 | 4 | Integration: receive → storage kg up; unknown SKU → error | + Storage → SKU → storage kg up → close session |
@@ -618,6 +623,20 @@ floor lighting) unit tests can't.
 
 Dated entries, most recent first. Record what happened, not just what was
 planned—decisions made, deviations, blockers, and their resolutions.
+
+**2026-08-23:** Considered folding the whole Codes page into Phase 0 while
+it was fresh in mind. Decided against it—Codes (§3.3: three tabs, size
+picker, error-type editor, print preview) is real feature scope, not shell
+work, and merging it into Phase 0 would blur the thin-vertical-slice
+discipline the plan otherwise follows. Instead, split Phase 1 into 1a
+(minimal Codes—Station labels tab only, just enough to print one `BBS-…`
+QR) and 1b (station entities), since 1b's own test gate literally cannot
+run without a printed station QR. `qrcode.react` is already a dependency
+(used in `ApiKeyQRCodeModal.tsx`), so QR rendering itself isn't new work.
+Printer and Error/Command label tabs stay tied to the phases that actually
+need them printable (7 and 9 respectively)—not built ahead of need. §10
+Phase 1 row, its notes, §15.1, and §15.5 updated to make this explicit
+instead of the old vague "Codes UI polish can trail phase 1."
 
 **2026-08-23:** Added `/floor` as a real landing page (Scan/Codes picker),
 pushed to the same PR #89. Gap found by inspecting the running app: nothing
