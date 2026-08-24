@@ -11,13 +11,12 @@ vi.mock('react-router-dom', async (importActual) => {
 });
 
 describe('FloorLandingPage', () => {
-  it('renders both destinations, Codes disabled as not-yet-built', () => {
+  it('renders both destinations', () => {
     render(<FloorLandingPage />);
 
     expect(screen.getByRole('heading', { name: 'Floor' })).toBeInTheDocument();
     expect(screen.getByRole('button', { name: 'Open Scan' })).toBeEnabled();
-    expect(screen.getByRole('button', { name: 'Open Codes' })).toBeDisabled();
-    expect(screen.getByText('Coming soon')).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Open Codes' })).toBeEnabled();
   });
 
   it('navigates to /floor/scan when Scan is opened', async () => {
@@ -27,5 +26,14 @@ describe('FloorLandingPage', () => {
     await user.click(screen.getByRole('button', { name: 'Open Scan' }));
 
     expect(mockNavigate).toHaveBeenCalledWith('/floor/scan');
+  });
+
+  it('navigates to /floor/codes when Codes is opened', async () => {
+    const user = userEvent.setup();
+    render(<FloorLandingPage />);
+
+    await user.click(screen.getByRole('button', { name: 'Open Codes' }));
+
+    expect(mockNavigate).toHaveBeenCalledWith('/floor/codes');
   });
 });

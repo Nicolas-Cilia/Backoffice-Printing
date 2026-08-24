@@ -54,6 +54,7 @@ GZIP_EXCLUDED_PATH_SUBSTRINGS: tuple[str, ...] = (
     # integration tests) rely on an exact Content-Length
     "/inventory/labels",
     "/spoolman/labels",
+    "/floor/labels",
     # Static media mounts
     "/img/",
     "/fonts/",

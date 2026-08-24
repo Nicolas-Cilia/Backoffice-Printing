@@ -31,6 +31,7 @@ from backend.app.api.routes import (
     filament_tracking,
     filaments,
     firmware,
+    floor,
     github_backup,
     groups,
     inventory,
@@ -8417,6 +8418,7 @@ app.include_router(filaments.router, prefix=app_settings.api_prefix)
 app.include_router(filament_tracking.router, prefix=app_settings.api_prefix)
 app.include_router(inventory.router, prefix=app_settings.api_prefix)
 app.include_router(labels.router, prefix=app_settings.api_prefix)
+app.include_router(floor.router, prefix=app_settings.api_prefix)
 app.include_router(settings_routes.router, prefix=app_settings.api_prefix)
 app.include_router(cloud.router, prefix=app_settings.api_prefix)
 app.include_router(orca_cloud.router, prefix=app_settings.api_prefix)
