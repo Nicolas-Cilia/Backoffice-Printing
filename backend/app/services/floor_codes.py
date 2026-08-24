@@ -61,6 +61,11 @@ class FloorStation:
     slug: str
     name: str
     description: str
+    # Whether this station takes a floor-wide lock (§2.4): at most one open
+    # session across every device. True for all but Cleanup, where parallel
+    # work on separate machines is normal. Note this is *not* the same as
+    # "one session per device" — that rule is universal and holds regardless.
+    exclusive: bool = True
 
     @property
     def payload(self) -> str:
@@ -94,10 +99,15 @@ FLOOR_STATIONS: tuple[FloorStation, ...] = (
         slug="cleanup",
         name="Cleanup",
         description="Log defects at support removal.",
+        # The one station without a floor-wide lock (§5.5): two benches
+        # clearing supports at once is ordinary parallel work, and their
+        # scans never touch the same record.
+        exclusive=False,
     ),
 )
 
 _STATIONS_BY_PAYLOAD: dict[str, FloorStation] = {s.payload: s for s in FLOOR_STATIONS}
+_STATIONS_BY_SLUG: dict[str, FloorStation] = {s.slug: s for s in FLOOR_STATIONS}
 
 
 def station_for_payload(payload: str) -> FloorStation | None:
@@ -108,6 +118,12 @@ def station_for_payload(payload: str) -> FloorStation | None:
     an unknown code (§9: error flash, no state change) is the safer answer.
     """
     return _STATIONS_BY_PAYLOAD.get(payload.strip())
+
+
+def station_for_slug(slug: str) -> FloorStation | None:
+    """Resolve a station slug, or ``None``. Used for stored session rows,
+    which key on the slug rather than the printed payload."""
+    return _STATIONS_BY_SLUG.get(slug.strip())
 
 
 @dataclass
@@ -211,6 +227,7 @@ __all__ = [
     "FloorStation",
     "FLOOR_STATIONS",
     "station_for_payload",
+    "station_for_slug",
     "CodeLabel",
     "render_code_labels",
 ]
