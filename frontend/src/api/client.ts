@@ -1263,6 +1263,35 @@ export interface FloorStation {
   description: string;
 }
 
+/** An open (or just-closed) claim on a floor station (docs/floor-plan.md §2.4).
+ *  Lives on the server, not in the tab: a lock only works if every device sees it. */
+export interface FloorSession {
+  id: number;
+  station_slug: string;
+  station_name: string;
+  device_id: string;
+  opened_at: string;
+  /** Server-computed, so the elapsed indicator does not depend on the kiosk's
+   *  clock being right — a drifted unattended PC would otherwise render the one
+   *  number this display exists to make trustworthy (§5.4). */
+  open_seconds: number;
+}
+
+/** What a station scan did. `locked` is a *success* response, not an error: the
+ *  station is real but held by another device, which is a different screen from
+ *  an unrecognised code (a 404). */
+export type FloorScanResult = 'opened' | 'closed' | 'switched' | 'locked';
+
+export interface FloorScanResponse {
+  result: FloorScanResult;
+  station_slug: string;
+  station_name: string;
+  /** The session now open on this device; null after a close or a refusal. */
+  session: FloorSession | null;
+  /** Only on `locked`: who holds the station, and for how long. */
+  blocking: FloorSession | null;
+}
+
 export interface StorageLocation {
   id: number;
   name: string;
@@ -5436,6 +5465,29 @@ export const api = {
     }
     return response.blob();
   },
+  // ── Floor sessions (docs/floor-plan.md §2.4) ───────────────────────────
+  /** The session this device holds, or null. Called on load so a reload
+   *  resumes the open station instead of stranding it. */
+  getFloorSession: (deviceId: string) =>
+    request<FloorSession | null>(`/floor/session?device_id=${encodeURIComponent(deviceId)}`),
+  /** Apply one scanned `BBS-` payload: opens, closes (same station) or
+   *  switches. Throws on a 404 — that means the payload is not a station at
+   *  all, which the scan page renders as the unknown-code error. */
+  scanFloorStation: (data: { payload: string; device_id: string }) =>
+    request<FloorScanResponse>('/floor/session/scan', {
+      method: 'POST',
+      body: JSON.stringify(data),
+    }),
+  /** Close whoever holds this station and open it here (§2.4). */
+  takeoverFloorStation: (data: { payload: string; device_id: string }) =>
+    request<FloorScanResponse>('/floor/session/takeover', {
+      method: 'POST',
+      body: JSON.stringify(data),
+    }),
+  closeFloorSession: (deviceId: string) =>
+    request<FloorSession | null>(`/floor/session?device_id=${encodeURIComponent(deviceId)}`, {
+      method: 'DELETE',
+    }),
   // ── Floor codes (docs/floor-plan.md §3.3) ──────────────────────────────
   getFloorStations: () => request<FloorStation[]>('/floor/stations'),
   printFloorStationLabels: async (data: {
