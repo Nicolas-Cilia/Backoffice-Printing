@@ -3,6 +3,68 @@
 Changes made in this fork on top of upstream Bambuddy. Upstream's own release notes stay
 in `CHANGELOG.md`. Planned work lives in `FORK_PLAN.md`.
 
+## 2026-08-23: Filament tracking donut rings keep rounded caps on small slices
+
+User-reported bug from a full-project audit: on Filament Tracking's "Consumption by
+printer" donut, slices below a fixed 18° threshold got `cornerRadius: 0` and rendered
+with square caps instead of round ones. The old fix (a hard threshold) traded "square
+caps on tiny slices" for "square caps on tiny slices below 18°" — same failure, smaller
+range.
+
+Root cause: Recharts' `Sector` spends `asin(cornerRadius / (innerRadius ± cornerRadius))`
+degrees of arc rounding each corner (`getTangentCircle` in its `Sector.js`). When a
+slice's arc can't fit both corners at the requested radius, `getSectorWithCorner`
+silently falls back to a square-edged path — there is no partial rounding built in.
+`ringCornerRadiusForArc` now solves that inequality for the largest `cornerRadius` the
+slice's arc actually supports (bounded by the chart's known ~49px inner ring radius) and
+shrinks smoothly toward it instead of snapping to 0, so every nonzero slice keeps fully
+rounded caps.
+
+### Changes
+
+- `frontend/src/pages/filamentTrackingChart.ts`: replaced the `MIN_SLICE_ANGLE_FOR_CORNER`
+  threshold with `ringCornerRadiusForArc`, a geometric clamp derived from Recharts' own
+  corner-tangent formula.
+- `frontend/src/__tests__/pages/FilamentTrackingPage.test.tsx`: replaced the threshold
+  test with one asserting tiny slices get `0 < cornerRadius < RING_CORNER` (not 0), plus a
+  geometric invariant test that the chosen radius never exceeds what the slice's arc can
+  fit, checked across the full 0.5°–30° range against the rendered chart's known inner
+  radius.
+
+### Verified
+
+- Frontend: full vitest suite (2685 tests, 197 files) passes; `tsc --noEmit` and eslint
+  clean on touched files; production `vite build` succeeds.
+- Not re-verified visually in a browser — the fix is a pure function change backed by a
+  geometric proof test against Recharts' actual corner-rounding formula, not a UI
+  screenshot.
+
+## 2026-08-23: Gzip compression for JSON and SPA bundle
+
+Found during a full-project performance audit: the standard deploy exposes uvicorn
+directly (no reverse proxy layer), and nothing in the app compressed responses — every
+JSON payload and the multi-megabyte frontend bundle crossed the wire raw. Measured on a
+live instance: `/openapi.json` 981 KB → 126 KB, the main JS chunk 8.4 MB → 2.3 MB.
+
+`PathAwareGZipMiddleware` wraps starlette's `GZipMiddleware` (minimum size 1 KB, zlib
+level 6) with a deterministic path bypass for routes where gzip is useless or harmful:
+camera MJPEG streams and the SSE color-sync feed (per-chunk latency for zero gain),
+thumbnails/covers/photos/timelapse (already-compressed bytes, Range semantics), and
+file downloads (3MF/zip containers, keep `Content-Length` for progress bars). It is
+registered before the `@app.middleware` decorators so it runs innermost, seeing each
+route's real `Content-Length` — outermost placement sat behind the BaseHTTPMiddleware
+layers and force-gzipped even 20-byte health checks. Verified end-to-end against a
+running instance: large JSON gzipped with accurate `Content-Length` and
+`Vary: Accept-Encoding`, tiny JSON left identity, excluded media paths untouched.
+
+### Changes
+
+- `backend/app/core/compression.py`: new — path-aware gzip middleware and exclusion list.
+- `backend/app/main.py`: register `PathAwareGZipMiddleware` innermost, before the
+  middleware decorators.
+- `backend/tests/unit/test_gzip_compression.py`: new — compression, minimum-size,
+  identity, and exclusion contracts.
+
 ## 2026-08-19: GitHub docs rewritten for this fork
 
 Fork plan entry #7. The five GitHub community tabs now describe this personal rework
