@@ -6,6 +6,7 @@ export default {
     queue: 'Coda di stampa',
     stats: 'Statistiche',
     profiles: 'Profili',
+    floor: 'Officina',
     maintenance: 'Manutenzione',
     inventory: 'Filamento',
     files: 'File',

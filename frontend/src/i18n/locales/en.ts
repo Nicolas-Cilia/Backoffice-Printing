@@ -6,6 +6,7 @@ export default {
     queue: 'Print Queue',
     stats: 'Statistics',
     profiles: 'Profiles',
+    floor: 'Floor',
     maintenance: 'Maintenance',
     inventory: 'Filament',
     files: 'File Manager',

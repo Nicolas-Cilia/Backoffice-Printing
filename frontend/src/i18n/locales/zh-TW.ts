@@ -6,6 +6,7 @@ export default {
     queue: '列印佇列',
     stats: '統計',
     profiles: '設定檔案',
+    floor: '車間',
     maintenance: '維護',
     inventory: '耗材',
     files: '檔案管理器',

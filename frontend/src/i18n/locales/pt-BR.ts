@@ -6,6 +6,7 @@ export default {
     queue: 'Fila de impressão',
     stats: 'Estatísticas',
     profiles: 'Perfis',
+    floor: 'Produção',
     maintenance: 'Manutenção',
     inventory: 'Inventário',
     files: 'Gerenciador de Arquivos',

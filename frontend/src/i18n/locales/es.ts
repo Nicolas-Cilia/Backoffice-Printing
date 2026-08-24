@@ -6,6 +6,7 @@ export default {
     queue: 'Cola de impresión',
     stats: 'Estadísticas',
     profiles: 'Perfiles',
+    floor: 'Planta',
     maintenance: 'Mantenimiento',
     inventory: 'Filamento',
     files: 'Gestor de archivos',

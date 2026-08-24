@@ -6,6 +6,7 @@ export default {
     queue: '印刷キュー',
     stats: '統計',
     profiles: 'プロファイル',
+    floor: '現場',
     maintenance: 'メンテナンス',
     inventory: 'フィラメント',
     files: 'ファイル管理',

@@ -5,6 +5,7 @@ export default {
     queue: "Очередь печати",
     stats: "Статистика",
     profiles: "Профили",
+    floor: "Цех",
     maintenance: "Обслуживание",
     inventory: "Филамент",
     files: "Файловый менеджер",

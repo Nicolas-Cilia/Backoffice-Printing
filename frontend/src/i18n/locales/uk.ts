@@ -6,6 +6,7 @@ export default {
     queue: "Черга друку",
     stats: "Статистика",
     profiles: "Профілі",
+    floor: "Цех",
     maintenance: "Технічне обслуговування",
     inventory: "Філамент",
     files: "Менеджер файлів",
