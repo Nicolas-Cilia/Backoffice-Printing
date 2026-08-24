@@ -517,7 +517,8 @@ the target design.
 | # | Phase | Status | Branch/PR |
 | --- | --- | --- | --- |
 | 0 | Floor sidebar + `/floor` landing picker + `/floor/scan` shell | In progress (PR open) | `feat/floor-stations-p0-scan-shell`, [PR #89](https://github.com/Nicolas-Cilia/Backoffice-Printing/pull/89) |
-| 1 | 1a: minimal Codes (Station labels). 1b: station entities + `BBS-` QR (WIP, + Storage, Move) | Not started | — |
+| 1a | Minimal Codes — Station labels tab (`/floor/codes`, station catalog, label PDF) | In progress (PR open) | `feat/floor-stations-p1a-codes-stations` |
+| 1b | Station entities + open/close/switch on `/floor/scan` (WIP, + Storage, Move) | Not started | — |
 | 2 | `filament_stock_movements` ledger + derived storage/WIP + `on_hand_grams` migration | Not started | — |
 | 3 | SKU registration (office) | Not started | — |
 | 4 | + Storage receive | Not started | — |
@@ -623,6 +624,24 @@ floor lighting) unit tests can't.
 
 Dated entries, most recent first. Record what happened, not just what was
 planned—decisions made, deviations, blockers, and their resolutions.
+
+**2026-08-23:** Phase 1a built on `feat/floor-stations-p1a-codes-stations`
+(stacked on the phase 0 branch): `/floor/codes` with the Station labels tab,
+a backend station catalog, and a station-label PDF endpoint. Decisions taken
+along the way: (1) the station catalog lives in the **backend**
+(`services/floor_codes.py`) rather than as a frontend constant, because phase
+1b's scan router has to resolve a scanned payload back to a station and the
+`BBS-` strings must have exactly one home — they're printed onto QRs that get
+taped to physical shelves, so they're effectively immutable once deployed;
+(2) labels render as a **server-side PDF** rather than CSS print, reusing
+`label_renderer`'s QR helper (which carries the #1870 thermal-printer
+module-size tuning) instead of duplicating it — the two genuinely shared
+helpers were promoted from private to public there; (3) `/floor/labels` was
+added to the gzip exclusion list, matching the existing spool-label PDF
+entries, so `Content-Length` stays exact. The label layout was verified by
+actually rendering PDFs and looking at them (40/60/80 mm square and 80×40
+wide) rather than trusting the geometry math. Printer and Error tabs show as
+disabled rather than hidden, same honesty as phase 0's Codes button.
 
 **2026-08-23:** Considered folding the whole Codes page into Phase 0 while
 it was fresh in mind. Decided against it—Codes (§3.3: three tabs, size
