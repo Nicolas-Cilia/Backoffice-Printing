@@ -21,7 +21,7 @@ export function FloorLandingPage() {
   const navigate = useNavigate();
 
   return (
-    <div className="space-y-6">
+    <div className="p-4 md:p-8 space-y-6">
       <div>
         <p className="text-xs uppercase tracking-wide text-bambu-gray">
           {t('floor.landingEyebrow', 'Production floor')}
