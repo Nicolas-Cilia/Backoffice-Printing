@@ -486,3 +486,136 @@ those layers.
 **Bad part at cleanup:** Cleanup → part → (rework?) → defect QR → saved → wait.
 
 **Office:** register new factory barcode on product; print new station/printer/error QR when needed.
+
+---
+
+## 15. Implementation timeline and project tracker
+
+This section is the **living tracker** for building Floor: current status per
+phase, the testing/staging approach, and a dated log of what actually
+happened (decisions, deviations from plan, blockers). Update §15.1's status
+column and append to §15.8 as work lands—this section is expected to drift
+from a static plan into a running record, unlike §1–§14 above which describe
+the target design.
+
+### 15.1 Phase status
+
+| # | Phase | Status | Branch/PR |
+| --- | --- | --- | --- |
+| 0 | Floor sidebar + `/floor/scan` shell | Not started | — |
+| 1 | Station entities + `BBS-` QR (WIP, + Storage, Move) | Not started | — |
+| 2 | `filament_stock_movements` ledger + derived storage/WIP + `on_hand_grams` migration | Not started | — |
+| 3 | SKU registration (office) | Not started | — |
+| 4 | + Storage receive | Not started | — |
+| 5 | Move → WIP | Not started | — |
+| 6 | Point print debit at WIP | Not started | — |
+| 7 | Printer QRs in Codes + harvest bind | Not started | — |
+| 8 | Harvest + cleanup + elapsed-time indicator | Not started | — |
+| — | Staging dry run (§15.6) | Not started | — |
+| — | Production cutover (§15.7) | Not started | — |
+
+Status values: **Not started** / **In progress** / **Blocked** (note why in
+§15.8) / **Done**.
+
+### 15.2 Testing infrastructure: disposable staging instance
+
+Built and validated **before** Phase 0 starts, so every later phase's pistol
+test gate has somewhere safe to run:
+
+```bash
+mkdir -p ~/bambuddy-floor-staging
+DATA_DIR=~/bambuddy-floor-staging PORT=8090 \
+  venv/bin/python3 -m uvicorn backend.app.main:app --host 127.0.0.1 --port 8090
+```
+
+- `DATA_DIR` fully isolates the SQLite DB from the real `bambuddy.db`—no
+  shared state, no risk to real inventory/filament/printer data.
+- Removal is `rm -rf ~/bambuddy-floor-staging`. Nothing to reconcile back.
+- Register 2–3 **virtual printers** in this instance (existing feature,
+  `backend/app/services/virtual_printer/`). Their MQTT `gcode_state=FINISH`
+  cycle is the same signal real hardware sends—it creates real
+  `print_archives` rows and sets `awaiting_plate_clear`, so Harvest (Phase 8)
+  is fully pistol-testable without physical printers.
+- Real USB pistols work against it identically to production: a pistol just
+  types a string into whichever tab has focus. Point a browser tab at
+  `localhost:8090/floor/scan` and real hardware + real printed labels test
+  the real flow against a throwaway database.
+- Physical hardware only enters at Phase 3 (one real factory barcode to
+  register) and Phase 8 (bought Data Matrix roll—order early, it has lead
+  time). Every other phase is virtual-printer-driven.
+
+### 15.3 Branch and commit strategy
+
+Sub-branches per phase, merged into `feat/floor-stations` in order (not one
+mega-branch)—matches §10's own suggestion. Each phase's pistol-test gate
+doubles as that sub-PR's review checkpoint, and `feat/floor-stations` stays
+in a working state throughout. `feat/floor-stations` itself stays unmerged
+into `dev` until Phase 8 passes staging—nothing user-facing activates before
+then (no station QRs exist to scan).
+
+CI per phase: frontend lint/tsc/`test:run` + backend `ruff check` / `ruff
+format --check` / pytest for whatever that phase touches (same as §10).
+
+### 15.4 Seed data for staging
+
+A checked-in seed script (e.g. `scripts/seed_floor_staging.py`) rather than
+manual clicking every time, so every phase starts from the same known state:
+
+- 2–3 virtual printers, one already mid-print (tests "scan printer QR while
+  running")
+- 2 tracking products with SKUs registered
+- One SKU intentionally **not** registered (exercises "unknown barcode →
+  error")
+- All 5 station QR payloads pre-rendered as one PDF, printed once, reused
+  across every phase
+
+### 15.5 Per-phase test gates
+
+| Phase | Automated tests | Pistol test gate |
+| --- | --- | --- |
+| 0 | Component test: renders, hidden input keeps focus | Type garbage → error, page stable |
+| 1 | Integration: station open/close/switch API | Print 1 QR. Scan → correct mode. Scan again → closed. |
+| 2 | Unit: ledger math, derived-sum correctness. Regression: existing Filament Tracking cover/order-in numbers unchanged for a bucket with no Floor activity | None (pure backend) |
+| 3 | Integration: SKU registration → product + kg mapping | Register 1 real barcode |
+| 4 | Integration: receive → storage kg up; unknown SKU → error | + Storage → SKU → storage kg up → close session |
+| 5 | Integration: atomic storage-down/WIP-up; abandoned-move discard | Move → SKUs → WIP QR → storage down, WIP up. Also: open Move, scan Cleanup, confirm "Move cancelled" message. |
+| 6 | Integration: consume path also writes a ledger row | Virtual printer finishes an assigned-product print → WIP kg down |
+| 7 | Integration: printer QR → latest finished job | Print `BBP-…` for a virtual printer, scan → correct job |
+| 8 | Integration: part linking, defect save, same-printer-close, abandoned-session display | Full loop on a virtual printer's finished job: printer → parts → close. Then a real defect scan. Leave a session open, reload, confirm elapsed time shows and increments. |
+
+### 15.6 Dry run before production
+
+Once Phase 8 passes on staging: real pistols, real printed labels, pointed
+at the staging instance, physically walking the floor bench-to-bench against
+either a virtual printer or one disposable real print. Catches ergonomics
+issues (label placement, scan-field focus loss, screen readability under
+floor lighting) unit tests can't.
+
+### 15.7 Cutover to production
+
+1. Merge `feat/floor-stations` → `dev` → `main`. Nothing activates on its
+   own—no station QRs exist until printed.
+2. Print the **real** `BBP-{printer_id}` QRs from the production Codes
+   page—payloads are printer-specific, staging's virtual-printer IDs won't
+   match.
+3. Soft-launch on **one bench** first (e.g. WIP + one printer's harvest), not
+   the whole floor at once.
+4. Roll to the rest of the floor once that bench has run a full day without
+   a mis-scan.
+5. Ongoing safety valve: the on-station Undo control (§9) is the rollback
+   for a bad scan in production—no manual DB edits for routine mistakes.
+
+### 15.8 Progress log
+
+Dated entries, most recent first. Record what happened, not just what was
+planned—decisions made, deviations, blockers, and their resolutions.
+
+**2026-08-23:** Design doc (§1–§14) finalized after review: same-printer
+harvest rescan clarified as unambiguous (§5.4), storage/WIP modeled as a
+ledger table rather than raw columns (§6.2), `on_hand_grams` deprecated in
+favor of a derived sum, abandoned Move sessions discard-and-warn (§5.3), and
+a passive elapsed-time indicator added for forgotten harvest sessions
+(§5.4/§11). This §15 timeline added: nine build phases with a `DATA_DIR`-
+isolated staging instance for testing, virtual printers standing in for
+real hardware through Phase 8, and a sub-branch-per-phase strategy. Nothing
+implemented yet—Phase 0 not started.
