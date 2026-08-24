@@ -5,6 +5,7 @@ export default {
     queue: '대기열',
     stats: '통계',
     profiles: '프로필',
+    floor: '현장',
     maintenance: '유지보수',
     inventory: '필라멘트',
     files: '파일 관리자',

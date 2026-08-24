@@ -6,6 +6,7 @@ export default {
     queue: '打印队列',
     stats: '统计',
     profiles: '配置文件',
+    floor: '车间',
     maintenance: '维护',
     inventory: '耗材',
     files: '文件管理器',

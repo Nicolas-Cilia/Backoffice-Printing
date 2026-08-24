@@ -1,6 +1,6 @@
 import { useState, useEffect, useCallback, useRef, useMemo } from 'react';
 import { NavLink, Outlet, useNavigate, useLocation } from 'react-router-dom';
-import { Printer, ListOrdered, BarChart3, Cloud, Settings, Sun, Moon, Monitor, ChevronLeft, ChevronRight, Keyboard, Github, ArrowUpCircle, Wrench, FolderOpen, X, Menu, Info, Plug, Bug, LogOut, Key, Loader2, Disc3, ShieldAlert, Bell, type LucideIcon } from 'lucide-react';
+import { Printer, ListOrdered, BarChart3, Cloud, Settings, Sun, Moon, Monitor, ChevronLeft, ChevronRight, Keyboard, Github, ArrowUpCircle, Wrench, FolderOpen, X, Menu, Info, Plug, Bug, LogOut, Key, Loader2, Disc3, ShieldAlert, Bell, ScanLine, type LucideIcon } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
 import { useTheme } from '../contexts/ThemeContext';
 import { KeyboardShortcutsModal } from './KeyboardShortcutsModal';
@@ -41,6 +41,11 @@ export const defaultNavItems: NavItem[] = [
   { id: 'inventory', to: '/inventory', icon: Disc3, labelKey: 'nav.inventory' },
   { id: 'queue', to: '/queue', icon: ListOrdered, labelKey: 'nav.queue' },
   { id: 'files', to: '/files', icon: FolderOpen, labelKey: 'nav.files' },
+  // Production-floor scanning (docs/floor-plan.md). Links to the /floor
+  // landing page (Scan/Codes picker) — not directly to /floor/scan, since
+  // floor-bench kiosk PCs bookmark that URL explicitly and shouldn't see a
+  // picker on reload (§2.1).
+  { id: 'floor', to: '/floor', icon: ScanLine, labelKey: 'nav.floor' },
   { id: 'profiles', to: '/profiles', icon: Cloud, labelKey: 'nav.profiles' },
   { id: 'maintenance', to: '/maintenance', icon: Wrench, labelKey: 'nav.maintenance' },
   { id: 'stats', to: '/stats', icon: BarChart3, labelKey: 'nav.stats' },

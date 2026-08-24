@@ -6,6 +6,7 @@ export default {
     queue: 'Baskı Kuyruğu',
     stats: 'İstatistikler',
     profiles: 'Profiller',
+    floor: 'Atölye',
     maintenance: 'Bakım',
     inventory: 'Filament',
     files: 'Dosya Yöneticisi',

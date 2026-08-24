@@ -6,6 +6,7 @@ export default {
     queue: 'Druckwarteschlange',
     stats: 'Statistiken',
     profiles: 'Profile',
+    floor: 'Werkstatt',
     maintenance: 'Wartung',
     inventory: 'Filament',
     files: 'Dateimanager',
