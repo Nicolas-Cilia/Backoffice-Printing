@@ -619,6 +619,16 @@ floor lighting) unit tests can't.
 Dated entries, most recent first. Record what happened, not just what was
 planned—decisions made, deviations, blockers, and their resolutions.
 
+**2026-08-23:** Added `/floor` as a real landing page (Scan/Codes picker),
+pushed to the same PR #89. Gap found by inspecting the running app: nothing
+linked to `/floor/codes` at all, even though §2.1's Office row ("Floor →
+Codes") implied a click-through path existed. Resolved the resulting tension
+with the kiosk-bookmark note (`/floor/scan` *or* `/floor` were documented as
+interchangeable): floor-bench PCs now bookmark `/floor/scan` explicitly, and
+the sidebar item points at the new `/floor` picker instead. Codes stays
+visibly disabled ("Coming soon") rather than linking to a route that doesn't
+exist yet. §2.1 and §3.1 updated to match.
+
 **2026-08-23:** Phase 0 built and opened as
 [PR #89](https://github.com/Nicolas-Cilia/Backoffice-Printing/pull/89)
 (`feat/floor-stations-p0-scan-shell` → `feat/floor-stations`): sidebar item,
