@@ -517,7 +517,7 @@ the target design.
 | # | Phase | Status | Branch/PR |
 | --- | --- | --- | --- |
 | 0 | Floor sidebar + `/floor` landing picker + `/floor/scan` shell | In progress (PR open) | `feat/floor-stations-p0-scan-shell`, [PR #89](https://github.com/Nicolas-Cilia/Backoffice-Printing/pull/89) |
-| 1a | Minimal Codes — Station labels tab (`/floor/codes`, station catalog, label PDF) | In progress (PR open) | `feat/floor-stations-p1a-codes-stations` |
+| 1a | Minimal Codes — Station labels tab (`/floor/codes`, station catalog, label PDF) | In progress (PR open) | `feat/floor-stations-p1a-codes-stations`, [PR #90](https://github.com/Nicolas-Cilia/Backoffice-Printing/pull/90) |
 | 1b | Station entities + open/close/switch on `/floor/scan` (WIP, + Storage, Move) | Not started | — |
 | 2 | `filament_stock_movements` ledger + derived storage/WIP + `on_hand_grams` migration | Not started | — |
 | 3 | SKU registration (office) | Not started | — |
