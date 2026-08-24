@@ -3313,6 +3313,7 @@ export type Permission =
   | 'filaments:read' | 'filaments:create' | 'filaments:update' | 'filaments:delete'
   | 'inventory:read' | 'inventory:create' | 'inventory:update' | 'inventory:delete' | 'inventory:view_assignments'
   | 'inventory:forecast_read' | 'inventory:forecast_write'
+  | 'floor:scan'
   | 'smart_plugs:read' | 'smart_plugs:create' | 'smart_plugs:update' | 'smart_plugs:delete' | 'smart_plugs:control'
   | 'camera:view'
   | 'maintenance:read' | 'maintenance:create' | 'maintenance:update' | 'maintenance:delete'

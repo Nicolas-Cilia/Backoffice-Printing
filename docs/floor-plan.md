@@ -413,8 +413,33 @@ assuming it went through.
 **Purpose:** Label parts while clearing the bed. Next job cannot start until bed
 is empty; stickers go on during clear.
 
-**Open:** Scan Harvest station QR (or first action is printer QR once in harvest
-mode).
+**Two ways in, and both work.** Harvest mode is an *ergonomic* choice, not a
+functional gate:
+
+1. **Scan the Harvest station QR**, then the printer's QR. Gives the lean
+   bed-clearing screen: big text, part count, nothing else competing for
+   attention during repetitive work.
+2. **Scan the printer's QR straight from idle.** Gives the printer info page
+   (§5.6) — and part scans from there bind exactly the same way.
+
+This is deliberate. The operator is standing at the machine with a full bed;
+the printer QR is *on the printer*, while the Harvest label is taped
+somewhere else. Requiring the station scan first asks for an unnatural step
+before the obvious one, which is precisely how it gets skipped — and a
+skipped harvest mode used to mean part scans silently going nowhere. Now
+forgetting it costs a leaner screen, not data.
+
+**Parts bind to the job, not just the printer.** The printer QR is how the
+app *finds* the work: it resolves to that printer's latest finished job, and
+the part links to that `print_archives` row. The archive carries the model,
+filament, settings and timing, so a part traced back weeks later says which
+run produced it. Bound only to a printer, the answer would degrade to
+"printer 12 made this, at some point".
+
+**The floor-wide harvest lock (§2.4) is claimed when harvesting actually
+begins** — on opening the Harvest station, or on the **first part scan** from
+the info page. Merely *looking* at a printer takes no lock, or routine info
+lookups would block real bed-clearing.
 
 **Flow:**
 
@@ -500,6 +525,43 @@ What is still forbidden is **two pistols on one machine**: they type into the
 same focused field and their scans interleave into garbage. That falls out of
 the universal one-session-per-device rule without needing a rule of its own —
 a second cleanup session cannot be opened on a device that already has one.
+
+### 5.6 Printer scan (info page)
+
+Not a station — a printer QR (`BBP-{id}`) scanned with **no station open**.
+It answers "what is this machine doing, and does it need anything from me",
+for an operator already standing in front of it.
+
+Everything below comes from data the app already holds; nothing new is
+tracked to build it:
+
+| Shown | Source |
+| --- | --- |
+| Name, model, location | `printers` |
+| State — printing / idle / **awaiting plate clear** | `printers.awaiting_plate_clear` and live status |
+| **Last finished print** — job name, when, and whether its parts are labeled yet | latest `print_archives` row |
+| **Total print hours** | `runtime_seconds` + `print_hours_offset` |
+| **Maintenance due or overdue** | `printer_maintenance` intervals vs `last_performed_hours` |
+| **Log maintenance performed** | writes `maintenance_history` |
+
+The last-print row doubles as the harvest prompt: a printer *awaiting plate
+clear* with an unlabeled finished job is exactly a bed waiting to be
+cleared, and saying so is more useful than a separate reminder somewhere
+else.
+
+**Part scans from this page bind normally** (§5.4) — the info page is a
+different screen, not a different mode. That is what stops a forgotten
+Harvest scan from silently discarding work.
+
+**Takes no lock.** Looking at a printer must not block whoever wants to
+harvest it; the harvest lock is claimed on the first part scan.
+
+**When there is nothing to harvest** — no finished job, or its parts are
+already labeled — the page says so plainly. But it is **not a dead end**: a
+part scanned anyway is still recorded against the printer and the time, with
+no job attached (§7.2), because by then the sticker is already on the part.
+The screen says which printer it went to and that no job was found, so the
+operator knows it landed somewhere findable rather than nowhere.
 
 ---
 
@@ -612,9 +674,30 @@ recorded separately on the unresolved-scan record, so the audit trail shows
 both "this arrived Tuesday" and "we worked out what it was on Friday"
 without conflating them.
 
-**Dismissal.** Not every unrecognized scan is stock — a shipping label or a
-pallet barcode will get scanned eventually. Those are dismissed: marked
-not-stock, no ledger row, kept for the record rather than deleted.
+**They never expire.** An unresolved scan stays pending until a person
+decides about it. Auto-expiring would keep the list tidy by silently
+discarding exactly the discrepancy the capture exists to surface — the
+tidiness would *be* the bug. The list stays short by making each entry easy
+to decide, not by deleting entries nobody got to.
+
+**Each scan records its position in its session**, so the operator can work
+out which physical item it was: "the 3rd scan after opening + Storage", with
+its timestamp. Returning to a bare unknown barcode hours later is close to
+useless; the position is what lets someone walk to the shelf and find the
+spool it came from.
+
+**Two ways out, and both are decisions:**
+
+- **Resolve** — assign it to a product, giving the SKU its kg-per-scan.
+  Registers the SKU and applies the held kg, as above.
+- **Dismiss** — "not stock, do not track". Not every unrecognized scan is
+  inventory; a shipping label or pallet barcode gets scanned eventually. No
+  ledger row.
+
+**Dismissal is logged** — who dismissed it and when — and the record is kept
+rather than deleted. It is a judgement that some barcode is not inventory,
+and if stock later fails to reconcile, the dismissals are part of the
+answer. A dismissal that vanished would take its own evidence with it.
 
 **Never guessed.** The app does not infer a product from an unfamiliar
 barcode by similarity, prefix, or the rest of the session. A wrong guess
@@ -648,6 +731,18 @@ receive of 10 kg last Tuesday was wrong" — so a **movement history** view is
 required, per bucket, showing each row with its direction, kg, time, source
 (scan session vs manual) and originating SKU, with a reverse action on each.
 Reversing twice is refused; the reversal is itself a visible row.
+
+**Every correction records a reason: a structured code, plus optional free
+text.** The code comes from a fixed list — miscount, wrong SKU, damaged,
+returned, other — so corrections can be counted and compared. That is the
+point: if half of them are "wrong SKU" the labels or the SKU registry need
+work, and if half are "miscount" the problem is process or training. Free
+text alone cannot answer that, because nobody phrases the same reason the
+same way twice.
+
+Free text stays available alongside, for the cases the list does not fit —
+and is *required* when the code is "other", so that option cannot become a
+silent dumping ground that hides a category worth adding.
 
 **Two surfaces, one set of components:**
 
@@ -687,13 +782,33 @@ reversible; generalizing a schema on speculation is neither.
 ### 7.2 Part record (new table, conceptual)
 
 - `sticker_code` (unique)
-- `archive_id` → finished print (`print_archives`)
-- `printer_id` (denormalized or via archive)
+- `archive_id` → finished print (`print_archives`), **nullable** — see below
+- `printer_id` — stored in its own right, **not** only reachable via archive
 - `labeled_at`
 - Defect records (cleanup): type (`BBF-` slug or other text), disposition
   (trash / rework), timestamp
 
 Does **not** duplicate filament, temps, file path—join archive when needed.
+
+**A part is always recorded, even when no job can be found.** If the printer
+has no finished job to bind to — never printed, archive already labeled,
+auto-archive off, or the archive was deleted — the part is still written,
+with `printer_id` and `labeled_at` set and `archive_id` left null.
+
+This is why `printer_id` is stored directly rather than being derived
+through the archive: it has to survive the case where there *is* no archive.
+
+The reasoning matches §6.3's unrecognized barcodes. The sticker is already
+physically on the part by the time it is scanned. Refusing the scan does not
+undo that — it just produces a labeled part the system has never heard of,
+which is strictly worse than a partial record. And the partial record is
+usually recoverable by hand: printer plus timestamp is normally enough to
+identify the run ("what did printer 12 finish around 14:32").
+
+**The operator is told at scan time** — "linked to printer 12, no job found"
+— never silently. And parts with a null `archive_id` surface as a
+needs-attention list, the same shape as unresolved scans, so they can be
+matched to a job later rather than discovered at a stock count.
 
 **Leaves room for a lifecycle.** v1 records only that a part exists and was
 labeled. The intended direction (§11.1) adds states — `produced`, `shipped`
@@ -729,6 +844,7 @@ operator QRs. Data should be queryable later from the same tables.
 | Defect / rework / multi without part in cleanup | Ignore |
 | Part scan with no cleanup part in front | Ignore (or error) |
 | Part already linked at harvest | Show link, do not relink to new job |
+| Part scanned but the printer has no finished job to bind to | **Record it anyway** — `printer_id` + `labeled_at`, `archive_id` null (§7.2). Screen says "linked to printer N, no job found". Surfaces in a needs-attention list to be matched later. The sticker is already on the part; refusing would create a labeled part the system never heard of |
 | SKU scan outside open station session | Error |
 | Move open, scan WIP | Complete move |
 | Move open, scan anything other than WIP | Discard queued kg (nothing was committed), show "Move cancelled — N kg not moved", switch to the new station |
@@ -746,6 +862,38 @@ Undo: control on station screen (v1). Undo QR on bench can wait.
 
 Ship in thin vertical slices. **Pistol test** at every gate before the next phase.
 
+### Build order (revised)
+
+**Phase numbers are stable identifiers, not positions.** They appear in
+branch names, commit messages, PR titles and the §15.8 log, so renumbering
+would invalidate that history. The *order they are built in* changed after
+phase 1:
+
+> **0 → 1a → 1b → 7 → 8 → 9 → 2 → 2b → 3 → 4 → 5 → 6**
+
+Parts and printers come first; filament and stock come last.
+
+**Why this is safe.** Harvest (§5.4) and cleanup (§5.5) do not touch
+filament at all — harvest's only mention of it is *"Ignores: filament
+SKUs"*. Their real dependencies are the Codes page (1a), station sessions
+(1b) and `print_archives`, all of which exist. Nothing in 7/8/9 reads or
+writes the stock ledger, so moving the whole filament block after them
+changes no behaviour.
+
+**Why it is worth doing.** The filament block (2 → 6) is the only work that
+*modifies code that already works and already holds real data* — the
+`on_hand_grams` migration touches live Filament Tracking maths. Everything
+in 7/8/9 is additive. Doing the additive, independently-valuable work first
+means the printer/part loop is running on the floor before any risk is taken
+with existing stock numbers.
+
+**Already built ahead of schedule:** phase 8's floor-wide harvest lock
+shipped in 1b.1, and its elapsed-time indicator in 1b.2 (generalised to
+every station, not just harvest). Phase 8 is correspondingly smaller than
+its row below suggests.
+
+The table stays in original numeric order — look a phase up by its number.
+
 | Phase | Build | Test gate (manual + pistol) |
 | --- | --- | --- |
 | **0** | Floor sidebar item (→ `/floor` landing page, Scan/Codes picker) + `/floor/scan` shell (always-focused input, status text). Codes button on the picker disabled/"coming soon" until Codes exists. | Type garbage → error. Page stable. Sidebar → `/floor` shows the picker; Scan navigates to the shell; Codes is visibly disabled, not a dead link. |
@@ -756,8 +904,8 @@ Ship in thin vertical slices. **Pistol test** at every gate before the next phas
 | **4** | + Storage receive **+ persisted session tally** (§5.2) **+ unresolved-scan capture and resolution** (§6.3) | + Storage → SKU → storage kg up (via `receive` ledger row). Close session. **Walk the blind flow for real:** scan a known SKU and an unregistered one at the shelf without looking at the screen, return, and confirm the tally persists, names the unrecognized payload, and survives a reload until acknowledged. **Resolve it:** assign that payload to a product → SKU registered, held kg applied dated to the original scan, and a second spool of the same batch scans clean with no further prompting. **Dismiss** a junk barcode → no ledger row. |
 | **5** | Move → WIP, **with the queued list shown on screen while the session is open** (§5.3), unresolved lines included | Move → SKUs → WIP QR → storage down, WIP up (`move_out`/`move_in` rows, one transaction). Abandoned move (switch to non-WIP station) discards the queue and shows the cancellation message. **Queue check:** scan spools at storage, walk back, confirm the screen lists exactly what was scanned *before* scanning WIP. **Unrecognized in a move:** queue an unregistered barcode, confirm it shows as an unresolved line, resolve it at the screen, then complete — the resolved kg move with the rest. |
 | **6** | Point print debit at WIP | Finish print on assigned product → WIP kg down (`consume` row, existing tracking hooks). |
-| **7** | Printer QRs in Codes + harvest printer bind | Print `BBP-…`. Scan → printer name + latest finished job. |
-| **8** | Harvest part linking + elapsed-time indicator + **server-side floor-wide harvest lock** (§5.4) | Printer → `BBD-` parts → printer close. DB: parts → correct archive. Same-printer rescan closes only (never reopens against a stale plate—see §5.4). Leave a session open, reload the page—elapsed time shown next to the printer name and increases correctly. **Lock:** open harvest, then attempt to open it from a second browser tab—refused, naming the open printer and its elapsed time. |
+| **7** | Printer labels tab in Codes (`BBP-{id}`) + the **printer info page** (§5.6): identity, state, last finished print, total print hours, maintenance due, log-maintenance action | Print `BBP-…` from Codes, scan it from idle → info page names the right printer, its latest finished job, and its hours. A printer with maintenance overdue says so; logging it from the page clears it. A printer with no finished job says there is nothing to harvest rather than going blank. Scanning it takes **no** harvest lock. |
+| **8** | Harvest part linking, via **both** entries (§5.4): Harvest station → printer, and printer-from-idle → parts. Lock and elapsed-time already shipped in 1b | Printer → `BBD-` parts → printer close. DB: parts → correct **archive**, not just printer. Same-printer rescan closes only (never reopens against a stale plate—see §5.4). **Both entries:** label parts via the Harvest station, and again via a bare printer scan — identical rows result. **No-job case:** scan a part against a printer with no finished job → part still recorded with `printer_id` + `labeled_at`, `archive_id` null, screen says "no job found", and it appears in the needs-attention list (§7.2). **Lock:** taken on first part scan from the info page, not on merely viewing it. |
 | **9** | Cleanup defects | Part → defect / rework / multi / other. Trash vs rework. Harvest codes ignored. |
 
 **Suggested branch strategy:** one feature branch (`feat/floor-stations`) with
@@ -841,28 +989,33 @@ on that one. Worth knowing if the question is ever reopened.
 ## 12. Open naming / polish (safe to defer)
 
 - Sidebar label: Floor vs Operations vs Production
-- Whether harvest requires scanning Harvest station QR before first printer QR
-- Whether reversal needs a reason code or free text is enough
-- Whether unresolved scans should expire if never resolved, or accumulate
-  indefinitely
-- **Which permission guards the Floor.** Phase 1b guards session writes with
-  `inventory:update` and the session read with `inventory:read` — defensible
-  (stations exist to move stock) and needs no new permission, no role
-  migration, and no extra merge surface against upstream. But it does not
-  describe harvest or cleanup, which are parts and defects rather than
-  stock. A dedicated `floor:scan` permission would fit the whole feature
-  better; it costs an enum value, a permission category, role-seeding
-  changes, and a migration for existing installs' role rows. Worth deciding
-  before phase 8 rather than after, since changing the guard later is a
-  breaking change for anyone already running it
+- Whether the printer info page should also surface AMS/filament state once
+  the filament phases land, or stay printer-only
+- Whether the reversal reason list (miscount / wrong SKU / damaged /
+  returned / other) needs more codes once real corrections accumulate
+- **Phase 2's backfill destination.** Migrating `on_hand_grams` puts every
+  bucket's existing stock into **storage** (§6.2's assumption: office-typed
+  stock is warehouse stock until moved), so on day one Filament Tracking
+  shows everything as storage and nothing in WIP until Moves get scanned.
+  Almost certainly right, but confirm before running it — it is visible to
+  everyone the moment it lands
 
 Settled since first draft: the exact `BBS-` payload strings (pinned in code
 and tests by phase 1a); where session state lives (§2.4); the harvest
 concurrency rule (§5.4); that the receive tally persists until acknowledged
 (§5.2); that storage/WIP appear on **both** the Filament Tracking page and
-`/floor/inventory`, sharing one set of components (§6.4); that unrecognized
-barcodes are captured and resolved rather than rejected (§6.3); that the
-ledger stays filament-specific while the inventory page generalizes (§6.4).
+`/floor/inventory`, sharing one set of components (§6.4); that harvest has
+**two equally valid entries** — the Harvest station for a lean bed-clearing
+screen, or a printer scan from idle for the info page — with parts binding
+to the job either way, so a forgotten station scan costs ergonomics rather
+than data (§5.4, §5.6); that unrecognized barcodes are captured and resolved
+rather than rejected, never expire, and carry their position in the session
+so the physical item can be found (§6.3); that corrections record a
+structured reason plus optional free text (§6.4); that a dedicated
+**`floor:scan`** permission guards the whole feature, backfilled on upgrade
+to any group holding `printers:control` so existing installs keep working;
+and that the ledger stays filament-specific while the inventory page
+generalizes (§6.4).
 
 ---
 
@@ -909,18 +1062,24 @@ the target design.
 
 | # | Phase | Status | Branch/PR |
 | --- | --- | --- | --- |
-| 0 | Floor sidebar + `/floor` landing picker + `/floor/scan` shell | In progress (PR open) | `feat/floor-stations-p0-scan-shell`, [PR #89](https://github.com/Nicolas-Cilia/Backoffice-Printing/pull/89) |
-| 1a | Minimal Codes — Station labels tab (`/floor/codes`, station catalog, label PDF) | In progress (PR open) | `feat/floor-stations-p1a-codes-stations`, [PR #90](https://github.com/Nicolas-Cilia/Backoffice-Printing/pull/90) |
-| 1b | Station entities + open/close/switch on `/floor/scan` (WIP, + Storage, Move), **server-side sessions with floor-wide locks + takeover** (§2.4), elapsed time, error tone | **1b.1 done** (backend, [PR #93](https://github.com/Nicolas-Cilia/Backoffice-Printing/pull/93), merged). 1b.2 in progress (scan UI) | `feat/floor-stations-p1b-station-sessions`, `feat/floor-stations-p1b2-scan-ui` |
-| 2 | `filament_stock_movements` ledger + derived storage/WIP + `on_hand_grams` migration | Not started | — |
+Listed in **build order** (§10), not numeric order — phase numbers are
+stable identifiers, so the sequence reads top to bottom while the numbers
+stay put.
+
+| # | Phase | Status | Branch/PR |
+| --- | --- | --- | --- |
+| 0 | Floor sidebar + `/floor` landing picker + `/floor/scan` shell | **Done** (merged) | `feat/floor-stations-p0-scan-shell`, [PR #89](https://github.com/Nicolas-Cilia/Backoffice-Printing/pull/89) |
+| 1a | Minimal Codes — Station labels tab (`/floor/codes`, station catalog, label PDF) | **Done** (merged) | `feat/floor-stations-p1a-codes-stations`, [PR #90](https://github.com/Nicolas-Cilia/Backoffice-Printing/pull/90) |
+| 1b | Station entities + open/close/switch on `/floor/scan`, **server-side sessions with floor-wide locks + takeover** (§2.4), elapsed time, error tone | **1b.1 done** ([PR #93](https://github.com/Nicolas-Cilia/Backoffice-Printing/pull/93), merged). **1b.2 in review** ([PR #94](https://github.com/Nicolas-Cilia/Backoffice-Printing/pull/94)). Pistol gate **passed** on several gun models | `feat/floor-stations-p1b-station-sessions`, `feat/floor-stations-p1b2-scan-ui` |
+| **7** | Printer labels tab in Codes + printer info page (§5.6) | **Next** | — |
+| **8** | Harvest part linking (lock and elapsed-time already shipped in 1b) | Not started | — |
+| **9** | Cleanup defects | Not started | — |
+| 2 | `filament_stock_movements` ledger + derived storage/WIP + `on_hand_grams` migration | Not started — deferred behind 7/8/9 | — |
 | 2b | `/floor/inventory` — movement history + manual corrections (adjust, manual move, reverse); same components on Filament Tracking | Not started | — |
 | 3 | SKU registration (office), many SKUs per product | Not started | — |
 | 4 | + Storage receive + persisted tally + unresolved-scan capture/resolution | Not started | — |
 | 5 | Move → WIP | Not started | — |
 | 6 | Point print debit at WIP | Not started | — |
-| 7 | Printer QRs in Codes + harvest bind | Not started | — |
-| 8 | Harvest part linking + elapsed-time indicator + floor-wide harvest lock | Not started | — |
-| 9 | Cleanup defects | Not started | — |
 | — | Staging dry run (§15.6) | Not started | — |
 | — | Production cutover (§15.7) | Not started | — |
 
