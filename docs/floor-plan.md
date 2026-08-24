@@ -845,6 +845,16 @@ on that one. Worth knowing if the question is ever reopened.
 - Whether reversal needs a reason code or free text is enough
 - Whether unresolved scans should expire if never resolved, or accumulate
   indefinitely
+- **Which permission guards the Floor.** Phase 1b guards session writes with
+  `inventory:update` and the session read with `inventory:read` — defensible
+  (stations exist to move stock) and needs no new permission, no role
+  migration, and no extra merge surface against upstream. But it does not
+  describe harvest or cleanup, which are parts and defects rather than
+  stock. A dedicated `floor:scan` permission would fit the whole feature
+  better; it costs an enum value, a permission category, role-seeding
+  changes, and a migration for existing installs' role rows. Worth deciding
+  before phase 8 rather than after, since changing the guard later is a
+  breaking change for anyone already running it
 
 Settled since first draft: the exact `BBS-` payload strings (pinned in code
 and tests by phase 1a); where session state lives (§2.4); the harvest
