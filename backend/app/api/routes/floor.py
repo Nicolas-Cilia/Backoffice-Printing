@@ -71,7 +71,7 @@ class StationLabelRequest(BaseModel):
 
 @router.get("/stations", response_model=list[FloorStationResponse])
 async def list_floor_stations(
-    _: User | None = RequirePermissionIfAuthEnabled(Permission.PRINTERS_READ),
+    _: User | None = RequirePermissionIfAuthEnabled(Permission.FLOOR_SCAN),
 ) -> list[FloorStationResponse]:
     """The fixed station catalog (§5). Static in v1 — stations are a property
     of the documented workflow, not user-configurable data."""
@@ -89,7 +89,7 @@ async def list_floor_stations(
 @router.post("/labels/stations")
 async def render_station_labels(
     body: StationLabelRequest,
-    _: User | None = RequirePermissionIfAuthEnabled(Permission.PRINTERS_READ),
+    _: User | None = RequirePermissionIfAuthEnabled(Permission.FLOOR_SCAN),
 ) -> StreamingResponse:
     """Render station QR labels as a one-label-per-page PDF."""
     stations = []
@@ -199,7 +199,7 @@ def _to_session_response(session: FloorStationSession) -> SessionResponse:
 async def get_current_session(
     device_id: str,
     db: AsyncSession = Depends(get_db),
-    _: User | None = RequirePermissionIfAuthEnabled(Permission.INVENTORY_READ),
+    _: User | None = RequirePermissionIfAuthEnabled(Permission.FLOOR_SCAN),
 ) -> SessionResponse | None:
     """The session this device currently holds, or null.
 
@@ -215,7 +215,7 @@ async def get_current_session(
 async def scan_station(
     body: ScanRequest,
     db: AsyncSession = Depends(get_db),
-    _: User | None = RequirePermissionIfAuthEnabled(Permission.INVENTORY_UPDATE),
+    _: User | None = RequirePermissionIfAuthEnabled(Permission.FLOOR_SCAN),
 ) -> ScanResponse:
     """Apply one station-QR scan: open, close (same station), or switch.
 
@@ -251,7 +251,7 @@ async def scan_station(
 async def takeover_station(
     body: TakeoverRequest,
     db: AsyncSession = Depends(get_db),
-    _: User | None = RequirePermissionIfAuthEnabled(Permission.INVENTORY_UPDATE),
+    _: User | None = RequirePermissionIfAuthEnabled(Permission.FLOOR_SCAN),
 ) -> ScanResponse:
     """Close whoever holds this station and open it here.
 
@@ -279,7 +279,7 @@ async def takeover_station(
 async def close_current_session(
     device_id: str,
     db: AsyncSession = Depends(get_db),
-    _: User | None = RequirePermissionIfAuthEnabled(Permission.INVENTORY_UPDATE),
+    _: User | None = RequirePermissionIfAuthEnabled(Permission.FLOOR_SCAN),
 ) -> SessionResponse | None:
     """Close whatever this device holds. Null if it held nothing.
 
