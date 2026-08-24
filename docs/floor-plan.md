@@ -46,11 +46,18 @@ text, and prefix-based routing—not dropdowns and dense tables.
 
 | Physical place | PC bookmarks | Pistol scans |
 | --- | --- | --- |
-| **Printer line** (clearing beds) | `/floor/scan` (or `/floor`) | Printer QRs, part Data Matrix |
+| **Printer line** (clearing beds) | `/floor/scan` | Printer QRs, part Data Matrix |
 | **Support cleanup** | same URL | Part Data Matrix, defect/command QRs |
 | **WIP shelf** | same URL | WIP station QR, factory SKU barcodes |
 | **Warehouse / storage shelf** | same URL | + Storage QR, Move QR, factory SKU barcodes |
-| **Office** | Floor → Codes | Print station/printer/error QRs (paper printer) |
+| **Office** | Sidebar → **Floor** → **Codes** | Print station/printer/error QRs (paper printer) |
+
+Kiosk PCs bookmark the **explicit** `/floor/scan` URL, not the bare `/floor`
+shorthand — a kiosk should never see a picker screen on reload. `/floor`
+itself is a small landing page (§3.1) reached by clicking **Floor** in the
+sidebar: two destinations, Scan and Codes. It exists so an office user
+navigating normally (not from a fixed kiosk bookmark) has a way to *reach*
+Codes at all — before this, nothing in the app linked to `/floor/codes`.
 
 Two (or more) pistols can share one logged-in app **at one bench**—the table
 above is one PC per physical place, so "shared" means two pistols feeding one
@@ -77,11 +84,13 @@ stomp each other's station mode. Each scan is a string + Enter; the
 ### 3.1 Sidebar
 
 One new top-level item: **Floor** (name may become Operations / Production).
+The sidebar item links to `/floor`, not directly to `/floor/scan`.
 
 Under Floor (routes):
 
 | Route | Purpose | UI style |
 | --- | --- | --- |
+| `/floor` | **Landing page** — picker: Scan / Codes. The sidebar item's destination; not a kiosk bookmark (see §2.1) | Normal app chrome + sidebar |
 | `/floor/scan` | **Main floor page** — all pistol input | Sparse: big status, hidden always-focused scan field, sidebar collapsed or minimal |
 | `/floor/codes` | Print QRs, register filament SKUs on products | Normal app chrome + sidebar |
 
@@ -407,7 +416,7 @@ Ship in thin vertical slices. **Pistol test** at every gate before the next phas
 
 | Phase | Build | Test gate (manual + pistol) |
 | --- | --- | --- |
-| **0** | Floor sidebar item + `/floor/scan` shell (always-focused input, status text) | Type garbage → error. Page stable. |
+| **0** | Floor sidebar item (→ `/floor` landing page, Scan/Codes picker) + `/floor/scan` shell (always-focused input, status text). Codes button on the picker disabled/"coming soon" until Codes exists. | Type garbage → error. Page stable. Sidebar → `/floor` shows the picker; Scan navigates to the shell; Codes is visibly disabled, not a dead link. |
 | **1** | Station entities + print station QR (`BBS-…`) for WIP, + Storage, Move | Print one QR. Scan → correct station/mode. Scan again → closed. Other station → switch. |
 | **2** | `filament_stock_movements` ledger + derived `storage_grams`/`wip_grams` on `FilamentColorBucket`; migrate `on_hand_grams` readers (Filament Tracking cover/order-in/monthly-estimate math) to the derived sum; existing Add/Edit stock modal writes a `manual_adjust` row instead of `on_hand_grams` directly | Existing Filament Tracking page behaves identically for a user typing stock by hand—cover days, order-in, monthly estimate unchanged for a bucket with no Floor activity yet. `on_hand_grams` column removed or frozen; nothing else in the app still writes it directly. |
 | **3** | SKU registration on filament tracking product | Register real box/spool barcode → product + kg. |
@@ -502,7 +511,7 @@ the target design.
 
 | # | Phase | Status | Branch/PR |
 | --- | --- | --- | --- |
-| 0 | Floor sidebar + `/floor/scan` shell | In progress (PR open) | `feat/floor-stations-p0-scan-shell`, [PR #89](https://github.com/Nicolas-Cilia/Backoffice-Printing/pull/89) |
+| 0 | Floor sidebar + `/floor` landing picker + `/floor/scan` shell | In progress (PR open) | `feat/floor-stations-p0-scan-shell`, [PR #89](https://github.com/Nicolas-Cilia/Backoffice-Printing/pull/89) |
 | 1 | Station entities + `BBS-` QR (WIP, + Storage, Move) | Not started | — |
 | 2 | `filament_stock_movements` ledger + derived storage/WIP + `on_hand_grams` migration | Not started | — |
 | 3 | SKU registration (office) | Not started | — |

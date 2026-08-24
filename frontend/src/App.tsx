@@ -24,6 +24,7 @@ import { SetupPage } from './pages/SetupPage';
 import { NotificationsPage } from './pages/NotificationsPage';
 import { GCodeViewerPage } from './pages/GCodeViewerPage';
 import { FloorScanPage } from './pages/FloorScanPage';
+import { FloorLandingPage } from './pages/FloorLandingPage';
 import { useWebSocket } from './hooks/useWebSocket';
 import { usePrintProgressTitle } from './hooks/usePrintProgressTitle';
 import { useStreamTokenSync } from './hooks/useCameraStreamToken';
@@ -222,9 +223,11 @@ function App() {
                   <Route path="system" element={<SystemInfoPage />} />
                   <Route path="notifications" element={<NotificationsPage />} />
                   <Route path="gcode-viewer" element={<GCodeViewerPage />} />
-                  {/* Floor scan shell (docs/floor-plan.md §3.1) — bare /floor
-                      bookmarks to the same page as /floor/scan. */}
-                  <Route path="floor" element={<Navigate to="/floor/scan" replace />} />
+                  {/* Floor (docs/floor-plan.md §3.1). /floor is the sidebar
+                      item's destination — a Scan/Codes picker, not a kiosk
+                      bookmark. Floor-bench PCs bookmark /floor/scan directly
+                      so they never see the picker on reload (§2.1). */}
+                  <Route path="floor" element={<FloorLandingPage />} />
                   <Route path="floor/scan" element={<FloorScanPage />} />
                   <Route path="external/:id" element={<ExternalLinkPage />} />
                   <Route path="camera-tokens" element={<Navigate to="/settings?tab=apikeys#card-camera-tokens" replace />} />
