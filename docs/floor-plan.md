@@ -502,7 +502,7 @@ the target design.
 
 | # | Phase | Status | Branch/PR |
 | --- | --- | --- | --- |
-| 0 | Floor sidebar + `/floor/scan` shell | Not started | — |
+| 0 | Floor sidebar + `/floor/scan` shell | In progress (PR open) | `feat/floor-stations-p0-scan-shell`, [PR #89](https://github.com/Nicolas-Cilia/Backoffice-Printing/pull/89) |
 | 1 | Station entities + `BBS-` QR (WIP, + Storage, Move) | Not started | — |
 | 2 | `filament_stock_movements` ledger + derived storage/WIP + `on_hand_grams` migration | Not started | — |
 | 3 | SKU registration (office) | Not started | — |
@@ -609,6 +609,21 @@ floor lighting) unit tests can't.
 
 Dated entries, most recent first. Record what happened, not just what was
 planned—decisions made, deviations, blockers, and their resolutions.
+
+**2026-08-23:** Phase 0 built and opened as
+[PR #89](https://github.com/Nicolas-Cilia/Backoffice-Printing/pull/89)
+(`feat/floor-stations-p0-scan-shell` → `feat/floor-stations`): sidebar item,
+`/floor/scan` shell, every scan flashing unknown per §9. One real bug found
+during manual verification (not by the automated suite—jsdom's timing didn't
+reproduce it): the Enter handler originally closed over React `value` state,
+which a fast enough same-tick input+Enter dispatch could read as stale
+before a render committed between them—exactly the shape of a USB pistol's
+scan. Fixed by reading from a ref updated synchronously in `onChange`
+instead. Also found live: the shell needed an explicit `z-50` to fully cover
+Layout's chrome (mobile header, desktop sidebar)—without it "sparse" wasn't
+actually sparse at some viewport widths. Verified end-to-end against a
+`DATA_DIR`-isolated instance per §15.2, using the browser tool directly
+against a live `uvicorn` + `vite` dev pair rather than only unit tests.
 
 **2026-08-23:** Design doc (§1–§14) finalized after review: same-printer
 harvest rescan clarified as unambiguous (§5.4), storage/WIP modeled as a
