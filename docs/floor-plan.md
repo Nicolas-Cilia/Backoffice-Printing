@@ -911,7 +911,7 @@ the target design.
 | --- | --- | --- | --- |
 | 0 | Floor sidebar + `/floor` landing picker + `/floor/scan` shell | In progress (PR open) | `feat/floor-stations-p0-scan-shell`, [PR #89](https://github.com/Nicolas-Cilia/Backoffice-Printing/pull/89) |
 | 1a | Minimal Codes — Station labels tab (`/floor/codes`, station catalog, label PDF) | In progress (PR open) | `feat/floor-stations-p1a-codes-stations`, [PR #90](https://github.com/Nicolas-Cilia/Backoffice-Printing/pull/90) |
-| 1b | Station entities + open/close/switch on `/floor/scan` (WIP, + Storage, Move), **server-side sessions with floor-wide locks + takeover** (§2.4), elapsed time, error tone | Not started | — |
+| 1b | Station entities + open/close/switch on `/floor/scan` (WIP, + Storage, Move), **server-side sessions with floor-wide locks + takeover** (§2.4), elapsed time, error tone | **1b.1 done** (backend, [PR #93](https://github.com/Nicolas-Cilia/Backoffice-Printing/pull/93), merged). 1b.2 in progress (scan UI) | `feat/floor-stations-p1b-station-sessions`, `feat/floor-stations-p1b2-scan-ui` |
 | 2 | `filament_stock_movements` ledger + derived storage/WIP + `on_hand_grams` migration | Not started | — |
 | 2b | `/floor/inventory` — movement history + manual corrections (adjust, manual move, reverse); same components on Filament Tracking | Not started | — |
 | 3 | SKU registration (office), many SKUs per product | Not started | — |
