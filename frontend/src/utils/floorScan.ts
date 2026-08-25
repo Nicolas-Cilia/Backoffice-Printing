@@ -65,6 +65,8 @@ export function classifyScan(raw: string): ScanClassification {
 export type ScanAction =
   /** A `BBS-` code: hand to the session API (open / close / switch). */
   | { action: 'station'; payload: string }
+  /** A `BBP-` code with no station open: show the printer info page (§5.6). */
+  | { action: 'printer-info'; payload: string }
   /** A real code whose handling lands in a later phase. */
   | { action: 'not-implemented'; kind: ScanKind; value: string }
   /** Nothing scannable. */
@@ -73,26 +75,39 @@ export type ScanAction =
 /**
  * Route a scan against the open station.
  *
- * `stationSlug` is the station currently open on this device, or null. It is
- * unused in phase 1b — every non-station code is unhandled regardless of mode
- * — but it is the parameter later phases key on (a `BBD-` means "link this
- * part" under harvest and "look up this part" under cleanup), so it is part of
- * the signature now rather than threaded through later.
+ * `stationSlug` is the station currently open on this device, or null — the
+ * "station" half of the (station × prefix) dispatch. A `BBD-` will mean "link
+ * this part" under harvest and "look up this part" under cleanup; a `BBP-`
+ * already means two different things depending on it.
  */
 export function routeScan(raw: string, stationSlug: string | null): ScanAction {
   const scan = classifyScan(raw);
   if (scan.kind === 'empty') return { action: 'ignore' };
   if (scan.kind === 'station') return { action: 'station', payload: scan.value };
 
-  void stationSlug;
+  if (scan.kind === 'printer') {
+    // With no station open, a printer scan is a lookup, not a claim: it shows
+    // the info page and takes no harvest lock (§5.6). Under an open Harvest
+    // station the same code binds the session to that printer — phase 8.
+    if (stationSlug === null) return { action: 'printer-info', payload: scan.value };
+    return { action: 'not-implemented', kind: scan.kind, value: scan.value };
+  }
+
   return { action: 'not-implemented', kind: scan.kind, value: scan.value };
 }
 
-/** "4m", "1h 12m" — coarse on purpose. The question it answers is "has this
- *  been sitting open longer than it should have", not "how long exactly". */
+/** "7s", "4m", "1h 12m".
+ *
+ *  Seconds for the first minute, then minutes. The fine-grained start is
+ *  what makes the counter visibly *live* — a station that just opened shows
+ *  it ticking, so an operator can see the screen is responding rather than
+ *  frozen on a stale "<1m". Past a minute the question changes to "has this
+ *  been sitting open longer than it should have", where second-level
+ *  precision is noise. */
 export function formatElapsed(totalSeconds: number): string {
-  const minutes = Math.max(0, Math.floor(totalSeconds / 60));
-  if (minutes < 1) return '<1m';
+  const seconds = Math.max(0, Math.floor(totalSeconds));
+  if (seconds < 60) return `${seconds}s`;
+  const minutes = Math.floor(seconds / 60);
   const hours = Math.floor(minutes / 60);
   const rest = minutes % 60;
   return hours > 0 ? `${hours}h ${rest}m` : `${minutes}m`;

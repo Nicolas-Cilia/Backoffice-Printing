@@ -50,7 +50,7 @@ describe('routeScan', () => {
     expect(routeScan('BBS-harvest', 'wip')).toEqual({ action: 'station', payload: 'BBS-harvest' });
   });
 
-  it.each(['BBP-12', 'BBD-1', 'BBF-x', 'BBX-multi', '4001234567890'])(
+  it.each(['BBD-1', 'BBF-x', 'BBX-multi', '4001234567890'])(
     'reports %s as recognised but not yet handled',
     (payload) => {
       // Distinct from unknown on purpose: "not built yet" and "that code means
@@ -59,6 +59,19 @@ describe('routeScan', () => {
       expect(route.action).toBe('not-implemented');
     },
   );
+
+  it('routes a printer scanned from idle to the info page', () => {
+    // §5.6: with no station open a printer scan is a lookup, not a claim.
+    expect(routeScan('BBP-12', null)).toEqual({ action: 'printer-info', payload: 'BBP-12' });
+  });
+
+  it('does not treat a printer scan as an info lookup while a station is open', () => {
+    // Under Harvest the same code binds the session to that printer (phase
+    // 8) — the (station × prefix) dispatch in action, and the reason the
+    // router takes the open station as a parameter at all.
+    const route = routeScan('BBP-12', 'harvest');
+    expect(route.action).toBe('not-implemented');
+  });
 
   it('carries the scan kind through, so later phases can dispatch on it', () => {
     const route = routeScan('BBD-000042', 'harvest');
@@ -72,9 +85,15 @@ describe('routeScan', () => {
 
 describe('formatElapsed', () => {
   it.each([
-    [0, '<1m'],
-    [59, '<1m'],
+    // Seconds for the first minute, so the counter is visibly live rather
+    // than sitting on a stale "<1m" while an operator wonders if it froze.
+    [0, '0s'],
+    [1, '1s'],
+    [7, '7s'],
+    [59, '59s'],
+    // Then minutes, where second-level precision is noise.
     [60, '1m'],
+    [61, '1m'],
     [599, '9m'],
     [3600, '1h 0m'],
     [4500, '1h 15m'],
@@ -85,6 +104,13 @@ describe('formatElapsed', () => {
 
   it('never renders a negative duration', () => {
     // Clock skew between server and kiosk must not produce "-3m".
-    expect(formatElapsed(-90)).toBe('<1m');
+    expect(formatElapsed(-90)).toBe('0s');
+  });
+
+  it('crosses cleanly from seconds to minutes', () => {
+    // The boundary is where a display bug would hide: 59s must not read
+    // "0m", and 60s must not read "60s".
+    expect(formatElapsed(59)).toBe('59s');
+    expect(formatElapsed(60)).toBe('1m');
   });
 });
