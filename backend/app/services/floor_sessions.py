@@ -22,7 +22,7 @@ from __future__ import annotations
 
 import logging
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from enum import StrEnum
 
 from sqlalchemy import select
@@ -98,13 +98,66 @@ async def get_open_session_for_station(db: AsyncSession, station_slug: str) -> F
 
 
 async def list_open_sessions(db: AsyncSession) -> list[FloorStationSession]:
-    """Every currently open session, oldest first."""
+    """Every currently open session, **oldest first**.
+
+    Oldest first is deliberate: the most likely reason to read this list is
+    hunting a session nobody came back to, and that one is at the top.
+    """
     result = await db.execute(
         select(FloorStationSession)
         .where(FloorStationSession.closed_at.is_(None))
         .order_by(FloorStationSession.opened_at)
     )
     return list(result.scalars())
+
+
+async def list_recent_sessions(
+    db: AsyncSession,
+    *,
+    hours: int = 24,
+    limit: int = 50,
+) -> list[FloorStationSession]:
+    """Recently closed sessions, newest first.
+
+    Available at all only because closing is a write rather than a delete
+    (§2.4) — the history is a side effect of that choice, not extra
+    bookkeeping. Answers "who had WIP open this morning", and shows which
+    sessions ended in a takeover rather than a normal close.
+    """
+    since = _utcnow() - timedelta(hours=hours)
+    result = await db.execute(
+        select(FloorStationSession)
+        .where(
+            FloorStationSession.closed_at.is_not(None),
+            FloorStationSession.closed_at >= since,
+        )
+        .order_by(FloorStationSession.closed_at.desc())
+        .limit(limit)
+    )
+    return list(result.scalars())
+
+
+async def close_session_by_id(db: AsyncSession, session_id: int) -> FloorStationSession | None:
+    """Close one session by id, whichever device holds it.
+
+    The escape hatch for a session nobody is going back to — distinct from
+    :func:`close_session_for_device`, which only ever closes the caller's
+    own. Returns None if the id is unknown *or already closed*, so a
+    double-click cannot resurrect and re-close a row.
+    """
+    result = await db.execute(
+        select(FloorStationSession).where(
+            FloorStationSession.id == session_id,
+            FloorStationSession.closed_at.is_(None),
+        )
+    )
+    session = result.scalar_one_or_none()
+    if session is None:
+        return None
+    _close(session)
+    await db.flush()
+    logger.info("Session %s (%s) closed from the sessions view", session_id, session.station_slug)
+    return session
 
 
 def _close(session: FloorStationSession, *, by_takeover: bool = False) -> None:
@@ -243,5 +296,7 @@ __all__ = [
     "get_open_session_for_device",
     "get_open_session_for_station",
     "list_open_sessions",
+    "list_recent_sessions",
+    "close_session_by_id",
     "resolve_station",
 ]
