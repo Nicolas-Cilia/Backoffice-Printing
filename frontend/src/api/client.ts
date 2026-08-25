@@ -1271,10 +1271,24 @@ export interface FloorSession {
   station_name: string;
   device_id: string;
   opened_at: string;
-  /** Server-computed, so the elapsed indicator does not depend on the kiosk's
+  /** How long the session has been open, or *was* open once closed — not time
+   *  since it opened, which would keep growing for finished sessions.
+   *
+   *  Server-computed, so the elapsed indicator does not depend on the kiosk's
    *  clock being right — a drifted unattended PC would otherwise render the one
    *  number this display exists to make trustworthy (§5.4). */
   open_seconds: number;
+  /** Null while open; present on history rows. */
+  closed_at?: string | null;
+  /** True when another device took the station rather than the holder closing
+   *  it — the distinction the history exists to show. */
+  closed_by_takeover?: boolean;
+}
+
+/** Open sessions plus recently closed ones, for the `/floor` landing page. */
+export interface FloorSessionOverview {
+  open: FloorSession[];
+  recent: FloorSession[];
 }
 
 /** What a station scan did. `locked` is a *success* response, not an error: the
@@ -1290,6 +1304,63 @@ export interface FloorScanResponse {
   session: FloorSession | null;
   /** Only on `locked`: who holds the station, and for how long. */
   blocking: FloorSession | null;
+}
+
+/** A printer as offered in the Codes page's Printer-labels tab. `payload` is
+ *  `BBP-{id}` — the exact string its QR encodes (§4). */
+export interface FloorPrinter {
+  id: number;
+  payload: string;
+  name: string;
+  model: string | null;
+  location: string | null;
+  is_active: boolean;
+}
+
+/** The printer's most recent finished job — the harvest candidate (§5.6). */
+export interface FloorLastPrint {
+  archive_id: number;
+  print_name: string | null;
+  completed_at: string | null;
+  quantity: number;
+  /** Phase 8 fills this in; until then always false, which reads correctly
+   *  as "nothing labeled yet". */
+  has_labeled_parts: boolean;
+}
+
+/** What the machine is doing right now, from MQTT. Absent when the printer
+ *  has no client at all — distinct from `connected: false`, which means we
+ *  know about it and it is unreachable. */
+export interface FloorLiveStatus {
+  connected: boolean;
+  /** Raw gcode state: RUNNING / IDLE / PAUSE / FINISH / FAILED / PREPARE /
+   *  SLICING, or "unknown" before the first MQTT message arrives. */
+  state: string;
+  current_print: string | null;
+  progress: number;
+  remaining_minutes: number;
+  layer_num: number;
+  total_layers: number;
+}
+
+/** The printer info page (§5.6): what this machine is doing, and whether it
+ *  needs anything. Shown when a `BBP-` code is scanned with no station open. */
+export interface FloorPrinterInfo {
+  id: number;
+  payload: string;
+  name: string;
+  model: string | null;
+  location: string | null;
+  serial_number: string;
+  is_active: boolean;
+  /** A finished job sitting on the bed waiting to be cleared — i.e. there is
+   *  something here to harvest. */
+  awaiting_plate_clear: boolean;
+  total_print_hours: number;
+  last_print: FloorLastPrint | null;
+  maintenance_due_count: number;
+  maintenance_warning_count: number;
+  live: FloorLiveStatus | null;
 }
 
 export interface StorageLocation {
@@ -5485,6 +5556,14 @@ export const api = {
       method: 'POST',
       body: JSON.stringify(data),
     }),
+  /** Open sessions plus those closed in the last `hours`, for the `/floor`
+   *  landing page's session panel. */
+  getFloorSessions: (hours = 24) =>
+    request<FloorSessionOverview>(`/floor/sessions?hours=${hours}`),
+  /** Close any session by id, whichever device holds it — the escape hatch
+   *  for a station nobody is coming back to. */
+  closeFloorSessionById: (sessionId: number) =>
+    request<FloorSession>(`/floor/sessions/${sessionId}`, { method: 'DELETE' }),
   closeFloorSession: (deviceId: string) =>
     request<FloorSession | null>(`/floor/session?device_id=${encodeURIComponent(deviceId)}`, {
       method: 'DELETE',
@@ -5509,6 +5588,31 @@ export const api = {
     }
     return response.blob();
   },
+  /** Printers offered in the Codes page's Printer-labels tab (§5.6). */
+  getFloorPrinters: () => request<FloorPrinter[]>('/floor/printers'),
+  printFloorPrinterLabels: async (data: {
+    payloads: string[];
+    width_mm: number;
+    height_mm: number;
+  }): Promise<Blob> => {
+    const headers: Record<string, string> = { 'Content-Type': 'application/json' };
+    if (authToken) headers['Authorization'] = `Bearer ${authToken}`;
+    const response = await fetch(`${API_BASE}/floor/labels/printers`, {
+      method: 'POST',
+      headers,
+      body: JSON.stringify(data),
+    });
+    if (!response.ok) {
+      const error = await response.json().catch(() => ({}));
+      throw new Error(error.detail || `HTTP ${response.status}`);
+    }
+    return response.blob();
+  },
+  /** The info page for a scanned printer QR. Keyed by the scanned payload so
+   *  the page hands over exactly what the pistol emitted — no client-side
+   *  parsing that could drift from the backend's idea of a valid code. */
+  getFloorPrinterInfo: (payload: string) =>
+    request<FloorPrinterInfo>(`/floor/printers/${encodeURIComponent(payload)}/info`),
   getSpoolCatalog: () =>
     request<SpoolCatalogEntry[]>('/inventory/catalog'),
   addCatalogEntry: (data: { name: string; weight: number }) =>

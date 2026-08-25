@@ -19,7 +19,7 @@ import { useQuery } from '@tanstack/react-query';
 import { useTranslation } from 'react-i18next';
 import { QRCodeSVG } from 'qrcode.react';
 import { Loader2, Printer, QrCode } from 'lucide-react';
-import { api, type FloorStation } from '../api/client';
+import { api } from '../api/client';
 import { Button } from '../components/Button';
 import { useToast } from '../contexts/ToastContext';
 import { openBlobInNewTab } from '../utils/file';
@@ -63,26 +63,60 @@ function isValidDimension(value: number): boolean {
   return Number.isFinite(value) && value >= MIN_LABEL_MM && value <= MAX_LABEL_MM;
 }
 
+/** Which label family is being printed. Errors land in phase 9. */
+type CodesTab = 'stations' | 'printers';
+
 export function FloorCodesPage() {
   const { t } = useTranslation();
   const { showToast } = useToast();
+
+  const [tab, setTab] = useState<CodesTab>('stations');
 
   const stationsQuery = useQuery({
     queryKey: ['floor-stations'],
     queryFn: () => api.getFloorStations(),
   });
+  const printersQuery = useQuery({
+    queryKey: ['floor-printers'],
+    queryFn: () => api.getFloorPrinters(),
+    // Only fetched once the tab is opened: an office user printing station
+    // labels has no reason to pull the printer list.
+    enabled: tab === 'printers',
+  });
+
   const stations = useMemo(() => stationsQuery.data ?? [], [stationsQuery.data]);
+  const printers = useMemo(() => printersQuery.data ?? [], [printersQuery.data]);
+
+  /** The rows the active tab prints, reduced to what the picker needs. Both
+   *  label families are a list of (payload, title, subtitle) — keeping one
+   *  shape means the selection, size picker and print button are written
+   *  once rather than duplicated per tab. */
+  const items = useMemo(
+    () =>
+      tab === 'stations'
+        ? stations.map((s) => ({ payload: s.payload, title: s.name, subtitle: s.description }))
+        : printers.map((p) => ({
+            payload: p.payload,
+            title: p.name,
+            subtitle: [p.model, p.location].filter(Boolean).join(' · ') || '—',
+          })),
+    [tab, stations, printers],
+  );
+
+  const activeQuery = tab === 'stations' ? stationsQuery : printersQuery;
 
   const [selected, setSelected] = useState<Set<string>>(new Set());
   const [size, setSize] = useState<StoredSize>(() => loadStoredSize());
   const [printing, setPrinting] = useState(false);
 
-  // Default to every station checked: the common errand is "print the whole
-  // set for a new bench", not picking one.
+  // Default to everything checked: the common errand is "print the whole set
+  // for a new bench", not picking one. Keyed on the payload list so switching
+  // tabs re-selects for the tab now shown rather than carrying a stale
+  // selection across.
+  const payloadKey = items.map((i) => i.payload).join('|');
   useEffect(() => {
-    if (stations.length === 0) return;
-    setSelected(new Set(stations.map((s) => s.payload)));
-  }, [stations]);
+    setSelected(new Set(payloadKey ? payloadKey.split('|') : []));
+  }, [payloadKey]);
 
   useEffect(() => {
     localStorage.setItem(SIZE_STORAGE_KEY, JSON.stringify(size));
@@ -105,20 +139,23 @@ export function FloorCodesPage() {
     });
   };
 
-  const allSelected = stations.length > 0 && selected.size === stations.length;
+  const allSelected = items.length > 0 && selected.size === items.length;
 
   const handlePrint = async () => {
     if (!canPrint) return;
     // Preserve catalog order so the PDF's page order matches the list.
-    const payloads = stations.map((s) => s.payload).filter((p) => selected.has(p));
+    const payloads = items.map((i) => i.payload).filter((p) => selected.has(p));
     setPrinting(true);
     try {
-      const blob = await api.printFloorStationLabels({
-        payloads,
-        width_mm: width,
-        height_mm: height,
-      });
-      openBlobInNewTab(blob, 'bambuddy-station-labels.pdf');
+      const body = { payloads, width_mm: width, height_mm: height };
+      const blob =
+        tab === 'stations'
+          ? await api.printFloorStationLabels(body)
+          : await api.printFloorPrinterLabels(body);
+      openBlobInNewTab(
+        blob,
+        tab === 'stations' ? 'bambuddy-station-labels.pdf' : 'bambuddy-printer-labels.pdf',
+      );
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
       showToast(t('floor.codesPrintError', 'Could not generate labels: {{msg}}', { msg }), 'error');
@@ -145,18 +182,26 @@ export function FloorCodesPage() {
       <div className="inline-flex rounded-lg bg-bambu-dark-secondary p-1">
         <button
           type="button"
-          className="px-3 py-1.5 text-sm rounded-md transition-colors bg-bambu-green text-white"
-          aria-current="page"
+          onClick={() => setTab('stations')}
+          aria-current={tab === 'stations' ? 'page' : undefined}
+          className={`px-3 py-1.5 text-sm rounded-md transition-colors ${
+            tab === 'stations' ? 'bg-bambu-green text-white' : 'text-bambu-gray hover:text-white'
+          }`}
         >
           {t('floor.codesTabStations', 'Station labels')}
         </button>
         <button
           type="button"
-          disabled
-          className="px-3 py-1.5 text-sm rounded-md transition-colors text-bambu-gray opacity-50 cursor-not-allowed"
+          onClick={() => setTab('printers')}
+          aria-current={tab === 'printers' ? 'page' : undefined}
+          className={`px-3 py-1.5 text-sm rounded-md transition-colors ${
+            tab === 'printers' ? 'bg-bambu-green text-white' : 'text-bambu-gray hover:text-white'
+          }`}
         >
           {t('floor.codesTabPrinters', 'Printer labels')}
         </button>
+        {/* Error labels land with cleanup (phase 9). Shown disabled rather
+            than hidden so the page's shape stays honest about what exists. */}
         <button
           type="button"
           disabled
@@ -169,20 +214,29 @@ export function FloorCodesPage() {
       <section className="bg-bambu-dark-secondary rounded-lg overflow-hidden">
         <div className="px-4 py-3 border-b border-bambu-dark-tertiary flex flex-wrap items-center justify-between gap-3">
           <div>
-            <h2 className="text-white font-semibold">{t('floor.codesStationsHeading', 'Station labels')}</h2>
+            <h2 className="text-white font-semibold">
+              {tab === 'stations'
+                ? t('floor.codesStationsHeading', 'Station labels')
+                : t('floor.codesPrintersHeading', 'Printer labels')}
+            </h2>
             <p className="text-xs text-bambu-gray mt-0.5">
-              {t(
-                'floor.codesStationsHint',
-                'One label per station. Scanning a station QR opens or closes that station on the scan page.',
-              )}
+              {tab === 'stations'
+                ? t(
+                    'floor.codesStationsHint',
+                    'One label per station. Scanning a station QR opens or closes that station on the scan page.',
+                  )
+                : t(
+                    'floor.codesPrintersHint',
+                    'One label per printer, stuck on the machine. Scanning it shows what that printer is doing and what it last finished.',
+                  )}
             </p>
           </div>
-          {stations.length > 0 && (
+          {items.length > 0 && (
             <button
               type="button"
               className="text-sm text-bambu-gray hover:text-white transition-colors"
               onClick={() =>
-                setSelected(allSelected ? new Set() : new Set(stations.map((s) => s.payload)))
+                setSelected(allSelected ? new Set() : new Set(items.map((i) => i.payload)))
               }
             >
               {allSelected
@@ -192,29 +246,45 @@ export function FloorCodesPage() {
           )}
         </div>
 
-        {stationsQuery.isLoading ? (
+        {activeQuery.isLoading ? (
           <div className="flex items-center justify-center py-16 text-bambu-gray">
             <Loader2 className="w-5 h-5 animate-spin mr-2" />
             {t('common.loading', 'Loading…')}
           </div>
-        ) : stationsQuery.isError ? (
+        ) : activeQuery.isError ? (
           <div className="text-center py-16 px-4">
             <QrCode className="w-10 h-10 text-bambu-gray mx-auto mb-3" />
             <p className="text-white font-medium">
-              {t('floor.codesLoadError', 'Could not load stations')}
+              {tab === 'stations'
+                ? t('floor.codesLoadError', 'Could not load stations')
+                : t('floor.codesPrintersLoadError', 'Could not load printers')}
             </p>
-            <Button className="mt-4" variant="secondary" onClick={() => stationsQuery.refetch()}>
+            <Button className="mt-4" variant="secondary" onClick={() => activeQuery.refetch()}>
               {t('common.retry', 'Retry')}
             </Button>
           </div>
+        ) : items.length === 0 ? (
+          // Reachable on the printers tab for an install with no printers
+          // added yet — an empty list with no explanation reads as a bug.
+          <div className="text-center py-16 px-4">
+            <QrCode className="w-10 h-10 text-bambu-gray mx-auto mb-3" />
+            <p className="text-white font-medium">
+              {t('floor.codesNoPrinters', 'No printers to label yet')}
+            </p>
+            <p className="text-sm text-bambu-gray mt-1">
+              {t('floor.codesNoPrintersHint', 'Add a printer first, then print its label here.')}
+            </p>
+          </div>
         ) : (
           <ul className="divide-y divide-bambu-dark-tertiary">
-            {stations.map((station) => (
-              <StationRow
-                key={station.payload}
-                station={station}
-                checked={selected.has(station.payload)}
-                onToggle={() => toggle(station.payload)}
+            {items.map((item) => (
+              <CodeRow
+                key={item.payload}
+                payload={item.payload}
+                title={item.title}
+                subtitle={item.subtitle}
+                checked={selected.has(item.payload)}
+                onToggle={() => toggle(item.payload)}
               />
             ))}
           </ul>
@@ -313,12 +383,19 @@ export function FloorCodesPage() {
   );
 }
 
-function StationRow({
-  station,
+/** One printable row, used by both label families. The QR is a *preview*
+ *  rendered client-side; the printed artefact is the server-rendered PDF,
+ *  whose payload comes from the same string the backend resolves on a scan. */
+function CodeRow({
+  payload,
+  title,
+  subtitle,
   checked,
   onToggle,
 }: {
-  station: FloorStation;
+  payload: string;
+  title: string;
+  subtitle: string;
   checked: boolean;
   onToggle: () => void;
 }) {
@@ -328,19 +405,19 @@ function StationRow({
         type="checkbox"
         checked={checked}
         onChange={onToggle}
-        aria-label={station.name}
+        aria-label={title}
         className="w-4 h-4 flex-shrink-0 accent-bambu-green"
       />
       {/* White plate behind the preview: a QR needs light quiet-zone contrast,
           and the page background is near-black. */}
       <div className="bg-white rounded p-1 flex-shrink-0" aria-hidden="true">
-        <QRCodeSVG value={station.payload} size={48} />
+        <QRCodeSVG value={payload} size={48} />
       </div>
       <div className="min-w-0 flex-1">
-        <div className="text-white font-medium">{station.name}</div>
-        <div className="text-xs text-bambu-gray truncate">{station.description}</div>
+        <div className="text-white font-medium">{title}</div>
+        <div className="text-xs text-bambu-gray truncate">{subtitle}</div>
       </div>
-      <code className="text-xs text-bambu-gray-light font-mono whitespace-nowrap">{station.payload}</code>
+      <code className="text-xs text-bambu-gray-light font-mono whitespace-nowrap">{payload}</code>
     </li>
   );
 }

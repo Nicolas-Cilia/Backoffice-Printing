@@ -498,19 +498,65 @@ just on the scan screen itself) stay out of v1 (§11).
 
 ### 5.5 Cleanup
 
-**Purpose:** Log defects at support removal. **Good parts are not scanned.**
+**Purpose:** Record the outcome of every part at support removal —
+**including the good ones**.
+
+**Every part is scanned.** An earlier draft said good parts were not, to
+keep bench work down. That is reversed (§11.2): if only defects are scanned,
+a part with no cleanup record is indistinguishable from one nobody has
+inspected yet, and a daily yield figure built on that denominator cannot be
+trusted — an unfinished inspection backlog reads as a great yield day.
+Scanning the good ones roughly doubles the work at this bench and buys a
+capacity number that means something.
 
 **Open:** Scan Cleanup station QR.
 
 **Flow:**
 
 1. Scan part `BBD-…` → show **which printer** (and ideally part model).
-2. Optional: scan `BBX-rework` (if not trash).
-3. Defect path:
+2. **Good part:** no further scan — the part is recorded good and the
+   station returns to waiting. This is the common case, so it must be the
+   shortest path: one scan, no confirmation step.
+3. Optional: scan `BBX-rework` (if not trash).
+4. Defect path:
    - **One defect:** scan `BBF-horizontal` / vertical / other → save → confirmation → **waiting for part**
    - **Several defects:** `BBX-multi` → scan each `BBF-…` → `BBX-multi` again → save
    - **Other:** `BBF-other` → **keyboard** types note → save
-4. Default disposition: **trash**. Rework only if `BBX-rework` was scanned before defect.
+5. Default disposition for a *defective* part: **trash**. Rework only if
+   `BBX-rework` was scanned before the defect.
+
+**Support removal *and* final inspection.** Cleanup is the single bench where
+every part's outcome is decided, which is what lets a part with no cleanup
+record mean *uninspected* without ambiguity.
+
+**A disposition can always be changed, by re-scanning the part.** The real
+sequence is inspect → scan → then handle the part, and handling breaks
+things: a part passed as good can snap during support removal or later
+post-processing. So re-scanning a part that already has a disposition means
+**amend** — the screen shows what is on record ("recorded good, 4 min ago")
+and lets the operator change it. No separate mode, and no time limit: the
+break is often noticed after moving on to the next parts.
+
+**Amendments append, they do not overwrite** — the same rule as the stock
+ledger (§6.4). A part's history reads `good @ 14:32` → `defective/broken @
+14:38`, and the current disposition is simply the latest.
+
+The ordering is not bookkeeping, it is **data**:
+
+| Sequence | What happened |
+| --- | --- |
+| Straight to defective | Came off the bed bad — a **print** failure |
+| Good, then defective | Survived printing, broke in post-processing — a **process** failure |
+
+That split matters for §11.2: only print failures should count against a
+printer's `(printer × plate variant)` reliability. Post-processing losses
+belong to the bench. Overwriting destructively would erase the distinction
+and make printers look worse than they are, sending anyone investigating
+after the wrong fix.
+
+**Job link immutable, disposition mutable.** A part's link to its print job
+is fixed once set (§9: do not relink at harvest). Its disposition is not.
+Two different properties, easy to conflate later.
 
 **Screen:** After save, back to idle (“Scan a part”). **No running tally** on
 station (reports later).
@@ -785,10 +831,19 @@ reversible; generalizing a schema on speculation is neither.
 - `archive_id` → finished print (`print_archives`), **nullable** — see below
 - `printer_id` — stored in its own right, **not** only reachable via archive
 - `labeled_at`
-- Defect records (cleanup): type (`BBF-` slug or other text), disposition
-  (trash / rework), timestamp
+- **Cleanup records (plural, append-only):** outcome (`good` / `defective`),
+  defect type where applicable (`BBF-` slug or other text), disposition
+  (trash / rework), timestamp, and who recorded it
 
 Does **not** duplicate filament, temps, file path—join archive when needed.
+
+**Disposition is a history, not a field.** A part passed as good can snap
+during support removal, so re-scanning it appends a new cleanup record
+rather than editing the old one (§5.5). The current outcome is the latest
+record; the sequence is what distinguishes a **print** failure (straight to
+defective) from a **process** failure (good, then defective) — a split
+§11.2's reliability model depends on. A single mutable `disposition` column
+would silently destroy it.
 
 **A part is always recorded, even when no job can be found.** If the printer
 has no finished job to bind to — never printed, archive already labeled,
@@ -843,7 +898,8 @@ operator QRs. Data should be queryable later from the same tables.
 | Unknown scan string | Error flash, no state change. **Plus error tone** — most rejections happen at the storage shelf where the flash cannot be seen (§2.2) |
 | Defect / rework / multi without part in cleanup | Ignore |
 | Part scan with no cleanup part in front | Ignore (or error) |
-| Part already linked at harvest | Show link, do not relink to new job |
+| Part already linked at harvest | Show link, do not relink to new job — the **job link is immutable** |
+| Part re-scanned at cleanup after a disposition was recorded | **Amend** — show the current disposition and its age, let the operator change it. Appends rather than overwrites, so `good → defective` stays visible as a post-processing loss (§5.5) |
 | Part scanned but the printer has no finished job to bind to | **Record it anyway** — `printer_id` + `labeled_at`, `archive_id` null (§7.2). Screen says "linked to printer N, no job found". Surfaces in a needs-attention list to be matched later. The sticker is already on the part; refusing would create a labeled part the system never heard of |
 | SKU scan outside open station session | Error |
 | Move open, scan WIP | Complete move |
@@ -906,7 +962,7 @@ The table stays in original numeric order — look a phase up by its number.
 | **6** | Point print debit at WIP | Finish print on assigned product → WIP kg down (`consume` row, existing tracking hooks). |
 | **7** | Printer labels tab in Codes (`BBP-{id}`) + the **printer info page** (§5.6): identity, state, last finished print, total print hours, maintenance due, log-maintenance action | Print `BBP-…` from Codes, scan it from idle → info page names the right printer, its latest finished job, and its hours. A printer with maintenance overdue says so; logging it from the page clears it. A printer with no finished job says there is nothing to harvest rather than going blank. Scanning it takes **no** harvest lock. |
 | **8** | Harvest part linking, via **both** entries (§5.4): Harvest station → printer, and printer-from-idle → parts. Lock and elapsed-time already shipped in 1b | Printer → `BBD-` parts → printer close. DB: parts → correct **archive**, not just printer. Same-printer rescan closes only (never reopens against a stale plate—see §5.4). **Both entries:** label parts via the Harvest station, and again via a bare printer scan — identical rows result. **No-job case:** scan a part against a printer with no finished job → part still recorded with `printer_id` + `labeled_at`, `archive_id` null, screen says "no job found", and it appears in the needs-attention list (§7.2). **Lock:** taken on first part scan from the info page, not on merely viewing it. |
-| **9** | Cleanup defects | Part → defect / rework / multi / other. Trash vs rework. Harvest codes ignored. |
+| **9** | Cleanup outcomes — **every part scanned, good ones included** (§5.5, §11.2) | Part scan alone → recorded **good**, one scan, no confirmation step. Part → defect / rework / multi / other → recorded defective with disposition. Trash vs rework. Harvest codes ignored. **Yield check:** label a job's parts, mark some good and some defective, and confirm `good / produced` comes out right for that job — and that a part never scanned at cleanup reads as *uninspected*, not as good. **Amendment:** scan a part good, then re-scan it and mark it defective — the current disposition changes, the earlier one survives, and the pair is distinguishable from a straight-to-defective part (§5.5). |
 
 **Suggested branch strategy:** one feature branch (`feat/floor-stations`) with
 sequential commits per phase, or sub-branches merged in order. Codes ships
@@ -975,6 +1031,86 @@ two independent: neither has to change for the other to arrive.
   transaction that marks a part produced — a BOM engine writing to several
   ledgers at once, one transaction per part
 
+### 11.2 Direction of travel: true yield, and replenishment that uses it
+
+Also not v1. Recorded because it is where the harvest and cleanup records
+are ultimately going, and because two decisions it depends on are cheapest
+to make *before* phase 9 builds cleanup.
+
+**The problem.** There is currently no reliable measure of true daily
+capacity — how many *good* parts the floor actually produces, as opposed to
+how many it starts.
+
+**The data mostly falls out of phases 8 and 9 already.** Harvest records
+parts produced against a specific job; cleanup records their disposition.
+Yield is then `good / produced`, sliceable by job, printer and day. No extra
+capture is needed — but see the good-parts decision below, which is what
+makes the denominator trustworthy.
+
+**Failure mode matters more than yield alone.** Whether dense plates are a
+good idea depends on how failures cluster:
+
+| Failure mode | Effect on a 3-up plate |
+| --- | --- |
+| **Independent** (one part warps) | Lose 1 of 3 — batching is nearly free |
+| **Correlated** (adhesion, layer shift, runout) | Lose all 3 — batching triples the exposure to one event |
+
+The part records already distinguish these, because parts bind to a specific
+job: all-of-a-job defective reads as plate-level, one-of-three as
+part-level. The split comes free from the same records.
+
+Density plausibly costs yield for physical reasons — a 1-up prints in the
+bed's sweet spot while a 3-up must use the edges, and travel moves between
+objects cause stringing a single object never sees. So **yield can beat
+throughput**: four 1-part plates may deliver more good parts than two 2-part
+plates, even though it burns more machine time.
+
+**Replenishment, when it comes, is not 1:1.** Plates print N-up, so
+"consume a part, queue a replacement" cannot work directly. It needs the
+same shape as filament reorder — a **reorder point and a batch size per
+part**. Consume down to the threshold, then queue plates.
+
+Choosing the split, with plate variants of 1 / 2 / 3 parts:
+
+1. **Minimise plate count.** That is the real cost — each plate is one
+   fixed overhead (bed heat, purge, first layer), one bed clear, one
+   harvest. Greedy largest-first is optimal for the 1/2/3 set, and having a
+   1-part variant means an exact count is always reachable with no
+   overproduction.
+2. **Among splits with that count, prefer the balanced one.** Total machine
+   time is identical either way — 3+1 and 2+2 both cost `2F + 4p` — but 2+2
+   *finishes sooner*, because 3+1 leaves one printer idle waiting on the
+   longer plate. Only matters when several printers are free.
+3. **Then weight by reliability**, per (printer × plate variant), which is
+   what can overturn steps 1 and 2 entirely when a dense plate's yield is
+   poor enough.
+
+**The trap in step 3:** per-(printer × variant) yield is a lot of cells —
+five printers and three variants is fifteen — and each needs a real sample
+before it means anything. On a sample of two, one unlucky plate reads as
+"printer C is bad at 3-ups". It needs a fallback ladder: use the cell once
+it has enough jobs, else printer-level yield, else a flat default. Without
+that, the system spends its first months making confident wrong choices,
+which is worse than making none — because people believe it.
+
+**Decisions needed before phase 9 builds cleanup:**
+
+- **Good parts are scanned too.** *Settled* — this reverses §5.5's original
+  "good parts are not scanned". Every part gets a disposition, so a part
+  with no cleanup record unambiguously means *not yet inspected* rather than
+  being indistinguishable from good. That distinction is what makes a daily
+  capacity figure trustworthy; the cost is roughly double the scanning at
+  the cleanup bench.
+- **Cleanup is support removal *and* final inspection.** *Settled.* Every
+  part passes through it regardless of whether it needed supports, which is
+  what lets "no cleanup record" mean *uninspected* without ambiguity.
+- **Dispositions are amendable, and amendments append** (§5.5). This yields
+  a third measure beyond raw yield: `good → defective` is a
+  **post-processing** loss, while straight-to-defective is a **print**
+  failure. Only the latter counts against a printer's reliability — a bench
+  that snaps 8% of parts during support removal would otherwise make every
+  printer look bad and send the investigation somewhere useless.
+
 **Bearing on the schema decision in §6.4:** this genuinely weakens one of
 the arguments made there. That section reasoned that filament's auto-debit
 from the print engine "has no analog for discrete components" — under a BOM
@@ -991,6 +1127,9 @@ on that one. Worth knowing if the question is ever reopened.
 - Sidebar label: Floor vs Operations vs Production
 - Whether the printer info page should also surface AMS/filament state once
   the filament phases land, or stay printer-only
+- Whether a `good → defective` amendment should capture *which* stage broke
+  the part (support removal vs later post-processing), or whether the
+  sequence alone is enough (§5.5)
 - Whether the reversal reason list (miscount / wrong SKU / damaged /
   returned / other) needs more codes once real corrections accumulate
 - **Phase 2's backfill destination.** Migrating `on_hand_grams` puts every
@@ -1008,7 +1147,11 @@ concurrency rule (§5.4); that the receive tally persists until acknowledged
 **two equally valid entries** — the Harvest station for a lean bed-clearing
 screen, or a printer scan from idle for the info page — with parts binding
 to the job either way, so a forgotten station scan costs ergonomics rather
-than data (§5.4, §5.6); that unrecognized barcodes are captured and resolved
+than data (§5.4, §5.6); that cleanup is support removal **and** final
+inspection, scans every part including the good ones, and lets a disposition
+be amended by re-scanning — appending rather than overwriting, so a part
+that broke in post-processing stays distinguishable from one that printed
+badly (§5.5, §11.2); that unrecognized barcodes are captured and resolved
 rather than rejected, never expire, and carry their position in the session
 so the physical item can be found (§6.3); that corrections record a
 structured reason plus optional free text (§6.4); that a dedicated
@@ -1073,7 +1216,7 @@ stay put.
 | 1b | Station entities + open/close/switch on `/floor/scan`, **server-side sessions with floor-wide locks + takeover** (§2.4), elapsed time, error tone | **1b.1 done** ([PR #93](https://github.com/Nicolas-Cilia/Backoffice-Printing/pull/93), merged). **1b.2 in review** ([PR #94](https://github.com/Nicolas-Cilia/Backoffice-Printing/pull/94)). Pistol gate **passed** on several gun models | `feat/floor-stations-p1b-station-sessions`, `feat/floor-stations-p1b2-scan-ui` |
 | **7** | Printer labels tab in Codes + printer info page (§5.6) | **Next** | — |
 | **8** | Harvest part linking (lock and elapsed-time already shipped in 1b) | Not started | — |
-| **9** | Cleanup defects | Not started | — |
+| **9** | Cleanup outcomes (every part scanned, good included) | Not started | — |
 | 2 | `filament_stock_movements` ledger + derived storage/WIP + `on_hand_grams` migration | Not started — deferred behind 7/8/9 | — |
 | 2b | `/floor/inventory` — movement history + manual corrections (adjust, manual move, reverse); same components on Filament Tracking | Not started | — |
 | 3 | SKU registration (office), many SKUs per product | Not started | — |

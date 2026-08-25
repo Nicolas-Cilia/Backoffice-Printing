@@ -189,3 +189,140 @@ class TestCurrentSession:
         )
         assert resp.status_code == 200
         assert resp.json() is None
+
+
+@pytest.mark.asyncio
+@pytest.mark.integration
+class TestSessionOverview:
+    """The /floor landing page's open-sessions panel.
+
+    Exists because a stale session that nobody is going back to otherwise has
+    no remedy except taking it over from the bench (§2.4).
+    """
+
+    async def test_lists_open_sessions(self, async_client):
+        await async_client.post(
+            "/api/v1/floor/session/scan",
+            json={"payload": "BBS-wip", "device_id": "pc-A"},
+        )
+
+        resp = await async_client.get("/api/v1/floor/sessions")
+
+        assert resp.status_code == 200
+        body = resp.json()
+        assert [s["station_slug"] for s in body["open"]] == ["wip"]
+        assert body["open"][0]["device_id"] == "pc-A"
+        assert body["open"][0]["closed_at"] is None
+
+    async def test_open_sessions_are_oldest_first(self, async_client):
+        # The reason to read this list is usually hunting a session nobody
+        # came back to, so the stalest belongs at the top.
+        await async_client.post(
+            "/api/v1/floor/session/scan",
+            json={"payload": "BBS-wip", "device_id": "pc-A"},
+        )
+        await async_client.post(
+            "/api/v1/floor/session/scan",
+            json={"payload": "BBS-harvest", "device_id": "pc-B"},
+        )
+
+        body = (await async_client.get("/api/v1/floor/sessions")).json()
+
+        opened = [s["opened_at"] for s in body["open"]]
+        assert opened == sorted(opened)
+
+    async def test_closed_sessions_appear_in_recent(self, async_client):
+        await async_client.post(
+            "/api/v1/floor/session/scan",
+            json={"payload": "BBS-wip", "device_id": "pc-A"},
+        )
+        # Rescanning the same station closes it.
+        await async_client.post(
+            "/api/v1/floor/session/scan",
+            json={"payload": "BBS-wip", "device_id": "pc-A"},
+        )
+
+        body = (await async_client.get("/api/v1/floor/sessions")).json()
+
+        assert body["open"] == []
+        assert any(s["station_slug"] == "wip" for s in body["recent"])
+
+    async def test_recent_records_a_takeover(self, async_client):
+        """The distinction the history exists to show: ended by someone else,
+        not closed by its holder."""
+        await async_client.post(
+            "/api/v1/floor/session/scan",
+            json={"payload": "BBS-wip", "device_id": "pc-A"},
+        )
+        await async_client.post(
+            "/api/v1/floor/session/takeover",
+            json={"payload": "BBS-wip", "device_id": "pc-B"},
+        )
+
+        body = (await async_client.get("/api/v1/floor/sessions")).json()
+
+        taken = [s for s in body["recent"] if s["device_id"] == "pc-A"]
+        assert len(taken) == 1
+        assert taken[0]["closed_by_takeover"] is True
+
+    async def test_a_closed_session_stops_ageing(self, async_client):
+        """open_seconds must be the duration it *was* open, not time since it
+        opened — otherwise finished sessions keep growing in the history."""
+        await async_client.post(
+            "/api/v1/floor/session/scan",
+            json={"payload": "BBS-wip", "device_id": "pc-A"},
+        )
+        await async_client.post(
+            "/api/v1/floor/session/scan",
+            json={"payload": "BBS-wip", "device_id": "pc-A"},
+        )
+
+        first = (await async_client.get("/api/v1/floor/sessions")).json()["recent"][0]
+        second = (await async_client.get("/api/v1/floor/sessions")).json()["recent"][0]
+
+        assert first["open_seconds"] == second["open_seconds"]
+
+    async def test_closes_any_session_by_id(self, async_client):
+        scan = await async_client.post(
+            "/api/v1/floor/session/scan",
+            json={"payload": "BBS-wip", "device_id": "pc-A"},
+        )
+        session_id = scan.json()["session"]["id"]
+
+        resp = await async_client.delete(f"/api/v1/floor/sessions/{session_id}")
+
+        assert resp.status_code == 200
+        assert resp.json()["closed_at"] is not None
+        # The station is free again — the whole point.
+        after = (await async_client.get("/api/v1/floor/sessions")).json()
+        assert after["open"] == []
+
+    async def test_closing_frees_the_station_for_another_device(self, async_client):
+        scan = await async_client.post(
+            "/api/v1/floor/session/scan",
+            json={"payload": "BBS-wip", "device_id": "pc-A"},
+        )
+        await async_client.delete(f"/api/v1/floor/sessions/{scan.json()['session']['id']}")
+
+        retry = await async_client.post(
+            "/api/v1/floor/session/scan",
+            json={"payload": "BBS-wip", "device_id": "pc-B"},
+        )
+
+        assert retry.json()["result"] == "opened"
+
+    async def test_closing_an_already_closed_session_is_a_404(self, async_client):
+        """A double click must not resurrect a row to re-close it."""
+        scan = await async_client.post(
+            "/api/v1/floor/session/scan",
+            json={"payload": "BBS-wip", "device_id": "pc-A"},
+        )
+        session_id = scan.json()["session"]["id"]
+        await async_client.delete(f"/api/v1/floor/sessions/{session_id}")
+
+        again = await async_client.delete(f"/api/v1/floor/sessions/{session_id}")
+
+        assert again.status_code == 404
+
+    async def test_closing_an_unknown_session_is_a_404(self, async_client):
+        assert (await async_client.delete("/api/v1/floor/sessions/999999")).status_code == 404

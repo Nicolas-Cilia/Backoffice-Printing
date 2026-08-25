@@ -211,13 +211,118 @@ describe('FloorCodesPage', () => {
     expect(screen.getByRole('button', { name: 'Retry' })).toBeInTheDocument();
   });
 
-  it('shows the not-yet-built tabs as disabled rather than hiding them', async () => {
+  it('shows the not-yet-built tab as disabled rather than hiding it', async () => {
     mockStationsAndCapturePrint();
     render(<FloorCodesPage />);
 
     await screen.findByText('WIP');
     const tabs = screen.getByRole('button', { name: 'Station labels' }).parentElement as HTMLElement;
-    expect(within(tabs).getByRole('button', { name: 'Printer labels' })).toBeDisabled();
+    // Printers shipped in phase 7; errors land with cleanup in phase 9.
+    expect(within(tabs).getByRole('button', { name: 'Printer labels' })).toBeEnabled();
     expect(within(tabs).getByRole('button', { name: 'Error labels' })).toBeDisabled();
+  });
+
+  describe('printer labels tab', () => {
+    const PRINTERS = [
+      { id: 3, payload: 'BBP-3', name: 'Bench A', model: 'X1C', location: 'Line 1', is_active: true },
+      { id: 7, payload: 'BBP-7', name: 'Bench B', model: 'A1', location: null, is_active: false },
+    ];
+
+    function mockPrinters(printers: typeof PRINTERS = PRINTERS) {
+      const captured: { body: Record<string, unknown> | null } = { body: null };
+      server.use(
+        http.get('/api/v1/floor/stations', () => HttpResponse.json(STATIONS)),
+        http.get('/api/v1/floor/printers', () => HttpResponse.json(printers)),
+        http.post('/api/v1/floor/labels/printers', async ({ request }) => {
+          captured.body = (await request.json()) as Record<string, unknown>;
+          return new HttpResponse(new Blob([new Uint8Array([0x25, 0x50, 0x44, 0x46])]), {
+            headers: { 'Content-Type': 'application/pdf' },
+          });
+        }),
+      );
+      return captured;
+    }
+
+    it('lists printers with their payloads once the tab is opened', async () => {
+      mockPrinters();
+      const user = userEvent.setup();
+      render(<FloorCodesPage />);
+      await screen.findByText('WIP');
+
+      await user.click(screen.getByRole('button', { name: 'Printer labels' }));
+
+      expect(await screen.findByText('Bench A')).toBeInTheDocument();
+      expect(screen.getByText('BBP-3')).toBeInTheDocument();
+    });
+
+    it('includes inactive printers, which are still physically on the floor', async () => {
+      mockPrinters();
+      const user = userEvent.setup();
+      render(<FloorCodesPage />);
+      await screen.findByText('WIP');
+
+      await user.click(screen.getByRole('button', { name: 'Printer labels' }));
+
+      expect(await screen.findByText('Bench B')).toBeInTheDocument();
+    });
+
+    it('prints the selected printers to the printer endpoint', async () => {
+      const captured = mockPrinters();
+      const user = userEvent.setup();
+      render(<FloorCodesPage />);
+      await screen.findByText('WIP');
+
+      await user.click(screen.getByRole('button', { name: 'Printer labels' }));
+      await screen.findByText('Bench A');
+      await user.click(screen.getByRole('checkbox', { name: 'Bench B' }));
+      await user.click(screen.getByRole('button', { name: /Print selected \(1\)/ }));
+
+      await waitFor(() => expect(captured.body).not.toBeNull());
+      expect(captured.body).toMatchObject({ payloads: ['BBP-3'] });
+    });
+
+    it('re-selects for the tab now shown rather than carrying a stale selection', async () => {
+      // Switching tabs must not leave station payloads selected while the
+      // printer list is on screen — the print button would then send the
+      // wrong codes to the wrong endpoint.
+      mockPrinters();
+      const user = userEvent.setup();
+      render(<FloorCodesPage />);
+      await screen.findByText('WIP');
+      expect(screen.getByRole('button', { name: /Print selected \(3\)/ })).toBeEnabled();
+
+      await user.click(screen.getByRole('button', { name: 'Printer labels' }));
+      await screen.findByText('Bench A');
+
+      expect(screen.getByRole('button', { name: /Print selected \(2\)/ })).toBeEnabled();
+    });
+
+    it('explains an empty printer list instead of showing a blank panel', async () => {
+      mockPrinters([]);
+      const user = userEvent.setup();
+      render(<FloorCodesPage />);
+      await screen.findByText('WIP');
+
+      await user.click(screen.getByRole('button', { name: 'Printer labels' }));
+
+      expect(await screen.findByText('No printers to label yet')).toBeInTheDocument();
+    });
+
+    it('offers a retry when the printer list fails to load', async () => {
+      server.use(
+        http.get('/api/v1/floor/stations', () => HttpResponse.json(STATIONS)),
+        http.get('/api/v1/floor/printers', () =>
+          HttpResponse.json({ detail: 'boom' }, { status: 500 }),
+        ),
+      );
+      const user = userEvent.setup();
+      render(<FloorCodesPage />);
+      await screen.findByText('WIP');
+
+      await user.click(screen.getByRole('button', { name: 'Printer labels' }));
+
+      expect(await screen.findByText('Could not load printers')).toBeInTheDocument();
+      expect(screen.getByRole('button', { name: 'Retry' })).toBeInTheDocument();
+    });
   });
 });
