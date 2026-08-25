@@ -18,8 +18,13 @@
  */
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
-import { Loader2, Lock, ScanLine } from 'lucide-react';
-import { api, type FloorSession } from '../api/client';
+import { Loader2, Lock, Printer, ScanLine } from 'lucide-react';
+import {
+  api,
+  type FloorLiveStatus,
+  type FloorPrinterInfo,
+  type FloorSession,
+} from '../api/client';
 import { getDeviceId } from '../utils/floorDevice';
 import { playScanErrorTone } from '../utils/floorSound';
 import { formatElapsed, routeScan } from '../utils/floorScan';
@@ -40,7 +45,10 @@ type Status =
   | { kind: 'closed'; stationName: string }
   /** Station held by another device: the one status that waits for a decision
    *  instead of timing out. */
-  | { kind: 'locked'; stationName: string; payload: string; blocking: FloorSession };
+  | { kind: 'locked'; stationName: string; payload: string; blocking: FloorSession }
+  /** A printer scanned with no station open — the info page (§5.6). Like
+   *  `locked`, it persists rather than flashing: the operator is reading it. */
+  | { kind: 'printer'; info: FloorPrinterInfo };
 
 export function FloorScanPage() {
   const { t } = useTranslation();
@@ -100,11 +108,6 @@ export function FloorScanPage() {
       cancelled = true;
     };
   }, [deviceId]);
-
-  useEffect(() => {
-    const id = window.setInterval(() => setNow(Date.now()), ELAPSED_TICK_MS);
-    return () => window.clearInterval(id);
-  }, []);
 
   // `locked` is excluded on purpose: it is a prompt, not a flash, and must
   // stay put until the operator takes over or scans something else.
@@ -169,6 +172,28 @@ export function FloorScanPage() {
     [applyScanResponse, deviceId, failScan, t],
   );
 
+  const submitPrinterScan = useCallback(
+    async (payload: string) => {
+      setBusy(true);
+      busyRef.current = true;
+      try {
+        setStatus({ kind: 'printer', info: await api.getFloorPrinterInfo(payload) });
+      } catch (err) {
+        const message = err instanceof Error ? err.message : String(err);
+        failScan(
+          message.includes('printer code')
+            ? t('floor.scanUnknown', 'Unknown code')
+            : t('floor.scanFailed', 'Scan failed'),
+          payload,
+        );
+      } finally {
+        setBusy(false);
+        busyRef.current = false;
+      }
+    },
+    [failScan, t],
+  );
+
   const handleScan = useCallback(
     (scanned: string) => {
       // Drop scans fired while a request is in flight rather than queueing
@@ -182,9 +207,13 @@ export function FloorScanPage() {
         void submitStationScan(route.payload);
         return;
       }
+      if (route.action === 'printer-info') {
+        void submitPrinterScan(route.payload);
+        return;
+      }
       failScan(t('floor.scanNotYetSupported', 'Not handled yet'), route.value);
     },
-    [failScan, submitStationScan, t],
+    [failScan, submitStationScan, submitPrinterScan, t],
   );
 
   const handleChange = (e: React.ChangeEvent<HTMLInputElement>) => {
@@ -247,6 +276,22 @@ export function FloorScanPage() {
     ? session.open_seconds + Math.max(0, Math.floor((now - elapsedBaseline.current) / 1000))
     : 0;
 
+  // Tick every second for the first minute so the counter is visibly live —
+  // an operator can see the screen responding rather than frozen. After
+  // that the display is minute-granular anyway, so a second-by-second
+  // re-render would be wasted work on a kiosk that runs for days.
+  const needsSecondTicks = session !== null && elapsedSeconds < 60;
+  useEffect(() => {
+    if (session === null) return;
+    const id = window.setInterval(
+      () => setNow(Date.now()),
+      needsSecondTicks ? 1000 : ELAPSED_TICK_MS,
+    );
+    return () => window.clearInterval(id);
+    // Keyed on the boolean, not the elapsed value: the interval is rebuilt
+    // once when it crosses a minute, not on every tick.
+  }, [needsSecondTicks, session]);
+
   const isError = status.kind === 'error';
   const isLocked = status.kind === 'locked';
 
@@ -255,7 +300,15 @@ export function FloorScanPage() {
       {/* z-50: above Layout's compact-mode mobile header (z-40) and desktop
           sidebar (z-30) — this page fully covers app chrome regardless of
           viewport width, matching the "sparse: sidebar collapsed or minimal"
-          spec (docs/floor-plan.md §3.1). */}
+          spec (docs/floor-plan.md §3.1).
+
+          Plain <input>, no keyboard-suppression attribute. Two attempts to
+          hide Android's on-screen keyboard here (inputMode="none", and a
+          non-editable div capturing raw keydown) both broke scan input on
+          the real device being tested against — reverted rather than
+          shipping a "fix" that cost the feature it was protecting. The
+          keyboard popping up is a known, accepted rough edge until a
+          working suppression approach is found. */}
       <input
         ref={inputRef}
         type="text"
@@ -273,6 +326,8 @@ export function FloorScanPage() {
 
       {loading ? (
         <Loader2 className="w-12 h-12 animate-spin text-bambu-gray" aria-hidden="true" />
+      ) : status.kind === 'printer' ? (
+        <PrinterInfoPanel info={status.info} onDismiss={() => setStatus({ kind: 'idle' })} t={t} />
       ) : isLocked && status.kind === 'locked' ? (
         <LockedPrompt
           stationName={status.stationName}
@@ -327,6 +382,201 @@ export function FloorScanPage() {
           )}
         </>
       )}
+    </div>
+  );
+}
+
+/** Gcode states that mean a job is loaded and in progress. Mirrors
+ *  `ACTIVE_PRINT_STATES` in printer_manager.py — kept in step with it so the
+ *  floor never calls a printer idle while the backend considers it busy. */
+const ACTIVE_PRINT_STATES = ['RUNNING', 'PAUSE', 'PREPARE', 'SLICING'];
+
+/** A word for the machine's current state. The raw gcode state is passed
+ *  through from MQTT, so this maps the ones an operator will actually meet
+ *  and falls back to showing the raw value rather than inventing one — an
+ *  unfamiliar state is better shown verbatim than mislabelled "idle". */
+function liveStatusLabel(
+  live: FloorLiveStatus | null,
+  t: ReturnType<typeof useTranslation>['t'],
+): string {
+  if (live === null) return t('floor.printerStatusUnknown', 'Status unavailable');
+  if (!live.connected) return t('floor.printerStatusOffline', 'Not connected');
+  switch (live.state) {
+    case 'RUNNING':
+      return t('floor.printerStatusPrinting', 'Printing');
+    case 'PAUSE':
+      return t('floor.printerStatusPaused', 'Paused');
+    case 'IDLE':
+      return t('floor.printerStatusIdle', 'Idle');
+    case 'FINISH':
+      return t('floor.printerStatusFinished', 'Finished');
+    case 'FAILED':
+      return t('floor.printerStatusFailed', 'Failed');
+    case 'PREPARE':
+      return t('floor.printerStatusPreparing', 'Preparing');
+    case 'SLICING':
+      return t('floor.printerStatusSlicing', 'Slicing');
+    case 'unknown':
+      return t('floor.printerStatusWaiting', 'Waiting for status');
+    default:
+      return live.state;
+  }
+}
+
+function StatusDot({ live }: { live: FloorLiveStatus | null }) {
+  const color =
+    live === null || !live.connected
+      ? 'bg-bambu-gray'
+      : live.state === 'FAILED'
+        ? 'bg-red-500'
+        : live.state === 'PAUSE'
+          ? 'bg-amber-500'
+          : ACTIVE_PRINT_STATES.includes(live.state)
+            ? 'bg-bambu-green'
+            : 'bg-bambu-gray-light';
+  return <span className={`w-3 h-3 rounded-full flex-shrink-0 ${color}`} aria-hidden="true" />;
+}
+
+/** The printer info page (§5.6) — what this machine is doing, and whether it
+ *  needs anything, for an operator already standing in front of it.
+ *
+ *  Denser than the rest of the scan page on purpose: this one is read, not
+ *  glanced at. It persists until dismissed or another scan replaces it,
+ *  because timing it out would yank away something being read. */
+function PrinterInfoPanel({
+  info,
+  onDismiss,
+  t,
+}: {
+  info: FloorPrinterInfo;
+  onDismiss: () => void;
+  t: ReturnType<typeof useTranslation>['t'];
+}) {
+  const last = info.last_print;
+  const live = info.live;
+  const isPrinting = live?.connected === true && live.state === 'RUNNING';
+
+  // A finished job still on the bed is exactly "there is something here to
+  // harvest", so it leads rather than sitting among the stats.
+  //
+  // Suppressed while the machine is actually running: `awaiting_plate_clear`
+  // should already be false during a print, but if the flag ever goes stale
+  // the screen would tell an operator to clear a bed mid-print. Live state
+  // wins over a stored flag when the two disagree.
+  const readyToHarvest =
+    info.awaiting_plate_clear && last !== null && !last.has_labeled_parts && !isPrinting;
+
+  return (
+    <div className="w-full max-w-2xl text-left">
+      <div className="flex items-start justify-between gap-4 mb-6">
+        <div className="min-w-0">
+          <p className="text-4xl font-bold text-white truncate">{info.name}</p>
+          <p className="text-bambu-gray mt-1">
+            {[info.model, info.location].filter(Boolean).join(' · ') || info.serial_number}
+          </p>
+        </div>
+        <Printer className="w-10 h-10 text-bambu-green flex-shrink-0" aria-hidden="true" />
+      </div>
+
+      {/* Status leads: standing at a machine, "is this running" is the first
+          question, before anything historical. */}
+      <div className="mb-4 flex items-center gap-3">
+        <StatusDot live={live} />
+        <div className="min-w-0">
+          <p className="text-white font-medium">{liveStatusLabel(live, t)}</p>
+          {isPrinting && live && (
+            <p className="text-sm text-bambu-gray truncate">
+              {live.current_print ?? t('floor.printerUnnamedJob', 'Unnamed job')}
+              {live.total_layers > 0 && ` · ${live.layer_num}/${live.total_layers}`}
+              {live.remaining_minutes > 0 &&
+                ` · ${t('floor.printerRemaining', '{{min}} min left', {
+                  min: live.remaining_minutes,
+                })}`}
+            </p>
+          )}
+        </div>
+        {isPrinting && live && (
+          <span className="ml-auto text-2xl font-bold text-bambu-green tabular-nums">
+            {Math.round(live.progress)}%
+          </span>
+        )}
+      </div>
+
+      {readyToHarvest && (
+        <div className="mb-4 rounded-lg border border-bambu-green/40 bg-bambu-green/10 px-4 py-3">
+          <p className="text-bambu-green font-semibold">
+            {t('floor.printerReadyToHarvest', 'Bed ready to clear')}
+          </p>
+          <p className="text-sm text-bambu-gray-light mt-0.5">
+            {t('floor.printerReadyToHarvestHint', 'Scan part stickers to label this job.')}
+          </p>
+        </div>
+      )}
+
+      <dl className="space-y-3">
+        <div className="flex items-baseline justify-between gap-4 border-b border-bambu-dark-secondary pb-3">
+          <dt className="text-bambu-gray">{t('floor.printerLastPrint', 'Last finished print')}</dt>
+          <dd className="text-white text-right min-w-0">
+            {last ? (
+              <>
+                <span className="font-medium break-words">
+                  {last.print_name ?? t('floor.printerUnnamedJob', 'Unnamed job')}
+                </span>
+                {last.quantity > 1 && (
+                  <span className="text-bambu-gray"> × {last.quantity}</span>
+                )}
+                {last.completed_at && (
+                  <span className="block text-sm text-bambu-gray">
+                    {new Date(last.completed_at).toLocaleString()}
+                  </span>
+                )}
+              </>
+            ) : (
+              // Not a dead end (§7.2): a part scanned here is still recorded
+              // against the printer and the time, with no job attached.
+              <span className="text-bambu-gray">
+                {t('floor.printerNoFinishedJob', 'Nothing finished to label')}
+              </span>
+            )}
+          </dd>
+        </div>
+
+        <div className="flex items-baseline justify-between gap-4 border-b border-bambu-dark-secondary pb-3">
+          <dt className="text-bambu-gray">{t('floor.printerTotalHours', 'Total print hours')}</dt>
+          <dd className="text-white font-medium">{info.total_print_hours.toFixed(1)}</dd>
+        </div>
+
+        <div className="flex items-baseline justify-between gap-4">
+          <dt className="text-bambu-gray">{t('floor.printerMaintenance', 'Maintenance')}</dt>
+          <dd className="text-right">
+            {info.maintenance_due_count > 0 ? (
+              <span className="text-red-500 font-medium">
+                {t('floor.printerMaintenanceDue', '{{count}} due', {
+                  count: info.maintenance_due_count,
+                })}
+              </span>
+            ) : info.maintenance_warning_count > 0 ? (
+              <span className="text-amber-500 font-medium">
+                {t('floor.printerMaintenanceSoon', '{{count}} due soon', {
+                  count: info.maintenance_warning_count,
+                })}
+              </span>
+            ) : (
+              <span className="text-bambu-gray">
+                {t('floor.printerMaintenanceOk', 'Nothing due')}
+              </span>
+            )}
+          </dd>
+        </div>
+      </dl>
+
+      <button
+        type="button"
+        onClick={onDismiss}
+        className="mt-8 px-4 py-2 text-sm rounded-lg bg-bambu-dark-secondary text-bambu-gray hover:text-white transition-colors"
+      >
+        {t('floor.printerDismiss', 'Done')}
+      </button>
     </div>
   );
 }

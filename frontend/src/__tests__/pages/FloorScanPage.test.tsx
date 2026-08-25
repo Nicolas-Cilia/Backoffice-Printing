@@ -107,10 +107,74 @@ describe('FloorScanPage (Phase 1b sessions)', () => {
       await scan('BBS-wip');
 
       expect(await screen.findByText('WIP')).toBeInTheDocument();
-      expect(screen.getByText('Open for <1m')).toBeInTheDocument();
+      expect(screen.getByText('Open for 0s')).toBeInTheDocument();
       // The payload is round-tripped, not a slug derived client-side.
       expect(captured.body).toMatchObject({ payload: 'BBS-wip' });
       expect(captured.body?.device_id).toBeTruthy();
+    });
+
+    it('counts up second by second while under a minute', async () => {
+      // The point of second-granularity: an operator can see the screen is
+      // live rather than frozen. A 15s tick would jump 0s → 15s and look
+      // stuck in between.
+      mockNoSession();
+      mockScan({
+        result: 'opened',
+        station_slug: 'wip',
+        station_name: 'WIP',
+        session: WIP_SESSION,
+        blocking: null,
+      });
+      vi.useFakeTimers({ shouldAdvanceTime: true });
+      try {
+        render(<FloorScanPage />);
+        await screen.findByText('Scan a code');
+        await scan('BBS-wip');
+        await screen.findByText('Open for 0s');
+
+        act(() => {
+          vi.advanceTimersByTime(1000);
+        });
+        expect(screen.getByText('Open for 1s')).toBeInTheDocument();
+
+        act(() => {
+          vi.advanceTimersByTime(2000);
+        });
+        expect(screen.getByText('Open for 3s')).toBeInTheDocument();
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+
+    it('switches to minutes once past the first minute', async () => {
+      mockNoSession();
+      mockScan({
+        result: 'opened',
+        station_slug: 'wip',
+        station_name: 'WIP',
+        // Opened 58s ago, so the boundary is two ticks away.
+        session: { ...WIP_SESSION, open_seconds: 58 },
+        blocking: null,
+      });
+      vi.useFakeTimers({ shouldAdvanceTime: true });
+      try {
+        render(<FloorScanPage />);
+        await screen.findByText('Scan a code');
+        await scan('BBS-wip');
+        await screen.findByText('Open for 58s');
+
+        act(() => {
+          vi.advanceTimersByTime(1000);
+        });
+        expect(screen.getByText('Open for 59s')).toBeInTheDocument();
+
+        act(() => {
+          vi.advanceTimersByTime(1000);
+        });
+        expect(screen.getByText('Open for 1m')).toBeInTheDocument();
+      } finally {
+        vi.useRealTimers();
+      }
     });
 
     it('confirms a close and returns to idle', async () => {
@@ -221,7 +285,7 @@ describe('FloorScanPage (Phase 1b sessions)', () => {
       await scan('BBS-wip');
       await user.click(await screen.findByRole('button', { name: 'Take over' }));
 
-      expect(await screen.findByText('Open for <1m')).toBeInTheDocument();
+      expect(await screen.findByText('Open for 0s')).toBeInTheDocument();
       expect(captured.body).toMatchObject({ payload: 'BBS-wip' });
     });
 
@@ -258,10 +322,10 @@ describe('FloorScanPage (Phase 1b sessions)', () => {
       render(<FloorScanPage />);
       await screen.findByText('Scan a code');
 
-      await scan('BBP-12');
+      await scan('BBD-000042');
 
       expect(await screen.findByText('Not handled yet')).toBeInTheDocument();
-      expect(screen.getByText('BBP-12')).toBeInTheDocument();
+      expect(screen.getByText('BBD-000042')).toBeInTheDocument();
     });
 
     it.each([
@@ -298,6 +362,333 @@ describe('FloorScanPage (Phase 1b sessions)', () => {
       await scan('BBS-wip');
 
       expect(await screen.findByText('Scan failed')).toBeInTheDocument();
+    });
+  });
+
+  describe('scanning a printer from idle (info page, §5.6)', () => {
+    const INFO = {
+      id: 12,
+      payload: 'BBP-12',
+      name: 'Bench A',
+      model: 'X1C',
+      location: 'Line 1',
+      serial_number: '00M09A000000001',
+      is_active: true,
+      awaiting_plate_clear: true,
+      total_print_hours: 412.6,
+      last_print: {
+        archive_id: 88,
+        print_name: 'Bracket v3',
+        completed_at: '2026-08-24T14:32:00',
+        quantity: 6,
+        has_labeled_parts: false,
+      },
+      maintenance_due_count: 0,
+      maintenance_warning_count: 0,
+      live: {
+        connected: true,
+        state: 'IDLE',
+        current_print: null,
+        progress: 0,
+        remaining_minutes: 0,
+        layer_num: 0,
+        total_layers: 0,
+      },
+    };
+
+    function mockInfo(overrides: Record<string, unknown> = {}) {
+      server.use(
+        http.get('/api/v1/floor/printers/:payload/info', () =>
+          HttpResponse.json({ ...INFO, ...overrides }),
+        ),
+      );
+    }
+
+    it('shows the printer, its last finished job and its hours', async () => {
+      mockNoSession();
+      mockInfo();
+      render(<FloorScanPage />);
+      await screen.findByText('Scan a code');
+
+      await scan('BBP-12');
+
+      expect(await screen.findByText('Bench A')).toBeInTheDocument();
+      expect(screen.getByText(/Bracket v3/)).toBeInTheDocument();
+      expect(screen.getByText('412.6')).toBeInTheDocument();
+      expect(screen.getByText('X1C · Line 1')).toBeInTheDocument();
+    });
+
+    it('leads with the harvest prompt when a finished job is still on the bed', async () => {
+      mockNoSession();
+      mockInfo();
+      render(<FloorScanPage />);
+      await screen.findByText('Scan a code');
+
+      await scan('BBP-12');
+
+      expect(await screen.findByText('Bed ready to clear')).toBeInTheDocument();
+    });
+
+    it('does not prompt to harvest a job whose parts are already labeled', async () => {
+      mockNoSession();
+      mockInfo({ last_print: { ...INFO.last_print, has_labeled_parts: true } });
+      render(<FloorScanPage />);
+      await screen.findByText('Scan a code');
+
+      await scan('BBP-12');
+
+      await screen.findByText('Bench A');
+      expect(screen.queryByText('Bed ready to clear')).not.toBeInTheDocument();
+    });
+
+    it('says plainly when there is nothing finished to label', async () => {
+      mockNoSession();
+      mockInfo({ last_print: null, awaiting_plate_clear: false });
+      render(<FloorScanPage />);
+      await screen.findByText('Scan a code');
+
+      await scan('BBP-12');
+
+      expect(await screen.findByText('Nothing finished to label')).toBeInTheDocument();
+    });
+
+    it('surfaces overdue maintenance', async () => {
+      mockNoSession();
+      mockInfo({ maintenance_due_count: 2 });
+      render(<FloorScanPage />);
+      await screen.findByText('Scan a code');
+
+      await scan('BBP-12');
+
+      expect(await screen.findByText('2 due')).toBeInTheDocument();
+    });
+
+    it('distinguishes due-soon from overdue', async () => {
+      mockNoSession();
+      mockInfo({ maintenance_due_count: 0, maintenance_warning_count: 1 });
+      render(<FloorScanPage />);
+      await screen.findByText('Scan a code');
+
+      await scan('BBP-12');
+
+      expect(await screen.findByText('1 due soon')).toBeInTheDocument();
+    });
+
+    it('takes no session, so looking does not lock the printer', async () => {
+      // §5.6: the harvest lock is claimed on the first part scan, not on
+      // merely viewing — otherwise routine lookups would block bed-clearing.
+      mockNoSession();
+      mockInfo();
+      render(<FloorScanPage />);
+      await screen.findByText('Scan a code');
+
+      await scan('BBP-12');
+      await screen.findByText('Bench A');
+
+      expect(screen.queryByRole('button', { name: 'Close station' })).not.toBeInTheDocument();
+    });
+
+    it('stays up instead of timing out, since it is being read', async () => {
+      mockNoSession();
+      mockInfo();
+      render(<FloorScanPage />);
+      await screen.findByText('Scan a code');
+      await scan('BBP-12');
+      await screen.findByText('Bench A');
+
+      vi.useFakeTimers({ shouldAdvanceTime: true });
+      act(() => {
+        vi.advanceTimersByTime(30000);
+      });
+      vi.useRealTimers();
+
+      expect(screen.getByText('Bench A')).toBeInTheDocument();
+    });
+
+    it('returns to idle when dismissed', async () => {
+      mockNoSession();
+      mockInfo();
+      const user = userEvent.setup();
+      render(<FloorScanPage />);
+      await screen.findByText('Scan a code');
+      await scan('BBP-12');
+
+      await user.click(await screen.findByRole('button', { name: 'Done' }));
+
+      expect(await screen.findByText('Scan a code')).toBeInTheDocument();
+    });
+
+    it('leads with the live status', async () => {
+      // Standing at a machine, "is this running" is the first question.
+      mockNoSession();
+      mockInfo();
+      render(<FloorScanPage />);
+      await screen.findByText('Scan a code');
+
+      await scan('BBP-12');
+
+      expect(await screen.findByText('Idle')).toBeInTheDocument();
+    });
+
+    it('shows progress, job, layers and time left while printing', async () => {
+      mockNoSession();
+      mockInfo({
+        live: {
+          connected: true,
+          state: 'RUNNING',
+          current_print: 'Bracket v3',
+          progress: 42.4,
+          remaining_minutes: 37,
+          layer_num: 120,
+          total_layers: 300,
+        },
+      });
+      render(<FloorScanPage />);
+      await screen.findByText('Scan a code');
+
+      await scan('BBP-12');
+
+      expect(await screen.findByText('Printing')).toBeInTheDocument();
+      expect(screen.getByText('42%')).toBeInTheDocument();
+      expect(screen.getByText(/120\/300/)).toBeInTheDocument();
+      expect(screen.getByText(/37 min left/)).toBeInTheDocument();
+    });
+
+    it.each([
+      ['PAUSE', 'Paused'],
+      ['FINISH', 'Finished'],
+      ['FAILED', 'Failed'],
+      ['PREPARE', 'Preparing'],
+      ['SLICING', 'Slicing'],
+      ['unknown', 'Waiting for status'],
+    ])('labels the %s state as %s', async (state, label) => {
+      mockNoSession();
+      mockInfo({
+        live: {
+          connected: true,
+          state,
+          current_print: null,
+          progress: 0,
+          remaining_minutes: 0,
+          layer_num: 0,
+          total_layers: 0,
+        },
+      });
+      render(<FloorScanPage />);
+      await screen.findByText('Scan a code');
+
+      await scan('BBP-12');
+
+      expect(await screen.findByText(label)).toBeInTheDocument();
+    });
+
+    it('shows an unrecognised state verbatim rather than mislabelling it', async () => {
+      // A state we have not mapped is better shown raw than called "idle".
+      mockNoSession();
+      mockInfo({
+        live: {
+          connected: true,
+          state: 'CALIBRATING',
+          current_print: null,
+          progress: 0,
+          remaining_minutes: 0,
+          layer_num: 0,
+          total_layers: 0,
+        },
+      });
+      render(<FloorScanPage />);
+      await screen.findByText('Scan a code');
+
+      await scan('BBP-12');
+
+      expect(await screen.findByText('CALIBRATING')).toBeInTheDocument();
+    });
+
+    it('says not connected when the printer is unreachable', async () => {
+      mockNoSession();
+      mockInfo({
+        live: {
+          connected: false,
+          state: 'unknown',
+          current_print: null,
+          progress: 0,
+          remaining_minutes: 0,
+          layer_num: 0,
+          total_layers: 0,
+        },
+      });
+      render(<FloorScanPage />);
+      await screen.findByText('Scan a code');
+
+      await scan('BBP-12');
+
+      expect(await screen.findByText('Not connected')).toBeInTheDocument();
+    });
+
+    it('distinguishes no-status-at-all from not-connected', async () => {
+      // live === null means we have no client for it, which is a different
+      // fact from "we know it and it is unreachable".
+      mockNoSession();
+      mockInfo({ live: null });
+      render(<FloorScanPage />);
+      await screen.findByText('Scan a code');
+
+      await scan('BBP-12');
+
+      expect(await screen.findByText('Status unavailable')).toBeInTheDocument();
+    });
+
+    it('still renders the rest of the panel without live status', async () => {
+      mockNoSession();
+      mockInfo({ live: null });
+      render(<FloorScanPage />);
+      await screen.findByText('Scan a code');
+
+      await scan('BBP-12');
+
+      expect(await screen.findByText('Bench A')).toBeInTheDocument();
+      expect(screen.getByText('412.6')).toBeInTheDocument();
+    });
+
+    it('does not tell an operator to clear a bed mid-print', async () => {
+      // awaiting_plate_clear should already be false during a run, but a
+      // stale flag must not produce a contradictory screen. Live state wins.
+      mockNoSession();
+      mockInfo({
+        awaiting_plate_clear: true,
+        live: {
+          connected: true,
+          state: 'RUNNING',
+          current_print: 'Bracket v3',
+          progress: 10,
+          remaining_minutes: 90,
+          layer_num: 30,
+          total_layers: 300,
+        },
+      });
+      render(<FloorScanPage />);
+      await screen.findByText('Scan a code');
+
+      await scan('BBP-12');
+
+      expect(await screen.findByText('Printing')).toBeInTheDocument();
+      expect(screen.queryByText('Bed ready to clear')).not.toBeInTheDocument();
+    });
+
+    it('reports an unknown printer as an unknown code', async () => {
+      mockNoSession();
+      server.use(
+        http.get('/api/v1/floor/printers/:payload/info', () =>
+          HttpResponse.json({ detail: 'Unknown printer code: BBP-999' }, { status: 404 }),
+        ),
+      );
+      render(<FloorScanPage />);
+      await screen.findByText('Scan a code');
+
+      await scan('BBP-999');
+
+      expect(await screen.findByText('Unknown code')).toBeInTheDocument();
+      expect(floorSound.playScanErrorTone).toHaveBeenCalled();
     });
   });
 
@@ -372,7 +763,7 @@ describe('FloorScanPage (Phase 1b sessions)', () => {
       render(<FloorScanPage />);
       await screen.findByText('Scan a code');
 
-      await scan('BBP-12');
+      await scan('BBD-000042');
       expect(await screen.findByText('Not handled yet')).toBeInTheDocument();
 
       act(() => {
