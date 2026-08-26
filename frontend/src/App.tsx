@@ -26,6 +26,7 @@ import { GCodeViewerPage } from './pages/GCodeViewerPage';
 import { FloorScanPage } from './pages/FloorScanPage';
 import { FloorLandingPage } from './pages/FloorLandingPage';
 import { FloorCodesPage } from './pages/FloorCodesPage';
+import { FloorInventoryPage } from './pages/FloorInventoryPage';
 import { useWebSocket } from './hooks/useWebSocket';
 import { usePrintProgressTitle } from './hooks/usePrintProgressTitle';
 import { useStreamTokenSync } from './hooks/useCameraStreamToken';
@@ -231,6 +232,7 @@ function App() {
                   <Route path="floor" element={<FloorLandingPage />} />
                   <Route path="floor/scan" element={<FloorScanPage />} />
                   <Route path="floor/codes" element={<FloorCodesPage />} />
+                  <Route path="floor/inventory" element={<FloorInventoryPage />} />
                   <Route path="external/:id" element={<ExternalLinkPage />} />
                   <Route path="camera-tokens" element={<Navigate to="/settings?tab=apikeys#card-camera-tokens" replace />} />
                 </Route>
