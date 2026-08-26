@@ -7,14 +7,35 @@ import { FloorCodesPage } from '../../pages/FloorCodesPage';
 import { server } from '../mocks/server';
 
 const STATIONS = [
-  { slug: 'wip', payload: 'BBS-wip', name: 'WIP', description: 'Production shelf.' },
+  { slug: 'wip', payload: 'BBS-wip', name: 'WIP', description: 'Production shelf.', category: 'station' },
   {
     slug: 'storage-receive',
     payload: 'BBS-storage-receive',
     name: '+ Storage',
     description: 'Warehouse shelf.',
+    category: 'station',
   },
-  { slug: 'harvest', payload: 'BBS-harvest', name: 'Harvest', description: 'Label parts.' },
+  {
+    slug: 'harvest',
+    payload: 'BBS-harvest',
+    name: 'Harvest',
+    description: 'Label parts.',
+    category: 'station',
+  },
+  {
+    slug: 'fit-check',
+    payload: 'BBS-fit-check',
+    name: 'Fit Check',
+    description: 'Mandatory checkpoint before Cleanup.',
+    category: 'location',
+  },
+  {
+    slug: 'sanding',
+    payload: 'BBS-sanding',
+    name: 'Sanding',
+    description: 'Optional bench for surface work.',
+    category: 'location',
+  },
 ];
 
 /** Captures the body of the label-render POST so tests can assert what the
@@ -67,7 +88,7 @@ describe('FloorCodesPage', () => {
     render(<FloorCodesPage />);
 
     await screen.findByText('WIP');
-    for (const station of STATIONS) {
+    for (const station of STATIONS.filter((s) => s.category === 'station')) {
       expect(screen.getByRole('checkbox', { name: station.name })).toBeChecked();
     }
     expect(screen.getByRole('button', { name: /Print selected \(3\)/ })).toBeEnabled();
@@ -217,9 +238,56 @@ describe('FloorCodesPage', () => {
 
     await screen.findByText('WIP');
     const tabs = screen.getByRole('button', { name: 'Station labels' }).parentElement as HTMLElement;
-    // Printers shipped in phase 7; errors land with cleanup in phase 9.
+    // Printers and Locations shipped in phases 7 and 9a/9b; errors land with
+    // cleanup in phase 9c.
+    expect(within(tabs).getByRole('button', { name: 'Locations' })).toBeEnabled();
     expect(within(tabs).getByRole('button', { name: 'Printer labels' })).toBeEnabled();
     expect(within(tabs).getByRole('button', { name: 'Error labels' })).toBeDisabled();
+  });
+
+  describe('locations tab', () => {
+    it('lists Fit Check and Sanding, not the workflow stations', async () => {
+      mockStationsAndCapturePrint();
+      const user = userEvent.setup();
+      render(<FloorCodesPage />);
+      await screen.findByText('WIP');
+
+      await user.click(screen.getByRole('button', { name: 'Locations' }));
+
+      expect(await screen.findByText('Fit Check')).toBeInTheDocument();
+      expect(screen.getByText('Sanding')).toBeInTheDocument();
+      expect(screen.getByText('BBS-fit-check')).toBeInTheDocument();
+      expect(screen.queryByText('WIP')).not.toBeInTheDocument();
+      expect(screen.queryByText('Harvest')).not.toBeInTheDocument();
+    });
+
+    it('prints the selected locations through the station labels endpoint', async () => {
+      const captured = mockStationsAndCapturePrint();
+      const user = userEvent.setup();
+      render(<FloorCodesPage />);
+      await screen.findByText('WIP');
+
+      await user.click(screen.getByRole('button', { name: 'Locations' }));
+      await screen.findByText('Fit Check');
+      await user.click(screen.getByRole('checkbox', { name: 'Sanding' }));
+      await user.click(screen.getByRole('button', { name: /Print selected \(1\)/ }));
+
+      await waitFor(() => expect(captured.body).not.toBeNull());
+      expect(captured.body).toMatchObject({ payloads: ['BBS-fit-check'] });
+    });
+
+    it('re-selects for the tab now shown rather than carrying a stale selection', async () => {
+      mockStationsAndCapturePrint();
+      const user = userEvent.setup();
+      render(<FloorCodesPage />);
+      await screen.findByText('WIP');
+      expect(screen.getByRole('button', { name: /Print selected \(3\)/ })).toBeEnabled();
+
+      await user.click(screen.getByRole('button', { name: 'Locations' }));
+      await screen.findByText('Fit Check');
+
+      expect(screen.getByRole('button', { name: /Print selected \(2\)/ })).toBeEnabled();
+    });
   });
 
   describe('printer labels tab', () => {

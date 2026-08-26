@@ -15,19 +15,52 @@
  * SKU, part, defect and command scans land in later phases; they are reported
  * as recognised-but-not-yet-handled rather than unknown, because "not built
  * yet" and "that code means nothing" send an operator to different places.
+ *
+ * Phase 8 adds Harvest (§5.4): a lean, big-text screen while the station is
+ * open, fed by two endpoints (`BBP-` binds/rebinds/closes a plate, `BBD-`
+ * links a part to it) and reachable from two entry points — the Harvest
+ * station itself, and a part scan straight from the printer info page
+ * (§5.6), which claims the harvest lock on its first scan. Both entry points
+ * share one result-handling path (`applyPartScanResponse`) so a `no_job` or
+ * `no_job` reads identically regardless of which entry point triggered it.
+ *
+ * Phase 9a/9b add Fit Check and Sanding (§5.4a/§5.4b) — **not** stations, so
+ * they add no session handling here at all. The flow is scan a part (from
+ * idle, nothing open), then scan a location, and for Sanding a reason after
+ * that — three scans, tracked entirely as `Status` transitions on this page
+ * (`awaiting-location` → `awaiting-sanding-reason` → commit), never on the
+ * server. Abandoning the flow needs no special code: scanning anything else
+ * just replaces `status` with whatever that scan means, the same as every
+ * other transition on this page.
  */
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
+import { useNavigate } from 'react-router-dom';
+import { useQueryClient } from '@tanstack/react-query';
 import { Loader2, Lock, Printer, ScanLine } from 'lucide-react';
 import {
   api,
   type FloorLiveStatus,
+  type FloorPlateArchive,
+  type FloorPlatePrinter,
+  type FloorLabeledPart,
   type FloorPrinterInfo,
   type FloorSession,
+  type LocationScanResponse,
+  type PartScanResponse,
+  type PartScanResult,
+  type SandingReasonCode,
 } from '../api/client';
 import { getDeviceId } from '../utils/floorDevice';
 import { playScanErrorTone } from '../utils/floorSound';
-import { formatElapsed, routeScan } from '../utils/floorScan';
+import {
+  HARVEST_STATION_PAYLOAD,
+  HARVEST_STATION_SLUG,
+  PREFIX_REASON,
+  formatElapsed,
+  formatFloorDate,
+  routeScan,
+} from '../utils/floorScan';
 
 /** How long a transient message (error, "closed", "not yet") stays up before
  *  the screen returns to its resting state. */
@@ -35,6 +68,7 @@ const FLASH_MS = 3000;
 /** The open-station elapsed counter only needs to be minute-accurate (§5.4),
  *  so it ticks slowly — a kiosk runs for days and this is pure display. */
 const ELAPSED_TICK_MS = 15000;
+const HARVEST_SUMMARY_MS = 10000;
 
 type Status =
   | { kind: 'idle' }
@@ -44,14 +78,63 @@ type Status =
   /** Station closed — brief confirmation before returning to idle. */
   | { kind: 'closed'; stationName: string }
   /** Station held by another device: the one status that waits for a decision
-   *  instead of timing out. */
+   *  instead of timing out. Reused for the harvest lock even when the
+   *  refusal came from a `BBP-`/`BBD-` scan rather than `BBS-harvest`
+   *  itself — same floor-wide lock (§2.4), same takeover path. */
   | { kind: 'locked'; stationName: string; payload: string; blocking: FloorSession }
   /** A printer scanned with no station open — the info page (§5.6). Like
    *  `locked`, it persists rather than flashing: the operator is reading it. */
-  | { kind: 'printer'; info: FloorPrinterInfo };
+  | { kind: 'printer'; info: FloorPrinterInfo }
+  /** The plate just closed (re-scanning the same printer under Harvest,
+   *  §5.4). Brief confirmation of what was on it before the screen returns
+   *  to the harvest idle state — plate close is not session close. */
+  | { kind: 'plate-closed'; printer: FloorPlatePrinter; archive: FloorPlateArchive | null; partCount: number }
+  | { kind: 'harvest-summary'; lines: import('../api/client').HarvestSummaryLine[] }
+  /** A part was just scanned with nothing else going on — the first half of
+   *  "scan a part, scan a location" (§5.4a/§5.4b). Persists (not a flash)
+   *  since it is itself a prompt waiting for the next scan; abandoned by
+   *  scanning anything that isn't a location code, same as every other
+   *  status transition here. */
+  | { kind: 'awaiting-location'; payload: string }
+  /** The part's location was Sanding — a pure UI transition, no server call
+   *  (§5.4b) — now waiting for the reason that actually commits it. */
+  | { kind: 'awaiting-sanding-reason'; payload: string }
+  /** Fit Check or Sanding just committed — brief confirmation before the
+   *  screen returns to idle, same timing as `plate-closed`. */
+  | {
+      kind: 'location-recorded';
+      locationSlug: 'fit-check' | 'sanding';
+      part: FloorLabeledPart | null;
+      printer: FloorPlatePrinter | null;
+      archive: FloorPlateArchive | null;
+      reasonCode?: string;
+    };
+
+/** The plate currently bound under an open Harvest session (§5.4): which
+ *  printer, its resolved job (null = no job found, §7.2), and the running
+ *  count of parts labeled against it. Null while Harvest is open but nothing
+ *  has been bound yet — the very first thing the flow asks for. */
+type HarvestPlate = {
+  printer: FloorPlatePrinter;
+  archive: FloorPlateArchive | null;
+  partCount: number;
+} | null;
+
+/** The result of the most recent `BBD-` scan, shown as a brief, deliberately
+ *  neutral line. Kept separate from
+ *  `Status` because it can overlay either the harvest screen or the printer
+ *  info panel, whichever is on top when the scan happens. */
+type PartFeedback = {
+  result: Extract<PartScanResult, 'labeled' | 'no_job'>;
+  part: FloorLabeledPart | null;
+  printer: FloorPlatePrinter | null;
+  archive: FloorPlateArchive | null;
+};
 
 export function FloorScanPage() {
   const { t } = useTranslation();
+  const navigate = useNavigate();
+  const queryClient = useQueryClient();
   const inputRef = useRef<HTMLInputElement>(null);
   const [value, setValue] = useState('');
   // A USB pistol fires its whole scan (characters + Enter) far faster than a
@@ -68,12 +151,28 @@ export function FloorScanPage() {
   const [loading, setLoading] = useState(true);
   // Ticks the open-station elapsed display without refetching the session.
   const [now, setNow] = useState(() => Date.now());
+  // The bound plate under an open Harvest session (§5.4). Local UI state, not
+  // server-resumed: `GET /floor/session` (used on reload) reports only the
+  // session, not what it is bound to, so a reload of an already-bound
+  // Harvest session shows the "scan the printer" idle flavor rather than
+  // reconstructing the plate — the next printer or part scan re-establishes
+  // it either way.
+  const [harvestPlate, setHarvestPlate] = useState<HarvestPlate>(null);
+  // The last `BBD-` scan's outcome, shown as a brief overlay on whichever
+  // screen was on top when it happened (the harvest screen or the printer
+  // info panel) — see `PartFeedback`.
+  const [partFeedback, setPartFeedback] = useState<PartFeedback | null>(null);
 
   // The session state the Enter handler reads. Same reasoning as valueRef:
   // two scans in quick succession must not both act on the pre-first state.
   const sessionRef = useRef<FloorSession | null>(null);
   sessionRef.current = session;
   const busyRef = useRef(false);
+  // Same reasoning again: `handleScan` needs to know whether the printer info
+  // page is currently showing (to pass its printer id as the harvest-lock
+  // hint, §5.6) without closing over stale `status` state.
+  const statusRef = useRef<Status>({ kind: 'idle' });
+  statusRef.current = status;
 
   const focusInput = useCallback(() => {
     inputRef.current?.focus();
@@ -109,13 +208,38 @@ export function FloorScanPage() {
     };
   }, [deviceId]);
 
-  // `locked` is excluded on purpose: it is a prompt, not a flash, and must
-  // stay put until the operator takes over or scans something else.
+  // `locked`, `awaiting-location` and `awaiting-sanding-reason` are excluded
+  // on purpose: each is a prompt waiting for a specific next scan, not a
+  // flash. `plate-closed`/`location-recorded` join `error`/`closed` here for
+  // the same reason those flash: each is a brief confirmation, not a
+  // decision point.
   useEffect(() => {
-    if (status.kind !== 'error' && status.kind !== 'closed') return;
+    if (
+      status.kind !== 'error' &&
+      status.kind !== 'closed' &&
+      status.kind !== 'plate-closed' &&
+      status.kind !== 'location-recorded'
+    )
+      return;
     const timer = window.setTimeout(() => setStatus({ kind: 'idle' }), FLASH_MS);
     return () => window.clearTimeout(timer);
   }, [status]);
+
+  useEffect(() => {
+    if (status.kind !== 'harvest-summary') return;
+    const timer = window.setTimeout(() => setStatus({ kind: 'idle' }), HARVEST_SUMMARY_MS);
+    return () => window.clearTimeout(timer);
+  }, [status]);
+
+  // A part-scan result overlays whichever screen was on top (harvest or the
+  // printer info panel) briefly, then gets out of the way on its own — the
+  // steady display (running count, plate job) already carries the durable
+  // information, so this is a confirmation, not a thing to dismiss.
+  useEffect(() => {
+    if (!partFeedback) return;
+    const timer = window.setTimeout(() => setPartFeedback(null), FLASH_MS);
+    return () => window.clearTimeout(timer);
+  }, [partFeedback]);
 
   const failScan = useCallback((message: string, detail?: string) => {
     // Sound before state: most rejections happen at the storage shelf, out of
@@ -138,10 +262,16 @@ export function FloorScanPage() {
       }
       if (resp.result === 'closed') {
         setSession(null);
+        setHarvestPlate(null);
         setStatus({ kind: 'closed', stationName: resp.station_name });
         return;
       }
       setSession(resp.session);
+      // A station-level open or switch always starts with nothing bound —
+      // any plate from a previous Harvest run on this device is gone with
+      // the session that carried it, whether this device just opened
+      // Harvest again or left it for another station entirely.
+      setHarvestPlate(null);
       setStatus({ kind: 'idle' });
     },
     [],
@@ -152,7 +282,10 @@ export function FloorScanPage() {
       setBusy(true);
       busyRef.current = true;
       try {
+        const closingHarvest = sessionRef.current?.station_slug === HARVEST_STATION_SLUG && payload === HARVEST_STATION_PAYLOAD;
+        const summary = closingHarvest ? await api.getHarvestSummary(sessionRef.current!.id) : null;
         applyScanResponse(await api.scanFloorStation({ payload, device_id: deviceId }));
+        if (summary) setStatus({ kind: 'harvest-summary', lines: summary });
       } catch (err) {
         const message = err instanceof Error ? err.message : String(err);
         // A 404 from this endpoint means "not a station code" — the unknown
@@ -194,6 +327,221 @@ export function FloorScanPage() {
     [failScan, t],
   );
 
+  const submitHarvestPrinterScan = useCallback(
+    async (payload: string) => {
+      setBusy(true);
+      busyRef.current = true;
+      try {
+        const resp = await api.scanHarvestPrinter({ device_id: deviceId, payload });
+        // Reflects ground truth unconditionally, same as the part-scan path
+        // below — including the defensive `no_session` case, where it
+        // corrects a local session this device no longer actually holds.
+        setSession(resp.session);
+
+        if (resp.result === 'locked') {
+          // Reserved for completeness (contract): the harvest lock is
+          // already held by this device whenever a session exists to scan
+          // against, so the backend should never actually send this here.
+          // Handled the same as a real refusal rather than assumed away.
+          if (resp.blocking) {
+            playScanErrorTone();
+            setStatus({
+              kind: 'locked',
+              stationName: t('floor.stationHarvest', 'Harvest'),
+              payload: HARVEST_STATION_PAYLOAD,
+              blocking: resp.blocking,
+            });
+          } else {
+            failScan(t('floor.scanFailed', 'Scan failed'), payload);
+          }
+          return;
+        }
+        if (resp.result === 'unknown_printer') {
+          failScan(t('floor.scanUnknown', 'Unknown code'), payload);
+          return;
+        }
+        if (resp.result === 'no_session') {
+          // The router never produces this action without a harvest session
+          // open, so this is defensive rather than reachable in practice —
+          // but if it happens, this device holds no plate either.
+          setHarvestPlate(null);
+          failScan(t('floor.scanFailed', 'Scan failed'), payload);
+          return;
+        }
+        if (resp.result === 'plate_closed') {
+          // Re-scanning the same printer closes the plate, not the session
+          // (§5.4) — show what was on it, then the harvest screen returns to
+          // its "scan a printer" idle flavor once the flash clears.
+          setHarvestPlate(null);
+          if (resp.printer) {
+            setStatus({
+              kind: 'plate-closed',
+              printer: resp.printer,
+              archive: resp.archive,
+              partCount: resp.part_count,
+            });
+          } else {
+            setStatus({ kind: 'idle' });
+          }
+          return;
+        }
+        // bound / rebound: (re)bind the plate. A rebind's part_count already
+        // restarts at 0 server-side (a fresh plate), so this simply mirrors
+        // whatever the response says rather than resetting locally.
+        if (resp.printer) {
+          setHarvestPlate({ printer: resp.printer, archive: resp.archive, partCount: resp.part_count });
+        }
+        setStatus({ kind: 'idle' });
+      } catch {
+        failScan(t('floor.scanFailed', 'Scan failed'), payload);
+      } finally {
+        setBusy(false);
+        busyRef.current = false;
+      }
+    },
+    [deviceId, failScan, t],
+  );
+
+  const applyPartScanResponse = useCallback(
+    (resp: PartScanResponse) => {
+      // Every part-scan outcome reports the session this device holds
+      // afterward — including one this very scan just created (info-page
+      // entry #2, §5.6) — so later scans route correctly regardless of
+      // which screen is on top right now.
+      setSession(resp.session);
+
+      if (resp.result === 'locked') {
+        if (resp.blocking) {
+          playScanErrorTone();
+          setStatus({
+            kind: 'locked',
+            stationName: t('floor.stationHarvest', 'Harvest'),
+            payload: HARVEST_STATION_PAYLOAD,
+            blocking: resp.blocking,
+          });
+        } else {
+          failScan(t('floor.scanFailed', 'Scan failed'));
+        }
+        return;
+      }
+      if (resp.result === 'no_printer') {
+        // §5.4: harvest "ignores" a part scan it cannot place — no printer
+        // bound, and no info-page hint to claim one from.
+        failScan(t('floor.scanPartNoPrinter', 'Scan the printer first'));
+        return;
+      }
+      if (resp.result === 'invalid_code') {
+        failScan(t('floor.scanInvalidCode', 'Invalid part code'));
+        return;
+      }
+      if (resp.result === 'duplicate') {
+        failScan(t('floor.scanPartDuplicate', 'Part already scanned'));
+        return;
+      }
+
+      // labeled / no_job both write against the current plate.
+      if (resp.printer) {
+        // labeled / no_job both write against the *current* plate, so
+        // printer/archive here are that plate's own.
+        setHarvestPlate({ printer: resp.printer, archive: resp.archive, partCount: resp.part_count });
+      }
+      setPartFeedback({ result: resp.result, part: resp.part, printer: resp.printer, archive: resp.archive });
+    },
+    [failScan, t],
+  );
+
+  const submitPartScan = useCallback(
+    async (payload: string, viewingPrinterId: number | null) => {
+      setBusy(true);
+      busyRef.current = true;
+      try {
+        applyPartScanResponse(
+          await api.scanFloorPart({ device_id: deviceId, payload, printer_id: viewingPrinterId }),
+        );
+      } catch {
+        failScan(t('floor.scanFailed', 'Scan failed'), payload);
+      } finally {
+        setBusy(false);
+        busyRef.current = false;
+      }
+    },
+    [applyPartScanResponse, deviceId, failScan, t],
+  );
+
+  // Fit Check and Sanding are locations, not stations (§5.4a/§5.4b) — no
+  // session touched by either commit below, and no device_id sent: the
+  // sticker code (and for Sanding, the reason) is everything the backend
+  // needs, already known locally by the time these are called.
+  const applyLocationScanResponse = useCallback(
+    (locationSlug: 'fit-check' | 'sanding', resp: LocationScanResponse, reasonCode?: string) => {
+      if (resp.result === 'invalid_code') {
+        failScan(t('floor.scanInvalidCode', 'Invalid part code'));
+        return;
+      }
+      if (resp.result === 'unknown_part') {
+        // §9: never enrolled at Harvest — the sticker doesn't exist yet.
+        failScan(t('floor.locationUnknownPart', 'Not enrolled — scan it at Harvest first'));
+        return;
+      }
+      // recorded: for Fit Check, a first check or a re-check both land here
+      // (§5.4a) — there is no verdict to distinguish them by. For Sanding,
+      // every visit is its own event (§5.4b) — no amendment concept either.
+      setStatus({
+        kind: 'location-recorded',
+        locationSlug,
+        part: resp.part,
+        printer: resp.printer,
+        archive: resp.archive,
+        reasonCode,
+      });
+    },
+    [failScan, t],
+  );
+
+  const submitFitCheckPartScan = useCallback(
+    async (payload: string) => {
+      setBusy(true);
+      busyRef.current = true;
+      try {
+        applyLocationScanResponse('fit-check', await api.scanFitCheckPart({ payload }));
+      } catch {
+        failScan(t('floor.scanFailed', 'Scan failed'), payload);
+      } finally {
+        setBusy(false);
+        busyRef.current = false;
+      }
+    },
+    [applyLocationScanResponse, failScan, t],
+  );
+
+  const submitSandingPartScan = useCallback(
+    async (payload: string, reasonPayload: string) => {
+      setBusy(true);
+      busyRef.current = true;
+      try {
+        // The reason payload is `BBR-<reason_code>` verbatim — the QR is
+        // printed with the backend's own SandingReasonCode values, so no
+        // translation happens here, just stripping the prefix. Not
+        // statically checked against the union (it comes from a scan, not
+        // a literal) — the backend accepts any non-empty string for this
+        // field and stores it as-is (§5.4b), same latitude `BBF-other`-style
+        // free-form codes get elsewhere in this app.
+        const reasonCode = reasonPayload.slice(PREFIX_REASON.length) as SandingReasonCode;
+        applyLocationScanResponse(
+          'sanding',
+          await api.scanSandingPart({ payload, reason_code: reasonCode }),
+          reasonCode,
+        );
+      } catch {
+        failScan(t('floor.scanFailed', 'Scan failed'), payload);
+      } finally {
+        setBusy(false);
+        busyRef.current = false;
+      }
+    },
+    [applyLocationScanResponse, failScan, t],
+  );
+
   const handleScan = useCallback(
     (scanned: string) => {
       // Drop scans fired while a request is in flight rather than queueing
@@ -201,19 +549,80 @@ export function FloorScanPage() {
       // immediately close the station.
       if (busyRef.current) return;
 
-      const route = routeScan(scanned, sessionRef.current?.station_slug ?? null);
+      // Read from refs, not the `status`/`session` state closed over by this
+      // render: the same same-tick pistol race `valueRef` exists for (see
+      // above) applies to routing, not just to the raw scanned text.
+      const viewingPrinterId = statusRef.current.kind === 'printer' ? statusRef.current.info.id : null;
+      const route = routeScan(scanned, sessionRef.current?.station_slug ?? null, viewingPrinterId);
       if (route.action === 'ignore') return;
       if (route.action === 'station') {
         void submitStationScan(route.payload);
         return;
       }
       if (route.action === 'printer-info') {
+        // A printer-info screen is a read-only inspection, not a station. A
+        // repeat scan of the same physical label is therefore the natural
+        // hands-free close gesture; a different printer still replaces it.
+        if (statusRef.current.kind === 'printer' && statusRef.current.info.payload === route.payload) {
+          setStatus({ kind: 'idle' });
+          setPartFeedback(null);
+          return;
+        }
         void submitPrinterScan(route.payload);
+        return;
+      }
+      if (route.action === 'harvest-printer') {
+        void submitHarvestPrinterScan(route.payload);
+        return;
+      }
+      if (route.action === 'harvest-part') {
+        void submitPartScan(route.payload, route.printerId ?? null);
+        return;
+      }
+      if (route.action === 'part-scanned') {
+        // First half of scan-part-then-location (§5.4a/§5.4b). Overwrites
+        // whatever was pending before, if anything — scanning a different
+        // part just restarts the flow on the new one.
+        setStatus({ kind: 'awaiting-location', payload: route.payload });
+        return;
+      }
+      if (route.action === 'location') {
+        if (statusRef.current.kind === 'awaiting-location') {
+          const pendingPayload = statusRef.current.payload;
+          if (route.slug === 'fit-check') {
+            void submitFitCheckPartScan(pendingPayload);
+          } else {
+            // Sanding's location scan is a pure state transition — no
+            // server call until the reason is known (§5.4b).
+            setStatus({ kind: 'awaiting-sanding-reason', payload: pendingPayload });
+          }
+          return;
+        }
+        // No part pending: a location code scanned on its own says so
+        // specifically, rather than reading as a generic unknown code.
+        failScan(t('floor.locationNoPartPending', 'Scan a part first'), route.payload);
+        return;
+      }
+      if (route.action === 'sanding-reason') {
+        if (statusRef.current.kind === 'awaiting-sanding-reason') {
+          void submitSandingPartScan(statusRef.current.payload, route.payload);
+          return;
+        }
+        failScan(t('floor.sandingReasonNoPartPending', 'Scan a part into Sanding first'), route.payload);
         return;
       }
       failScan(t('floor.scanNotYetSupported', 'Not handled yet'), route.value);
     },
-    [failScan, submitStationScan, submitPrinterScan, t],
+    [
+      failScan,
+      submitStationScan,
+      submitPrinterScan,
+      submitHarvestPrinterScan,
+      submitPartScan,
+      submitFitCheckPartScan,
+      submitSandingPartScan,
+      t,
+    ],
   );
 
   const handleChange = (e: React.ChangeEvent<HTMLInputElement>) => {
@@ -253,6 +662,8 @@ export function FloorScanPage() {
     try {
       await api.closeFloorSession(deviceId);
       setSession(null);
+      setHarvestPlate(null);
+      setPartFeedback(null);
       setStatus({ kind: 'idle' });
     } catch (err) {
       failScan(err instanceof Error ? err.message : String(err));
@@ -327,13 +738,99 @@ export function FloorScanPage() {
       {loading ? (
         <Loader2 className="w-12 h-12 animate-spin text-bambu-gray" aria-hidden="true" />
       ) : status.kind === 'printer' ? (
-        <PrinterInfoPanel info={status.info} onDismiss={() => setStatus({ kind: 'idle' })} t={t} />
+        <PrinterInfoPanel
+          info={status.info}
+          feedback={partFeedback}
+          onDismiss={() => setStatus({ kind: 'idle' })}
+          t={t}
+        />
       ) : isLocked && status.kind === 'locked' ? (
         <LockedPrompt
           stationName={status.stationName}
           blocking={status.blocking}
           busy={busy}
           onTakeover={handleTakeover}
+          t={t}
+        />
+      ) : status.kind === 'plate-closed' ? (
+        <PlateClosedFlash printer={status.printer} archive={status.archive} partCount={status.partCount} t={t} />
+      ) : status.kind === 'harvest-summary' ? (
+        <div className="w-full max-w-2xl text-center">
+          <h1 className="text-3xl font-bold text-white">
+            {t('floor.harvestCompleteTitle', 'Harvest complete')}
+          </h1>
+          <p className="text-bambu-gray mt-1">
+            {t('floor.harvestCompleteCount', '{{count}} parts linked', {
+              count: status.lines.reduce((total, line) => total + line.part_count, 0),
+            })}
+          </p>
+          <div className="mt-6 space-y-2">
+            {status.lines.map((line) => (
+              <div
+                key={`${line.printer_id}-${line.print_name}`}
+                className="bg-bambu-dark-secondary rounded-lg p-4 text-white flex justify-between text-left"
+              >
+                <span>
+                  {line.printer_name ?? t('floor.harvestUnknownPrinter', 'Unknown printer')}
+                  {' · '}
+                  {line.print_name ?? t('floor.harvestNoJob', 'No job')}
+                </span>
+                <strong>{line.part_count}</strong>
+              </div>
+            ))}
+          </div>
+          <button
+            type="button"
+            className="mt-6 px-4 py-2 text-sm rounded-lg bg-blue-600 text-white hover:bg-blue-700"
+            onClick={() => {
+              void queryClient.invalidateQueries({ queryKey: ['floor-inventory-parts'] });
+              navigate('/floor/inventory');
+            }}
+          >
+            {t('floor.harvestViewPartHistory', 'View part history')}
+          </button>
+        </div>
+      ) : status.kind === 'error' && session && session.station_slug === HARVEST_STATION_SLUG ? (
+        // The generic block below hides its error text once a session is
+        // open (it shows the station name instead, which for every other
+        // station is rare enough to be a non-issue) — but Harvest rejects a
+        // scan for reasons the operator has to actually read ("scan the
+        // printer first", "invalid part code"), so this reproduces the same
+        // red flash with the message visible instead of hidden behind it.
+        <>
+          <ScanLine className="w-16 h-16 mb-6 text-red-500" aria-hidden="true" />
+          <p className="text-3xl font-bold text-red-500">{status.message}</p>
+          {status.detail && (
+            <p className="mt-3 text-lg text-bambu-gray-light font-mono break-all max-w-2xl">
+              {status.detail}
+            </p>
+          )}
+        </>
+      ) : session && session.station_slug === HARVEST_STATION_SLUG && status.kind === 'idle' ? (
+        // The lean harvest screen (§5.4) — the resting state once nothing
+        // more urgent (error, lock, printer-info) is on top of it.
+        <HarvestScreen
+          session={session}
+          plate={harvestPlate}
+          feedback={partFeedback}
+          elapsedSeconds={elapsedSeconds}
+          busy={busy}
+          onClose={handleClose}
+          t={t}
+        />
+      ) : status.kind === 'awaiting-location' ? (
+        // First half of scan-part-then-location, done (§5.4a/§5.4b) — not a
+        // station, so nothing about `session` is involved here at all.
+        <AwaitingLocationScreen payload={status.payload} t={t} />
+      ) : status.kind === 'awaiting-sanding-reason' ? (
+        <AwaitingSandingReasonScreen payload={status.payload} t={t} />
+      ) : status.kind === 'location-recorded' ? (
+        <LocationRecordedFlash
+          locationSlug={status.locationSlug}
+          part={status.part}
+          printer={status.printer}
+          archive={status.archive}
+          reasonCode={status.reasonCode}
           t={t}
         />
       ) : (
@@ -437,6 +934,35 @@ function StatusDot({ live }: { live: FloorLiveStatus | null }) {
   return <span className={`w-3 h-3 rounded-full flex-shrink-0 ${color}`} aria-hidden="true" />;
 }
 
+/** Turns a successful part scan into display text plus a tone. Shared by
+ *  `HarvestScreen` and `PrinterInfoPanel` — the two screens a `BBD-` scan can
+ *  land on (§5.4/§5.6) — so the wording (and the "never red" rule for
+ *  `no_job` (§7.2) can't drift between them. */
+function partFeedbackMessage(
+  feedback: PartFeedback,
+  t: ReturnType<typeof useTranslation>['t'],
+): { text: string; tone: 'positive' | 'neutral' } {
+  if (feedback.result === 'labeled') {
+    return {
+      text: t('floor.partLabeled', 'Linked · {{model}}', {
+        model: feedback.archive?.print_name ?? t('floor.printerUnnamedJob', 'Unnamed job'),
+      }),
+      tone: 'positive',
+    };
+  }
+  // no_job: the exact phrasing docs/floor-plan.md §7.2/§9 asks for — a plain
+  // statement, not an apology, and never styled or sounded as a rejection.
+  // Unconditional (not a second `if`): `feedback.result` is a two-value
+  // union, but leaving the fallthrough implicit meant TS couldn't prove
+  // every path returns, which broke `npm run build` — this fixes that.
+  return {
+    text: t('floor.partNoJob', 'Linked to printer {{id}}, no job found', {
+      id: feedback.printer?.id,
+    }),
+    tone: 'neutral',
+  };
+}
+
 /** The printer info page (§5.6) — what this machine is doing, and whether it
  *  needs anything, for an operator already standing in front of it.
  *
@@ -445,16 +971,21 @@ function StatusDot({ live }: { live: FloorLiveStatus | null }) {
  *  because timing it out would yank away something being read. */
 function PrinterInfoPanel({
   info,
+  feedback,
   onDismiss,
   t,
 }: {
   info: FloorPrinterInfo;
+  /** The last `BBD-` scan made from this page (§5.6 entry #2), if any and
+   *  still within its flash window. */
+  feedback: PartFeedback | null;
   onDismiss: () => void;
   t: ReturnType<typeof useTranslation>['t'];
 }) {
   const last = info.last_print;
   const live = info.live;
   const isPrinting = live?.connected === true && live.state === 'RUNNING';
+  const feedbackMsg = feedback ? partFeedbackMessage(feedback, t) : null;
 
   // A finished job still on the bed is exactly "there is something here to
   // harvest", so it leads rather than sitting among the stats.
@@ -502,6 +1033,23 @@ function PrinterInfoPanel({
         )}
       </div>
 
+      {/* A part scan made from this page binds normally (§5.6) — this is
+          that scan's result, overlaid here rather than replacing the page,
+          because the operator is standing at this same printer either way. */}
+      {feedbackMsg && (
+        <div
+          className={`mb-4 rounded-lg border px-4 py-3 ${
+            feedbackMsg.tone === 'positive'
+              ? 'border-bambu-green/40 bg-bambu-green/10'
+              : 'border-bambu-dark-tertiary bg-bambu-dark-secondary'
+          }`}
+        >
+          <p className={feedbackMsg.tone === 'positive' ? 'text-bambu-green font-semibold' : 'text-white font-semibold'}>
+            {feedbackMsg.text}
+          </p>
+        </div>
+      )}
+
       {readyToHarvest && (
         <div className="mb-4 rounded-lg border border-bambu-green/40 bg-bambu-green/10 px-4 py-3">
           <p className="text-bambu-green font-semibold">
@@ -527,7 +1075,7 @@ function PrinterInfoPanel({
                 )}
                 {last.completed_at && (
                   <span className="block text-sm text-bambu-gray">
-                    {new Date(last.completed_at).toLocaleString()}
+                    {formatFloorDate(last.completed_at)}
                   </span>
                 )}
               </>
@@ -624,6 +1172,210 @@ function LockedPrompt({
           'floor.scanTakeoverHint',
           'Taking over closes the other session. Anything it had queued is discarded.',
         )}
+      </p>
+    </>
+  );
+}
+
+/** The lean harvest screen (§5.4): printer name, the elapsed indicator,
+ *  running part count, and the plate's job. Nothing else, on purpose — this
+ *  is repetitive gloved work at a machine, not a screen to read closely.
+ *
+ *  Two flavors depending on whether a plate is bound yet: before the first
+ *  printer scan there is nothing to show but the session itself and a
+ *  prompt, same shape as any other open station; after it, the printer name
+ *  takes over as the loudest thing on screen (§5.4's own wording — "after
+ *  printer scan: printer name"), since confirming *which* printer is being
+ *  cleared matters more than the station name once that much is settled. */
+function HarvestScreen({
+  session,
+  plate,
+  feedback,
+  elapsedSeconds,
+  busy,
+  onClose,
+  t,
+}: {
+  session: FloorSession;
+  plate: HarvestPlate;
+  /** The last `BBD-` scan made from this screen, if any and still within its
+   *  flash window. */
+  feedback: PartFeedback | null;
+  elapsedSeconds: number;
+  busy: boolean;
+  onClose: () => void;
+  t: ReturnType<typeof useTranslation>['t'];
+}) {
+  const feedbackMsg = feedback ? partFeedbackMessage(feedback, t) : null;
+
+  return (
+    <div className="w-full max-w-xl">
+      <ScanLine className="w-14 h-14 mb-6 mx-auto text-bambu-green" aria-hidden="true" />
+
+      {plate ? (
+        <>
+          <p className="text-5xl font-bold text-white truncate">{plate.printer.name}</p>
+          <p className="mt-2 text-lg text-bambu-gray">
+            {t('floor.scanOpenFor', 'Open for {{elapsed}}', { elapsed: formatElapsed(elapsedSeconds) })}
+          </p>
+
+          {/* The running count is the number an operator glances at
+              repeatedly while clearing a bed — biggest text on the screen. */}
+          <p className="mt-10 text-7xl font-bold text-bambu-green tabular-nums">{plate.partCount}</p>
+          <p className="text-bambu-gray mt-1">{t('floor.harvestPartCount', 'parts labeled')}</p>
+
+          <p className="mt-8 text-2xl font-medium">
+            {plate.archive ? (
+              <span className="text-white">
+                {plate.archive.print_name ?? t('floor.printerUnnamedJob', 'Unnamed job')}
+              </span>
+            ) : (
+              // Not an error (§7.2): the sticker is on the part either way,
+              // and this plate's parts are still being recorded.
+              <span className="text-bambu-gray">
+                {t('floor.harvestNoJobLine', 'No job found for this printer')}
+              </span>
+            )}
+          </p>
+        </>
+      ) : (
+        <>
+          <p className="text-5xl font-bold text-bambu-green">{session.station_name}</p>
+          <p className="mt-3 text-lg text-bambu-gray">
+            {t('floor.scanOpenFor', 'Open for {{elapsed}}', { elapsed: formatElapsed(elapsedSeconds) })}
+          </p>
+          <p className="mt-10 text-2xl text-bambu-gray">
+            {t('floor.harvestScanPrinter', 'Scan the printer to begin')}
+          </p>
+        </>
+      )}
+
+      {feedbackMsg && (
+        <p
+          className={`mt-8 text-lg ${
+            feedbackMsg.tone === 'positive' ? 'text-bambu-green' : 'text-bambu-gray-light'
+          }`}
+        >
+          {feedbackMsg.text}
+        </p>
+      )}
+
+      <button
+        type="button"
+        onClick={onClose}
+        disabled={busy}
+        className="mt-10 px-4 py-2 text-sm rounded-lg bg-bambu-dark-secondary text-bambu-gray hover:text-white transition-colors disabled:opacity-50"
+      >
+        {t('floor.scanClose', 'Close station')}
+      </button>
+    </div>
+  );
+}
+
+/** First half of scan-part-then-location, done (§5.4a/§5.4b): a part is
+ *  pending, waiting for its location. No lookup here — the sticker code is
+ *  shown verbatim rather than fetched, keeping this the same "no premature
+ *  validation" shape as the rest of the scan page. Persists rather than
+ *  flashing: it is itself a prompt, abandoned only by scanning something
+ *  else (handled generically — see `handleScan`'s `part-scanned` branch). */
+function AwaitingLocationScreen({
+  payload,
+  t,
+}: {
+  payload: string;
+  t: ReturnType<typeof useTranslation>['t'];
+}) {
+  return (
+    <>
+      <ScanLine className="w-16 h-16 mb-6 text-bambu-green" aria-hidden="true" />
+      <p className="text-3xl font-bold text-white font-mono">{payload}</p>
+      <p className="mt-3 text-2xl text-bambu-gray">
+        {t('floor.locationScanLocation', 'Scan a location')}
+      </p>
+    </>
+  );
+}
+
+/** Second half of Sanding's flow: the part's location was Sanding (a pure
+ *  UI transition, no server call — §5.4b), now waiting for the reason that
+ *  actually commits it. */
+function AwaitingSandingReasonScreen({
+  payload,
+  t,
+}: {
+  payload: string;
+  t: ReturnType<typeof useTranslation>['t'];
+}) {
+  return (
+    <>
+      <ScanLine className="w-16 h-16 mb-6 text-bambu-green" aria-hidden="true" />
+      <p className="text-3xl font-bold text-white font-mono">{payload}</p>
+      <p className="mt-1 text-lg text-bambu-gray">{t('floor.locationSanding', 'Sanding')}</p>
+      <p className="mt-3 text-2xl text-bambu-gray">{t('floor.sandingScanReason', 'Scan a reason')}</p>
+    </>
+  );
+}
+
+/** Brief confirmation after Fit Check or Sanding commits (§5.4a/§5.4b),
+ *  before the screen returns to idle — same timing as `PlateClosedFlash`. */
+function LocationRecordedFlash({
+  locationSlug,
+  part,
+  printer,
+  archive,
+  reasonCode,
+  t,
+}: {
+  locationSlug: 'fit-check' | 'sanding';
+  part: FloorLabeledPart | null;
+  printer: FloorPlatePrinter | null;
+  archive: FloorPlateArchive | null;
+  reasonCode?: string;
+  t: ReturnType<typeof useTranslation>['t'];
+}) {
+  return (
+    <>
+      <ScanLine className="w-16 h-16 mb-6 text-bambu-green" aria-hidden="true" />
+      <p className="text-4xl font-bold text-white font-mono">{part?.sticker_code ?? ''}</p>
+      <p className="mt-2 text-lg text-bambu-gray">
+        {[printer?.name, archive?.print_name ?? (printer ? t('floor.printerUnnamedJob', 'Unnamed job') : null)]
+          .filter(Boolean)
+          .join(' · ')}
+      </p>
+      <p className="mt-3 text-lg text-bambu-green">
+        {locationSlug === 'fit-check'
+          ? t('floor.fitCheckRecorded', 'Checked')
+          : t('floor.sandingRecorded', 'Sent to Sanding · {{reason}}', { reason: reasonCode })}
+      </p>
+    </>
+  );
+}
+
+/** Brief confirmation of the plate that just closed (re-scanning the same
+ *  printer under Harvest, §5.4) before the screen returns to the harvest
+ *  idle state. Plate close is not session close, so this never touches
+ *  `session` — only the plate's own printer/archive/count, which are about
+ *  to be cleared from local state regardless. */
+function PlateClosedFlash({
+  printer,
+  archive,
+  partCount,
+  t,
+}: {
+  printer: FloorPlatePrinter;
+  archive: FloorPlateArchive | null;
+  partCount: number;
+  t: ReturnType<typeof useTranslation>['t'];
+}) {
+  return (
+    <>
+      <ScanLine className="w-16 h-16 mb-6 text-bambu-green" aria-hidden="true" />
+      <p className="text-4xl font-bold text-white">{printer.name}</p>
+      <p className="mt-2 text-lg text-bambu-gray">
+        {archive?.print_name ?? t('floor.printerUnnamedJob', 'Unnamed job')}
+      </p>
+      <p className="mt-3 text-lg text-bambu-green">
+        {t('floor.harvestPlateClosed', 'Plate closed · {{count}} parts', { count: partCount })}
       </p>
     </>
   );

@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { classifyScan, routeScan, formatElapsed } from '../../utils/floorScan';
+import { classifyScan, routeScan, formatElapsed, HARVEST_STATION_PAYLOAD } from '../../utils/floorScan';
 
 describe('classifyScan', () => {
   it.each([
@@ -8,6 +8,7 @@ describe('classifyScan', () => {
     ['BBD-000042', 'part'],
     ['BBF-warping', 'defect'],
     ['BBX-rework', 'command'],
+    ['BBR-doesnt-fit', 'reason'],
   ])('classifies %s as %s', (payload, kind) => {
     expect(classifyScan(payload)).toEqual({ kind, value: payload });
   });
@@ -50,11 +51,13 @@ describe('routeScan', () => {
     expect(routeScan('BBS-harvest', 'wip')).toEqual({ action: 'station', payload: 'BBS-harvest' });
   });
 
-  it.each(['BBD-1', 'BBF-x', 'BBX-multi', '4001234567890'])(
+  it.each(['BBF-x', 'BBX-multi', '4001234567890'])(
     'reports %s as recognised but not yet handled',
     (payload) => {
       // Distinct from unknown on purpose: "not built yet" and "that code means
-      // nothing" send an operator to different places.
+      // nothing" send an operator to different places. BBD- is excluded here
+      // since phase 9a/9b now give it a meaning at idle — see the
+      // "fit check and sanding" describe block below.
       const route = routeScan(payload, null);
       expect(route.action).toBe('not-implemented');
     },
@@ -66,20 +69,153 @@ describe('routeScan', () => {
   });
 
   it('does not treat a printer scan as an info lookup while a station is open', () => {
-    // Under Harvest the same code binds the session to that printer (phase
-    // 8) — the (station × prefix) dispatch in action, and the reason the
-    // router takes the open station as a parameter at all.
-    const route = routeScan('BBP-12', 'harvest');
+    // Under a non-harvest station, a printer scan still has no handler
+    // (phase 8 only teaches Harvest what to do with `BBP-`) — the
+    // (station × prefix) dispatch in action, and the reason the router takes
+    // the open station as a parameter at all.
+    const route = routeScan('BBP-12', 'cleanup');
     expect(route.action).toBe('not-implemented');
   });
 
   it('carries the scan kind through, so later phases can dispatch on it', () => {
-    const route = routeScan('BBD-000042', 'harvest');
+    // Cleanup also accepts `BBD-` per §5.5, but that handling is phase 9 —
+    // out of scope here, so it stays recognised-but-unhandled same as ever.
+    const route = routeScan('BBD-000042', 'cleanup');
     expect(route).toMatchObject({ action: 'not-implemented', kind: 'part' });
   });
 
   it('ignores an empty scan', () => {
     expect(routeScan('  ', null)).toEqual({ action: 'ignore' });
+  });
+
+  describe('harvest (phase 8, §5.4/§5.6)', () => {
+    it('binds/rebinds/closes a plate on a printer scan under an open Harvest station', () => {
+      expect(routeScan('BBP-12', 'harvest')).toEqual({ action: 'harvest-printer', payload: 'BBP-12' });
+    });
+
+    it('links a part on a part scan under an open Harvest station, with no printer hint', () => {
+      // The session already knows (or will learn) which plate this belongs
+      // to, so no hint is sent — unlike the info-page entry point below.
+      const route = routeScan('BBD-000042', 'harvest');
+      expect(route).toEqual({ action: 'harvest-part', payload: 'BBD-000042' });
+      expect(route).not.toHaveProperty('printerId');
+    });
+
+    it('links a part from the printer info page, carrying the viewed printer as a hint', () => {
+      // §5.6 entry #2: nothing open, but a printer is being viewed — the
+      // first such scan is what claims the harvest lock server-side.
+      expect(routeScan('BBD-000042', null, 12)).toEqual({
+        action: 'harvest-part',
+        payload: 'BBD-000042',
+        printerId: 12,
+      });
+    });
+
+    it('starts the scan-part-then-location flow when nothing is open and no printer is viewed', () => {
+      // Superseded by phase 9a/9b: a bare `BBD-` scan at idle used to be
+      // unhandled; it is now the first half of "scan a part, scan a
+      // location" (§5.4a/§5.4b) — see that describe block below for the
+      // full picture.
+      expect(routeScan('BBD-000042', null).action).toBe('part-scanned');
+      expect(routeScan('BBD-000042', null, null).action).toBe('part-scanned');
+      expect(routeScan('BBD-000042', null, undefined).action).toBe('part-scanned');
+    });
+
+    it('exposes the harvest station payload used to reuse the takeover flow', () => {
+      // The lock a `locked` part/printer scan reports is the same
+      // floor-wide Harvest lock as `BBS-harvest` itself (§2.4) — the
+      // constant is what lets the scan page's existing takeover button
+      // target it without a second, parallel takeover mechanism.
+      expect(HARVEST_STATION_PAYLOAD).toBe('BBS-harvest');
+    });
+
+    it('does not let the harvest-only routing leak into a printer scan with no station open', () => {
+      // Entry #2 only exists for `BBD-`; a `BBP-` scan with nothing open is
+      // always the info-page lookup (§5.6), never harvest-printer, even
+      // though a printer id happens to be in scope by coincidence.
+      expect(routeScan('BBP-99', null, 12)).toEqual({ action: 'printer-info', payload: 'BBP-99' });
+    });
+  });
+
+  describe('fit check and sanding (phase 9a/9b, §5.4a/§5.4b) — locations, not stations', () => {
+    it('starts the scan-part-then-location flow on a bare part scan at idle', () => {
+      expect(routeScan('BBD-000042', null)).toEqual({ action: 'part-scanned', payload: 'BBD-000042' });
+    });
+
+    it('does not start it when a printer is being viewed — that stays harvest-part (§5.6 entry #2)', () => {
+      expect(routeScan('BBD-000042', null, 12)).toEqual({
+        action: 'harvest-part',
+        payload: 'BBD-000042',
+        printerId: 12,
+      });
+    });
+
+    it('does not start it while a real station is open', () => {
+      // Scanning a part while WIP (or any real station) is open must not
+      // silently kick off an unrelated flow underneath active station work.
+      expect(routeScan('BBD-000042', 'wip').action).toBe('not-implemented');
+    });
+
+    it('classifies BBS-fit-check as a location, pulled out of the generic station action', () => {
+      expect(routeScan('BBS-fit-check', null)).toEqual({
+        action: 'location',
+        slug: 'fit-check',
+        payload: 'BBS-fit-check',
+      });
+    });
+
+    it('classifies BBS-sanding as a location the same way', () => {
+      expect(routeScan('BBS-sanding', null)).toEqual({
+        action: 'location',
+        slug: 'sanding',
+        payload: 'BBS-sanding',
+      });
+    });
+
+    it('classifies a location payload the same way regardless of what station is open', () => {
+      // Whether this is *usable* right now (is a part pending?) is the
+      // page's call, not the router's — the classification itself never
+      // depends on stationSlug.
+      expect(routeScan('BBS-fit-check', 'wip')).toEqual({
+        action: 'location',
+        slug: 'fit-check',
+        payload: 'BBS-fit-check',
+      });
+    });
+
+    it('every other BBS- payload still routes as a normal station scan', () => {
+      expect(routeScan('BBS-harvest', null)).toEqual({ action: 'station', payload: 'BBS-harvest' });
+      expect(routeScan('BBS-cleanup', null)).toEqual({ action: 'station', payload: 'BBS-cleanup' });
+    });
+
+    it('classifies a BBR- code as a sanding-reason scan', () => {
+      expect(routeScan('BBR-doesnt-fit', null)).toEqual({
+        action: 'sanding-reason',
+        payload: 'BBR-doesnt-fit',
+      });
+    });
+
+    it('classifies a sanding-reason scan the same way regardless of station context', () => {
+      expect(routeScan('BBR-other', 'wip')).toEqual({ action: 'sanding-reason', payload: 'BBR-other' });
+    });
+  });
+
+  describe('the pre-phase-8 two-argument call signature', () => {
+    // These mirror the pre-existing assertions above almost verbatim — the
+    // point being that every one of them still holds calling `routeScan`
+    // with exactly two arguments, the way every call site did before phase
+    // 8 added the optional third one.
+    it.each([
+      ['BBS-wip', null, { action: 'station', payload: 'BBS-wip' }],
+      ['BBP-12', null, { action: 'printer-info', payload: 'BBP-12' }],
+      ['  ', null, { action: 'ignore' }],
+    ])('routes %s (station=%s) unchanged', (raw, stationSlug, expected) => {
+      expect(routeScan(raw, stationSlug)).toEqual(expected);
+    });
+
+    it('still starts the scan-part-then-location flow with no third argument at all', () => {
+      expect(routeScan('BBD-000042', null).action).toBe('part-scanned');
+    });
   });
 });
 
