@@ -63,8 +63,13 @@ function isValidDimension(value: number): boolean {
   return Number.isFinite(value) && value >= MIN_LABEL_MM && value <= MAX_LABEL_MM;
 }
 
-/** Which label family is being printed. Errors land in phase 9. */
-type CodesTab = 'stations' | 'printers';
+/** Which label family is being printed. Errors land in phase 9c.
+ *  `locations` is a display-only split of the same station catalog as
+ *  `stations` (§5.4a/§5.4b's `category` field) — Fit Check and Sanding are
+ *  QC checkpoints a part passes through, not workflow-mode benches, so they
+ *  get their own tab even though they're printed and resolved exactly like
+ *  any other `BBS-` code. */
+type CodesTab = 'stations' | 'locations' | 'printers';
 
 export function FloorCodesPage() {
   const { t } = useTranslation();
@@ -84,26 +89,33 @@ export function FloorCodesPage() {
     enabled: tab === 'printers',
   });
 
-  const stations = useMemo(() => stationsQuery.data ?? [], [stationsQuery.data]);
+  const stations = useMemo(
+    () => (stationsQuery.data ?? []).filter((s) => s.category === 'station'),
+    [stationsQuery.data],
+  );
+  const locations = useMemo(
+    () => (stationsQuery.data ?? []).filter((s) => s.category === 'location'),
+    [stationsQuery.data],
+  );
   const printers = useMemo(() => printersQuery.data ?? [], [printersQuery.data]);
 
-  /** The rows the active tab prints, reduced to what the picker needs. Both
-   *  label families are a list of (payload, title, subtitle) — keeping one
-   *  shape means the selection, size picker and print button are written
+  /** The rows the active tab prints, reduced to what the picker needs. All
+   *  three label families are a list of (payload, title, subtitle) — keeping
+   *  one shape means the selection, size picker and print button are written
    *  once rather than duplicated per tab. */
-  const items = useMemo(
-    () =>
-      tab === 'stations'
-        ? stations.map((s) => ({ payload: s.payload, title: s.name, subtitle: s.description }))
-        : printers.map((p) => ({
-            payload: p.payload,
-            title: p.name,
-            subtitle: [p.model, p.location].filter(Boolean).join(' · ') || '—',
-          })),
-    [tab, stations, printers],
-  );
+  const items = useMemo(() => {
+    if (tab === 'stations') return stations.map((s) => ({ payload: s.payload, title: s.name, subtitle: s.description }));
+    if (tab === 'locations') return locations.map((s) => ({ payload: s.payload, title: s.name, subtitle: s.description }));
+    return printers.map((p) => ({
+      payload: p.payload,
+      title: p.name,
+      subtitle: [p.model, p.location].filter(Boolean).join(' · ') || '—',
+    }));
+  }, [tab, stations, locations, printers]);
 
-  const activeQuery = tab === 'stations' ? stationsQuery : printersQuery;
+  // Locations shares the station catalog query — it's the same data, split
+  // by `category` client-side, not a second fetch.
+  const activeQuery = tab === 'printers' ? printersQuery : stationsQuery;
 
   const [selected, setSelected] = useState<Set<string>>(new Set());
   const [size, setSize] = useState<StoredSize>(() => loadStoredSize());
@@ -148,14 +160,20 @@ export function FloorCodesPage() {
     setPrinting(true);
     try {
       const body = { payloads, width_mm: width, height_mm: height };
+      // Locations prints through the same `/floor/labels/stations` endpoint
+      // as Station labels — it's the same catalog and the same `BBS-`
+      // resolution on the backend, just a different client-side filter.
       const blob =
-        tab === 'stations'
-          ? await api.printFloorStationLabels(body)
-          : await api.printFloorPrinterLabels(body);
-      openBlobInNewTab(
-        blob,
-        tab === 'stations' ? 'bambuddy-station-labels.pdf' : 'bambuddy-printer-labels.pdf',
-      );
+        tab === 'printers'
+          ? await api.printFloorPrinterLabels(body)
+          : await api.printFloorStationLabels(body);
+      const filename =
+        tab === 'printers'
+          ? 'bambuddy-printer-labels.pdf'
+          : tab === 'locations'
+            ? 'bambuddy-location-labels.pdf'
+            : 'bambuddy-station-labels.pdf';
+      openBlobInNewTab(blob, filename);
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
       showToast(t('floor.codesPrintError', 'Could not generate labels: {{msg}}', { msg }), 'error');
@@ -192,6 +210,16 @@ export function FloorCodesPage() {
         </button>
         <button
           type="button"
+          onClick={() => setTab('locations')}
+          aria-current={tab === 'locations' ? 'page' : undefined}
+          className={`px-3 py-1.5 text-sm rounded-md transition-colors ${
+            tab === 'locations' ? 'bg-bambu-green text-white' : 'text-bambu-gray hover:text-white'
+          }`}
+        >
+          {t('floor.codesTabLocations', 'Locations')}
+        </button>
+        <button
+          type="button"
           onClick={() => setTab('printers')}
           aria-current={tab === 'printers' ? 'page' : undefined}
           className={`px-3 py-1.5 text-sm rounded-md transition-colors ${
@@ -217,7 +245,9 @@ export function FloorCodesPage() {
             <h2 className="text-white font-semibold">
               {tab === 'stations'
                 ? t('floor.codesStationsHeading', 'Station labels')
-                : t('floor.codesPrintersHeading', 'Printer labels')}
+                : tab === 'locations'
+                  ? t('floor.codesLocationsHeading', 'Locations')
+                  : t('floor.codesPrintersHeading', 'Printer labels')}
             </h2>
             <p className="text-xs text-bambu-gray mt-0.5">
               {tab === 'stations'
@@ -225,10 +255,15 @@ export function FloorCodesPage() {
                     'floor.codesStationsHint',
                     'One label per station. Scanning a station QR opens or closes that station on the scan page.',
                   )
-                : t(
-                    'floor.codesPrintersHint',
-                    'One label per printer, stuck on the machine. Scanning it shows what that printer is doing and what it last finished.',
-                  )}
+                : tab === 'locations'
+                  ? t(
+                      'floor.codesLocationsHint',
+                      'Fit Check and Sanding. Scanning one opens that checkpoint on the scan page, same as a station QR.',
+                    )
+                  : t(
+                      'floor.codesPrintersHint',
+                      'One label per printer, stuck on the machine. Scanning it shows what that printer is doing and what it last finished.',
+                    )}
             </p>
           </div>
           {items.length > 0 && (
@@ -257,7 +292,9 @@ export function FloorCodesPage() {
             <p className="text-white font-medium">
               {tab === 'stations'
                 ? t('floor.codesLoadError', 'Could not load stations')
-                : t('floor.codesPrintersLoadError', 'Could not load printers')}
+                : tab === 'locations'
+                  ? t('floor.codesLocationsLoadError', 'Could not load locations')
+                  : t('floor.codesPrintersLoadError', 'Could not load printers')}
             </p>
             <Button className="mt-4" variant="secondary" onClick={() => activeQuery.refetch()}>
               {t('common.retry', 'Retry')}

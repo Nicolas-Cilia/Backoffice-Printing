@@ -11,11 +11,16 @@ import { useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { useNavigate } from 'react-router-dom';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import { ScanLine, QrCode, Loader2 } from 'lucide-react';
+import { ScanLine, QrCode, Loader2, AlertTriangle, ClipboardList } from 'lucide-react';
 import { Button } from '../components/Button';
 import { api, type FloorSession } from '../api/client';
 import { getDeviceId } from '../utils/floorDevice';
 import { formatElapsed } from '../utils/floorScan';
+
+/** How many needs-attention rows to fetch and show at once. Matches the
+ *  panel's own request, not a separate page-size concept — there is no
+ *  pagination control in v1, just the "showing N of total" hint. */
+const NEEDS_ATTENTION_LIMIT = 50;
 
 export function FloorLandingPage() {
   const { t } = useTranslation();
@@ -31,7 +36,7 @@ export function FloorLandingPage() {
         <p className="text-bambu-gray mt-1 max-w-2xl">
           {t(
             'floor.landingSubtitle',
-            'Scan is the pistol-input station for the floor. Codes prints the QR labels that make scanning work.',
+            'Scan is the pistol-input station. Part history traces stickered parts back to their jobs. Codes prints the QR labels the floor scans.',
           )}
         </p>
       </div>
@@ -52,6 +57,22 @@ export function FloorLandingPage() {
         </article>
 
         <article className="bg-bambu-dark-secondary rounded-lg p-6 flex flex-col">
+          <ClipboardList className="w-8 h-8 text-bambu-green mb-3" aria-hidden="true" />
+          <h2 className="text-white font-semibold text-lg">
+            {t('floor.inventoryTitle', 'Part history')}
+          </h2>
+          <p className="text-sm text-bambu-gray mt-1 flex-1">
+            {t(
+              'floor.landingInventoryDescription',
+              'Review linked parts and their job history.',
+            )}
+          </p>
+          <Button className="mt-4 self-start" onClick={() => navigate('/floor/inventory')}>
+            {t('floor.landingInventoryAction', 'Open Part history')}
+          </Button>
+        </article>
+
+        <article className="bg-bambu-dark-secondary rounded-lg p-6 flex flex-col">
           <QrCode className="w-8 h-8 text-bambu-green mb-3" aria-hidden="true" />
           <h2 className="text-white font-semibold text-lg">{t('floor.landingCodesTitle', 'Codes')}</h2>
           <p className="text-sm text-bambu-gray mt-1 flex-1">
@@ -67,6 +88,7 @@ export function FloorLandingPage() {
       </div>
 
       <SessionsPanel t={t} />
+      <UnlabeledBuildPlatesPanel t={t} />
     </div>
   );
 }
@@ -221,6 +243,109 @@ function HistoryRow({
         </span>
       )}
     </li>
+  );
+}
+
+/** Labeled parts with no resolved job (§7.2), newest first — the office-side
+ *  counterpart to the harvest screen's "no job found" statement. A part
+ *  lands here whenever a printer had nothing finished to bind to at harvest
+ *  time; the fix is matching it to the right job by hand, which is why the
+ *  sticker code and printer are what a reader needs, not a call to action.
+ *
+ *  Quiet on purpose, matching §7.2's framing of the underlying case as a
+ *  plain fact rather than a fault: no red, no "error", not even in an empty
+ *  state that would otherwise read as "nothing is wrong" — it just isn't
+ *  phrased as if something usually is. */
+function UnlabeledBuildPlatesPanel({ t }: { t: ReturnType<typeof useTranslation>['t'] }) {
+  const queryClient = useQueryClient();
+  const partsQuery = useQuery({
+    queryKey: ['floor-unlabeled-build-plates'],
+    queryFn: () => api.getFloorUnlabeledBuildPlates(NEEDS_ATTENTION_LIMIT),
+    // A harvest session elsewhere can add to this list at any moment; same
+    // cadence as the open-sessions panel above rather than a faster poll —
+    // this is a backlog to work through, not something needing live update.
+    refetchInterval: 15000,
+  });
+
+  const parts = partsQuery.data ?? [];
+  const dismiss = useMutation({
+    mutationFn: (id: number) => api.dismissFloorUnlabeledBuildPlate(id),
+    onSuccess: () => queryClient.invalidateQueries({ queryKey: ['floor-unlabeled-build-plates'] }),
+  });
+
+  return (
+    <section className="bg-bambu-dark-secondary rounded-lg overflow-hidden max-w-3xl">
+      <div className="px-4 py-3 border-b border-bambu-dark-tertiary">
+        <h2 className="text-white font-semibold">
+          {t('floor.needsAttentionHeading', 'Build plates needing linking')}
+        </h2>
+        <p className="text-xs text-bambu-gray mt-0.5">
+          {t(
+            'floor.needsAttentionHint',
+            'Completed jobs that have not received a linked part yet.',
+          )}
+        </p>
+      </div>
+
+      {partsQuery.isLoading ? (
+        <div className="flex items-center justify-center py-10 text-bambu-gray">
+          <Loader2 className="w-5 h-5 animate-spin mr-2" />
+          {t('common.loading', 'Loading…')}
+        </div>
+      ) : partsQuery.isError ? (
+        <div className="text-center py-10 px-4">
+          <p className="text-white font-medium">
+            {t('floor.needsAttentionLoadError', 'Could not load this list')}
+          </p>
+          <Button className="mt-3" variant="secondary" onClick={() => partsQuery.refetch()}>
+            {t('common.retry', 'Retry')}
+          </Button>
+        </div>
+      ) : parts.length === 0 ? (
+        // Deliberately the same quiet phrasing as "No stations are open." —
+        // an empty backlog is the ordinary state, not a thing to celebrate.
+        <p className="px-4 py-8 text-center text-bambu-gray">
+          {t('floor.needsAttentionNone', 'No build plates are waiting on parts.')}
+        </p>
+      ) : (
+        <ul className="divide-y divide-bambu-dark-tertiary">
+          {parts.map((part) => (
+            <li key={part.id} className="flex items-center gap-4 px-4 py-3">
+              <AlertTriangle
+                className="w-4 h-4 text-amber-500 flex-shrink-0"
+                aria-hidden="true"
+              />
+              <div className="min-w-0 flex-1">
+                <div className="text-white font-medium">{part.print_name}</div>
+                <div className="text-xs text-bambu-gray">{part.printer_name}</div>
+              </div>
+              <span className="text-xs text-bambu-gray whitespace-nowrap">
+                {part.completed_at
+                  ? new Date(`${part.completed_at}Z`).toLocaleString()
+                  : t('floor.needsAttentionUnknownTime', 'Unknown time')}
+              </span>
+              <Button
+                variant="secondary"
+                onClick={() => {
+                  if (
+                    window.confirm(
+                      t('floor.dismissBuildPlateConfirm', 'Hide {{name}} from the production backlog?', {
+                        name: part.print_name ?? t('floor.dismissBuildPlateFallback', 'this build plate'),
+                      }),
+                    )
+                  ) {
+                    dismiss.mutate(part.id);
+                  }
+                }}
+                disabled={dismiss.isPending}
+              >
+                {t('floor.dismissBuildPlate', 'Not for production')}
+              </Button>
+            </li>
+          ))}
+        </ul>
+      )}
+    </section>
   );
 }
 

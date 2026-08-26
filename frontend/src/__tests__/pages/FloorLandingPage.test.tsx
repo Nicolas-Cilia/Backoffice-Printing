@@ -32,11 +32,12 @@ function mockSessions(overview: { open?: unknown[]; recent?: unknown[] } = {}) {
 }
 
 describe('FloorLandingPage', () => {
-  it('renders both destinations', () => {
+  it('renders the Scan, Part history, and Codes destinations', () => {
     render(<FloorLandingPage />);
 
     expect(screen.getByRole('heading', { name: 'Floor' })).toBeInTheDocument();
     expect(screen.getByRole('button', { name: 'Open Scan' })).toBeEnabled();
+    expect(screen.getByRole('button', { name: 'Open Part history' })).toBeEnabled();
     expect(screen.getByRole('button', { name: 'Open Codes' })).toBeEnabled();
   });
 
@@ -56,6 +57,15 @@ describe('FloorLandingPage', () => {
     await user.click(screen.getByRole('button', { name: 'Open Codes' }));
 
     expect(mockNavigate).toHaveBeenCalledWith('/floor/codes');
+  });
+
+  it('navigates to /floor/inventory when Part history is opened', async () => {
+    const user = userEvent.setup();
+    render(<FloorLandingPage />);
+
+    await user.click(screen.getByRole('button', { name: 'Open Part history' }));
+
+    expect(mockNavigate).toHaveBeenCalledWith('/floor/inventory');
   });
 });
 
@@ -188,6 +198,86 @@ describe('FloorLandingPage open-sessions panel', () => {
 
     await screen.findByText('WIP');
     expect(screen.getByRole('button', { name: 'Open Scan' })).toBeEnabled();
+    expect(screen.getByRole('button', { name: 'Open Part history' })).toBeEnabled();
     expect(screen.getByRole('button', { name: 'Open Codes' })).toBeEnabled();
+  });
+});
+
+describe('FloorLandingPage unlabeled build-plates panel', () => {
+  beforeEach(() => {
+    vi.mocked(localStorage.getItem).mockReset();
+    vi.mocked(localStorage.getItem).mockReturnValue(null);
+    vi.mocked(localStorage.setItem).mockReset();
+    mockSessions();
+  });
+
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  const UNLABELED_PLATE = {
+    id: 5,
+    print_name: 'Cable guide',
+    printer_name: 'P1S-3',
+    completed_at: '2026-08-24T14:32:00',
+  };
+
+  function mockUnlabeledPlates(plates: unknown[] = []) {
+    server.use(
+      http.get('/api/v1/floor/parts/unlabeled-build-plates', () =>
+        HttpResponse.json(plates),
+      ),
+    );
+  }
+
+  it('lists a completed job with no linked parts: job name and printer', async () => {
+    mockUnlabeledPlates([UNLABELED_PLATE]);
+    render(<FloorLandingPage />);
+
+    expect(await screen.findByText('Cable guide')).toBeInTheDocument();
+    expect(screen.getByText('P1S-3')).toBeInTheDocument();
+    expect(
+      screen.getByText(new Date(`${UNLABELED_PLATE.completed_at}Z`).toLocaleString()),
+    ).toBeInTheDocument();
+  });
+
+  it('shows newest first, trusting the server order rather than re-sorting', async () => {
+    const older = { ...UNLABELED_PLATE, id: 1, print_name: 'Older job', completed_at: '2026-08-20T09:00:00' };
+    const newer = { ...UNLABELED_PLATE, id: 2, print_name: 'Newer job', completed_at: '2026-08-24T09:00:00' };
+    mockUnlabeledPlates([newer, older]);
+    render(<FloorLandingPage />);
+
+    await screen.findByText('Newer job');
+    const names = screen.getAllByText(/job$/).map((el) => el.textContent);
+    expect(names).toEqual(['Newer job', 'Older job']);
+  });
+
+  it('says plainly when nothing is waiting, without reading as an error', async () => {
+    mockUnlabeledPlates();
+    render(<FloorLandingPage />);
+
+    const empty = await screen.findByText('No build plates are waiting on parts.');
+    expect(empty.className).not.toMatch(/text-red-500/);
+  });
+
+  it('surfaces a load failure with a retry', async () => {
+    server.use(
+      http.get('/api/v1/floor/parts/unlabeled-build-plates', () =>
+        HttpResponse.json({ detail: 'boom' }, { status: 500 }),
+      ),
+    );
+    render(<FloorLandingPage />);
+
+    expect(await screen.findByText('Could not load this list')).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Retry' })).toBeInTheDocument();
+  });
+
+  it('does not disturb the open-sessions panel above it', async () => {
+    mockSessions({ open: [OPEN_SESSION] });
+    mockUnlabeledPlates([UNLABELED_PLATE]);
+    render(<FloorLandingPage />);
+
+    await screen.findByText('WIP');
+    expect(await screen.findByText('Cable guide')).toBeInTheDocument();
   });
 });

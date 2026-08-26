@@ -317,19 +317,20 @@ describe('FloorScanPage (Phase 1b sessions)', () => {
 
     it('distinguishes a recognised prefix whose phase has not shipped', async () => {
       // "Not built yet" and "that code means nothing" send an operator to
-      // different places, so they must not render identically (§4).
+      // different places, so they must not render identically (§4). BBD- is
+      // not used for this any more — phase 9a/9b gave it a meaning at idle
+      // (see the "fit check and sanding" describe block).
       mockNoSession();
       render(<FloorScanPage />);
       await screen.findByText('Scan a code');
 
-      await scan('BBD-000042');
+      await scan('BBF-warping');
 
       expect(await screen.findByText('Not handled yet')).toBeInTheDocument();
-      expect(screen.getByText('BBD-000042')).toBeInTheDocument();
+      expect(screen.getByText('BBF-warping')).toBeInTheDocument();
     });
 
     it.each([
-      ['BBD-000042', 'part'],
       ['BBF-warping', 'defect'],
       ['BBX-rework', 'command'],
       ['4001234567890', 'factory SKU'],
@@ -692,6 +693,668 @@ describe('FloorScanPage (Phase 1b sessions)', () => {
     });
   });
 
+  describe('harvest (§5.4, phase 8)', () => {
+    const HARVEST_SESSION = {
+      id: 5,
+      station_slug: 'harvest',
+      station_name: 'Harvest',
+      device_id: 'this-device',
+      opened_at: '2026-08-24T10:00:00',
+      open_seconds: 0,
+    };
+
+    const PLATE_PRINTER = { id: 12, name: 'P1S-3' };
+    const PLATE_ARCHIVE = {
+      id: 88,
+      print_name: 'bracket_v4',
+      completed_at: '2026-08-24T14:32:00',
+      quantity: 4,
+    };
+
+    /** Resumes an already-open Harvest session on load, so a test can start
+     *  straight from "Harvest is open, nothing bound yet". */
+    function mockHarvestSession() {
+      server.use(http.get('/api/v1/floor/session', () => HttpResponse.json(HARVEST_SESSION)));
+    }
+
+    function mockHarvestPrinterScan(response: unknown, status = 200) {
+      const captured: { body: Record<string, unknown> | null } = { body: null };
+      server.use(
+        http.post('/api/v1/floor/harvest/printer', async ({ request }) => {
+          captured.body = (await request.json()) as Record<string, unknown>;
+          return HttpResponse.json(response, { status });
+        }),
+      );
+      return captured;
+    }
+
+    function mockPartScan(response: unknown, status = 200) {
+      const captured: { body: Record<string, unknown> | null } = { body: null };
+      server.use(
+        http.post('/api/v1/floor/parts/scan', async ({ request }) => {
+          captured.body = (await request.json()) as Record<string, unknown>;
+          return HttpResponse.json(response, { status });
+        }),
+      );
+      return captured;
+    }
+
+    describe('the lean harvest screen, from the station', () => {
+      it('shows nothing but the session and a prompt before anything is bound', async () => {
+        mockHarvestSession();
+        render(<FloorScanPage />);
+
+        expect(await screen.findByText('Harvest')).toBeInTheDocument();
+        expect(screen.getByText('Scan the printer to begin')).toBeInTheDocument();
+      });
+
+      it('binds the plate on a printer scan: printer, elapsed, count and job', async () => {
+        mockHarvestSession();
+        mockHarvestPrinterScan({
+          result: 'bound',
+          session: HARVEST_SESSION,
+          printer: PLATE_PRINTER,
+          archive: PLATE_ARCHIVE,
+          part_count: 0,
+          blocking: null,
+        });
+        render(<FloorScanPage />);
+        await screen.findByText('Harvest');
+
+        await scan('BBP-12');
+
+        expect(await screen.findByText('P1S-3')).toBeInTheDocument();
+        expect(screen.getByText('bracket_v4')).toBeInTheDocument();
+        expect(screen.getByText('0')).toBeInTheDocument();
+        expect(screen.getByText('Open for 0s')).toBeInTheDocument();
+      });
+
+      it('states plainly when the printer has no finished job, without an error flash or tone', async () => {
+        mockHarvestSession();
+        mockHarvestPrinterScan({
+          result: 'bound',
+          session: HARVEST_SESSION,
+          printer: PLATE_PRINTER,
+          archive: null,
+          part_count: 0,
+          blocking: null,
+        });
+        render(<FloorScanPage />);
+        await screen.findByText('Harvest');
+
+        await scan('BBP-12');
+
+        const line = await screen.findByText('No job found for this printer');
+        expect(line.className).not.toMatch(/text-red-500/);
+        expect(floorSound.playScanErrorTone).not.toHaveBeenCalled();
+      });
+
+      it('rebinds to a different printer, restarting the count at 0', async () => {
+        mockHarvestSession();
+        mockHarvestPrinterScan({
+          result: 'bound',
+          session: HARVEST_SESSION,
+          printer: PLATE_PRINTER,
+          archive: PLATE_ARCHIVE,
+          part_count: 2,
+          blocking: null,
+        });
+        render(<FloorScanPage />);
+        await screen.findByText('Harvest');
+        await scan('BBP-12');
+        await screen.findByText('P1S-3');
+
+        const OTHER_PRINTER = { id: 20, name: 'X1C-2' };
+        mockHarvestPrinterScan({
+          result: 'rebound',
+          session: HARVEST_SESSION,
+          printer: OTHER_PRINTER,
+          archive: null,
+          part_count: 0,
+          blocking: null,
+        });
+        await scan('BBP-20');
+
+        expect(await screen.findByText('X1C-2')).toBeInTheDocument();
+        expect(screen.getByText('0')).toBeInTheDocument();
+      });
+
+      it('closes the plate on a repeat scan of the same printer, then returns to the scan-printer prompt', async () => {
+        // Opened well past the first minute, so the elapsed display's own
+        // 1s-tick interval (§5.4) is not also running during the advance
+        // below — otherwise two independent fake-timer-driven intervals
+        // (that one and the flash's) contend under `shouldAdvanceTime`,
+        // which is only asking for flakiness this test has no interest in.
+        const session = { ...HARVEST_SESSION, open_seconds: 120 };
+        server.use(http.get('/api/v1/floor/session', () => HttpResponse.json(session)));
+        mockHarvestPrinterScan({
+          result: 'bound',
+          session,
+          printer: PLATE_PRINTER,
+          archive: PLATE_ARCHIVE,
+          part_count: 4,
+          blocking: null,
+        });
+        vi.useFakeTimers({ shouldAdvanceTime: true });
+        try {
+          render(<FloorScanPage />);
+          await screen.findByText('Harvest');
+          await scan('BBP-12');
+          await screen.findByText('P1S-3');
+
+          mockHarvestPrinterScan({
+            result: 'plate_closed',
+            session,
+            printer: PLATE_PRINTER,
+            archive: PLATE_ARCHIVE,
+            part_count: 4,
+            blocking: null,
+          });
+          await scan('BBP-12');
+
+          expect(await screen.findByText('Plate closed · 4 parts')).toBeInTheDocument();
+
+          act(() => {
+            vi.advanceTimersByTime(3000);
+          });
+
+          expect(await screen.findByText('Scan the printer to begin')).toBeInTheDocument();
+        } finally {
+          vi.useRealTimers();
+        }
+      });
+
+      it('reports an unresolvable printer code as unknown', async () => {
+        mockHarvestSession();
+        mockHarvestPrinterScan({
+          result: 'unknown_printer',
+          session: HARVEST_SESSION,
+          printer: null,
+          archive: null,
+          part_count: 0,
+          blocking: null,
+        });
+        render(<FloorScanPage />);
+        await screen.findByText('Harvest');
+
+        await scan('BBP-999');
+
+        expect(await screen.findByText('Unknown code')).toBeInTheDocument();
+        expect(floorSound.playScanErrorTone).toHaveBeenCalled();
+      });
+
+      it('handles a locked printer-bind result without crashing, though the contract calls it unreachable', async () => {
+        mockHarvestSession();
+        mockHarvestPrinterScan({
+          result: 'locked',
+          session: null,
+          printer: null,
+          archive: null,
+          part_count: 0,
+          blocking: { ...HARVEST_SESSION, device_id: 'other-device', open_seconds: 120 },
+        });
+        render(<FloorScanPage />);
+        await screen.findByText('Harvest');
+
+        await scan('BBP-12');
+
+        expect(await screen.findByText('Harvest is open elsewhere')).toBeInTheDocument();
+      });
+    });
+
+    describe('part scans against a bound plate', () => {
+      async function bindPlate() {
+        mockHarvestSession();
+        mockHarvestPrinterScan({
+          result: 'bound',
+          session: HARVEST_SESSION,
+          printer: PLATE_PRINTER,
+          archive: PLATE_ARCHIVE,
+          part_count: 0,
+          blocking: null,
+        });
+        render(<FloorScanPage />);
+        await screen.findByText('Harvest');
+        await scan('BBP-12');
+        await screen.findByText('P1S-3');
+      }
+
+      it('links a part, incrementing the running count, with no error tone', async () => {
+        await bindPlate();
+        mockPartScan({
+          result: 'labeled',
+          part: { id: 1, sticker_code: 'BBD-000042', printer_id: 12, archive_id: 88, labeled_at: '2026-08-24T14:40:00' },
+          printer: PLATE_PRINTER,
+          archive: PLATE_ARCHIVE,
+          part_count: 1,
+          session: HARVEST_SESSION,
+          blocking: null,
+        });
+
+        await scan('BBD-000042');
+
+        expect(await screen.findByText('1')).toBeInTheDocument();
+        expect(screen.getByText('Linked · bracket_v4')).toBeInTheDocument();
+        expect(floorSound.playScanErrorTone).not.toHaveBeenCalled();
+      });
+
+      it('states the no-job outcome per part, plainly and without the error tone', async () => {
+        await bindPlate();
+        mockPartScan({
+          result: 'no_job',
+          part: { id: 2, sticker_code: 'BBD-000043', printer_id: 12, archive_id: null, labeled_at: '2026-08-24T14:41:00' },
+          printer: PLATE_PRINTER,
+          archive: null,
+          part_count: 1,
+          session: HARVEST_SESSION,
+          blocking: null,
+        });
+
+        await scan('BBD-000043');
+
+        const line = await screen.findByText('Linked to printer 12, no job found');
+        expect(line.className).not.toMatch(/text-red-500/);
+        expect(floorSound.playScanErrorTone).not.toHaveBeenCalled();
+      });
+
+      it('rejects an already-enrolled sticker without changing the plate', async () => {
+        await bindPlate();
+        // Bump the plate to a nonzero count first, to prove a duplicate scan
+        // does not disturb it.
+        mockPartScan({
+          result: 'labeled',
+          part: { id: 1, sticker_code: 'BBD-000042', printer_id: 12, archive_id: 88, labeled_at: '2026-08-24T14:40:00' },
+          printer: PLATE_PRINTER,
+          archive: PLATE_ARCHIVE,
+          part_count: 3,
+          session: HARVEST_SESSION,
+          blocking: null,
+        });
+        await scan('BBD-000042');
+        await screen.findByText('3');
+
+        mockPartScan({
+          result: 'duplicate',
+          part: null,
+          printer: null,
+          archive: null,
+          part_count: 3,
+          session: HARVEST_SESSION,
+          blocking: null,
+        });
+        await scan('BBD-000099');
+
+        expect(await screen.findByText('Part already scanned')).toBeInTheDocument();
+        expect(floorSound.playScanErrorTone).toHaveBeenCalled();
+      });
+
+      it('errors and rings the tone when no printer is bound yet', async () => {
+        mockHarvestSession();
+        mockPartScan({
+          result: 'no_printer',
+          part: null,
+          printer: null,
+          archive: null,
+          part_count: 0,
+          session: HARVEST_SESSION,
+          blocking: null,
+        });
+        render(<FloorScanPage />);
+        await screen.findByText('Harvest');
+
+        await scan('BBD-000042');
+
+        expect(await screen.findByText('Scan the printer first')).toBeInTheDocument();
+        expect(floorSound.playScanErrorTone).toHaveBeenCalled();
+      });
+
+      it('flags a malformed part code as invalid, and rings the tone', async () => {
+        await bindPlate();
+        mockPartScan({
+          result: 'invalid_code',
+          part: null,
+          printer: null,
+          archive: null,
+          part_count: 0,
+          session: HARVEST_SESSION,
+          blocking: null,
+        });
+
+        await scan('BBD-1');
+
+        expect(await screen.findByText('Invalid part code')).toBeInTheDocument();
+        expect(floorSound.playScanErrorTone).toHaveBeenCalled();
+      });
+
+      it('refuses a part scan that tries to claim a lock held elsewhere, offering takeover', async () => {
+        await bindPlate();
+        mockPartScan({
+          result: 'locked',
+          part: null,
+          printer: null,
+          archive: null,
+          part_count: 0,
+          session: null,
+          blocking: { ...HARVEST_SESSION, device_id: 'other-device', open_seconds: 600 },
+        });
+
+        await scan('BBD-000042');
+
+        expect(await screen.findByText('Harvest is open elsewhere')).toBeInTheDocument();
+        expect(floorSound.playScanErrorTone).toHaveBeenCalled();
+      });
+    });
+
+    describe('part scans from the printer info page (§5.6 entry #2)', () => {
+      const HARVEST_INFO = {
+        id: 12,
+        payload: 'BBP-12',
+        name: 'Bench A',
+        model: 'X1C',
+        location: 'Line 1',
+        serial_number: '00M09A000000001',
+        is_active: true,
+        awaiting_plate_clear: true,
+        total_print_hours: 100,
+        last_print: null,
+        maintenance_due_count: 0,
+        maintenance_warning_count: 0,
+        live: null,
+      };
+
+      function mockHarvestInfo() {
+        server.use(
+          http.get('/api/v1/floor/printers/:payload/info', () => HttpResponse.json(HARVEST_INFO)),
+        );
+      }
+
+      it('links a part and shows the result without leaving the info page', async () => {
+        mockNoSession();
+        mockHarvestInfo();
+        render(<FloorScanPage />);
+        await screen.findByText('Scan a code');
+        await scan('BBP-12');
+        await screen.findByText('Bench A');
+
+        const captured = mockPartScan({
+          result: 'labeled',
+          part: { id: 1, sticker_code: 'BBD-000042', printer_id: 12, archive_id: 88, labeled_at: '2026-08-24T15:00:00' },
+          printer: { id: 12, name: 'Bench A' },
+          archive: { id: 88, print_name: 'bracket_v4', completed_at: null, quantity: 1 },
+          part_count: 1,
+          session: HARVEST_SESSION,
+          blocking: null,
+        });
+
+        await scan('BBD-000042');
+
+        // Stays on the info page (§5.6: "a different screen, not a different
+        // mode") — the operator is still standing at this same printer.
+        expect(await screen.findByText('Bench A')).toBeInTheDocument();
+        expect(screen.getByText('Linked · bracket_v4')).toBeInTheDocument();
+        // The viewed printer's id is sent as the lock-claim hint, since no
+        // harvest session existed yet.
+        expect(captured.body).toMatchObject({ printer_id: 12, payload: 'BBD-000042' });
+        expect(floorSound.playScanErrorTone).not.toHaveBeenCalled();
+      });
+
+      it('produces identical no_job rendering to the harvest-station path', async () => {
+        mockNoSession();
+        mockHarvestInfo();
+        render(<FloorScanPage />);
+        await screen.findByText('Scan a code');
+        await scan('BBP-12');
+        await screen.findByText('Bench A');
+
+        mockPartScan({
+          result: 'no_job',
+          part: { id: 1, sticker_code: 'BBD-000042', printer_id: 12, archive_id: null, labeled_at: '2026-08-24T15:00:00' },
+          printer: { id: 12, name: 'Bench A' },
+          archive: null,
+          part_count: 1,
+          session: HARVEST_SESSION,
+          blocking: null,
+        });
+
+        await scan('BBD-000042');
+
+        const line = await screen.findByText('Linked to printer 12, no job found');
+        expect(line.className).not.toMatch(/text-red-500/);
+        expect(floorSound.playScanErrorTone).not.toHaveBeenCalled();
+      });
+
+      it('stops sending the printer-id hint once the harvest session already exists', async () => {
+        mockNoSession();
+        mockHarvestInfo();
+        render(<FloorScanPage />);
+        await screen.findByText('Scan a code');
+        await scan('BBP-12');
+        await screen.findByText('Bench A');
+
+        mockPartScan({
+          result: 'labeled',
+          part: { id: 1, sticker_code: 'BBD-000042', printer_id: 12, archive_id: 88, labeled_at: '2026-08-24T15:00:00' },
+          printer: { id: 12, name: 'Bench A' },
+          archive: { id: 88, print_name: 'bracket_v4', completed_at: null, quantity: 1 },
+          part_count: 1,
+          session: HARVEST_SESSION,
+          blocking: null,
+        });
+        await scan('BBD-000042');
+        await screen.findByText('Linked · bracket_v4');
+
+        const captured2 = mockPartScan({
+          result: 'labeled',
+          part: { id: 2, sticker_code: 'BBD-000043', printer_id: 12, archive_id: 88, labeled_at: '2026-08-24T15:01:00' },
+          printer: { id: 12, name: 'Bench A' },
+          archive: { id: 88, print_name: 'bracket_v4', completed_at: null, quantity: 1 },
+          part_count: 2,
+          session: HARVEST_SESSION,
+          blocking: null,
+        });
+        await scan('BBD-000043');
+
+        await waitFor(() => expect(captured2.body).not.toBeNull());
+        // The session this device holds is now Harvest, so the router takes
+        // the harvest branch (§5.4) rather than the info-page hint branch —
+        // the hint is only for claiming the lock in the first place.
+        expect(captured2.body).toMatchObject({ printer_id: null });
+      });
+
+      it('does not claim the harvest lock when the very first scan is already enrolled', async () => {
+        mockNoSession();
+        mockHarvestInfo();
+        render(<FloorScanPage />);
+        await screen.findByText('Scan a code');
+        await scan('BBP-12');
+        await screen.findByText('Bench A');
+
+        mockPartScan({
+          result: 'duplicate',
+          part: null,
+          printer: null,
+          archive: null,
+          part_count: 0,
+          // Nothing was created: already-enrolled short-circuits before the
+          // lock-claim step in the resolution order.
+          session: null,
+          blocking: null,
+        });
+
+        await scan('BBD-000099');
+
+        expect(await screen.findByText('Part already scanned')).toBeInTheDocument();
+        expect(floorSound.playScanErrorTone).toHaveBeenCalled();
+      });
+    });
+  });
+
+  describe('fit check and sanding (§5.4a/§5.4b, phase 9a/9b) — locations, not stations', () => {
+    const RECORDED_PART = { id: 42, sticker_code: 'BBD-000042', printer_id: 12, archive_id: 88, labeled_at: '2026-08-24T10:00:00' };
+    const RECORDED_PRINTER = { id: 12, name: 'P1S-3' };
+    const RECORDED_ARCHIVE = { id: 88, print_name: 'bracket_v4', completed_at: '2026-08-24T14:32:00', quantity: 4 };
+
+    function mockFitCheckScan(response: unknown, status = 200) {
+      const captured: { body: Record<string, unknown> | null } = { body: null };
+      server.use(
+        http.post('/api/v1/floor/locations/fit-check/part', async ({ request }) => {
+          captured.body = (await request.json()) as Record<string, unknown>;
+          return HttpResponse.json(response, { status });
+        }),
+      );
+      return captured;
+    }
+
+    function mockSandingScan(response: unknown, status = 200) {
+      const captured: { body: Record<string, unknown> | null } = { body: null };
+      server.use(
+        http.post('/api/v1/floor/locations/sanding/part', async ({ request }) => {
+          captured.body = (await request.json()) as Record<string, unknown>;
+          return HttpResponse.json(response, { status });
+        }),
+      );
+      return captured;
+    }
+
+    it('prompts for a location on a bare part scan at idle, with no station opened', async () => {
+      mockNoSession();
+      render(<FloorScanPage />);
+      await screen.findByText('Scan a code');
+
+      await scan('BBD-000042');
+
+      expect(await screen.findByText('BBD-000042')).toBeInTheDocument();
+      expect(screen.getByText('Scan a location')).toBeInTheDocument();
+      // No station opened — this is not a session, so nothing was posted to
+      // the station-scan endpoint for it.
+      expect(screen.queryByText('WIP')).not.toBeInTheDocument();
+    });
+
+    it('commits Fit Check on the location scan that follows, with no device_id involved', async () => {
+      mockNoSession();
+      const captured = mockFitCheckScan({
+        result: 'recorded',
+        part: RECORDED_PART,
+        printer: RECORDED_PRINTER,
+        archive: RECORDED_ARCHIVE,
+      });
+      render(<FloorScanPage />);
+      await screen.findByText('Scan a code');
+
+      await scan('BBD-000042');
+      await screen.findByText('Scan a location');
+      await scan('BBS-fit-check');
+
+      expect(await screen.findByText('Checked')).toBeInTheDocument();
+      expect(screen.getByText('BBD-000042')).toBeInTheDocument();
+      expect(captured.body).toEqual({ payload: 'BBD-000042' });
+    });
+
+    it('returns to idle once the confirmation flashes out', async () => {
+      mockNoSession();
+      mockFitCheckScan({ result: 'recorded', part: RECORDED_PART, printer: RECORDED_PRINTER, archive: RECORDED_ARCHIVE });
+      vi.useFakeTimers({ shouldAdvanceTime: true });
+      render(<FloorScanPage />);
+      await screen.findByText('Scan a code');
+      await scan('BBD-000042');
+      await screen.findByText('Scan a location');
+      await scan('BBS-fit-check');
+      await screen.findByText('Checked');
+
+      await act(async () => {
+        vi.advanceTimersByTime(3100);
+      });
+
+      expect(await screen.findByText('Scan a code')).toBeInTheDocument();
+      vi.useRealTimers();
+    });
+
+    it('rejects a location scan with no part pending, specifically rather than as an unknown code', async () => {
+      mockNoSession();
+      render(<FloorScanPage />);
+      await screen.findByText('Scan a code');
+
+      await scan('BBS-fit-check');
+
+      expect(await screen.findByText('Scan a part first')).toBeInTheDocument();
+      expect(floorSound.playScanErrorTone).toHaveBeenCalled();
+    });
+
+    it('reports an unenrolled sticker without touching Harvest at all', async () => {
+      mockNoSession();
+      mockFitCheckScan({ result: 'unknown_part', part: null, printer: null, archive: null });
+      render(<FloorScanPage />);
+      await screen.findByText('Scan a code');
+
+      await scan('BBD-000042');
+      await screen.findByText('Scan a location');
+      await scan('BBS-fit-check');
+
+      expect(await screen.findByText('Not enrolled — scan it at Harvest first')).toBeInTheDocument();
+    });
+
+    it('abandons a pending part when a station code is scanned instead of a location', async () => {
+      mockNoSession();
+      mockScan({
+        result: 'opened',
+        station_slug: 'wip',
+        station_name: 'WIP',
+        session: WIP_SESSION,
+        blocking: null,
+      });
+      render(<FloorScanPage />);
+      await screen.findByText('Scan a code');
+      await scan('BBD-000042');
+      await screen.findByText('Scan a location');
+
+      await scan('BBS-wip');
+
+      expect(await screen.findByText('WIP')).toBeInTheDocument();
+      expect(screen.queryByText('Scan a location')).not.toBeInTheDocument();
+    });
+
+    it('does not commit on the Sanding location scan — it only advances to asking why', async () => {
+      mockNoSession();
+      const sandingCall = mockSandingScan({ result: 'recorded', part: RECORDED_PART, printer: RECORDED_PRINTER, archive: RECORDED_ARCHIVE });
+      render(<FloorScanPage />);
+      await screen.findByText('Scan a code');
+      await scan('BBD-000042');
+      await screen.findByText('Scan a location');
+
+      await scan('BBS-sanding');
+
+      expect(await screen.findByText('Scan a reason')).toBeInTheDocument();
+      expect(screen.getByText('Sanding')).toBeInTheDocument();
+      expect(sandingCall.body).toBeNull();
+    });
+
+    it('commits Sanding on the reason scan, sending the bare reason code', async () => {
+      mockNoSession();
+      const captured = mockSandingScan({ result: 'recorded', part: RECORDED_PART, printer: RECORDED_PRINTER, archive: RECORDED_ARCHIVE });
+      render(<FloorScanPage />);
+      await screen.findByText('Scan a code');
+      await scan('BBD-000042');
+      await screen.findByText('Scan a location');
+      await scan('BBS-sanding');
+      await screen.findByText('Scan a reason');
+
+      await scan('BBR-doesnt_fit');
+
+      expect(await screen.findByText('Sent to Sanding · doesnt_fit')).toBeInTheDocument();
+      expect(captured.body).toEqual({ payload: 'BBD-000042', reason_code: 'doesnt_fit' });
+    });
+
+    it('rejects a reason scan with no part pending in Sanding', async () => {
+      mockNoSession();
+      render(<FloorScanPage />);
+      await screen.findByText('Scan a code');
+
+      await scan('BBR-other');
+
+      expect(await screen.findByText('Scan a part into Sanding first')).toBeInTheDocument();
+    });
+  });
+
   describe('pistol input handling', () => {
     it('reads the just-typed value when Enter fires in the same tick', async () => {
       // A pistol fires characters and Enter with no yield between, before
@@ -763,7 +1426,7 @@ describe('FloorScanPage (Phase 1b sessions)', () => {
       render(<FloorScanPage />);
       await screen.findByText('Scan a code');
 
-      await scan('BBD-000042');
+      await scan('BBF-warping');
       expect(await screen.findByText('Not handled yet')).toBeInTheDocument();
 
       act(() => {
