@@ -11,8 +11,13 @@ Phase 7: printer codes — the Codes page's Printer-labels tab, and the
 printer info page (§5.6) shown when a `BBP-` payload is scanned with no
 station open.
 
-The rest of the scan routing (SKUs, parts, defects) lands here in later
-phases; this module is the Floor feature's backend entry point.
+Phase 8: harvest binding and labeled parts (§5.4, §7) — binding a harvest
+plate to a printer's latest finished job, enrolling `BBD-` part stickers
+against it from either harvest entry point, and the needs-attention list for
+parts with no job to show for them.
+
+The rest of the scan routing (SKUs, defects) lands here in later phases;
+this module is the Floor feature's backend entry point.
 """
 
 from __future__ import annotations
@@ -23,13 +28,14 @@ from datetime import datetime, timezone
 
 from fastapi import APIRouter, Depends, HTTPException
 from fastapi.responses import StreamingResponse
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from backend.app.core.auth import RequirePermissionIfAuthEnabled
 from backend.app.core.database import get_db
 from backend.app.core.permissions import Permission
 from backend.app.models.floor_session import FloorStationSession
+from backend.app.models.printer import Printer
 from backend.app.models.user import User
 from backend.app.services.floor_codes import (
     FLOOR_STATIONS,
@@ -41,7 +47,34 @@ from backend.app.services.floor_codes import (
     station_for_payload,
     station_for_slug,
 )
+from backend.app.services.floor_parts import (
+    HarvestPrinterResult,
+    LocationScanOutcome,
+    LocationScanResult,
+    PartScanResult,
+    ReplaceStickerReasonCode,
+    ReplaceStickerResult,
+    UnlinkReasonCode,
+    archive_part,
+    delete_part,
+    dismiss_build_plate,
+    get_harvest_summary,
+    list_inventory_parts,
+    list_needs_attention,
+    list_part_events,
+    list_part_job_candidates,
+    list_unlabeled_build_plates,
+    relink_part,
+    replace_sticker_code,
+    scan_fit_check_part,
+    scan_harvest_printer,
+    scan_part,
+    scan_sanding_part,
+    search_completed_jobs,
+    unlink_part,
+)
 from backend.app.services.floor_printers import (
+    LastPrint,
     get_printer,
     get_printer_info,
     list_printers_for_labels,
@@ -70,6 +103,9 @@ class FloorStationResponse(BaseModel):
     payload: str
     name: str
     description: str
+    # "station" (WIP/+Storage/Move/Harvest/Cleanup) vs "location" (Fit
+    # Check/Sanding) — which Codes-page tab this label prints under (§3.3).
+    category: str
 
 
 class StationLabelRequest(BaseModel):
@@ -95,6 +131,7 @@ async def list_floor_stations(
             payload=station.payload,
             name=station.name,
             description=station.description,
+            category=station.category,
         )
         for station in FLOOR_STATIONS
     ]
@@ -251,9 +288,15 @@ async def scan_station(
     treats that as the unknown-code error flash of §9, so it must stay
     distinguishable from a *locked* station, which is a 200 with
     `result: locked`.
+
+    `category == "location"` entries (Fit Check, Sanding — §5.4a/§5.4b) are
+    printed and resolved through this same catalog, but they are not
+    sessions: nothing opens or closes for them, so this route refuses them
+    the same as an unrecognized code. The scan-part-then-location flow that
+    actually handles them lives in ``/floor/locations/part``, never here.
     """
     station = station_for_payload(body.payload)
-    if station is None:
+    if station is None or station.category == "location":
         raise HTTPException(404, f"Not a station code: {body.payload}")
 
     outcome = await apply_station_scan(db, station, body.device_id)
@@ -287,9 +330,13 @@ async def takeover_station(
     reading how long the session has been open, judges staleness better than
     any timeout the server could apply — and §11 rules out closing sessions
     on a timer.
+
+    `category == "location"` entries are never sessions (see `scan_station`
+    above) — structurally unreachable in practice since nothing ever opens
+    one to take over, but refused the same way for consistency.
     """
     station = station_for_payload(body.payload)
-    if station is None:
+    if station is None or station.category == "location":
         raise HTTPException(404, f"Not a station code: {body.payload}")
 
     outcome = await take_over(db, station, body.device_id)
@@ -441,9 +488,7 @@ async def render_printer_labels(
         io.BytesIO(pdf),
         media_type="application/pdf",
         headers={
-            "Content-Disposition": build_content_disposition(
-                "bambuddy-printer-labels.pdf", disposition="inline"
-            ),
+            "Content-Disposition": build_content_disposition("bambuddy-printer-labels.pdf", disposition="inline"),
             "Content-Length": str(len(pdf)),
             "Cache-Control": "no-store",
         },
@@ -562,3 +607,539 @@ async def close_floor_session(
         raise HTTPException(404, "No open session with that id")
     await db.commit()
     return _to_session_response(session)
+
+
+# ── Harvest and labeled parts (phase 8, §5.4, §7) ──────────────────────────
+
+
+class PlatePrinterResponse(BaseModel):
+    """The slim printer identity a harvest/part scan response needs — not
+    the full ``FloorPrinterResponse`` used by the Codes page, which carries
+    label-printing fields (model, location, is_active) these screens don't."""
+
+    id: int
+    name: str
+
+
+class PlateArchiveResponse(BaseModel):
+    """The slim archive summary a harvest/part scan response needs."""
+
+    id: int
+    print_name: str | None
+    completed_at: datetime | None
+    quantity: int
+
+
+class LabeledPartResponse(BaseModel):
+    """One enrolled sticker (§7.2)."""
+
+    id: int
+    sticker_code: str
+    printer_id: int | None
+    archive_id: int | None
+    labeled_at: datetime
+
+
+class HarvestPrinterScanRequest(BaseModel):
+    """A `BBP-` scan made while this device holds an open harvest session."""
+
+    device_id: str = Field(..., min_length=1, max_length=64)
+    payload: str = Field(..., min_length=1, max_length=256)
+
+
+class HarvestScanResponse(BaseModel):
+    """What a harvest printer scan did, and the plate it left open (if any)."""
+
+    result: HarvestPrinterResult
+    session: SessionResponse | None = None
+    printer: PlatePrinterResponse | None = None
+    archive: PlateArchiveResponse | None = None
+    part_count: int = 0
+    # Populated only on the (structurally near-unreachable) `locked` result.
+    blocking: SessionResponse | None = None
+
+
+class PartScanRequest(BaseModel):
+    """A `BBD-` scan. ``printer_id`` is the printer-info-page hint (§5.4 entry
+    #2) — ignored once this device already holds a harvest session."""
+
+    device_id: str = Field(..., min_length=1, max_length=64)
+    payload: str = Field(..., min_length=1, max_length=256)
+    printer_id: int | None = None
+
+
+class PartScanResponse(BaseModel):
+    """What a part scan did."""
+
+    result: PartScanResult
+    part: LabeledPartResponse | None = None
+    printer: PlatePrinterResponse | None = None
+    archive: PlateArchiveResponse | None = None
+    part_count: int = 0
+    session: SessionResponse | None = None
+    blocking: SessionResponse | None = None
+
+
+def _to_plate_printer(printer: Printer | None) -> PlatePrinterResponse | None:
+    return PlatePrinterResponse(id=printer.id, name=printer.name) if printer else None
+
+
+def _to_plate_archive(archive: LastPrint | None) -> PlateArchiveResponse | None:
+    if archive is None:
+        return None
+    return PlateArchiveResponse(
+        id=archive.archive_id,
+        print_name=archive.print_name,
+        completed_at=archive.completed_at,
+        quantity=archive.quantity,
+    )
+
+
+@router.post("/harvest/printer", response_model=HarvestScanResponse)
+async def scan_harvest_printer_route(
+    body: HarvestPrinterScanRequest,
+    db: AsyncSession = Depends(get_db),
+    _: User | None = RequirePermissionIfAuthEnabled(Permission.FLOOR_SCAN),
+) -> HarvestScanResponse:
+    """Bind, rebind, or close a harvest plate (§5.4).
+
+    Requires the device to already hold an open harvest session — reached
+    either by scanning `BBS-harvest` first, or, per entry #2, by a prior
+    `POST /floor/parts/scan` that claimed the lock from the printer info
+    page. A device with no harvest session gets `no_session` cleanly rather
+    than an error; the client should not be calling this in that state.
+    """
+    outcome = await scan_harvest_printer(db, body.device_id, body.payload)
+    await db.commit()
+
+    logger.info(
+        "Harvest printer scan: device=%s payload=%s result=%s",
+        body.device_id,
+        body.payload,
+        outcome.result,
+    )
+
+    return HarvestScanResponse(
+        result=outcome.result,
+        session=_to_session_response(outcome.session) if outcome.session else None,
+        printer=_to_plate_printer(outcome.printer),
+        archive=_to_plate_archive(outcome.archive),
+        part_count=outcome.part_count,
+        blocking=_to_session_response(outcome.blocking) if outcome.blocking else None,
+    )
+
+
+@router.post("/parts/scan", response_model=PartScanResponse)
+async def scan_part_route(
+    body: PartScanRequest,
+    db: AsyncSession = Depends(get_db),
+    _: User | None = RequirePermissionIfAuthEnabled(Permission.FLOOR_SCAN),
+) -> PartScanResponse:
+    """Enroll (or look up) one `BBD-` sticker (§7, §9).
+
+    Handles both harvest entry points identically: a device already in
+    harvest mode writes against its bound plate; a device with no session at
+    all can claim the harvest lock here directly, using ``printer_id`` as
+    the info-page hint (§5.4 entry #2). The hint is ignored once a session
+    exists — see ``floor_parts.scan_part``'s docstring.
+    """
+    outcome = await scan_part(db, body.device_id, body.payload, printer_id_hint=body.printer_id)
+    await db.commit()
+
+    logger.info(
+        "Part scan: device=%s payload=%s result=%s",
+        body.device_id,
+        body.payload,
+        outcome.result,
+    )
+
+    return PartScanResponse(
+        result=outcome.result,
+        part=(
+            LabeledPartResponse(
+                id=outcome.part.id,
+                sticker_code=outcome.part.sticker_code,
+                printer_id=outcome.part.printer_id,
+                archive_id=outcome.part.archive_id,
+                labeled_at=outcome.part.labeled_at,
+            )
+            if outcome.part
+            else None
+        ),
+        printer=_to_plate_printer(outcome.printer),
+        archive=_to_plate_archive(outcome.archive),
+        part_count=outcome.part_count,
+        session=_to_session_response(outcome.session) if outcome.session else None,
+        blocking=_to_session_response(outcome.blocking) if outcome.blocking else None,
+    )
+
+
+# ── Fit Check and Sanding (phase 9a/9b, §5.4a/§5.4b) ────────────────────────
+#
+# Neither is a station (see `scan_station`'s docstring above) — no session,
+# no device/floor-wide state on this side either. Each route below is a pure
+# commit: the scan page tracks which part is "pending" a location, or which
+# part is pending a Sanding reason, entirely in its own local state, and
+# only calls these once it already has everything a write needs.
+
+
+class LocationPartScanResponse(BaseModel):
+    """What a scan-part-then-location commit did (Fit Check or Sanding)."""
+
+    result: LocationScanResult
+    part: LabeledPartResponse | None = None
+    printer: PlatePrinterResponse | None = None
+    archive: PlateArchiveResponse | None = None
+
+
+def _to_location_response(outcome: LocationScanOutcome) -> LocationPartScanResponse:
+    return LocationPartScanResponse(
+        result=outcome.result,
+        part=(
+            LabeledPartResponse(
+                id=outcome.part.id,
+                sticker_code=outcome.part.sticker_code,
+                printer_id=outcome.part.printer_id,
+                archive_id=outcome.part.archive_id,
+                labeled_at=outcome.part.labeled_at,
+            )
+            if outcome.part
+            else None
+        ),
+        printer=_to_plate_printer(outcome.printer),
+        archive=_to_plate_archive(outcome.archive),
+    )
+
+
+class FitCheckScanRequest(BaseModel):
+    """The `BBD-…` sticker the scan page already has pending for Fit Check."""
+
+    payload: str = Field(..., min_length=1, max_length=256)
+
+
+@router.post("/locations/fit-check/part", response_model=LocationPartScanResponse)
+async def scan_fit_check_part_route(
+    body: FitCheckScanRequest,
+    db: AsyncSession = Depends(get_db),
+    _: User | None = RequirePermissionIfAuthEnabled(Permission.FLOOR_SCAN),
+) -> LocationPartScanResponse:
+    """Commit "this part is at Fit Check" (§5.4a) — the second of two scans
+    (part, then this location), with nothing held open in between on the
+    server."""
+    outcome = await scan_fit_check_part(db, body.payload)
+    await db.commit()
+    logger.info("Fit check: payload=%s result=%s", body.payload, outcome.result)
+    return _to_location_response(outcome)
+
+
+class SandingScanRequest(BaseModel):
+    """The pending part plus the reason scan that completes Sanding's flow
+    (§5.4b) — the Sanding *location* scan itself is a pure UI transition on
+    the scan page and never reaches the backend on its own."""
+
+    payload: str = Field(..., min_length=1, max_length=256)
+    reason_code: str = Field(..., min_length=1, max_length=32)
+    reason_text: str | None = Field(default=None, max_length=500)
+
+
+@router.post("/locations/sanding/part", response_model=LocationPartScanResponse)
+async def scan_sanding_part_route(
+    body: SandingScanRequest,
+    db: AsyncSession = Depends(get_db),
+    _: User | None = RequirePermissionIfAuthEnabled(Permission.FLOOR_SCAN),
+) -> LocationPartScanResponse:
+    """Commit "this part is at Sanding, because …" (§5.4b) — the third scan
+    of its flow (part, Sanding location, reason); this is the only point at
+    which anything is written."""
+    outcome = await scan_sanding_part(db, body.payload, body.reason_code, body.reason_text)
+    await db.commit()
+    logger.info("Sanding: payload=%s reason=%s result=%s", body.payload, body.reason_code, outcome.result)
+    return _to_location_response(outcome)
+
+
+class NeedsAttentionPartResponse(BaseModel):
+    """One part with no job to show for it (§7.2, §9)."""
+
+    id: int
+    sticker_code: str
+    printer_id: int | None
+    printer_name: str | None
+    labeled_at: datetime
+
+
+class NeedsAttentionResponse(BaseModel):
+    parts: list[NeedsAttentionPartResponse]
+    total: int
+
+
+class UnlabeledBuildPlateResponse(BaseModel):
+    id: int
+    print_name: str | None
+    printer_name: str | None
+    completed_at: datetime | None
+
+
+class HarvestSummaryLineResponse(BaseModel):
+    printer_id: int | None
+    printer_name: str | None
+    print_name: str | None
+    part_count: int
+
+
+@router.get("/harvest/sessions/{session_id}/summary", response_model=list[HarvestSummaryLineResponse])
+async def harvest_session_summary(
+    session_id: int,
+    db: AsyncSession = Depends(get_db),
+    _: User | None = RequirePermissionIfAuthEnabled(Permission.FLOOR_SCAN),
+) -> list[HarvestSummaryLineResponse]:
+    return [HarvestSummaryLineResponse(**line) for line in await get_harvest_summary(db, session_id)]
+
+
+class InventoryPartResponse(BaseModel):
+    id: int
+    sticker_code: str
+    printer_id: int | None
+    printer_name: str | None
+    archive_id: int | None
+    print_name: str | None
+    labeled_at: datetime
+    archived_at: datetime | None
+    released_at: datetime | None
+    latest_event_action: str | None
+
+
+class RelinkPartRequest(BaseModel):
+    archive_id: int
+
+
+class UnlinkPartRequest(BaseModel):
+    reason_code: str
+    reason_text: str | None = None
+
+    @model_validator(mode="after")
+    def validate_reason(self) -> UnlinkPartRequest:
+        valid_codes = {code.value for code in UnlinkReasonCode}
+        if self.reason_code not in valid_codes:
+            raise ValueError(f"reason_code must be one of {sorted(valid_codes)}")
+        if self.reason_code == UnlinkReasonCode.OTHER and not (self.reason_text or "").strip():
+            raise ValueError("reason_text is required when reason_code is 'other'")
+        return self
+
+
+class ReplaceStickerRequest(BaseModel):
+    new_sticker_code: str
+    reason_code: str
+    reason_text: str | None = None
+
+    @model_validator(mode="after")
+    def validate_reason(self) -> ReplaceStickerRequest:
+        valid_codes = {code.value for code in ReplaceStickerReasonCode}
+        if self.reason_code not in valid_codes:
+            raise ValueError(f"reason_code must be one of {sorted(valid_codes)}")
+        if self.reason_code == ReplaceStickerReasonCode.OTHER and not (self.reason_text or "").strip():
+            raise ValueError("reason_text is required when reason_code is 'other'")
+        return self
+
+
+class InventoryPartEventResponse(BaseModel):
+    id: int
+    action: str
+    details: dict | None
+    occurred_at: datetime
+
+
+class DeleteInventoryPartResponse(BaseModel):
+    deleted: bool
+
+
+class PartJobCandidateResponse(BaseModel):
+    id: int
+    print_name: str
+    completed_at: datetime | None
+
+
+class JobSearchResultResponse(BaseModel):
+    id: int
+    print_name: str
+    printer_id: int | None
+    printer_name: str | None
+    completed_at: datetime | None
+
+
+@router.get("/inventory/parts", response_model=list[InventoryPartResponse])
+async def get_inventory_parts(
+    include_archived: bool = False,
+    db: AsyncSession = Depends(get_db),
+    _: User | None = RequirePermissionIfAuthEnabled(Permission.FLOOR_SCAN),
+) -> list[InventoryPartResponse]:
+    return [
+        InventoryPartResponse(**part.__dict__)
+        for part in await list_inventory_parts(db, include_archived=include_archived)
+    ]
+
+
+@router.post("/inventory/parts/{part_id}/archive", response_model=InventoryPartResponse)
+async def set_part_archived(
+    part_id: int,
+    archived: bool = True,
+    db: AsyncSession = Depends(get_db),
+    _: User | None = RequirePermissionIfAuthEnabled(Permission.FLOOR_SCAN),
+) -> InventoryPartResponse:
+    part = await archive_part(db, part_id, archived=archived)
+    if part is None:
+        raise HTTPException(404, "Part not found")
+    await db.commit()
+    rows = await list_inventory_parts(db, include_archived=True)
+    return next(InventoryPartResponse(**row.__dict__) for row in rows if row.id == part_id)
+
+
+@router.delete("/inventory/parts/{part_id}", response_model=DeleteInventoryPartResponse)
+async def delete_inventory_part(
+    part_id: int,
+    db: AsyncSession = Depends(get_db),
+    _: User | None = RequirePermissionIfAuthEnabled(Permission.FLOOR_SCAN),
+) -> DeleteInventoryPartResponse:
+    if not await delete_part(db, part_id):
+        raise HTTPException(404, "Part not found")
+    await db.commit()
+    return DeleteInventoryPartResponse(deleted=True)
+
+
+@router.post("/inventory/parts/{part_id}/relink", response_model=InventoryPartResponse)
+async def relink_inventory_part(
+    part_id: int,
+    body: RelinkPartRequest,
+    db: AsyncSession = Depends(get_db),
+    _: User | None = RequirePermissionIfAuthEnabled(Permission.FLOOR_SCAN),
+) -> InventoryPartResponse:
+    part = await relink_part(db, part_id, body.archive_id)
+    if part is None:
+        raise HTTPException(404, "Part or completed job not found")
+    await db.commit()
+    rows = await list_inventory_parts(db, include_archived=True)
+    return next(InventoryPartResponse(**row.__dict__) for row in rows if row.id == part_id)
+
+
+@router.post("/inventory/parts/{part_id}/unlink", response_model=InventoryPartResponse)
+async def unlink_inventory_part(
+    part_id: int,
+    body: UnlinkPartRequest,
+    db: AsyncSession = Depends(get_db),
+    _: User | None = RequirePermissionIfAuthEnabled(Permission.FLOOR_SCAN),
+) -> InventoryPartResponse:
+    part = await unlink_part(db, part_id, body.reason_code, body.reason_text)
+    if part is None:
+        # Deliberately a single catch-all, same terse style as `relink`'s
+        # 404 above — not distinguishing "missing part" from "archived" from
+        # "already unlinked" here keeps this endpoint's contract as simple as
+        # relink's, and none of those cases needs a different client action.
+        raise HTTPException(404, "Part not found or has nothing to unlink")
+    await db.commit()
+    rows = await list_inventory_parts(db, include_archived=True)
+    return next(InventoryPartResponse(**row.__dict__) for row in rows if row.id == part_id)
+
+
+@router.get("/inventory/parts/{part_id}/events", response_model=list[InventoryPartEventResponse])
+async def get_inventory_part_events(
+    part_id: int,
+    db: AsyncSession = Depends(get_db),
+    _: User | None = RequirePermissionIfAuthEnabled(Permission.FLOOR_SCAN),
+) -> list[InventoryPartEventResponse]:
+    events = await list_part_events(db, part_id)
+    if events is None:
+        raise HTTPException(404, "Part not found")
+    return [InventoryPartEventResponse(**event.__dict__) for event in events]
+
+
+@router.get("/inventory/parts/{part_id}/job-candidates", response_model=list[PartJobCandidateResponse])
+async def get_inventory_part_job_candidates(
+    part_id: int,
+    db: AsyncSession = Depends(get_db),
+    _: User | None = RequirePermissionIfAuthEnabled(Permission.FLOOR_SCAN),
+) -> list[PartJobCandidateResponse]:
+    candidates = await list_part_job_candidates(db, part_id)
+    if candidates is None:
+        raise HTTPException(404, "Part not found")
+    return [PartJobCandidateResponse(**candidate.__dict__) for candidate in candidates]
+
+
+@router.get("/inventory/jobs/search", response_model=list[JobSearchResultResponse])
+async def search_inventory_jobs(
+    q: str,
+    limit: int = 20,
+    db: AsyncSession = Depends(get_db),
+    _: User | None = RequirePermissionIfAuthEnabled(Permission.FLOOR_SCAN),
+) -> list[JobSearchResultResponse]:
+    """The cross-printer escalation from `job-candidates` above (§ relink
+    docstring): used when the recorded printer itself is wrong, so the
+    reviewer needs every completed job, not just one printer's."""
+    results = await search_completed_jobs(db, q, limit=limit)
+    return [JobSearchResultResponse(**result.__dict__) for result in results]
+
+
+@router.post("/inventory/parts/{part_id}/replace-sticker", response_model=InventoryPartResponse)
+async def replace_inventory_part_sticker(
+    part_id: int,
+    body: ReplaceStickerRequest,
+    db: AsyncSession = Depends(get_db),
+    _: User | None = RequirePermissionIfAuthEnabled(Permission.FLOOR_SCAN),
+) -> InventoryPartResponse:
+    outcome = await replace_sticker_code(db, part_id, body.new_sticker_code, body.reason_code, body.reason_text)
+    if outcome.result is ReplaceStickerResult.NOT_FOUND:
+        raise HTTPException(404, "Part not found")
+    if outcome.result is ReplaceStickerResult.ARCHIVED:
+        raise HTTPException(400, "Part is archived")
+    if outcome.result is ReplaceStickerResult.INVALID_CODE:
+        raise HTTPException(400, "New sticker code is invalid or unchanged")
+    if outcome.result is ReplaceStickerResult.CODE_IN_USE:
+        raise HTTPException(409, "New sticker code is already in use")
+    await db.commit()
+    rows = await list_inventory_parts(db, include_archived=True)
+    return next(InventoryPartResponse(**row.__dict__) for row in rows if row.id == part_id)
+
+
+@router.get("/parts/needs-attention", response_model=NeedsAttentionResponse)
+async def get_needs_attention(
+    limit: int = 50,
+    db: AsyncSession = Depends(get_db),
+    _: User | None = RequirePermissionIfAuthEnabled(Permission.FLOOR_SCAN),
+) -> NeedsAttentionResponse:
+    """Parts with no job linked, newest first (§7.2, §9): the harvest label
+    was applied but no archive could be resolved for it. Surfaced here so
+    these can be matched to a job by hand later rather than discovered at a
+    stock count."""
+    parts, total = await list_needs_attention(db, limit=limit)
+    return NeedsAttentionResponse(
+        parts=[
+            NeedsAttentionPartResponse(
+                id=p.id,
+                sticker_code=p.sticker_code,
+                printer_id=p.printer_id,
+                printer_name=p.printer_name,
+                labeled_at=p.labeled_at,
+            )
+            for p in parts
+        ],
+        total=total,
+    )
+
+
+@router.get("/parts/unlabeled-build-plates", response_model=list[UnlabeledBuildPlateResponse])
+async def get_unlabeled_build_plates(
+    limit: int = 50,
+    db: AsyncSession = Depends(get_db),
+    _: User | None = RequirePermissionIfAuthEnabled(Permission.FLOOR_SCAN),
+) -> list[UnlabeledBuildPlateResponse]:
+    return [UnlabeledBuildPlateResponse(**plate) for plate in await list_unlabeled_build_plates(db, limit=limit)]
+
+
+@router.post("/parts/unlabeled-build-plates/{archive_id}/dismiss")
+async def dismiss_unlabeled_build_plate(
+    archive_id: int,
+    db: AsyncSession = Depends(get_db),
+    _: User | None = RequirePermissionIfAuthEnabled(Permission.FLOOR_SCAN),
+) -> dict[str, str]:
+    if not await dismiss_build_plate(db, archive_id):
+        raise HTTPException(404, "Completed build plate not found")
+    await db.commit()
+    return {"status": "dismissed"}

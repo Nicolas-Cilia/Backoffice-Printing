@@ -18,7 +18,7 @@ class TestListStations:
         assert resp.status_code == 200
 
         stations = resp.json()
-        assert len(stations) == 5
+        assert len(stations) == 7
 
         payloads = [s["payload"] for s in stations]
         assert payloads == [
@@ -26,12 +26,20 @@ class TestListStations:
             "BBS-storage-receive",
             "BBS-storage-move",
             "BBS-harvest",
+            "BBS-fit-check",
+            "BBS-sanding",
             "BBS-cleanup",
         ]
         # Order is the documented workflow order (§5), not alphabetical — the
         # Codes page prints them in this sequence.
         assert stations[0]["name"] == "WIP"
         assert all(s["description"] for s in stations)
+
+        by_slug = {s["slug"]: s for s in stations}
+        assert by_slug["fit-check"]["category"] == "location"
+        assert by_slug["sanding"]["category"] == "location"
+        assert by_slug["wip"]["category"] == "station"
+        assert by_slug["cleanup"]["category"] == "station"
 
 
 class TestRenderStationLabels:

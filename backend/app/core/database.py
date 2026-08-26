@@ -1,5 +1,6 @@
 import asyncio
 import logging
+from datetime import datetime, timezone
 
 from sqlalchemy import event
 from sqlalchemy.exc import IntegrityError, OperationalError, ProgrammingError
@@ -300,6 +301,8 @@ async def init_db():
         user_otp_code,
         user_totp,
         virtual_printer,
+        floor_part,
+        floor_session,
     )
 
     async with engine.begin() as conn:
@@ -325,7 +328,20 @@ async def init_db():
     await seed_spool_catalog()
     await seed_color_catalog()
 
+    await _backfill_floor_part_events()
+
     await check_pool_fits_server()
+
+
+async def _backfill_floor_part_events() -> None:
+    """Ensure every labeled part has an enroll row in the audit log."""
+    from backend.app.services.floor_parts import backfill_missing_enrolled_events
+
+    async with async_session() as db:
+        count = await backfill_missing_enrolled_events(db)
+        if count:
+            await db.commit()
+            logger.info("Backfilled %d floor part enrolled event(s)", count)
 
 
 async def check_pool_fits_server() -> None:
@@ -3189,6 +3205,9 @@ async def run_migrations(conn):
     default_settings = [
         ("advanced_auth_enabled", "false"),
         ("smtp_auth_enabled", "true"),
+        # Floor's part backlog begins at installation/cutover, never from
+        # historical archives that predate physical BBD stickers.
+        ("floor_part_tracking_started_at", datetime.now(timezone.utc).replace(tzinfo=None).isoformat()),
     ]
     for key, value in default_settings:
         try:
@@ -4107,6 +4126,26 @@ async def run_migrations(conn):
             )
         )
 
+    # Migration: harvest plate binding on floor_station_sessions (phase 8,
+    # docs/floor-plan.md §5.4). Additive and nullable, so `create_all` alone
+    # would miss them on an upgrading install — floor_station_sessions is an
+    # existing table (phase 1b), not a new one. Idempotent on both SQLite and
+    # Postgres via `_safe_execute`, matching the `pipeline_runs.parent_run_id`
+    # migration above rather than the PRAGMA-table_info pattern used
+    # elsewhere in this function: those guard `ALTER COLUMN` type changes
+    # SQLite cannot do in place, which is not the case here — a plain
+    # nullable `ADD COLUMN` needs no dialect branch.
+    await _safe_execute(
+        conn,
+        "ALTER TABLE floor_station_sessions ADD COLUMN bound_printer_id INTEGER REFERENCES printers(id) ON DELETE SET NULL",
+    )
+    await _safe_execute(
+        conn,
+        "ALTER TABLE floor_station_sessions ADD COLUMN bound_archive_id INTEGER REFERENCES print_archives(id) ON DELETE SET NULL",
+    )
+    await _safe_execute(conn, "ALTER TABLE floor_labeled_parts ADD COLUMN archived_at DATETIME")
+    await _safe_execute(conn, "ALTER TABLE floor_labeled_parts ADD COLUMN released_at DATETIME")
+
 
 _SECTION_PART_DEFAULT_ORDER = ("TOP", "BOT", "KNB", "BUT")
 
@@ -4456,11 +4495,7 @@ async def seed_default_groups():
         # Additive and idempotent, like the clear_plate backfill above.
         result = await session.execute(select(Group))
         for group in result.scalars().all():
-            if (
-                group.permissions
-                and "printers:control" in group.permissions
-                and "floor:scan" not in group.permissions
-            ):
+            if group.permissions and "printers:control" in group.permissions and "floor:scan" not in group.permissions:
                 group.permissions = [*group.permissions, "floor:scan"]
                 logger.info("Added floor:scan to group '%s' (has printers:control)", group.name)
         await session.commit()

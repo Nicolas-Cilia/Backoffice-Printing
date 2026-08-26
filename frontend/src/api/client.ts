@@ -1261,6 +1261,11 @@ export interface FloorStation {
   payload: string;
   name: string;
   description: string;
+  /** "station" (WIP/+Storage/Move/Harvest/Cleanup) vs "location" (Fit
+   *  Check/Sanding) — which Codes-page tab this label prints under (§3.3).
+   *  Purely a presentation grouping; every entry works identically as a
+   *  scannable station regardless of category. */
+  category: 'station' | 'location';
 }
 
 /** An open (or just-closed) claim on a floor station (docs/floor-plan.md §2.4).
@@ -1361,6 +1366,168 @@ export interface FloorPrinterInfo {
   maintenance_due_count: number;
   maintenance_warning_count: number;
   live: FloorLiveStatus | null;
+}
+
+// ── Harvest (docs/floor-plan.md §5.4/§7) — phase 8 ─────────────────────────
+
+/** The bound printer, as embedded in a harvest/part-scan response. Distinct
+ *  from `FloorPrinter`/`FloorPrinterInfo`: this is the minimal shape the
+ *  lean harvest screen needs, not the Codes-page or info-page shape. */
+export interface FloorPlatePrinter {
+  id: number;
+  name: string;
+}
+
+/** The plate's resolved job, embedded in a harvest/part-scan response. The
+ *  archive is resolved once, at printer-bind time, and shared by every part
+ *  on that plate (§7.2) — null means no finished job was found, which is a
+ *  plain fact the screen states, not an error. Distinct from `FloorLastPrint`:
+ *  keyed `id` rather than `archive_id`, and carries no `has_labeled_parts` —
+ *  that field only matters for the info page's harvest prompt. */
+export interface FloorPlateArchive {
+  id: number;
+  print_name: string | null;
+  completed_at: string | null;
+  quantity: number;
+}
+
+/** A written (or looked-up) labeled part row (§7.2). `archive_id` is null on
+ *  the no-job case — the part is still recorded, against the printer and the
+ *  time, so it is never a dead end. */
+export interface FloorLabeledPart {
+  id: number;
+  sticker_code: string;
+  printer_id: number;
+  archive_id: number | null;
+  labeled_at: string;
+}
+
+/** What a `BBP-` scan did while this device holds an open harvest session
+ *  (§5.4, entry #1). `locked` is reachable in shape only — the harvest lock
+ *  is already held by this device whenever a session exists to scan against,
+ *  so the backend returns it rather than crashing, but the client should
+ *  never actually see it here. */
+export type HarvestScanResult =
+  | 'bound'
+  | 'rebound'
+  | 'plate_closed'
+  | 'locked'
+  | 'unknown_printer'
+  | 'no_session';
+
+export interface HarvestScanResponse {
+  result: HarvestScanResult;
+  session: FloorSession | null;
+  printer: FloorPlatePrinter | null;
+  archive: FloorPlateArchive | null;
+  /** Parts labeled against the *current* plate (same session + bound
+   *  printer). On `plate_closed` this is the closed plate's final count. */
+  part_count: number;
+  /** Only when `result === 'locked'` — reserved for completeness (see above). */
+  blocking: FloorSession | null;
+}
+
+/** What a `BBD-` scan did. One endpoint, two entry points (§5.4/§5.6): from
+ *  an open Harvest station, and from the printer info page with nothing
+ *  open, where the first such scan claims the harvest lock. */
+export type PartScanResult =
+  | 'labeled'
+  | 'no_job'
+  | 'duplicate'
+  | 'locked'
+  | 'no_printer'
+  | 'invalid_code';
+
+export interface PartScanResponse {
+  result: PartScanResult;
+  part: FloorLabeledPart | null;
+  printer: FloorPlatePrinter | null;
+  archive: FloorPlateArchive | null;
+  part_count: number;
+  /** The harvest session this device holds after the scan — set even when
+   *  the scan is what created it (info-page entry #2). */
+  session: FloorSession | null;
+  /** Only when `result === 'locked'`: who holds harvest, and for how long. */
+  blocking: FloorSession | null;
+}
+
+// ── Fit Check and Sanding (docs/floor-plan.md §5.4a/§5.4b) — phase 9a/9b ───
+//
+// Neither is a station — no session, no device/floor-wide state. Each is a
+// plain commit: scan-part-then-location (Fit Check), or scan-part-then-
+// location-then-reason (Sanding, where the location scan itself is a pure
+// UI transition on the scan page and never reaches this API on its own).
+
+/** What a scan-part-then-location commit did. No verdict is recorded for
+ *  Fit Check — `recorded` covers both a first check and a re-check
+ *  (§5.4a); there is nothing to amend. */
+export type LocationScanResult = 'recorded' | 'unknown_part' | 'invalid_code';
+
+export interface LocationScanResponse {
+  result: LocationScanResult;
+  part: FloorLabeledPart | null;
+  printer: FloorPlatePrinter | null;
+  archive: FloorPlateArchive | null;
+}
+
+/** Fixed, seeded reasons for Sanding (§5.4b) — not a user-editable registry,
+ *  the same shape as the office-side unlink/replace-sticker reason codes.
+ *  Mirrors `backend.app.services.floor_parts.SandingReasonCode`. */
+export type SandingReasonCode = 'doesnt_fit' | 'rough_surface' | 'layer_lines' | 'other';
+
+/** One row of the `/floor` landing page's needs-attention panel (§7.2): a
+ *  labeled part with no resolved job, waiting to be matched by hand. */
+export interface FloorNeedsAttentionPart {
+  id: number;
+  sticker_code: string;
+  printer_id: number;
+  printer_name: string;
+  labeled_at: string;
+}
+
+export interface FloorNeedsAttentionResponse {
+  parts: FloorNeedsAttentionPart[];
+  /** Unbounded count, so the panel can say "showing 50 of 7xx" rather than
+   *  implying the list it got back is everything. */
+  total: number;
+}
+export interface FloorUnlabeledBuildPlate { id: number; print_name: string | null; printer_name: string | null; completed_at: string | null; }
+export interface HarvestSummaryLine { printer_id: number | null; printer_name: string | null; print_name: string | null; part_count: number; }
+
+export interface FloorInventoryPart {
+  id: number;
+  sticker_code: string;
+  printer_id: number | null;
+  printer_name: string | null;
+  archive_id: number | null;
+  print_name: string | null;
+  labeled_at: string;
+  archived_at: string | null;
+  released_at: string | null;
+  latest_event_action?: string | null;
+}
+
+export interface FloorInventoryPartEvent {
+  id: number;
+  action: string;
+  details: Record<string, unknown> | null;
+  occurred_at: string;
+}
+
+export interface FloorPartJobCandidate {
+  id: number;
+  print_name: string;
+  completed_at: string | null;
+}
+
+/** A cross-printer completed job result from the "search all jobs" escalation
+ *  (used when the printer recorded on a part is itself wrong). */
+export interface JobSearchResult {
+  id: number;
+  print_name: string;
+  printer_id: number | null;
+  printer_name: string | null;
+  completed_at: string | null;
 }
 
 export interface StorageLocation {
@@ -5613,6 +5780,69 @@ export const api = {
    *  parsing that could drift from the backend's idea of a valid code. */
   getFloorPrinterInfo: (payload: string) =>
     request<FloorPrinterInfo>(`/floor/printers/${encodeURIComponent(payload)}/info`),
+  // ── Harvest (docs/floor-plan.md §5.4/§7) — phase 8 ─────────────────────
+  /** A `BBP-` scan made while this device holds an open harvest session:
+   *  binds the plate, rebinds to a different printer, or (on a repeat scan
+   *  of the same one) closes it. */
+  scanHarvestPrinter: (data: { device_id: string; payload: string }) =>
+    request<HarvestScanResponse>('/floor/harvest/printer', {
+      method: 'POST',
+      body: JSON.stringify(data),
+    }),
+  /** A `BBD-` scan from either entry point (§5.4/§5.6). `printer_id` is the
+   *  info-page hint used only to claim the harvest lock on this device's
+   *  first such scan; the backend ignores it once a session already exists,
+   *  so it is safe to always pass the viewed printer's id (or omit it). */
+  scanFloorPart: (data: { device_id: string; payload: string; printer_id?: number | null }) =>
+    request<PartScanResponse>('/floor/parts/scan', {
+      method: 'POST',
+      body: JSON.stringify(data),
+    }),
+  // ── Fit Check and Sanding (docs/floor-plan.md §5.4a/§5.4b) — phase 9a/9b ─
+  // Neither is a station — a plain commit, not gated on any open session.
+  /** Commit "this part is at Fit Check" — the second of two scans (part,
+   *  then this location). Re-scanning an already-checked part is not an
+   *  error (§5.4a). */
+  scanFitCheckPart: (data: { payload: string }) =>
+    request<LocationScanResponse>('/floor/locations/fit-check/part', {
+      method: 'POST',
+      body: JSON.stringify(data),
+    }),
+  /** Commit "this part is at Sanding, because …" — the third scan of its
+   *  flow (part, Sanding location — a pure UI transition, never a call of
+   *  its own — then this reason). */
+  scanSandingPart: (data: { payload: string; reason_code: SandingReasonCode; reason_text?: string | null }) =>
+    request<LocationScanResponse>('/floor/locations/sanding/part', {
+      method: 'POST',
+      body: JSON.stringify(data),
+    }),
+  /** Parts with no resolved job, newest first — office matching lives on
+   *  Part history (`/floor/inventory`); this list is the same unmatched set. */
+  getFloorNeedsAttentionParts: (limit = 50) =>
+    request<FloorNeedsAttentionResponse>(`/floor/parts/needs-attention?limit=${limit}`),
+  getFloorUnlabeledBuildPlates: (limit = 50) =>
+    request<FloorUnlabeledBuildPlate[]>(`/floor/parts/unlabeled-build-plates?limit=${limit}`),
+  dismissFloorUnlabeledBuildPlate: (archiveId: number) =>
+    request<{ status: string }>(`/floor/parts/unlabeled-build-plates/${archiveId}/dismiss`, { method: 'POST' }),
+  getHarvestSummary: (sessionId: number) => request<HarvestSummaryLine[]>(`/floor/harvest/sessions/${sessionId}/summary`),
+  getFloorInventoryParts: (includeArchived = false) =>
+    request<FloorInventoryPart[]>(`/floor/inventory/parts?include_archived=${includeArchived}`),
+  getFloorInventoryPartEvents: (partId: number) =>
+    request<FloorInventoryPartEvent[]>(`/floor/inventory/parts/${partId}/events`),
+  getFloorInventoryPartJobCandidates: (partId: number) =>
+    request<FloorPartJobCandidate[]>(`/floor/inventory/parts/${partId}/job-candidates`),
+  archiveFloorInventoryPart: (partId: number, archived = true) =>
+    request<FloorInventoryPart>(`/floor/inventory/parts/${partId}/archive?archived=${archived}`, { method: 'POST' }),
+  deleteFloorInventoryPart: (partId: number) =>
+    request<{ deleted: boolean }>(`/floor/inventory/parts/${partId}`, { method: 'DELETE' }),
+  relinkFloorInventoryPart: (partId: number, archiveId: number) =>
+    request<FloorInventoryPart>(`/floor/inventory/parts/${partId}/relink`, { method: 'POST', body: JSON.stringify({ archive_id: archiveId }) }),
+  unlinkFloorInventoryPart: (partId: number, reasonCode: string, reasonText?: string | null) =>
+    request<FloorInventoryPart>(`/floor/inventory/parts/${partId}/unlink`, { method: 'POST', body: JSON.stringify({ reason_code: reasonCode, reason_text: reasonText ?? null }) }),
+  searchFloorInventoryJobs: (query: string, limit = 20) =>
+    request<JobSearchResult[]>(`/floor/inventory/jobs/search?q=${encodeURIComponent(query)}&limit=${limit}`),
+  replaceFloorInventoryPartSticker: (partId: number, newStickerCode: string, reasonCode: string, reasonText?: string | null) =>
+    request<FloorInventoryPart>(`/floor/inventory/parts/${partId}/replace-sticker`, { method: 'POST', body: JSON.stringify({ new_sticker_code: newStickerCode, reason_code: reasonCode, reason_text: reasonText ?? null }) }),
   getSpoolCatalog: () =>
     request<SpoolCatalogEntry[]>('/inventory/catalog'),
   addCatalogEntry: (data: { name: string; weight: number }) =>

@@ -326,3 +326,54 @@ class TestSessionOverview:
 
     async def test_closing_an_unknown_session_is_a_404(self, async_client):
         assert (await async_client.delete("/api/v1/floor/sessions/999999")).status_code == 404
+
+
+@pytest.mark.asyncio
+@pytest.mark.integration
+class TestHarvestSessionsClaimedByAPartScan:
+    """Phase 8 (§5.4 entry #2) can open a harvest session through a
+    completely different route (`POST /floor/parts/scan`) than the normal
+    `BBS-harvest` station scan. These guard that the generic session
+    machinery — the floor-wide lock and the ordinary session endpoints —
+    treats a session opened that way exactly like any other harvest session.
+    """
+
+    async def test_a_lock_claimed_by_a_part_scan_blocks_a_station_scan(
+        self, async_client, printer_factory, archive_factory
+    ):
+        printer = await printer_factory()
+        await archive_factory(printer_id=printer.id)
+        await async_client.post(
+            "/api/v1/floor/parts/scan",
+            json={"payload": "BBD-000001", "device_id": DEVICE_A, "printer_id": printer.id},
+        )
+
+        resp = await _scan(async_client, "BBS-harvest", DEVICE_B)
+
+        assert resp.json()["result"] == "locked"
+        assert resp.json()["blocking"]["device_id"] == DEVICE_A
+
+    async def test_it_shows_up_in_the_session_overview(self, async_client, printer_factory, archive_factory):
+        printer = await printer_factory()
+        await archive_factory(printer_id=printer.id)
+        await async_client.post(
+            "/api/v1/floor/parts/scan",
+            json={"payload": "BBD-000001", "device_id": DEVICE_A, "printer_id": printer.id},
+        )
+
+        resp = await async_client.get("/api/v1/floor/sessions")
+
+        assert [s["station_slug"] for s in resp.json()["open"]] == ["harvest"]
+        assert resp.json()["open"][0]["device_id"] == DEVICE_A
+
+    async def test_the_station_toggle_still_closes_it(self, async_client, printer_factory, archive_factory):
+        printer = await printer_factory()
+        await archive_factory(printer_id=printer.id)
+        await async_client.post(
+            "/api/v1/floor/parts/scan",
+            json={"payload": "BBD-000001", "device_id": DEVICE_A, "printer_id": printer.id},
+        )
+
+        resp = await _scan(async_client, "BBS-harvest", DEVICE_A)
+
+        assert resp.json()["result"] == "closed"

@@ -93,9 +93,11 @@ class LastPrint:
     print_name: str | None
     completed_at: datetime | None
     quantity: int
-    # Whether any part sticker has been linked to this job yet. Phase 8 fills
-    # this in from the part table; until then it is always False, which reads
-    # correctly as "nothing labeled".
+    # Whether any part sticker has been linked to this job yet. Filled in by
+    # `get_last_finished_print` from `floor_labeled_parts` (phase 8); defaults
+    # to False here so `get_archive_summary`'s callers, which already know
+    # the part in question and would discard the field, don't pay for the
+    # query (see that function's docstring).
     has_labeled_parts: bool = False
 
 
@@ -159,11 +161,49 @@ async def get_last_finished_print(db: AsyncSession, printer_id: int) -> LastPrin
     archive = result.scalars().first()
     if archive is None:
         return None
+
+    # Deferred import: `floor_parts` imports this module for printer/archive
+    # resolution, so a module-level import here would be circular. Mirrors
+    # the deferred imports below for the maintenance overview and live MQTT
+    # status, for the same reason.
+    from backend.app.services.floor_parts import has_labeled_parts_for_archive
+
+    return _archive_summary(archive, has_labeled_parts=await has_labeled_parts_for_archive(db, archive.id))
+
+
+async def get_archive_summary(db: AsyncSession, archive_id: int) -> LastPrint | None:
+    """The summary fields for one specific archive, by id.
+
+    Distinct from :func:`get_last_finished_print`, which asks "what is this
+    printer's *latest* finished job right now". Phase 8 needs this instead
+    when it displays a plate that was bound earlier (closing a harvest plate,
+    or showing an already-labeled part's link): the archive that was bound at
+    scan time, not whatever happens to be latest by the time the response is
+    built. In practice these can never disagree while a harvest plate is open
+    (§5.4: a printer cannot finish a second job while `awaiting_plate_clear`
+    is true), but reaching for the specific row rather than re-deriving
+    "latest" keeps that true by construction instead of by the docs.
+
+    ``has_labeled_parts`` is left at its default (False) here rather than
+    queried: every phase 8 caller of this function already knows the part in
+    question (that is why it is asking), so the field would be discarded —
+    querying it anyway would cost a scan-time round trip for nothing on the
+    harvest screen's hot path.
+    """
+    result = await db.execute(select(PrintArchive).where(PrintArchive.id == archive_id))
+    archive = result.scalar_one_or_none()
+    if archive is None:
+        return None
+    return _archive_summary(archive)
+
+
+def _archive_summary(archive: PrintArchive, *, has_labeled_parts: bool = False) -> LastPrint:
     return LastPrint(
         archive_id=archive.id,
         print_name=archive.print_name or archive.filename,
         completed_at=archive.completed_at,
         quantity=archive.quantity or 1,
+        has_labeled_parts=has_labeled_parts,
     )
 
 
@@ -263,5 +303,6 @@ __all__ = [
     "get_printer",
     "list_printers_for_labels",
     "get_last_finished_print",
+    "get_archive_summary",
     "get_printer_info",
 ]

@@ -29,6 +29,7 @@ from __future__ import annotations
 
 import io
 from dataclasses import dataclass
+from typing import Literal
 
 from reportlab.lib.colors import HexColor, black
 from reportlab.lib.units import mm
@@ -66,6 +67,15 @@ class FloorStation:
     # work on separate machines is normal. Note this is *not* the same as
     # "one session per device" — that rule is universal and holds regardless.
     exclusive: bool = True
+    # Which Codes-page tab this station's printable label sits under (§3.3).
+    # Purely a presentation grouping — every station here is identical
+    # session-machinery-wise (open/close/switch, `exclusive`, scan dispatch
+    # keyed by slug) regardless of category. "station" covers the original
+    # workflow-mode benches (WIP/+Storage/Move/Harvest/Cleanup); "location"
+    # covers QC checkpoints a part passes through (Fit Check/Sanding) — an
+    # operator's mental model the label sheet should match, even though
+    # nothing in the backend actually treats the two groups differently.
+    category: Literal["station", "location"] = "station"
 
     @property
     def payload(self) -> str:
@@ -73,7 +83,7 @@ class FloorStation:
         return f"{STATION_PREFIX}{self.slug}"
 
 
-# The five stations from §5. Slugs match the payload examples in §4 verbatim.
+# The stations from §5. Slugs match the payload examples in §4 verbatim.
 FLOOR_STATIONS: tuple[FloorStation, ...] = (
     FloorStation(
         slug="wip",
@@ -94,6 +104,23 @@ FLOOR_STATIONS: tuple[FloorStation, ...] = (
         slug="harvest",
         name="Harvest",
         description="Label parts while clearing the bed.",
+    ),
+    FloorStation(
+        slug="fit-check",
+        name="Fit Check",
+        description="Mandatory checkpoint before Cleanup. Scan each part to record it as checked.",
+        # No floor-wide lock (§2.4/§5.4a): parallel fit-check benches are
+        # normal work, same reasoning as Cleanup below.
+        exclusive=False,
+        category="location",
+    ),
+    FloorStation(
+        slug="sanding",
+        name="Sanding",
+        description="Optional bench for parts that need surface work before Cleanup.",
+        # No floor-wide lock (§2.4/§5.4b), same reasoning as Fit Check.
+        exclusive=False,
+        category="location",
     ),
     FloorStation(
         slug="cleanup",
