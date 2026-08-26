@@ -107,9 +107,7 @@ class FloorPrintStopReason(Base):
     """A reason attached to a recently stopped printer run from the Floor UI."""
 
     __tablename__ = "floor_print_stop_reasons"
-    __table_args__ = (
-        Index("ix_floor_print_stop_reasons_printer_stopped", "printer_id", "stopped_at"),
-    )
+    __table_args__ = (Index("ix_floor_print_stop_reasons_printer_stopped", "printer_id", "stopped_at"),)
 
     id: Mapped[int] = mapped_column(primary_key=True)
     # Deliberately not a foreign key: print-log rows are independently

@@ -64,9 +64,7 @@ class TestFloorScanBackfill:
 
     @pytest.mark.asyncio
     @pytest.mark.integration
-    async def test_administrators_gain_floor_scan_without_a_dedicated_backfill(
-        self, async_client: AsyncClient
-    ):
+    async def test_administrators_gain_floor_scan_without_a_dedicated_backfill(self, async_client: AsyncClient):
         """Covered by the ALL_PERMISSIONS sync, not by the printers:control
         rule — so it holds even for an admin group with an odd permission set."""
         await seed_default_groups()
@@ -110,9 +108,7 @@ class TestFloorScanBackfill:
         await seed_default_groups()
 
         async with _database_module.async_session() as session:
-            grp = (
-                await session.execute(select(Group).where(Group.name == "Operators"))
-            ).scalar_one_or_none()
+            grp = (await session.execute(select(Group).where(Group.name == "Operators"))).scalar_one_or_none()
             assert grp is not None
             assert (grp.permissions or []).count("floor:scan") == 1
 

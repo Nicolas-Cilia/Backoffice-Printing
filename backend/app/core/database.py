@@ -1202,9 +1202,17 @@ async def run_migrations(conn):
     # Floor Part History: persist the canonical Production code resolved from
     # the source library file, so code searches do not rely on file names.
     await _safe_execute(conn, "ALTER TABLE floor_labeled_parts ADD COLUMN part_code VARCHAR(32)")
-    await _safe_execute(conn, "CREATE INDEX IF NOT EXISTS ix_floor_labeled_parts_part_code ON floor_labeled_parts(part_code)")
-    await _safe_execute(conn, "ALTER TABLE floor_labeled_parts ADD COLUMN section_part_id INTEGER REFERENCES library_section_parts(id) ON DELETE SET NULL")
-    await _safe_execute(conn, "CREATE INDEX IF NOT EXISTS ix_floor_labeled_parts_section_part_id ON floor_labeled_parts(section_part_id)")
+    await _safe_execute(
+        conn, "CREATE INDEX IF NOT EXISTS ix_floor_labeled_parts_part_code ON floor_labeled_parts(part_code)"
+    )
+    await _safe_execute(
+        conn,
+        "ALTER TABLE floor_labeled_parts ADD COLUMN section_part_id INTEGER REFERENCES library_section_parts(id) ON DELETE SET NULL",
+    )
+    await _safe_execute(
+        conn,
+        "CREATE INDEX IF NOT EXISTS ix_floor_labeled_parts_section_part_id ON floor_labeled_parts(section_part_id)",
+    )
 
     # Migration: Add parent_run_id column to pipeline_runs (#1425 PR C).
     # Links a retry-failed run back to its parent so the dashboard can show

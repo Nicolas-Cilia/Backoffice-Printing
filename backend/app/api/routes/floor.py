@@ -919,9 +919,7 @@ async def scan_part_route(
     outcome = await scan_part(db, body.device_id, body.payload, printer_id_hint=body.printer_id)
     await db.commit()
     presentation = (
-        await get_inventory_part_by_sticker(db, outcome.part.sticker_code)
-        if outcome.part is not None
-        else None
+        await get_inventory_part_by_sticker(db, outcome.part.sticker_code) if outcome.part is not None else None
     )
 
     logger.info(

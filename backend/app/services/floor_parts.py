@@ -162,15 +162,19 @@ async def _part_code_for_archive(db: AsyncSession, archive_id: int | None) -> st
     from backend.app.models.production import ProductionPart, ProductionPartInstance
 
     codes = (
-        await db.execute(
-            select(ProductionPart.code)
-            .join(ProductionPartInstance, ProductionPartInstance.part_id == ProductionPart.id)
-            .join(LibraryFile, LibraryFile.folder_id == ProductionPartInstance.folder_id)
-            .join(PrintArchive, PrintArchive.library_file_id == LibraryFile.id)
-            .where(PrintArchive.id == archive_id)
-            .distinct()
+        (
+            await db.execute(
+                select(ProductionPart.code)
+                .join(ProductionPartInstance, ProductionPartInstance.part_id == ProductionPart.id)
+                .join(LibraryFile, LibraryFile.folder_id == ProductionPartInstance.folder_id)
+                .join(PrintArchive, PrintArchive.library_file_id == LibraryFile.id)
+                .where(PrintArchive.id == archive_id)
+                .distinct()
+            )
         )
-    ).scalars().all()
+        .scalars()
+        .all()
+    )
     return codes[0] if len(codes) == 1 else None
 
 
@@ -247,13 +251,17 @@ async def _section_part_for_archive(db: AsyncSession, archive_id: int | None) ->
 async def backfill_missing_part_codes(db: AsyncSession) -> int:
     """Populate codes for existing linked stickers when their source maps cleanly."""
     parts = (
-        await db.execute(
-            select(FloorLabeledPart).where(
-                FloorLabeledPart.archive_id.is_not(None),
-                or_(FloorLabeledPart.part_code.is_(None), FloorLabeledPart.section_part_id.is_(None)),
+        (
+            await db.execute(
+                select(FloorLabeledPart).where(
+                    FloorLabeledPart.archive_id.is_not(None),
+                    or_(FloorLabeledPart.part_code.is_(None), FloorLabeledPart.section_part_id.is_(None)),
+                )
             )
         )
-    ).scalars().all()
+        .scalars()
+        .all()
+    )
     count = 0
     for part in parts:
         code, section_part_id = await _section_part_for_archive(db, part.archive_id)
@@ -503,7 +511,11 @@ async def scan_part(
     db.add(part)
     await db.flush()
     db.add(
-        FloorPartEvent(part_id=part.id, action="enrolled", details={"printer_id": printer_id, "archive_id": archive_id, "part_code": part_code})
+        FloorPartEvent(
+            part_id=part.id,
+            action="enrolled",
+            details={"printer_id": printer_id, "archive_id": archive_id, "part_code": part_code},
+        )
     )
     await db.flush()
 
@@ -572,9 +584,7 @@ async def _resolve_part_for_location(
     return LocationScanResult.RECORDED, part
 
 
-async def _part_is_at_location(
-    db: AsyncSession, part_id: int, action: str
-) -> bool:
+async def _part_is_at_location(db: AsyncSession, part_id: int, action: str) -> bool:
     metadata_actions = (
         "scanned",
         "archived",
@@ -606,7 +616,13 @@ async def _to_location_outcome(
         return LocationScanOutcome(result=result)
     printer = await get_printer(db, part.printer_id) if part.printer_id is not None else None
     archive = await get_archive_summary(db, part.archive_id) if part.archive_id is not None else None
-    return LocationScanOutcome(result=result, part=part, printer=printer, archive=archive, reason=reason)
+    return LocationScanOutcome(
+        result=result,
+        part=part,
+        printer=printer,
+        archive=archive,
+        reason=reason,
+    )
 
 
 async def scan_fit_check_part(db: AsyncSession, payload: str) -> LocationScanOutcome:
@@ -1380,8 +1396,9 @@ async def list_part_code_options(db: AsyncSession) -> list[PartCodeOption]:
 
     rows = (
         await db.execute(
-            select(LibrarySectionPart.code, LibrarySectionPart.name)
-            .order_by(LibrarySectionPart.code, LibrarySectionPart.id)
+            select(LibrarySectionPart.code, LibrarySectionPart.name).order_by(
+                LibrarySectionPart.code, LibrarySectionPart.id
+            )
         )
     ).all()
     seen: dict[str, str] = {}

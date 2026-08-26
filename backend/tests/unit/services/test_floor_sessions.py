@@ -201,9 +201,7 @@ class TestTakeover:
         await take_over(db_session, WIP, DEVICE_B)
         await db_session.commit()
 
-        result = await db_session.execute(
-            select(FloorStationSession).where(FloorStationSession.device_id == DEVICE_A)
-        )
+        result = await db_session.execute(select(FloorStationSession).where(FloorStationSession.device_id == DEVICE_A))
         assert result.scalar_one().closed_by_takeover is True
 
     @pytest.mark.asyncio

@@ -177,15 +177,11 @@ class TestCurrentSession:
     async def test_close_endpoint_is_idempotent(self, async_client: AsyncClient):
         await _scan(async_client, "BBS-wip", DEVICE_A)
 
-        resp = await async_client.request(
-            "DELETE", "/api/v1/floor/session", params={"device_id": DEVICE_A}
-        )
+        resp = await async_client.request("DELETE", "/api/v1/floor/session", params={"device_id": DEVICE_A})
         assert resp.status_code == 200
         assert resp.json()["station_slug"] == "wip"
 
-        resp = await async_client.request(
-            "DELETE", "/api/v1/floor/session", params={"device_id": DEVICE_A}
-        )
+        resp = await async_client.request("DELETE", "/api/v1/floor/session", params={"device_id": DEVICE_A})
         assert resp.status_code == 200
         assert resp.json() is None
 

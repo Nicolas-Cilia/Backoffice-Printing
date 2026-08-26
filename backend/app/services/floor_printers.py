@@ -216,9 +216,7 @@ async def get_recent_stopped_print(db: AsyncSession, printer_id: int) -> RecentS
     ):
         return None
 
-    recorded = await db.scalar(
-        select(FloorPrintStopReason).where(FloorPrintStopReason.print_log_id == entry.id)
-    )
+    recorded = await db.scalar(select(FloorPrintStopReason).where(FloorPrintStopReason.print_log_id == entry.id))
     return RecentStoppedPrint(
         print_log_id=entry.id,
         archive_id=entry.archive_id,

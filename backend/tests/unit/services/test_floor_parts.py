@@ -641,7 +641,9 @@ class TestFitCheckPartScan:
         assert outcome.part is None
 
     @pytest.mark.asyncio
-    async def test_commits_regardless_of_whatever_station_is_open_elsewhere(self, db_session, printer_factory, archive_factory):
+    async def test_commits_regardless_of_whatever_station_is_open_elsewhere(
+        self, db_session, printer_factory, archive_factory
+    ):
         """Not a station, so it is not gated on — or affected by — any real
         station session. WIP being open on some device must not block it."""
         printer = await printer_factory()
