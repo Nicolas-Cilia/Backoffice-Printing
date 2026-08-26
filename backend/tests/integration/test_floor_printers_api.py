@@ -157,6 +157,58 @@ class TestPrinterInfo:
         # Phase 8 fills this in; until then "nothing labeled" is correct.
         assert last["has_labeled_parts"] is False
 
+    async def test_exposes_and_records_a_recent_stopped_print_reason(
+        self, async_client, printer_factory, archive_factory
+    ):
+        printer = await printer_factory(name="Bench A")
+        await archive_factory(
+            printer_id=printer.id,
+            print_name="TOP bracket",
+            run_status="stopped",
+        )
+
+        before = await async_client.get(f"/api/v1/floor/printers/BBP-{printer.id}/info")
+        recent = before.json()["recent_stopped_print"]
+        assert recent["print_name"] == "TOP bracket"
+        assert recent["status"] == "stopped"
+        assert recent["reason_code"] is None
+
+        saved = await async_client.post(
+            f"/api/v1/floor/printers/{printer.id}/stopped-print/reason",
+            json={"reason_code": "warping"},
+        )
+
+        assert saved.status_code == 200
+        assert saved.json()["reason_code"] == "warping"
+        after = await async_client.get(f"/api/v1/floor/printers/BBP-{printer.id}/info")
+        assert after.json()["recent_stopped_print"]["reason_code"] == "warping"
+        log = await async_client.get("/api/v1/floor/inventory/print-failures")
+        assert log.json()[0]["printer_id"] == printer.id
+        assert log.json()[0]["reason_code"] == "warping"
+
+    async def test_requires_text_for_other_stopped_print_reason(
+        self, async_client, printer_factory, archive_factory
+    ):
+        printer = await printer_factory()
+        await archive_factory(printer_id=printer.id, run_status="cancelled")
+
+        response = await async_client.post(
+            f"/api/v1/floor/printers/{printer.id}/stopped-print/reason",
+            json={"reason_code": "other"},
+        )
+
+        assert response.status_code == 422
+
+    async def test_exposes_a_recent_failed_print_for_reason_logging(
+        self, async_client, printer_factory, archive_factory
+    ):
+        printer = await printer_factory()
+        await archive_factory(printer_id=printer.id, print_name="Bottom bracket", run_status="failed")
+
+        response = await async_client.get(f"/api/v1/floor/printers/BBP-{printer.id}/info")
+
+        assert response.json()["recent_stopped_print"]["status"] == "failed"
+
     async def test_picks_the_most_recently_completed_not_the_newest_row(
         self, async_client, printer_factory, archive_factory
     ):

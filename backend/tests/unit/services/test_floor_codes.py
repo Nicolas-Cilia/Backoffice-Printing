@@ -41,7 +41,6 @@ class TestStationCatalog:
             "BBS-harvest",
             "BBS-fit-check",
             "BBS-rework",
-            "BBS-cleanup",
         }
 
     def test_every_station_carries_the_station_prefix(self):
@@ -51,12 +50,12 @@ class TestStationCatalog:
         assert len({s.slug for s in FLOOR_STATIONS}) == len(FLOOR_STATIONS)
         assert len({s.name for s in FLOOR_STATIONS}) == len(FLOOR_STATIONS)
 
-    def test_the_seven_documented_stations_are_present(self):
-        assert len(FLOOR_STATIONS) == 7
+    def test_the_six_current_floor_codes_are_present(self):
+        assert len(FLOOR_STATIONS) == 6
 
     def test_fit_check_and_rework_carry_no_floor_wide_lock(self):
-        """Same reasoning as Cleanup (§2.4/§5.4a/§5.4b): parallel benches on
-        separate machines are normal work for both."""
+        """Parallel fit-check and rework benches on separate machines are
+        normal work for both."""
         by_slug = {s.slug: s for s in FLOOR_STATIONS}
         assert by_slug["fit-check"].exclusive is False
         assert by_slug["rework"].exclusive is False
@@ -66,7 +65,7 @@ class TestStationCatalog:
         Locations tab, everything else under Station labels."""
         by_slug = {s.slug: s for s in FLOOR_STATIONS}
         assert {s.slug for s in FLOOR_STATIONS if s.category == "location"} == {"fit-check", "rework"}
-        for slug in ("wip", "storage-receive", "storage-move", "harvest", "cleanup"):
+        for slug in ("wip", "storage-receive", "storage-move", "harvest"):
             assert by_slug[slug].category == "station"
 
 
@@ -123,7 +122,7 @@ class TestRenderCodeLabels:
     def test_renders_across_the_supported_size_range(self, width: float, height: float):
         """Layout is computed from the label's own dimensions, so every size
         in range must produce a real PDF rather than only the tuned one."""
-        pdf = render_code_labels([CodeLabel(payload="BBS-cleanup", title="Cleanup")], width_mm=width, height_mm=height)
+        pdf = render_code_labels([CodeLabel(payload="BBS-wip", title="WIP")], width_mm=width, height_mm=height)
         assert pdf.startswith(b"%PDF-")
         assert _page_count(pdf) == 1
 

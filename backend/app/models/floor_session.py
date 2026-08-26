@@ -13,14 +13,12 @@ business rules forbid:
    transaction.
 2. **One open session per station, floor-wide — for exclusive stations.**
    WIP, + Storage, Move and Harvest are each held by at most one device.
-   Cleanup is not exclusive, so several devices may hold it at once.
 
 ``exclusive`` is denormalized from the station catalog
 (``services/floor_codes.FloorStation.exclusive``) at open time. The catalog
 stays the single source of truth for *which* stations lock; this column
 exists so the constraint can be expressed as an index without hardcoding a
-slug like ``!= 'cleanup'`` into the schema, where it would silently drift
-from the catalog.
+station slug into the schema, where it would silently drift from the catalog.
 
 Later phases extend the session rather than replacing it: harvest (phase 8)
 binds a printer to the open session, and Move (phase 5) hangs its queued kg
@@ -41,7 +39,6 @@ class FloorStationSession(Base):
     __tablename__ = "floor_station_sessions"
     __table_args__ = (
         # Rule 2: one open session per exclusive station, floor-wide.
-        # Cleanup rows carry exclusive=False and so are exempt.
         Index(
             "uq_floor_session_open_station",
             "station_slug",
@@ -49,10 +46,9 @@ class FloorStationSession(Base):
             sqlite_where=text("closed_at IS NULL AND exclusive = 1"),
             postgresql_where=text("closed_at IS NULL AND exclusive"),
         ),
-        # Rule 1: one open session per device, every station including
-        # cleanup. This is what stops one machine holding two sessions —
-        # and therefore what stops two pistols on one screen from being
-        # treated as two independent benches (§5.5).
+        # Rule 1: one open session per device. This is what stops one machine
+        # holding two sessions — and therefore what stops two pistols on one
+        # screen from being treated as two independent benches.
         Index(
             "uq_floor_session_open_device",
             "device_id",

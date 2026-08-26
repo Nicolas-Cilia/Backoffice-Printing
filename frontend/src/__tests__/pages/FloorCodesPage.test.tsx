@@ -26,7 +26,7 @@ const STATIONS = [
     slug: 'fit-check',
     payload: 'BBS-fit-check',
     name: 'Fit Check',
-    description: 'Mandatory checkpoint before Cleanup.',
+    description: 'Mandatory first QC checkpoint.',
     category: 'location',
   },
   {

@@ -35,7 +35,7 @@ from __future__ import annotations
 
 from datetime import datetime
 
-from sqlalchemy import JSON, DateTime, ForeignKey, Index, String, func
+from sqlalchemy import JSON, DateTime, ForeignKey, Index, Integer, String, func
 from sqlalchemy.orm import Mapped, mapped_column
 
 from backend.app.core.database import Base
@@ -101,6 +101,28 @@ class FloorPartEvent(Base):
     action: Mapped[str] = mapped_column(String(32))
     details: Mapped[dict | None] = mapped_column(JSON, nullable=True)
     occurred_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
+
+
+class FloorPrintStopReason(Base):
+    """A reason attached to a recently stopped printer run from the Floor UI."""
+
+    __tablename__ = "floor_print_stop_reasons"
+    __table_args__ = (
+        Index("ix_floor_print_stop_reasons_printer_stopped", "printer_id", "stopped_at"),
+    )
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    # Deliberately not a foreign key: print-log rows are independently
+    # deletable, while this floor record should preserve the operator's reason.
+    print_log_id: Mapped[int] = mapped_column(Integer, unique=True, index=True)
+    printer_id: Mapped[int] = mapped_column(Integer, index=True)
+    archive_id: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    print_name: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    part_code: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    reason_code: Mapped[str] = mapped_column(String(64))
+    reason_text: Mapped[str | None] = mapped_column(String(500), nullable=True)
+    stopped_at: Mapped[datetime] = mapped_column(DateTime)
+    created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
 
 
 class FloorErrorLabel(Base):

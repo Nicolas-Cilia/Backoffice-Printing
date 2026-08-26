@@ -7,8 +7,8 @@
  * on every scan.
  *
  * **Dispatch is on (open station × prefix), never one-station-one-prefix.**
- * Harvest accepts `BBP-` then `BBD-`; cleanup accepts `BBD-`, `BBF-` and
- * `BBX-`. A station owning a single kind of code was never true, so the router
+ * Harvest accepts `BBP-` then `BBD-`; part/error flows are handled from idle
+ * through Fit Check, Rework, and Discard. A station owning a single kind of code was never true, so the router
  * is shaped for the general case from the start — later phases add handlers to
  * this table rather than restructuring it.
  *
@@ -141,7 +141,7 @@ export type ScanAction =
  *
  * `stationSlug` is the station currently open on this device, or null — the
  * "station" half of the (station × prefix) dispatch. A `BBD-` will mean "link
- * this part" under harvest and "look up this part" under cleanup; a `BBP-`
+ * this part" under harvest and "start the part flow" from idle; a `BBP-`
  * already means two different things depending on it.
  *
  * `viewingPrinterId` is the printer shown on the info page, if any — the only

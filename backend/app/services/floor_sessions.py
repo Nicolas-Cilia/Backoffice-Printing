@@ -6,7 +6,7 @@ Implements the two composing rules from ``docs/floor-plan.md`` §2.4:
    device's current session and opens the new one, atomically.
 2. **One open session per exclusive station, floor-wide** — a second device
    scanning WIP / + Storage / Move / Harvest is refused and told who holds
-   it. Cleanup is not exclusive and so is exempt.
+   it.
 
 Every outcome is returned as a :class:`ScanOutcome` rather than signalled by
 exception, because the caller has to *render* the difference: opened, closed,
@@ -82,9 +82,7 @@ async def get_open_session_for_device(db: AsyncSession, device_id: str) -> Floor
 async def get_open_session_for_station(db: AsyncSession, station_slug: str) -> FloorStationSession | None:
     """The session currently holding this station, if any.
 
-    Only meaningful for exclusive stations — cleanup may have several open at
-    once, in which case this returns an arbitrary one and callers should not
-    be asking.
+    Only meaningful for exclusive stations.
     """
     result = await db.execute(
         select(FloorStationSession)

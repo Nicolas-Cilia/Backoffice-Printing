@@ -23,12 +23,14 @@ from __future__ import annotations
 
 import logging
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import datetime, timedelta
 
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from backend.app.models.archive import PrintArchive
+from backend.app.models.floor_part import FloorPrintStopReason
+from backend.app.models.print_log import PrintLogEntry
 from backend.app.models.printer import Printer
 
 logger = logging.getLogger(__name__)
@@ -123,11 +125,229 @@ class PrinterInfo:
     # run, or removed. Distinct from `connected: False`, which means we know
     # about it and it is unreachable.
     live: LiveStatus | None
+    recent_stopped_print: RecentStoppedPrint | None
+
+
+@dataclass(frozen=True)
+class RecentStoppedPrint:
+    """The latest stopped or failed run still recent enough to classify."""
+
+    print_log_id: int
+    archive_id: int | None
+    print_name: str | None
+    part_code: str | None
+    status: str
+    stopped_at: datetime
+    reason_code: str | None = None
+    reason_text: str | None = None
+
+
+@dataclass(frozen=True)
+class FloorStopReasonRecord:
+    """One operator-classified stopped print for the Part history feed."""
+
+    id: int
+    printer_id: int
+    printer_name: str | None
+    archive_id: int | None
+    print_name: str | None
+    part_code: str | None
+    reason_code: str
+    reason_text: str | None
+    stopped_at: datetime
+
+
+FLOOR_STOP_REASON_CODES = (
+    "first_layer_issue",
+    "warping",
+    "layer_lines",
+    "filament_issue",
+    "other",
+)
+RECENT_STOP_LOOKBACK = timedelta(hours=6)
 
 
 async def get_printer(db: AsyncSession, printer_id: int) -> Printer | None:
     result = await db.execute(select(Printer).where(Printer.id == printer_id))
     return result.scalar_one_or_none()
+
+
+async def _floor_part_code_for_archive(db: AsyncSession, archive_id: int | None) -> str | None:
+    """Resolve a production code, falling back to an unambiguous title code."""
+    from backend.app.services.floor_parts import _part_code_for_archive, _section_part_for_archive
+
+    production_code = await _part_code_for_archive(db, archive_id)
+    if production_code is not None:
+        return production_code
+    section_code, _ = await _section_part_for_archive(db, archive_id)
+    return section_code
+
+
+async def get_recent_stopped_print(db: AsyncSession, printer_id: int) -> RecentStoppedPrint | None:
+    """Find a just-stopped or failed run that can still be classified at the printer."""
+    cutoff = datetime.now() - RECENT_STOP_LOOKBACK
+    result = await db.execute(
+        select(PrintLogEntry)
+        .where(
+            PrintLogEntry.printer_id == printer_id,
+            PrintLogEntry.status.in_(("stopped", "cancelled", "failed")),
+            PrintLogEntry.created_at >= cutoff,
+        )
+        .order_by(PrintLogEntry.created_at.desc(), PrintLogEntry.id.desc())
+        .limit(1)
+    )
+    entry = result.scalars().first()
+    if entry is None:
+        return None
+
+    # A newer print supersedes the stop prompt. The operator should only be
+    # asked to classify the most recent run, never an older failure after a
+    # new job has already started (or finished).
+    latest_result = await db.execute(
+        select(PrintLogEntry)
+        .where(PrintLogEntry.printer_id == printer_id)
+        .order_by(PrintLogEntry.created_at.desc(), PrintLogEntry.id.desc())
+        .limit(1)
+    )
+    latest_entry = latest_result.scalars().first()
+    if latest_entry is not None and (
+        latest_entry.created_at > entry.created_at
+        or (latest_entry.created_at == entry.created_at and latest_entry.id > entry.id)
+    ):
+        return None
+
+    recorded = await db.scalar(
+        select(FloorPrintStopReason).where(FloorPrintStopReason.print_log_id == entry.id)
+    )
+    return RecentStoppedPrint(
+        print_log_id=entry.id,
+        archive_id=entry.archive_id,
+        print_name=entry.print_name,
+        part_code=recorded.part_code if recorded else await _floor_part_code_for_archive(db, entry.archive_id),
+        status=entry.status,
+        stopped_at=entry.completed_at or entry.created_at,
+        reason_code=recorded.reason_code if recorded else None,
+        reason_text=recorded.reason_text if recorded else None,
+    )
+
+
+async def record_floor_stop_reason(
+    db: AsyncSession,
+    printer_id: int,
+    reason_code: str,
+    reason_text: str | None = None,
+) -> RecentStoppedPrint:
+    """Persist a classification for the printer's latest recent stoppage or failure."""
+    if reason_code not in FLOOR_STOP_REASON_CODES:
+        raise ValueError(f"Unknown floor stop reason: {reason_code!r}")
+    normalized_text = reason_text.strip() if reason_text and reason_text.strip() else None
+    if reason_code == "other" and not normalized_text:
+        raise ValueError("reason_text is required for the other floor stop reason")
+
+    recent = await get_recent_stopped_print(db, printer_id)
+    if recent is None:
+        raise LookupError("No recent stopped or failed print found for this printer")
+    if recent.reason_code is not None:
+        return recent
+
+    record = FloorPrintStopReason(
+        print_log_id=recent.print_log_id,
+        printer_id=printer_id,
+        archive_id=recent.archive_id,
+        print_name=recent.print_name,
+        part_code=await _floor_part_code_for_archive(db, recent.archive_id),
+        reason_code=reason_code,
+        reason_text=normalized_text,
+        stopped_at=recent.stopped_at,
+    )
+    db.add(record)
+    await db.flush()
+    return RecentStoppedPrint(
+        print_log_id=recent.print_log_id,
+        archive_id=recent.archive_id,
+        print_name=recent.print_name,
+        part_code=record.part_code,
+        status=recent.status,
+        stopped_at=recent.stopped_at,
+        reason_code=record.reason_code,
+        reason_text=record.reason_text,
+    )
+
+
+async def list_floor_stop_reasons(db: AsyncSession, limit: int = 20) -> list[FloorStopReasonRecord]:
+    """Newest operator-classified print failures for the Part history page."""
+    rows = (
+        await db.execute(
+            select(FloorPrintStopReason, Printer.name)
+            .outerjoin(Printer, Printer.id == FloorPrintStopReason.printer_id)
+            .order_by(FloorPrintStopReason.stopped_at.desc(), FloorPrintStopReason.id.desc())
+            .limit(limit)
+        )
+    ).all()
+    return [
+        FloorStopReasonRecord(
+            id=record.id,
+            printer_id=record.printer_id,
+            printer_name=printer_name,
+            archive_id=record.archive_id,
+            print_name=record.print_name,
+            part_code=record.part_code,
+            reason_code=record.reason_code,
+            reason_text=record.reason_text,
+            stopped_at=record.stopped_at,
+        )
+        for record, printer_name in rows
+    ]
+
+
+async def update_floor_stop_reason(
+    db: AsyncSession,
+    reason_id: int,
+    reason_code: str,
+    reason_text: str | None = None,
+) -> FloorStopReasonRecord | None:
+    """Update an operator-classified stop/failure reason from Part history."""
+    if reason_code not in FLOOR_STOP_REASON_CODES:
+        raise ValueError(f"Unknown floor stop reason: {reason_code!r}")
+    normalized_text = reason_text.strip() if reason_text and reason_text.strip() else None
+    if reason_code == "other" and not normalized_text:
+        raise ValueError("reason_text is required for the other floor stop reason")
+
+    record = await db.get(FloorPrintStopReason, reason_id)
+    if record is None:
+        return None
+    record.reason_code = reason_code
+    record.reason_text = normalized_text
+    await db.flush()
+    row = (
+        await db.execute(
+            select(FloorPrintStopReason, Printer.name)
+            .outerjoin(Printer, Printer.id == FloorPrintStopReason.printer_id)
+            .where(FloorPrintStopReason.id == reason_id)
+        )
+    ).one()
+    updated, printer_name = row
+    return FloorStopReasonRecord(
+        id=updated.id,
+        printer_id=updated.printer_id,
+        printer_name=printer_name,
+        archive_id=updated.archive_id,
+        print_name=updated.print_name,
+        part_code=updated.part_code,
+        reason_code=updated.reason_code,
+        reason_text=updated.reason_text,
+        stopped_at=updated.stopped_at,
+    )
+
+
+async def delete_floor_stop_reason(db: AsyncSession, reason_id: int) -> bool:
+    """Remove an operator-classified stop/failure reason."""
+    record = await db.get(FloorPrintStopReason, reason_id)
+    if record is None:
+        return False
+    await db.delete(record)
+    await db.flush()
+    return True
 
 
 async def list_printers_for_labels(db: AsyncSession) -> list[Printer]:
@@ -275,6 +495,11 @@ async def get_printer_info(db: AsyncSession, printer_id: int) -> PrinterInfo | N
         # maintenance overview failed to build.
         logger.warning("Maintenance overview failed for printer %s", printer_id, exc_info=True)
 
+    live = get_live_status(printer_id)
+    recent_stopped_print = await get_recent_stopped_print(db, printer_id)
+    if live is not None and live.state.upper() in {"RUNNING", "PREPARE", "SLICING"}:
+        recent_stopped_print = None
+
     return PrinterInfo(
         id=printer.id,
         name=printer.name,
@@ -288,7 +513,8 @@ async def get_printer_info(db: AsyncSession, printer_id: int) -> PrinterInfo | N
         last_print=await get_last_finished_print(db, printer_id),
         maintenance_due_count=due_count,
         maintenance_warning_count=warning_count,
-        live=get_live_status(printer_id),
+        live=live,
+        recent_stopped_print=recent_stopped_print,
     )
 
 
@@ -299,8 +525,16 @@ __all__ = [
     "LastPrint",
     "LiveStatus",
     "PrinterInfo",
+    "RecentStoppedPrint",
+    "FloorStopReasonRecord",
+    "FLOOR_STOP_REASON_CODES",
     "get_live_status",
     "get_printer",
+    "get_recent_stopped_print",
+    "record_floor_stop_reason",
+    "list_floor_stop_reasons",
+    "update_floor_stop_reason",
+    "delete_floor_stop_reason",
     "list_printers_for_labels",
     "get_last_finished_print",
     "get_archive_summary",

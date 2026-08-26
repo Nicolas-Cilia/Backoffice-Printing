@@ -4,7 +4,7 @@ These cover the two composing rules and their interaction, which is the part
 of phase 1b that is easy to get subtly wrong:
 
 1. one open session per device, and
-2. one open session per *exclusive* station, floor-wide (cleanup exempt).
+2. one open session per *exclusive* station, floor-wide.
 
 The database's partial unique indexes are the real guard, so a few tests
 assert against the DB rather than only the service return value — a service
@@ -35,7 +35,6 @@ DEVICE_B = "device-b"
 
 WIP = station_for_slug("wip")
 RECEIVE = station_for_slug("storage-receive")
-CLEANUP = station_for_slug("cleanup")
 
 
 async def _open_rows(db) -> list[FloorStationSession]:
@@ -173,46 +172,6 @@ class TestFloorWideLock:
 
         assert outcome.result is ScanResult.OPENED
         assert len(await _open_rows(db_session)) == 2
-
-
-class TestCleanupException:
-    @pytest.mark.asyncio
-    async def test_two_devices_may_hold_cleanup_at_once(self, db_session):
-        """§5.5: parallel cleanup on separate machines is ordinary work."""
-        await apply_station_scan(db_session, CLEANUP, DEVICE_A)
-        await db_session.commit()
-
-        outcome = await apply_station_scan(db_session, CLEANUP, DEVICE_B)
-        await db_session.commit()
-
-        assert outcome.result is ScanResult.OPENED
-        rows = await _open_rows(db_session)
-        assert {r.device_id for r in rows} == {DEVICE_A, DEVICE_B}
-
-    @pytest.mark.asyncio
-    async def test_one_device_still_cannot_hold_two_cleanup_sessions(self, db_session):
-        """Rule 1 is universal. This is what stops two pistols on one screen
-        being treated as two benches — the second scan closes the first
-        session rather than opening a parallel one."""
-        await apply_station_scan(db_session, CLEANUP, DEVICE_A)
-        await db_session.commit()
-
-        outcome = await apply_station_scan(db_session, CLEANUP, DEVICE_A)
-        await db_session.commit()
-
-        assert outcome.result is ScanResult.CLOSED
-        assert await _open_rows(db_session) == []
-
-    @pytest.mark.asyncio
-    async def test_cleanup_rows_are_marked_non_exclusive(self, db_session):
-        """The flag is denormalized from the catalog at open time; if it were
-        ever written wrong the partial index would silently start locking
-        cleanup."""
-        await apply_station_scan(db_session, CLEANUP, DEVICE_A)
-        await db_session.commit()
-
-        row = await get_open_session_for_device(db_session, DEVICE_A)
-        assert row.exclusive is False
 
 
 class TestTakeover:
@@ -370,7 +329,7 @@ class TestCloseAndQueries:
         first.opened_at = datetime.utcnow() - timedelta(hours=2)
         await db_session.commit()
 
-        await apply_station_scan(db_session, CLEANUP, DEVICE_B)
+        await apply_station_scan(db_session, RECEIVE, DEVICE_B)
         await db_session.commit()
 
         rows = await list_open_sessions(db_session)

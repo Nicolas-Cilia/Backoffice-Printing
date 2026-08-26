@@ -238,7 +238,7 @@ class TestPartScan:
     async def test_no_printer_when_a_different_stations_session_is_held(self, async_client):
         await async_client.post(
             "/api/v1/floor/session/scan",
-            json={"payload": "BBS-cleanup", "device_id": DEVICE_A},
+            json={"payload": "BBS-storage-receive", "device_id": DEVICE_A},
         )
 
         resp = await _scan_part(async_client, "BBD-000001", DEVICE_A)
@@ -312,8 +312,9 @@ class TestFitCheckPartScan:
         assert body["printer"] == {"id": printer.id, "name": "Bench A"}
         assert body["archive"]["id"] == archive.id
 
-    async def test_rescanning_an_already_checked_part_is_rejected(self, async_client, printer_factory):
+    async def test_rescanning_an_already_checked_part_is_rejected(self, async_client, printer_factory, archive_factory):
         printer = await printer_factory()
+        await archive_factory(printer_id=printer.id)
         await _harvest_one_part(async_client, printer.id, DEVICE_A)
         await _scan_fit_check_part(async_client, "BBD-000001")
 
@@ -328,16 +329,27 @@ class TestFitCheckPartScan:
         assert resp.status_code == 200
         assert resp.json()["result"] == "unknown_part"
 
+    async def test_unlinked_harvest_record_is_rejected(self, async_client, printer_factory):
+        printer = await printer_factory()
+        await _harvest_one_part(async_client, printer.id, DEVICE_A)
+
+        resp = await _scan_fit_check_part(async_client, "BBD-000001")
+
+        assert resp.status_code == 200
+        assert resp.json()["result"] == "unknown_part"
+        assert resp.json()["part"] is None
+
     async def test_invalid_code(self, async_client):
         resp = await _scan_fit_check_part(async_client, "not-a-code")
 
         assert resp.status_code == 200
         assert resp.json()["result"] == "invalid_code"
 
-    async def test_commits_with_no_station_open_anywhere(self, async_client, printer_factory):
+    async def test_commits_with_no_station_open_anywhere(self, async_client, printer_factory, archive_factory):
         """The common case: idle, no station open at all, just a part then
         a location."""
         printer = await printer_factory()
+        await archive_factory(printer_id=printer.id)
         await _harvest_one_part(async_client, printer.id, DEVICE_A)
         session = await async_client.get("/api/v1/floor/session", params={"device_id": DEVICE_A})
         assert session.json() is None  # confirms _harvest_one_part left nothing open
@@ -346,8 +358,9 @@ class TestFitCheckPartScan:
 
         assert resp.json()["result"] == "recorded"
 
-    async def test_event_appears_in_part_history(self, async_client, printer_factory):
+    async def test_event_appears_in_part_history(self, async_client, printer_factory, archive_factory):
         printer = await printer_factory()
+        await archive_factory(printer_id=printer.id)
         await _harvest_one_part(async_client, printer.id, DEVICE_A)
         scan_resp = await _scan_fit_check_part(async_client, "BBD-000001")
         part_id = scan_resp.json()["part"]["id"]
@@ -395,8 +408,9 @@ class TestReworkPartScan:
         assert last_event["action"] == "rework"
         assert last_event["details"] == {"reason_code": "doesnt_fit", "reason_text": None}
 
-    async def test_other_reason_carries_free_text(self, async_client, printer_factory):
+    async def test_other_reason_carries_free_text(self, async_client, printer_factory, archive_factory):
         printer = await printer_factory()
+        await archive_factory(printer_id=printer.id)
         await _harvest_one_part(async_client, printer.id, DEVICE_A)
 
         resp = await _scan_rework_part(async_client, "BBD-000001", "other", "warped corner")
