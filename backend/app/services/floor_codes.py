@@ -72,7 +72,7 @@ class FloorStation:
     # session-machinery-wise (open/close/switch, `exclusive`, scan dispatch
     # keyed by slug) regardless of category. "station" covers the original
     # workflow-mode benches (WIP/+Storage/Move/Harvest/Cleanup); "location"
-    # covers QC checkpoints a part passes through (Fit Check/Sanding) — an
+    # covers QC checkpoints a part passes through (Fit Check/Rework) — an
     # operator's mental model the label sheet should match, even though
     # nothing in the backend actually treats the two groups differently.
     category: Literal["station", "location"] = "station"
@@ -115,9 +115,9 @@ FLOOR_STATIONS: tuple[FloorStation, ...] = (
         category="location",
     ),
     FloorStation(
-        slug="sanding",
-        name="Sanding",
-        description="Optional bench for parts that need surface work before Cleanup.",
+        slug="rework",
+        name="Rework",
+        description="Optional shelf for parts that need rework before Cleanup.",
         # No floor-wide lock (§2.4/§5.4b), same reasoning as Fit Check.
         exclusive=False,
         category="location",
@@ -135,6 +135,9 @@ FLOOR_STATIONS: tuple[FloorStation, ...] = (
 
 _STATIONS_BY_PAYLOAD: dict[str, FloorStation] = {s.payload: s for s in FLOOR_STATIONS}
 _STATIONS_BY_SLUG: dict[str, FloorStation] = {s.slug: s for s in FLOOR_STATIONS}
+# Older printed labels remain valid after the name change. They resolve to
+# the canonical Rework location but are no longer offered for new printing.
+_STATIONS_BY_PAYLOAD[f"{STATION_PREFIX}sanding"] = _STATIONS_BY_SLUG["rework"]
 
 
 def station_for_payload(payload: str) -> FloorStation | None:

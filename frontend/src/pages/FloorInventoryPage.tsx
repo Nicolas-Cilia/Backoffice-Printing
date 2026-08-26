@@ -1,11 +1,13 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { useMutation, useQueries, useQuery, useQueryClient } from "@tanstack/react-query";
 import {
   Archive,
   ArchiveRestore,
   CheckCircle2,
+  ChevronDown,
   Clock3,
+  Hash,
   Link2,
   Loader2,
   Search,
@@ -20,6 +22,7 @@ import {
   api,
   type FloorInventoryPart,
   type FloorInventoryPartEvent,
+  type FloorPartCodeOption,
   type FloorPartJobCandidate,
   type JobSearchResult,
 } from "../api/client";
@@ -28,6 +31,14 @@ import { formatFloorDate } from "../utils/floorScan";
 
 type PartFilter = "all" | "attention" | "linked" | "archived";
 const EMPTY_PARTS: FloorInventoryPart[] = [];
+const NON_STATUS_EVENT_ACTIONS = new Set([
+  "scanned",
+  "archived",
+  "restored",
+  "part_code_assigned",
+  "part_code_changed",
+  "part_code_removed",
+]);
 
 function isAttention(part: FloorInventoryPart) {
   return !part.archived_at && part.archive_id === null;
@@ -68,7 +79,9 @@ export function FloorInventoryPage() {
       new Map(
         historyQueries.flatMap((query, index) => {
           const events = query.data;
-          const latestEvent = events?.at(-1);
+          const latestEvent = [...(events ?? [])]
+            .reverse()
+            .find((event) => !NON_STATUS_EVENT_ACTIONS.has(event.action));
           const part = activeRecords[index];
           return latestEvent && part
             ? [[part.id, latestEvent.action] as const]
@@ -84,7 +97,9 @@ export function FloorInventoryPage() {
     enabled: selectedId !== null,
   });
   useEffect(() => {
-    const latestEventAction = eventsQuery.data?.at(-1)?.action;
+    const latestEventAction = [...(eventsQuery.data ?? [])]
+      .reverse()
+      .find((event) => !NON_STATUS_EVENT_ACTIONS.has(event.action))?.action;
     if (selectedId === null || !latestEventAction) {
       return;
     }
@@ -109,6 +124,14 @@ export function FloorInventoryPage() {
       selectedId !== null &&
       selectedPart?.archive_id === null &&
       !selectedPart.archived_at,
+  });
+  const partCodeOptionsQuery = useQuery({
+    queryKey: ["floor-part-code-options"],
+    queryFn: () => api.getFloorPartCodeOptions(),
+    enabled:
+      selectedId !== null &&
+      !selectedPart?.archived_at,
+    staleTime: 60_000,
   });
   const refresh = () =>
     queryClient.invalidateQueries({ queryKey: ["floor-inventory-parts"] });
@@ -272,6 +295,47 @@ export function FloorInventoryPage() {
       });
     },
   });
+  const setPartCodeMutation = useMutation({
+    mutationFn: ({ id, code }: { id: number; code: string }) =>
+      api.setFloorInventoryPartCode(id, code),
+    onSuccess: async (updatedPart) => {
+      queryClient.setQueryData<FloorInventoryPart[]>(
+        ["floor-inventory-parts"],
+        (current) => {
+          if (!current) return [updatedPart];
+          const index = current.findIndex((part) => part.id === updatedPart.id);
+          if (index === -1) return [updatedPart, ...current];
+          const next = [...current];
+          next[index] = updatedPart;
+          return next;
+        },
+      );
+      showToast(
+        t(
+          "floor.inventorySetPartCodeSuccess",
+          "Part code set to {{code}}",
+          { code: updatedPart.part_code },
+        ),
+        "success",
+      );
+      await refresh();
+      queryClient.invalidateQueries({
+        queryKey: ["floor-inventory-part-events", updatedPart.id],
+      });
+    },
+  });
+  const clearPartCodeMutation = useMutation({
+    mutationFn: (id: number) => api.clearFloorInventoryPartCode(id),
+    onSuccess: async (updatedPart) => {
+      queryClient.setQueryData<FloorInventoryPart[]>(
+        ["floor-inventory-parts"],
+        (current) => current?.map((part) => part.id === updatedPart.id ? updatedPart : part) ?? [updatedPart],
+      );
+      showToast(t("floor.inventoryRemovePartCodeSuccess", "Part code removed"), "success");
+      await refresh();
+      queryClient.invalidateQueries({ queryKey: ["floor-inventory-part-events", updatedPart.id] });
+    },
+  });
   const counts = useMemo(
     () => ({
       active: records.filter(isLinked).length,
@@ -294,7 +358,7 @@ export function FloorInventoryPage() {
       return (
         included &&
         (!term ||
-          [part.sticker_code, part.print_name, part.printer_name].some(
+          [part.sticker_code, part.part_code, part.print_name, part.printer_name].some(
             (value) => value?.toLowerCase().includes(term),
           ))
       );
@@ -311,6 +375,7 @@ export function FloorInventoryPage() {
     relinkMutation.isError ||
     unlinkMutation.isError ||
     replaceStickerMutation.isError ||
+    setPartCodeMutation.isError ||
     deleteMutation.isError
       ? t("floor.inventorySaveError", "Could not save that change.")
       : null;
@@ -522,6 +587,7 @@ export function FloorInventoryPage() {
                         </span>
                       </td>
                       <td className="px-4 py-3 text-white">
+                        {part.part_code && <span className="mr-2 font-mono text-bambu-green-light">{part.part_code}</span>}
                         {part.print_name ?? (
                           <span className="text-bambu-gray">
                             {t("floor.inventoryNoJob", "No completed job")}
@@ -557,6 +623,10 @@ export function FloorInventoryPage() {
           unlinkPending={unlinkMutation.isPending}
           stickerPending={replaceStickerMutation.isPending}
           deletePending={deleteMutation.isPending}
+          codeOptions={partCodeOptionsQuery.data ?? []}
+          codeOptionsLoading={partCodeOptionsQuery.isLoading}
+          setCodePending={setPartCodeMutation.isPending}
+          clearCodePending={clearPartCodeMutation.isPending}
           saveError={saveError}
           onClose={() => setSelectedId(null)}
           onRelink={(archiveId) =>
@@ -580,6 +650,10 @@ export function FloorInventoryPage() {
               reasonText,
             })
           }
+          onSetPartCode={(code) =>
+            selectedPart && setPartCodeMutation.mutate({ id: selectedPart.id, code })
+          }
+          onClearPartCode={() => selectedPart && clearPartCodeMutation.mutate(selectedPart.id)}
           onDelete={() => selectedPart && deleteMutation.mutate(selectedPart.id)}
         />
       </div>
@@ -596,8 +670,10 @@ function statusLabel(
     ? t("floor.inventoryStatusArchived", "Archived")
     : latestEventAction === "fit_check" || latestEventAction === "fit_checked"
       ? t("floor.inventoryStatusFitCheckPass", "Fit Check Pass")
-    : latestEventAction === "sanding"
-      ? t("floor.inventoryStatusSanding", "Sanding")
+    : latestEventAction === "rework" || latestEventAction === "sanding"
+      ? t("floor.inventoryStatusRework", "Rework")
+    : latestEventAction === "discarded"
+      ? t("floor.inventoryStatusDiscarded", "Discarded")
     : latestEventAction === "cleanup" || latestEventAction === "cleaned_up"
       ? t("floor.inventoryStatusCleanupPass", "Cleanup Pass")
     : latestEventAction === "wip" || latestEventAction === "in_wip"
@@ -616,18 +692,20 @@ function statusClass(
   return part.archived_at
     ? "bg-bambu-dark-tertiary text-bambu-gray-light"
     : latestEventAction === "fit_check" || latestEventAction === "fit_checked"
-      ? "border border-green-400/50 bg-green-500/20 text-green-300 shadow-sm shadow-green-500/20"
-    : latestEventAction === "sanding"
-      ? "border border-orange-400/50 bg-orange-500/20 text-orange-300 shadow-sm shadow-orange-500/20"
+      ? "border border-green-600 bg-green-100 text-green-800 shadow-sm shadow-green-500/20 dark:border-green-400/50 dark:bg-green-500/20 dark:text-green-300"
+    : latestEventAction === "rework" || latestEventAction === "sanding"
+      ? "border border-orange-600 bg-orange-100 text-orange-800 shadow-sm shadow-orange-500/20 dark:border-orange-400/50 dark:bg-orange-500/20 dark:text-orange-300"
+    : latestEventAction === "discarded"
+      ? "border border-red-600 bg-red-100 text-red-800 shadow-sm shadow-red-500/20 dark:border-red-400/50 dark:bg-red-500/20 dark:text-red-300"
     : latestEventAction === "cleanup" || latestEventAction === "cleaned_up"
-      ? "border border-emerald-400/50 bg-emerald-500/20 text-emerald-300 shadow-sm shadow-emerald-500/20"
+      ? "border border-emerald-600 bg-emerald-100 text-emerald-800 shadow-sm shadow-emerald-500/20 dark:border-emerald-400/50 dark:bg-emerald-500/20 dark:text-emerald-300"
     : latestEventAction === "wip" || latestEventAction === "in_wip"
-      ? "border border-amber-400/50 bg-amber-500/20 text-amber-300 shadow-sm shadow-amber-500/20"
+      ? "border border-amber-600 bg-amber-100 text-amber-800 shadow-sm shadow-amber-500/20 dark:border-amber-400/50 dark:bg-amber-500/20 dark:text-amber-300"
     : latestEventAction === "shipped"
-      ? "border border-sky-400/50 bg-sky-500/20 text-sky-300 shadow-sm shadow-sky-500/20"
+      ? "border border-sky-600 bg-sky-100 text-sky-800 shadow-sm shadow-sky-500/20 dark:border-sky-400/50 dark:bg-sky-500/20 dark:text-sky-300"
     : part.archive_id === null
-      ? "bg-amber-500/15 text-amber-300 border border-amber-500/25"
-      : "bg-bambu-green/15 text-bambu-green-light border border-bambu-green/25";
+      ? "border border-amber-600 bg-amber-100 text-amber-800 dark:border-amber-500/25 dark:bg-amber-500/15 dark:text-amber-300"
+      : "border border-cyan-600 bg-cyan-100 text-cyan-800 dark:border-bambu-green/25 dark:bg-bambu-green/15 dark:text-bambu-green-light";
 }
 
 function eventLabel(
@@ -655,16 +733,33 @@ function eventLabel(
     case "fit_check":
     case "fit_checked":
       return t("floor.inventoryEventFitChecked", "Fit checked · Initial QC passed");
+    case "rework":
     case "sanding": {
       const reasonCode = event.details?.reason_code;
       const reasonText = event.details?.reason_text;
-      const reason =
-        typeof reasonCode === "string" && reasonCode !== "other"
-          ? reasonCode.replaceAll("_", " ")
-          : (typeof reasonText === "string" && reasonText) || null;
+      const errorName = event.details?.error_name;
+      const reasonLabel =
+        typeof errorName === "string" && errorName
+          ? errorName
+          : typeof reasonCode === "string" && reasonCode !== "other"
+            ? reasonCode.replaceAll("_", " ")
+            : null;
+      const description =
+        typeof reasonText === "string" && reasonText.trim()
+          ? compactEventReason(reasonText)
+          : null;
+      const reason = [reasonLabel, description].filter(Boolean).join(" · ") || null;
       return reason
-        ? t("floor.inventoryEventSandingWithReason", "Sent to Sanding · {{reason}}", { reason })
-        : t("floor.inventoryEventSanding", "Sent to Sanding");
+        ? t("floor.inventoryEventReworkWithReason", "Sent to Rework · {{reason}}", { reason })
+        : t("floor.inventoryEventRework", "Sent to Rework");
+    }
+    case "discarded": {
+      const errorName = typeof event.details?.error_name === "string" ? event.details.error_name : null;
+      const reasonText = typeof event.details?.reason_text === "string" ? event.details.reason_text : null;
+      const reason = [errorName, reasonText ? compactEventReason(reasonText) : null].filter(Boolean).join(" · ") || null;
+      return reason
+        ? t("floor.inventoryEventDiscardedWithReason", "Discarded · {{reason}}", { reason })
+        : t("floor.inventoryEventDiscarded", "Discarded");
     }
     case "cleanup":
     case "cleaned_up":
@@ -707,9 +802,37 @@ function eventLabel(
           )
         : t("floor.inventoryEventStickerReplaced", "Sticker replaced");
     }
+    case "part_code_assigned": {
+      const partCode = event.details?.part_code;
+      return typeof partCode === "string"
+        ? t(
+            "floor.inventoryEventPartCodeAssignedWithCode",
+            "Part code assigned · {{partCode}}",
+            { partCode },
+          )
+        : t("floor.inventoryEventPartCodeAssigned", "Part code assigned");
+    }
+    case "part_code_changed": {
+      const previousCode = event.details?.previous_code;
+      const partCode = event.details?.part_code;
+      return typeof previousCode === "string" && typeof partCode === "string"
+        ? t("floor.inventoryEventPartCodeChanged", "Part code changed · {{previousCode}} → {{partCode}}", { previousCode, partCode })
+        : t("floor.inventoryEventPartCodeChangedGeneric", "Part code changed");
+    }
+    case "part_code_removed": {
+      const previousCode = event.details?.previous_code;
+      return typeof previousCode === "string"
+        ? t("floor.inventoryEventPartCodeRemovedWithCode", "Part code removed · {{partCode}}", { partCode: previousCode })
+        : t("floor.inventoryEventPartCodeRemoved", "Part code removed");
+    }
     default:
       return event.action.replaceAll("_", " ");
   }
+}
+
+function compactEventReason(value: string) {
+  const compact = value.trim().replace(/\s+/g, " ");
+  return compact.length > 56 ? `${compact.slice(0, 53)}…` : compact;
 }
 
 /** Always includes enroll from the part row; merges API audit events on top. */
@@ -717,7 +840,9 @@ function buildPartTimeline(
   part: FloorInventoryPart,
   events: FloorInventoryPartEvent[],
 ): FloorInventoryPartEvent[] {
-  const extras = events.filter((event) => event.action !== "enrolled");
+  const extras = events.filter(
+    (event) => event.action !== "enrolled" && event.action !== "scanned",
+  );
   const enrolledFromApi = events.find((event) => event.action === "enrolled");
   const enrolled: FloorInventoryPartEvent = enrolledFromApi ?? {
     id: -part.id,
@@ -771,12 +896,18 @@ function PartDetail({
   unlinkPending,
   stickerPending,
   deletePending,
+  codeOptions,
+  codeOptionsLoading,
+  setCodePending,
+  clearCodePending,
   saveError,
   onClose,
   onRelink,
   onArchive,
   onUnlink,
   onReplaceSticker,
+  onSetPartCode,
+  onClearPartCode,
   onDelete,
 }: {
   part: FloorInventoryPart | null;
@@ -789,6 +920,10 @@ function PartDetail({
   unlinkPending: boolean;
   stickerPending: boolean;
   deletePending: boolean;
+  codeOptions: FloorPartCodeOption[];
+  codeOptionsLoading: boolean;
+  setCodePending: boolean;
+  clearCodePending: boolean;
   saveError: string | null;
   onClose: () => void;
   onRelink: (archiveId: number) => void;
@@ -799,6 +934,8 @@ function PartDetail({
     reasonCode: string,
     reasonText: string | null,
   ) => void;
+  onSetPartCode: (code: string) => void;
+  onClearPartCode: () => void;
   onDelete: () => void;
 }) {
   const { t } = useTranslation();
@@ -811,6 +948,11 @@ function PartDetail({
   const [stickerReasonCode, setStickerReasonCode] = useState("damaged");
   const [stickerReasonText, setStickerReasonText] = useState("");
   const [deleteOpen, setDeleteOpen] = useState(false);
+  const [clearCodeOpen, setClearCodeOpen] = useState(false);
+  const [partCodeSelection, setPartCodeSelection] = useState("");
+  const [partCodeEditing, setPartCodeEditing] = useState(false);
+  const historyScrollRef = useRef<HTMLDivElement>(null);
+  const [historyAtBottom, setHistoryAtBottom] = useState(true);
   useEffect(() => {
     setUnlinkOpen(false);
     setUnlinkReasonCode("wrong_job");
@@ -820,7 +962,18 @@ function PartDetail({
     setStickerReasonCode("damaged");
     setStickerReasonText("");
     setDeleteOpen(false);
+    setClearCodeOpen(false);
+    setPartCodeSelection("");
+    setPartCodeEditing(false);
+    setHistoryAtBottom(true);
   }, [part?.id]);
+  useEffect(() => {
+    const element = historyScrollRef.current;
+    if (!element) return;
+    setHistoryAtBottom(
+      element.scrollTop + element.clientHeight >= element.scrollHeight - 4,
+    );
+  }, [part?.id, events.length]);
   if (!part)
     return (
       <aside className="rounded-lg border border-dashed border-bambu-dark-tertiary p-6 text-center text-sm text-bambu-gray xl:sticky xl:top-6">
@@ -832,13 +985,15 @@ function PartDetail({
     );
   const needsMatching = isAttention(part);
   const timeline = buildPartTimeline(part, events);
-  const latestEventAction = timeline.at(-1)?.action ?? null;
+  const latestEventAction = [...timeline]
+    .reverse()
+    .find((event) => !NON_STATUS_EVENT_ACTIONS.has(event.action))?.action ?? null;
   return (
     <aside
-      className="rounded-lg border border-bambu-dark-tertiary bg-bambu-dark-secondary xl:sticky xl:top-6"
+      className="rounded-lg border border-bambu-dark-tertiary bg-bambu-dark-secondary xl:sticky xl:top-6 xl:flex xl:max-h-[calc(100vh-3rem)] xl:flex-col xl:overflow-hidden"
       aria-label={t("floor.inventoryDetailLabel", "Part detail")}
     >
-      <div className="flex items-start justify-between gap-3 border-b border-bambu-dark-tertiary p-4">
+      <div className="flex shrink-0 items-start justify-between gap-3 border-b border-bambu-dark-tertiary p-4">
         <div>
           <p className="text-xs uppercase tracking-wide text-bambu-gray">
             {t("floor.inventoryDetailEyebrow", "Part record")}
@@ -856,7 +1011,7 @@ function PartDetail({
           <X className="h-5 w-5" />
         </button>
       </div>
-      <div className="space-y-5 p-4">
+      <div className="flex min-h-0 flex-none flex-col gap-5 overflow-hidden p-4">
         <div className="flex items-center gap-2">
           <span
             className={`inline-flex rounded-full px-2 py-1 text-xs font-medium ${statusClass(part, latestEventAction)}`}
@@ -894,6 +1049,82 @@ function PartDetail({
             </dd>
           </div>
           <div className="col-span-2">
+            <dt className="text-bambu-gray">{t("floor.inventoryPartCode", "Part code")}</dt>
+            {part.archived_at ? (
+              <dd className="mt-0.5 font-mono text-white">{part.part_code ?? "—"}</dd>
+            ) : part.part_code && !partCodeEditing ? (
+              <dd className="mt-1.5 flex flex-wrap items-center gap-2">
+                <span className="font-mono text-white">{part.part_code}</span>
+                <Button
+                  size="sm"
+                  variant="secondary"
+                  onClick={() => setPartCodeEditing(true)}
+                >
+                  <Hash className="h-4 w-4" />
+                  {t("floor.inventoryChangePartCode", "Change")}
+                </Button>
+                <Button
+                  size="sm"
+                  variant="secondary"
+                  disabled={setCodePending || clearCodePending}
+                  onClick={() => setClearCodeOpen(true)}
+                >
+                  <X className="h-4 w-4" />
+                  {t("floor.inventoryRemovePartCode", "Remove code")}
+                </Button>
+              </dd>
+            ) : (
+              <dd className="mt-1.5 flex flex-wrap items-center gap-2">
+                <select
+                  aria-label={t("floor.inventoryAssignPartCodeLabel", "Assign part code")}
+                  value={partCodeSelection || part.part_code || ""}
+                  onChange={(event) => setPartCodeSelection(event.target.value)}
+                  disabled={codeOptionsLoading || setCodePending}
+                  className="min-w-0 flex-1 rounded-lg border border-bambu-dark-tertiary bg-bambu-dark px-2 py-1.5 text-sm text-white focus:border-bambu-green focus:outline-none disabled:opacity-50"
+                >
+                  <option value="">
+                    {codeOptionsLoading
+                      ? t("floor.inventoryPartCodeOptionsLoading", "Loading codes…")
+                      : t("floor.inventoryChoosePartCode", "Choose a part code")}
+                  </option>
+                  {codeOptions.map((option) => (
+                    <option key={option.code} value={option.code}>
+                      {option.code} — {option.name}
+                    </option>
+                  ))}
+                </select>
+                <Button
+                  size="sm"
+                  disabled={!partCodeSelection || setCodePending}
+                  onClick={() => {
+                    onSetPartCode(partCodeSelection);
+                    setPartCodeSelection("");
+                    setPartCodeEditing(false);
+                  }}
+                >
+                  {setCodePending ? (
+                    <Loader2 className="h-4 w-4 animate-spin" />
+                  ) : (
+                    <Hash className="h-4 w-4" />
+                  )}
+                  {part.part_code
+                    ? t("floor.inventoryChangePartCode", "Change")
+                    : t("floor.inventoryAssignPartCode", "Assign")}
+                </Button>
+                {part.part_code && (
+                  <Button
+                    size="sm"
+                    variant="secondary"
+                    disabled={setCodePending || clearCodePending}
+                    onClick={() => setPartCodeEditing(false)}
+                  >
+                    {t("floor.inventoryCancelPartCodeChange", "Cancel")}
+                  </Button>
+                )}
+              </dd>
+            )}
+          </div>
+          <div className="col-span-2">
             <dt className="text-bambu-gray">
               {t("floor.inventoryCompletedJob", "Completed job")}
             </dt>
@@ -913,40 +1144,68 @@ function PartDetail({
             onMatch={onRelink}
           />
         )}
-        <section>
+        <section className="flex min-h-0 flex-none flex-col">
           <div className="flex items-center gap-2">
             <Clock3 className="h-4 w-4 text-bambu-gray" />
             <h3 className="font-medium text-white">
               {t("floor.inventoryHistoryHeading", "History")}
             </h3>
           </div>
-          <ol className="mt-3 space-y-3 border-l border-bambu-dark-tertiary pl-4">
-            {timeline.map((event) => (
-              <li key={event.id} className="relative text-sm">
+          <div className="relative mt-3">
+            <div
+              ref={historyScrollRef}
+              className="max-h-56 overflow-y-auto pr-1"
+              onScroll={(event) => {
+                const element = event.currentTarget;
+                setHistoryAtBottom(
+                  element.scrollTop + element.clientHeight >= element.scrollHeight - 4,
+                );
+              }}
+            >
+              <div className="relative">
                 <span
-                  className={`absolute -left-[21px] top-1.5 h-2 w-2 rounded-full ${
-                    event.action === "enrolled" ||
-                    event.action === "relinked" ||
-                    event.action === "relinked_by_scan"
-                      ? "bg-bambu-green"
-                      : event.action === "fit_check" ||
-                          event.action === "fit_checked"
-                        ? "bg-green-500"
-                        : event.action === "sanding"
-                          ? "bg-orange-500"
-                      : "bg-bambu-gray"
-                  }`}
+                  aria-hidden="true"
+                  className="absolute bottom-2 left-1 top-2 w-px bg-bambu-dark-tertiary"
                 />
-                <p className="text-white">{eventLabel(event, t)}</p>
-                <p className="text-xs text-bambu-gray">
-                  {formatFloorDate(event.occurred_at, {
-                    dateStyle: "medium",
-                    timeStyle: "short",
-                  })}
-                </p>
-              </li>
-            ))}
-          </ol>
+                <ol className="space-y-3">
+                  {timeline.map((event) => (
+                    <li key={event.id} className="relative pl-7 text-sm">
+                      <span
+                        className={`absolute left-1 top-1.5 h-2 w-2 -translate-x-1/2 rounded-full ${
+                          event.action === "enrolled" ||
+                          event.action === "relinked" ||
+                          event.action === "relinked_by_scan"
+                            ? "bg-bambu-green"
+                            : event.action === "fit_check" ||
+                                event.action === "fit_checked"
+                              ? "bg-green-500"
+                              : event.action === "rework" || event.action === "sanding"
+                                ? "bg-orange-500"
+                              : event.action === "discarded"
+                                ? "bg-red-500"
+                            : "bg-bambu-gray"
+                        }`}
+                      />
+                      <p className="text-white">{eventLabel(event, t)}</p>
+                      <p className="text-xs text-bambu-gray">
+                        {formatFloorDate(event.occurred_at, {
+                          dateStyle: "medium",
+                          timeStyle: "short",
+                        })}
+                      </p>
+                    </li>
+                  ))}
+                </ol>
+              </div>
+            </div>
+            {timeline.length > 4 && !historyAtBottom && (
+              <div className="pointer-events-none absolute inset-x-0 bottom-0 flex h-10 items-end justify-center bg-gradient-to-t from-bambu-dark-secondary via-bambu-dark-secondary/80 to-transparent pb-1">
+                <span className="flex h-5 w-5 items-center justify-center rounded-full border border-gray-300 bg-white text-gray-700 shadow-md shadow-gray-400/40 dark:border-gray-500/70 dark:bg-bambu-dark-secondary dark:text-bambu-gray-light dark:shadow-black/70 dark:ring-1 dark:ring-white/5">
+                  <ChevronDown className="h-3.5 w-3.5" aria-hidden="true" />
+                </span>
+              </div>
+            )}
+          </div>
           {eventsLoadFailed && events.length === 0 && (
             <p className="mt-2 text-xs text-bambu-gray">
               {t(
@@ -961,7 +1220,8 @@ function PartDetail({
             {saveError}
           </p>
         )}
-        <div className="space-y-3 border-t border-bambu-dark-tertiary pt-4">
+      </div>
+      <div className="shrink-0 space-y-3 border-t border-bambu-dark-tertiary p-4">
           <div className="flex flex-wrap gap-2">
             {isLinked(part) && !unlinkOpen && (
               <Button
@@ -1049,7 +1309,6 @@ function PartDetail({
               }}
             />
           )}
-        </div>
       </div>
       {deleteOpen && (
         <ConfirmModal
@@ -1064,6 +1323,24 @@ function PartDetail({
           isLoading={deletePending}
           onCancel={() => setDeleteOpen(false)}
           onConfirm={onDelete}
+        />
+      )}
+      {clearCodeOpen && (
+        <ConfirmModal
+          title={t("floor.inventoryRemovePartCodeTitle", "Remove part code?")}
+          message={t(
+            "floor.inventoryRemovePartCodeConfirm",
+            "This removes the part-code association from {{code}} but keeps the part, job link, and history.",
+            { code: part.part_code },
+          )}
+          confirmText={t("floor.inventoryRemovePartCodeConfirmButton", "Remove code")}
+          variant="danger"
+          isLoading={clearCodePending}
+          onCancel={() => setClearCodeOpen(false)}
+          onConfirm={() => {
+            onClearPartCode();
+            setClearCodeOpen(false);
+          }}
         />
       )}
     </aside>

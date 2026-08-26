@@ -27,7 +27,7 @@ class TestListStations:
             "BBS-storage-move",
             "BBS-harvest",
             "BBS-fit-check",
-            "BBS-sanding",
+            "BBS-rework",
             "BBS-cleanup",
         ]
         # Order is the documented workflow order (§5), not alphabetical — the
@@ -37,7 +37,7 @@ class TestListStations:
 
         by_slug = {s["slug"]: s for s in stations}
         assert by_slug["fit-check"]["category"] == "location"
-        assert by_slug["sanding"]["category"] == "location"
+        assert by_slug["rework"]["category"] == "location"
         assert by_slug["wip"]["category"] == "station"
         assert by_slug["cleanup"]["category"] == "station"
 

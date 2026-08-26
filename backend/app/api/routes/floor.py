@@ -27,13 +27,17 @@ import logging
 from datetime import datetime, timezone
 
 from fastapi import APIRouter, Depends, HTTPException
-from fastapi.responses import StreamingResponse
+from fastapi.responses import FileResponse, StreamingResponse
 from pydantic import BaseModel, Field, model_validator
+from sqlalchemy import select
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from backend.app.core.auth import RequirePermissionIfAuthEnabled
+from backend.app.api.routes.library import to_absolute_path
+from backend.app.core.auth import RequireCameraStreamTokenIfAuthEnabled, RequirePermissionIfAuthEnabled
 from backend.app.core.database import get_db
 from backend.app.core.permissions import Permission
+from backend.app.models.floor_part import FloorErrorLabel
 from backend.app.models.floor_session import FloorStationSession
 from backend.app.models.printer import Printer
 from backend.app.models.user import User
@@ -54,13 +58,19 @@ from backend.app.services.floor_parts import (
     PartScanResult,
     ReplaceStickerReasonCode,
     ReplaceStickerResult,
+    SetPartCodeResult,
     UnlinkReasonCode,
     archive_part,
+    clear_part_code,
     delete_part,
+    discard_part,
     dismiss_build_plate,
+    find_part_code_thumbnail,
     get_harvest_summary,
+    get_inventory_part_by_sticker,
     list_inventory_parts,
     list_needs_attention,
+    list_part_code_options,
     list_part_events,
     list_part_job_candidates,
     list_unlabeled_build_plates,
@@ -69,8 +79,10 @@ from backend.app.services.floor_parts import (
     scan_fit_check_part,
     scan_harvest_printer,
     scan_part,
-    scan_sanding_part,
+    scan_rework_error,
+    scan_rework_part,
     search_completed_jobs,
+    set_part_code,
     unlink_part,
 )
 from backend.app.services.floor_printers import (
@@ -104,7 +116,7 @@ class FloorStationResponse(BaseModel):
     name: str
     description: str
     # "station" (WIP/+Storage/Move/Harvest/Cleanup) vs "location" (Fit
-    # Check/Sanding) — which Codes-page tab this label prints under (§3.3).
+    # Check/Rework) — which Codes-page tab this label prints under (§3.3).
     category: str
 
 
@@ -117,6 +129,61 @@ class StationLabelRequest(BaseModel):
     payloads: list[str] = Field(..., min_length=1, max_length=MAX_LABELS_PER_REQUEST)
     width_mm: float = Field(..., ge=MIN_LABEL_MM, le=MAX_LABEL_MM)
     height_mm: float = Field(..., ge=MIN_LABEL_MM, le=MAX_LABEL_MM)
+
+
+class ErrorLabelRequest(BaseModel):
+    name: str = Field(..., min_length=1, max_length=120)
+    slug: str = Field(..., min_length=1, max_length=64, pattern=r"^[a-z0-9]+(?:-[a-z0-9]+)*$")
+
+
+class ErrorLabelResponse(BaseModel):
+    id: int
+    name: str
+    slug: str
+    payload: str
+
+
+def _to_error_label_response(label: FloorErrorLabel) -> ErrorLabelResponse:
+    return ErrorLabelResponse(id=label.id, name=label.name, slug=label.slug, payload=f"BBF-{label.slug}")
+
+
+@router.get("/error-labels", response_model=list[ErrorLabelResponse])
+async def list_error_labels(
+    db: AsyncSession = Depends(get_db),
+    _: User | None = RequirePermissionIfAuthEnabled(Permission.FLOOR_SCAN),
+) -> list[ErrorLabelResponse]:
+    labels = (await db.execute(select(FloorErrorLabel).order_by(FloorErrorLabel.name))).scalars().all()
+    return [_to_error_label_response(label) for label in labels]
+
+
+@router.post("/error-labels", response_model=ErrorLabelResponse, status_code=201)
+async def create_error_label(
+    body: ErrorLabelRequest,
+    db: AsyncSession = Depends(get_db),
+    _: User | None = RequirePermissionIfAuthEnabled(Permission.FLOOR_SCAN),
+) -> ErrorLabelResponse:
+    label = FloorErrorLabel(name=body.name.strip(), slug=body.slug.strip().lower())
+    db.add(label)
+    try:
+        await db.commit()
+    except IntegrityError as exc:
+        await db.rollback()
+        raise HTTPException(409, "An error label with that name or code already exists") from exc
+    await db.refresh(label)
+    return _to_error_label_response(label)
+
+
+@router.delete("/error-labels/{label_id}", status_code=204)
+async def delete_error_label(
+    label_id: int,
+    db: AsyncSession = Depends(get_db),
+    _: User | None = RequirePermissionIfAuthEnabled(Permission.FLOOR_SCAN),
+) -> None:
+    label = await db.get(FloorErrorLabel, label_id)
+    if label is None:
+        raise HTTPException(404, "Error label not found")
+    await db.delete(label)
+    await db.commit()
 
 
 @router.get("/stations", response_model=list[FloorStationResponse])
@@ -178,6 +245,36 @@ async def render_station_labels(
             "Content-Disposition": build_content_disposition("bambuddy-station-labels.pdf", disposition="inline"),
             "Content-Length": str(len(pdf)),
             # Re-printing after a size change must not serve the old PDF.
+            "Cache-Control": "no-store",
+        },
+    )
+
+
+@router.post("/labels/errors")
+async def render_error_labels(
+    body: StationLabelRequest,
+    db: AsyncSession = Depends(get_db),
+    _: User | None = RequirePermissionIfAuthEnabled(Permission.FLOOR_SCAN),
+) -> StreamingResponse:
+    labels_by_payload = {
+        f"BBF-{label.slug}": CodeLabel(payload=f"BBF-{label.slug}", title=label.name)
+        for label in (await db.execute(select(FloorErrorLabel))).scalars()
+    }
+    labels_by_payload["BBX-discard"] = CodeLabel(payload="BBX-discard", title="Discard")
+    labels = [labels_by_payload[payload] for payload in body.payloads if payload in labels_by_payload]
+    unknown = [payload for payload in body.payloads if payload not in labels_by_payload]
+    if unknown:
+        raise HTTPException(400, f"Unknown error code(s): {', '.join(unknown)}")
+    try:
+        pdf = render_code_labels(labels, width_mm=body.width_mm, height_mm=body.height_mm)
+    except ValueError as exc:
+        raise HTTPException(400, str(exc)) from exc
+    return StreamingResponse(
+        io.BytesIO(pdf),
+        media_type="application/pdf",
+        headers={
+            "Content-Disposition": build_content_disposition("bambuddy-error-labels.pdf", disposition="inline"),
+            "Content-Length": str(len(pdf)),
             "Cache-Control": "no-store",
         },
     )
@@ -289,7 +386,7 @@ async def scan_station(
     distinguishable from a *locked* station, which is a 200 with
     `result: locked`.
 
-    `category == "location"` entries (Fit Check, Sanding — §5.4a/§5.4b) are
+    `category == "location"` entries (Fit Check, Rework — §5.4a/§5.4b) are
     printed and resolved through this same catalog, but they are not
     sessions: nothing opens or closes for them, so this route refuses them
     the same as an unrecognized code. The scan-part-then-location flow that
@@ -637,6 +734,10 @@ class LabeledPartResponse(BaseModel):
     sticker_code: str
     printer_id: int | None
     archive_id: int | None
+    part_code: str | None
+    section_part_id: int | None
+    part_name: str | None = None
+    part_source: str | None = None
     labeled_at: datetime
 
 
@@ -745,6 +846,11 @@ async def scan_part_route(
     """
     outcome = await scan_part(db, body.device_id, body.payload, printer_id_hint=body.printer_id)
     await db.commit()
+    presentation = (
+        await get_inventory_part_by_sticker(db, outcome.part.sticker_code)
+        if outcome.part is not None
+        else None
+    )
 
     logger.info(
         "Part scan: device=%s payload=%s result=%s",
@@ -761,6 +867,10 @@ async def scan_part_route(
                 sticker_code=outcome.part.sticker_code,
                 printer_id=outcome.part.printer_id,
                 archive_id=outcome.part.archive_id,
+                part_code=outcome.part.part_code,
+                section_part_id=outcome.part.section_part_id,
+                part_name=presentation.part_name if presentation else None,
+                part_source=presentation.part_source if presentation else None,
                 labeled_at=outcome.part.labeled_at,
             )
             if outcome.part
@@ -774,22 +884,60 @@ async def scan_part_route(
     )
 
 
-# ── Fit Check and Sanding (phase 9a/9b, §5.4a/§5.4b) ────────────────────────
+@router.get("/parts/thumbnail/{code}")
+async def get_part_code_thumbnail(
+    code: str,
+    section_part_id: int | None = None,
+    db: AsyncSession = Depends(get_db),
+    _: None = RequireCameraStreamTokenIfAuthEnabled,
+):
+    """Serve the 3MF cover image registered for a Production part code, if
+    Files has one on file for it (§7). 404 whether the code is unknown or
+    just has no thumbnail — the scan page treats both as "nothing to show",
+    not an error."""
+    thumbnail_path = await find_part_code_thumbnail(db, code, section_part_id)
+    abs_thumb_path = to_absolute_path(thumbnail_path)
+    if abs_thumb_path is None or not abs_thumb_path.is_file():
+        raise HTTPException(status_code=404, detail="Thumbnail not found")
+    return FileResponse(
+        str(abs_thumb_path),
+        media_type="image/png",
+        headers={"Cache-Control": "no-cache, no-store, must-revalidate"},
+    )
+
+
+class PartCodeOptionResponse(BaseModel):
+    code: str
+    name: str
+
+
+@router.get("/parts/codes", response_model=list[PartCodeOptionResponse])
+async def list_floor_part_codes(
+    db: AsyncSession = Depends(get_db),
+    _: User | None = RequirePermissionIfAuthEnabled(Permission.FLOOR_SCAN),
+) -> list[PartCodeOptionResponse]:
+    """The Production catalog (§7), for Part history's "assign a part code"
+    picker on a part harvest couldn't resolve one for."""
+    return [PartCodeOptionResponse(code=o.code, name=o.name) for o in await list_part_code_options(db)]
+
+
+# ── Fit Check and Rework (phase 9a/9b, §5.4a/§5.4b) ───────────────────────
 #
 # Neither is a station (see `scan_station`'s docstring above) — no session,
 # no device/floor-wide state on this side either. Each route below is a pure
 # commit: the scan page tracks which part is "pending" a location, or which
-# part is pending a Sanding reason, entirely in its own local state, and
+# part is pending a Rework reason, entirely in its own local state, and
 # only calls these once it already has everything a write needs.
 
 
 class LocationPartScanResponse(BaseModel):
-    """What a scan-part-then-location commit did (Fit Check or Sanding)."""
+    """What a scan-part-then-location commit did (Fit Check or Rework)."""
 
     result: LocationScanResult
     part: LabeledPartResponse | None = None
     printer: PlatePrinterResponse | None = None
     archive: PlateArchiveResponse | None = None
+    reason: str | None = None
 
 
 def _to_location_response(outcome: LocationScanOutcome) -> LocationPartScanResponse:
@@ -801,6 +949,8 @@ def _to_location_response(outcome: LocationScanOutcome) -> LocationPartScanRespo
                 sticker_code=outcome.part.sticker_code,
                 printer_id=outcome.part.printer_id,
                 archive_id=outcome.part.archive_id,
+                part_code=outcome.part.part_code,
+                section_part_id=outcome.part.section_part_id,
                 labeled_at=outcome.part.labeled_at,
             )
             if outcome.part
@@ -808,6 +958,7 @@ def _to_location_response(outcome: LocationScanOutcome) -> LocationPartScanRespo
         ),
         printer=_to_plate_printer(outcome.printer),
         archive=_to_plate_archive(outcome.archive),
+        reason=outcome.reason,
     )
 
 
@@ -832,9 +983,9 @@ async def scan_fit_check_part_route(
     return _to_location_response(outcome)
 
 
-class SandingScanRequest(BaseModel):
-    """The pending part plus the reason scan that completes Sanding's flow
-    (§5.4b) — the Sanding *location* scan itself is a pure UI transition on
+class ReworkScanRequest(BaseModel):
+    """The pending part plus the reason scan that completes Rework's flow
+    (§5.4b) — the Rework *location* scan itself is a pure UI transition on
     the scan page and never reaches the backend on its own."""
 
     payload: str = Field(..., min_length=1, max_length=256)
@@ -842,18 +993,47 @@ class SandingScanRequest(BaseModel):
     reason_text: str | None = Field(default=None, max_length=500)
 
 
-@router.post("/locations/sanding/part", response_model=LocationPartScanResponse)
-async def scan_sanding_part_route(
-    body: SandingScanRequest,
+class ErrorPartScanRequest(BaseModel):
+    payload: str = Field(..., min_length=1, max_length=256)
+    error_payload: str = Field(..., min_length=5, max_length=80)
+    reason_text: str | None = Field(default=None, max_length=120)
+
+
+@router.post("/locations/sanding/part", response_model=LocationPartScanResponse, deprecated=True)
+@router.post("/locations/rework/part", response_model=LocationPartScanResponse)
+async def scan_rework_part_route(
+    body: ReworkScanRequest,
     db: AsyncSession = Depends(get_db),
     _: User | None = RequirePermissionIfAuthEnabled(Permission.FLOOR_SCAN),
 ) -> LocationPartScanResponse:
-    """Commit "this part is at Sanding, because …" (§5.4b) — the third scan
-    of its flow (part, Sanding location, reason); this is the only point at
+    """Commit "this part is at Rework, because …" (§5.4b) — the third scan
+    of its flow (part, Rework location, reason); this is the only point at
     which anything is written."""
-    outcome = await scan_sanding_part(db, body.payload, body.reason_code, body.reason_text)
+    outcome = await scan_rework_part(db, body.payload, body.reason_code, body.reason_text)
     await db.commit()
-    logger.info("Sanding: payload=%s reason=%s result=%s", body.payload, body.reason_code, outcome.result)
+    logger.info("Rework: payload=%s reason=%s result=%s", body.payload, body.reason_code, outcome.result)
+    return _to_location_response(outcome)
+
+
+@router.post("/locations/rework/error", response_model=LocationPartScanResponse)
+async def scan_rework_error_route(
+    body: ErrorPartScanRequest,
+    db: AsyncSession = Depends(get_db),
+    _: User | None = RequirePermissionIfAuthEnabled(Permission.FLOOR_SCAN),
+) -> LocationPartScanResponse:
+    outcome = await scan_rework_error(db, body.payload, body.error_payload, body.reason_text)
+    await db.commit()
+    return _to_location_response(outcome)
+
+
+@router.post("/parts/discard", response_model=LocationPartScanResponse)
+async def discard_part_route(
+    body: ErrorPartScanRequest,
+    db: AsyncSession = Depends(get_db),
+    _: User | None = RequirePermissionIfAuthEnabled(Permission.FLOOR_SCAN),
+) -> LocationPartScanResponse:
+    outcome = await discard_part(db, body.payload, body.error_payload, body.reason_text)
+    await db.commit()
     return _to_location_response(outcome)
 
 
@@ -901,6 +1081,10 @@ class InventoryPartResponse(BaseModel):
     printer_id: int | None
     printer_name: str | None
     archive_id: int | None
+    part_code: str | None
+    section_part_id: int | None
+    part_name: str | None = None
+    part_source: str | None = None
     print_name: str | None
     labeled_at: datetime
     archived_at: datetime | None
@@ -976,6 +1160,18 @@ async def get_inventory_parts(
         InventoryPartResponse(**part.__dict__)
         for part in await list_inventory_parts(db, include_archived=include_archived)
     ]
+
+
+@router.get("/inventory/parts/by-sticker/{sticker_code}", response_model=InventoryPartResponse)
+async def get_inventory_part_by_sticker_route(
+    sticker_code: str,
+    db: AsyncSession = Depends(get_db),
+    _: User | None = RequirePermissionIfAuthEnabled(Permission.FLOOR_SCAN),
+) -> InventoryPartResponse:
+    part = await get_inventory_part_by_sticker(db, sticker_code)
+    if part is None:
+        raise HTTPException(404, "Part not found")
+    return InventoryPartResponse(**part.__dict__)
 
 
 @router.post("/inventory/parts/{part_id}/archive", response_model=InventoryPartResponse)
@@ -1093,6 +1289,48 @@ async def replace_inventory_part_sticker(
         raise HTTPException(400, "New sticker code is invalid or unchanged")
     if outcome.result is ReplaceStickerResult.CODE_IN_USE:
         raise HTTPException(409, "New sticker code is already in use")
+    await db.commit()
+    rows = await list_inventory_parts(db, include_archived=True)
+    return next(InventoryPartResponse(**row.__dict__) for row in rows if row.id == part_id)
+
+
+class SetPartCodeRequest(BaseModel):
+    code: str = Field(..., min_length=1, max_length=32)
+
+
+@router.post("/inventory/parts/{part_id}/part-code", response_model=InventoryPartResponse)
+async def set_inventory_part_code(
+    part_id: int,
+    body: SetPartCodeRequest,
+    db: AsyncSession = Depends(get_db),
+    _: User | None = RequirePermissionIfAuthEnabled(Permission.FLOOR_SCAN),
+) -> InventoryPartResponse:
+    """Assign a Production part code to a part harvest couldn't resolve one
+    for (§7) — only fills a gap; an already-set code must stay as recorded
+    at harvest, so this refuses rather than overwrites."""
+    outcome = await set_part_code(db, part_id, body.code)
+    if outcome.result is SetPartCodeResult.NOT_FOUND:
+        raise HTTPException(404, "Part not found")
+    if outcome.result is SetPartCodeResult.ARCHIVED:
+        raise HTTPException(400, "Part is archived")
+    if outcome.result is SetPartCodeResult.ALREADY_SET:
+        raise HTTPException(400, "Part already has a part code")
+    if outcome.result is SetPartCodeResult.UNKNOWN_CODE:
+        raise HTTPException(400, "Unknown part code")
+    await db.commit()
+    rows = await list_inventory_parts(db, include_archived=True)
+    return next(InventoryPartResponse(**row.__dict__) for row in rows if row.id == part_id)
+
+
+@router.delete("/inventory/parts/{part_id}/part-code", response_model=InventoryPartResponse)
+async def clear_inventory_part_code(
+    part_id: int,
+    db: AsyncSession = Depends(get_db),
+    _: User | None = RequirePermissionIfAuthEnabled(Permission.FLOOR_SCAN),
+) -> InventoryPartResponse:
+    part = await clear_part_code(db, part_id)
+    if part is None:
+        raise HTTPException(404, "Part not found or archived")
     await db.commit()
     rows = await list_inventory_parts(db, include_archived=True)
     return next(InventoryPartResponse(**row.__dict__) for row in rows if row.id == part_id)

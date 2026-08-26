@@ -262,6 +262,8 @@ async def init_db():
         filament,
         filament_sku_settings,
         filament_tracking,
+        floor_part,
+        floor_session,
         github_backup,
         group,
         kprofile_note,
@@ -301,8 +303,6 @@ async def init_db():
         user_otp_code,
         user_totp,
         virtual_printer,
-        floor_part,
-        floor_session,
     )
 
     async with engine.begin() as conn:
@@ -329,6 +329,8 @@ async def init_db():
     await seed_color_catalog()
 
     await _backfill_floor_part_events()
+    await _backfill_floor_part_codes()
+    await _seed_floor_error_labels()
 
     await check_pool_fits_server()
 
@@ -342,6 +344,30 @@ async def _backfill_floor_part_events() -> None:
         if count:
             await db.commit()
             logger.info("Backfilled %d floor part enrolled event(s)", count)
+
+
+async def _backfill_floor_part_codes() -> None:
+    from backend.app.services.floor_parts import backfill_missing_part_codes
+
+    async with async_session() as db:
+        count = await backfill_missing_part_codes(db)
+        if count:
+            await db.commit()
+            logger.info("Backfilled %d floor part code(s)", count)
+
+
+async def _seed_floor_error_labels() -> None:
+    """Install the starter labels once; users can subsequently manage them."""
+    from sqlalchemy import select
+
+    from backend.app.models.floor_part import FloorErrorLabel
+
+    defaults = (("horizontal-line", "Horizontal line"), ("vertical-line", "Vertical line"), ("other", "Other"))
+    async with async_session() as db:
+        existing = set((await db.execute(select(FloorErrorLabel.slug))).scalars())
+        db.add_all(FloorErrorLabel(slug=slug, name=name) for slug, name in defaults if slug not in existing)
+        if {slug for slug, _ in defaults} - existing:
+            await db.commit()
 
 
 async def check_pool_fits_server() -> None:
@@ -1172,6 +1198,13 @@ async def run_migrations(conn):
     swallowed.
     """
     from sqlalchemy import text
+
+    # Floor Part History: persist the canonical Production code resolved from
+    # the source library file, so code searches do not rely on file names.
+    await _safe_execute(conn, "ALTER TABLE floor_labeled_parts ADD COLUMN part_code VARCHAR(32)")
+    await _safe_execute(conn, "CREATE INDEX IF NOT EXISTS ix_floor_labeled_parts_part_code ON floor_labeled_parts(part_code)")
+    await _safe_execute(conn, "ALTER TABLE floor_labeled_parts ADD COLUMN section_part_id INTEGER REFERENCES library_section_parts(id) ON DELETE SET NULL")
+    await _safe_execute(conn, "CREATE INDEX IF NOT EXISTS ix_floor_labeled_parts_section_part_id ON floor_labeled_parts(section_part_id)")
 
     # Migration: Add parent_run_id column to pipeline_runs (#1425 PR C).
     # Links a retry-failed run back to its parent so the dashboard can show

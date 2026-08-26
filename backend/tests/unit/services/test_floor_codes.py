@@ -40,7 +40,7 @@ class TestStationCatalog:
             "BBS-storage-move",
             "BBS-harvest",
             "BBS-fit-check",
-            "BBS-sanding",
+            "BBS-rework",
             "BBS-cleanup",
         }
 
@@ -54,18 +54,18 @@ class TestStationCatalog:
     def test_the_seven_documented_stations_are_present(self):
         assert len(FLOOR_STATIONS) == 7
 
-    def test_fit_check_and_sanding_carry_no_floor_wide_lock(self):
+    def test_fit_check_and_rework_carry_no_floor_wide_lock(self):
         """Same reasoning as Cleanup (§2.4/§5.4a/§5.4b): parallel benches on
         separate machines are normal work for both."""
         by_slug = {s.slug: s for s in FLOOR_STATIONS}
         assert by_slug["fit-check"].exclusive is False
-        assert by_slug["sanding"].exclusive is False
+        assert by_slug["rework"].exclusive is False
 
     def test_category_splits_locations_from_stations(self):
-        """§3.3: Fit Check and Sanding print under the Codes page's
+        """§3.3: Fit Check and Rework print under the Codes page's
         Locations tab, everything else under Station labels."""
         by_slug = {s.slug: s for s in FLOOR_STATIONS}
-        assert {s.slug for s in FLOOR_STATIONS if s.category == "location"} == {"fit-check", "sanding"}
+        assert {s.slug for s in FLOOR_STATIONS if s.category == "location"} == {"fit-check", "rework"}
         for slug in ("wip", "storage-receive", "storage-move", "harvest", "cleanup"):
             assert by_slug[slug].category == "station"
 

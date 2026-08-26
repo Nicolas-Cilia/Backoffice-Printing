@@ -15,12 +15,13 @@
  * same `payload` string the backend resolves on a scan.
  */
 import { useEffect, useMemo, useState } from 'react';
-import { useQuery } from '@tanstack/react-query';
+import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { useTranslation } from 'react-i18next';
 import { QRCodeSVG } from 'qrcode.react';
-import { Loader2, Printer, QrCode } from 'lucide-react';
+import { Loader2, Printer, QrCode, Trash2 } from 'lucide-react';
 import { api } from '../api/client';
 import { Button } from '../components/Button';
+import { ConfirmModal } from '../components/ConfirmModal';
 import { useToast } from '../contexts/ToastContext';
 import { openBlobInNewTab } from '../utils/file';
 
@@ -63,17 +64,28 @@ function isValidDimension(value: number): boolean {
   return Number.isFinite(value) && value >= MIN_LABEL_MM && value <= MAX_LABEL_MM;
 }
 
+/** Matches the API's slug rule: lowercase words separated by single hyphens. */
+function normalizeErrorSlug(value: string): string {
+  return value
+    .toLowerCase()
+    .replace(/\s+/g, '-')
+    .replace(/[^a-z0-9-]/g, '')
+    .replace(/-+/g, '-')
+    .replace(/^-+/, '');
+}
+
 /** Which label family is being printed. Errors land in phase 9c.
  *  `locations` is a display-only split of the same station catalog as
- *  `stations` (§5.4a/§5.4b's `category` field) — Fit Check and Sanding are
+ *  `stations` (§5.4a/§5.4b's `category` field) — Fit Check and Rework are
  *  QC checkpoints a part passes through, not workflow-mode benches, so they
  *  get their own tab even though they're printed and resolved exactly like
  *  any other `BBS-` code. */
-type CodesTab = 'stations' | 'locations' | 'printers';
+type CodesTab = 'stations' | 'locations' | 'printers' | 'errors';
 
 export function FloorCodesPage() {
   const { t } = useTranslation();
   const { showToast } = useToast();
+  const queryClient = useQueryClient();
 
   const [tab, setTab] = useState<CodesTab>('stations');
 
@@ -88,6 +100,16 @@ export function FloorCodesPage() {
     // labels has no reason to pull the printer list.
     enabled: tab === 'printers',
   });
+  const errorsQuery = useQuery({
+    queryKey: ['floor-error-labels'],
+    queryFn: () => api.getFloorErrorLabels(),
+    enabled: tab === 'errors',
+  });
+  const [errorName, setErrorName] = useState('');
+  const [errorSlug, setErrorSlug] = useState('');
+  const [errorSlugFocused, setErrorSlugFocused] = useState(false);
+  const [deleteTarget, setDeleteTarget] = useState<{ id: number; name: string } | null>(null);
+  const [deletePending, setDeletePending] = useState(false);
 
   const stations = useMemo(
     () => (stationsQuery.data ?? []).filter((s) => s.category === 'station'),
@@ -98,6 +120,7 @@ export function FloorCodesPage() {
     [stationsQuery.data],
   );
   const printers = useMemo(() => printersQuery.data ?? [], [printersQuery.data]);
+  const errors = useMemo(() => errorsQuery.data ?? [], [errorsQuery.data]);
 
   /** The rows the active tab prints, reduced to what the picker needs. All
    *  three label families are a list of (payload, title, subtitle) — keeping
@@ -106,16 +129,20 @@ export function FloorCodesPage() {
   const items = useMemo(() => {
     if (tab === 'stations') return stations.map((s) => ({ payload: s.payload, title: s.name, subtitle: s.description }));
     if (tab === 'locations') return locations.map((s) => ({ payload: s.payload, title: s.name, subtitle: s.description }));
+    if (tab === 'errors') return [
+      { payload: 'BBX-discard', title: 'Discard', subtitle: 'Then scan an error label.' },
+      ...errors.map((error) => ({ payload: error.payload, title: error.name, subtitle: 'Rework and discard reason', id: error.id })),
+    ];
     return printers.map((p) => ({
       payload: p.payload,
       title: p.name,
       subtitle: [p.model, p.location].filter(Boolean).join(' · ') || '—',
     }));
-  }, [tab, stations, locations, printers]);
+  }, [tab, stations, locations, printers, errors]);
 
   // Locations shares the station catalog query — it's the same data, split
   // by `category` client-side, not a second fetch.
-  const activeQuery = tab === 'printers' ? printersQuery : stationsQuery;
+  const activeQuery = tab === 'printers' ? printersQuery : tab === 'errors' ? errorsQuery : stationsQuery;
 
   const [selected, setSelected] = useState<Set<string>>(new Set());
   const [size, setSize] = useState<StoredSize>(() => loadStoredSize());
@@ -140,6 +167,7 @@ export function FloorCodesPage() {
       : { width: Number(size.mode), height: Number(size.mode) };
 
   const sizeValid = isValidDimension(width) && isValidDimension(height);
+  const errorSlugValid = /^[a-z0-9]+(?:-[a-z0-9]+)*$/.test(errorSlug);
   const canPrint = selected.size > 0 && sizeValid && !printing;
 
   const toggle = (payload: string) => {
@@ -166,12 +194,16 @@ export function FloorCodesPage() {
       const blob =
         tab === 'printers'
           ? await api.printFloorPrinterLabels(body)
+          : tab === 'errors'
+            ? await api.printFloorErrorLabels(body)
           : await api.printFloorStationLabels(body);
       const filename =
         tab === 'printers'
           ? 'bambuddy-printer-labels.pdf'
           : tab === 'locations'
             ? 'bambuddy-location-labels.pdf'
+            : tab === 'errors'
+              ? 'bambuddy-error-labels.pdf'
             : 'bambuddy-station-labels.pdf';
       openBlobInNewTab(blob, filename);
     } catch (err) {
@@ -228,12 +260,11 @@ export function FloorCodesPage() {
         >
           {t('floor.codesTabPrinters', 'Printer labels')}
         </button>
-        {/* Error labels land with cleanup (phase 9). Shown disabled rather
-            than hidden so the page's shape stays honest about what exists. */}
         <button
           type="button"
-          disabled
-          className="px-3 py-1.5 text-sm rounded-md transition-colors text-bambu-gray opacity-50 cursor-not-allowed"
+          onClick={() => setTab('errors')}
+          aria-current={tab === 'errors' ? 'page' : undefined}
+          className={`px-3 py-1.5 text-sm rounded-md transition-colors ${tab === 'errors' ? 'bg-bambu-green text-white' : 'text-bambu-gray hover:text-white'}`}
         >
           {t('floor.codesTabErrors', 'Error labels')}
         </button>
@@ -247,6 +278,8 @@ export function FloorCodesPage() {
                 ? t('floor.codesStationsHeading', 'Station labels')
                 : tab === 'locations'
                   ? t('floor.codesLocationsHeading', 'Locations')
+                  : tab === 'errors'
+                    ? t('floor.codesErrorsHeading', 'Error labels')
                   : t('floor.codesPrintersHeading', 'Printer labels')}
             </h2>
             <p className="text-xs text-bambu-gray mt-0.5">
@@ -258,8 +291,10 @@ export function FloorCodesPage() {
                 : tab === 'locations'
                   ? t(
                       'floor.codesLocationsHint',
-                      'Fit Check and Sanding. Scanning one opens that checkpoint on the scan page, same as a station QR.',
+                      'Fit Check and Rework. Scanning one opens that checkpoint on the scan page, same as a station QR.',
                     )
+                  : tab === 'errors'
+                    ? t('floor.codesErrorsHint', 'Scan an error label after Rework or Discard. Add or remove reasons as needed.')
                   : t(
                       'floor.codesPrintersHint',
                       'One label per printer, stuck on the machine. Scanning it shows what that printer is doing and what it last finished.',
@@ -322,11 +357,38 @@ export function FloorCodesPage() {
                 subtitle={item.subtitle}
                 checked={selected.has(item.payload)}
                 onToggle={() => toggle(item.payload)}
+                action={tab === 'errors' && 'id' in item ? (
+                  <Button size="sm" variant="danger" onClick={() => setDeleteTarget({ id: Number(item.id), name: item.title })}>
+                    <Trash2 className="h-4 w-4" />
+                    Remove
+                  </Button>
+                ) : undefined}
               />
             ))}
           </ul>
         )}
       </section>
+
+      {tab === 'errors' && (
+        <section className="bg-bambu-dark-secondary rounded-lg p-4 space-y-3">
+          <h2 className="text-white font-semibold">Manage error labels</h2>
+          <div className="flex flex-wrap gap-2">
+            <input value={errorName} onChange={(e) => setErrorName(e.target.value)} placeholder="Label name" className="rounded-lg border border-bambu-dark-tertiary bg-bambu-dark px-3 py-2 text-sm text-white" />
+            <label className="flex items-center rounded-lg border border-bambu-dark-tertiary bg-bambu-dark text-sm text-white focus-within:border-bambu-green">
+              <span className="pl-3 text-bambu-gray font-mono">BBF-</span>
+              <input value={errorSlug} onFocus={() => setErrorSlugFocused(true)} onBlur={() => { setErrorSlugFocused(false); setErrorSlug((value) => value.replace(/-+$/, '')); }} onChange={(e) => setErrorSlug(normalizeErrorSlug(e.target.value))} placeholder={errorSlugFocused ? '' : 'h-line'} pattern="[a-z0-9]+(?:-[a-z0-9]+)*" title="Use letters and numbers, separated by one space or hyphen." className="w-36 bg-transparent px-1 py-2 font-mono text-sm text-white outline-none" />
+            </label>
+            <Button onClick={async () => {
+              try {
+                await api.createFloorErrorLabel({ name: errorName.trim(), slug: errorSlug.trim() });
+                setErrorName(''); setErrorSlug('');
+                await queryClient.invalidateQueries({ queryKey: ['floor-error-labels'] });
+              } catch (err) { showToast(err instanceof Error ? err.message : 'Could not add error label', 'error'); }
+            }} disabled={!errorName.trim() || !errorSlugValid}>Add label</Button>
+          </div>
+          <p className="text-xs text-bambu-gray">Use letters and numbers. A single space becomes a hyphen (for example, <code>h line</code> becomes <code>h-line</code>).</p>
+        </section>
+      )}
 
       <section className="bg-bambu-dark-secondary rounded-lg p-4 space-y-3">
         <h2 className="text-white font-semibold">{t('floor.codesSizeHeading', 'Label size')}</h2>
@@ -416,6 +478,28 @@ export function FloorCodesPage() {
           </span>
         </div>
       </section>
+      {deleteTarget && (
+        <ConfirmModal
+          title="Remove error label?"
+          message={`This permanently removes ${deleteTarget.name} from future scans and printing. Existing part history keeps the recorded reason. This cannot be undone.`}
+          confirmText="Remove permanently"
+          variant="danger"
+          isLoading={deletePending}
+          onCancel={() => !deletePending && setDeleteTarget(null)}
+          onConfirm={async () => {
+            setDeletePending(true);
+            try {
+              await api.deleteFloorErrorLabel(deleteTarget.id);
+              await queryClient.invalidateQueries({ queryKey: ['floor-error-labels'] });
+              setDeleteTarget(null);
+            } catch (err) {
+              showToast(err instanceof Error ? err.message : 'Could not remove error label', 'error');
+            } finally {
+              setDeletePending(false);
+            }
+          }}
+        />
+      )}
     </div>
   );
 }
@@ -429,12 +513,14 @@ function CodeRow({
   subtitle,
   checked,
   onToggle,
+  action,
 }: {
   payload: string;
   title: string;
   subtitle: string;
   checked: boolean;
   onToggle: () => void;
+  action?: React.ReactNode;
 }) {
   return (
     <li className="flex items-center gap-4 px-4 py-3">
@@ -447,7 +533,10 @@ function CodeRow({
       />
       {/* White plate behind the preview: a QR needs light quiet-zone contrast,
           and the page background is near-black. */}
-      <div className="bg-white rounded p-1 flex-shrink-0" aria-hidden="true">
+      <div
+        className="flex-shrink-0 rounded border border-gray-300 bg-white p-1 shadow-md shadow-gray-400/40 dark:border-gray-700 dark:shadow-none"
+        aria-hidden="true"
+      >
         <QRCodeSVG value={payload} size={48} />
       </div>
       <div className="min-w-0 flex-1">
@@ -455,6 +544,7 @@ function CodeRow({
         <div className="text-xs text-bambu-gray truncate">{subtitle}</div>
       </div>
       <code className="text-xs text-bambu-gray-light font-mono whitespace-nowrap">{payload}</code>
+      {action}
     </li>
   );
 }

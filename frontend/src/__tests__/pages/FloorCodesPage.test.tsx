@@ -30,10 +30,10 @@ const STATIONS = [
     category: 'location',
   },
   {
-    slug: 'sanding',
-    payload: 'BBS-sanding',
-    name: 'Sanding',
-    description: 'Optional bench for surface work.',
+    slug: 'rework',
+    payload: 'BBS-rework',
+    name: 'Rework',
+    description: 'Optional shelf for rework.',
     category: 'location',
   },
 ];
@@ -232,21 +232,21 @@ describe('FloorCodesPage', () => {
     expect(screen.getByRole('button', { name: 'Retry' })).toBeInTheDocument();
   });
 
-  it('shows the not-yet-built tab as disabled rather than hiding it', async () => {
+  it('shows every tab as enabled — stations, locations, printers, and errors have all shipped', async () => {
     mockStationsAndCapturePrint();
     render(<FloorCodesPage />);
 
     await screen.findByText('WIP');
     const tabs = screen.getByRole('button', { name: 'Station labels' }).parentElement as HTMLElement;
-    // Printers and Locations shipped in phases 7 and 9a/9b; errors land with
-    // cleanup in phase 9c.
+    // Printers and Locations shipped in phases 7 and 9a/9b; Error labels
+    // shipped alongside Rework/Discard's error-label step.
     expect(within(tabs).getByRole('button', { name: 'Locations' })).toBeEnabled();
     expect(within(tabs).getByRole('button', { name: 'Printer labels' })).toBeEnabled();
-    expect(within(tabs).getByRole('button', { name: 'Error labels' })).toBeDisabled();
+    expect(within(tabs).getByRole('button', { name: 'Error labels' })).toBeEnabled();
   });
 
   describe('locations tab', () => {
-    it('lists Fit Check and Sanding, not the workflow stations', async () => {
+    it('lists Fit Check and Rework, not the workflow stations', async () => {
       mockStationsAndCapturePrint();
       const user = userEvent.setup();
       render(<FloorCodesPage />);
@@ -255,7 +255,7 @@ describe('FloorCodesPage', () => {
       await user.click(screen.getByRole('button', { name: 'Locations' }));
 
       expect(await screen.findByText('Fit Check')).toBeInTheDocument();
-      expect(screen.getByText('Sanding')).toBeInTheDocument();
+      expect(screen.getByText('Rework')).toBeInTheDocument();
       expect(screen.getByText('BBS-fit-check')).toBeInTheDocument();
       expect(screen.queryByText('WIP')).not.toBeInTheDocument();
       expect(screen.queryByText('Harvest')).not.toBeInTheDocument();
@@ -269,7 +269,7 @@ describe('FloorCodesPage', () => {
 
       await user.click(screen.getByRole('button', { name: 'Locations' }));
       await screen.findByText('Fit Check');
-      await user.click(screen.getByRole('checkbox', { name: 'Sanding' }));
+      await user.click(screen.getByRole('checkbox', { name: 'Rework' }));
       await user.click(screen.getByRole('button', { name: /Print selected \(1\)/ }));
 
       await waitFor(() => expect(captured.body).not.toBeNull());

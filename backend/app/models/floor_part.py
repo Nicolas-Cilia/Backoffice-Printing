@@ -67,6 +67,14 @@ class FloorLabeledPart(Base):
     # `print_archives.printer_id`'s own convention: deleting the archive
     # degrades the part to needs-attention rather than deleting it.
     archive_id: Mapped[int | None] = mapped_column(ForeignKey("print_archives.id", ondelete="SET NULL"), nullable=True)
+    # Canonical Production part code (TOP/BOT/BUT/etc.) resolved from the
+    # archived library file at link time. Null when that print is not mapped.
+    part_code: Mapped[str | None] = mapped_column(String(32), nullable=True, index=True)
+    # Exact Section Part whose parameters 3MF supplied the model thumbnail.
+    # The code alone is not globally unique across library sections.
+    section_part_id: Mapped[int | None] = mapped_column(
+        ForeignKey("library_section_parts.id", ondelete="SET NULL"), nullable=True, index=True
+    )
     # Which harvest run enrolled this part. Audit only — nothing about a part
     # is ever blocked on its session still existing, which is why this is
     # nullable even though `floor_station_sessions` rows are never deleted
@@ -93,6 +101,18 @@ class FloorPartEvent(Base):
     action: Mapped[str] = mapped_column(String(32))
     details: Mapped[dict | None] = mapped_column(JSON, nullable=True)
     occurred_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
+
+
+class FloorErrorLabel(Base):
+    """A user-managed ``BBF-…`` label used for both Rework and discard."""
+
+    __tablename__ = "floor_error_labels"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    # The suffix only; the printable/scannable value is always ``BBF-{slug}``.
+    slug: Mapped[str] = mapped_column(String(64), unique=True, index=True)
+    name: Mapped[str] = mapped_column(String(120), unique=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
 
 
 class FloorDismissedBuildPlate(Base):

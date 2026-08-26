@@ -51,17 +51,26 @@ describe('routeScan', () => {
     expect(routeScan('BBS-harvest', 'wip')).toEqual({ action: 'station', payload: 'BBS-harvest' });
   });
 
-  it.each(['BBF-x', 'BBX-multi', '4001234567890'])(
-    'reports %s as recognised but not yet handled',
-    (payload) => {
-      // Distinct from unknown on purpose: "not built yet" and "that code means
-      // nothing" send an operator to different places. BBD- is excluded here
-      // since phase 9a/9b now give it a meaning at idle — see the
-      // "fit check and sanding" describe block below.
-      const route = routeScan(payload, null);
-      expect(route.action).toBe('not-implemented');
-    },
-  );
+  it('routes a defect code to error-label — Rework/Discard decide whether one is actually pending', () => {
+    // Recognised, not unknown: `error-label` is a real classification now
+    // (Rework's reason step, Discard's error step), just meaningless with
+    // nothing pending — which is the *page*'s call, not the router's (same
+    // reasoning as 'location'/'rework-reason' above).
+    expect(routeScan('BBF-x', null)).toEqual({ action: 'error-label', payload: 'BBF-x' });
+  });
+
+  it('routes a command code to command — only BBX-discard is handled so far', () => {
+    expect(routeScan('BBX-multi', null)).toEqual({ action: 'command', payload: 'BBX-multi' });
+  });
+
+  it('reports a factory SKU as recognised but not yet handled', () => {
+    // Distinct from unknown on purpose: "not built yet" and "that code means
+    // nothing" send an operator to different places. BBD- is excluded here
+    // since phase 9a/9b now give it a meaning at idle — see the
+    // "fit check and rework" describe block below.
+    const route = routeScan('4001234567890', null);
+    expect(route.action).toBe('not-implemented');
+  });
 
   it('routes a printer scanned from idle to the info page', () => {
     // §5.6: with no station open a printer scan is a lookup, not a claim.
@@ -137,7 +146,7 @@ describe('routeScan', () => {
     });
   });
 
-  describe('fit check and sanding (phase 9a/9b, §5.4a/§5.4b) — locations, not stations', () => {
+  describe('fit check and rework (phase 9a/9b, §5.4a/§5.4b) — locations, not stations', () => {
     it('starts the scan-part-then-location flow on a bare part scan at idle', () => {
       expect(routeScan('BBD-000042', null)).toEqual({ action: 'part-scanned', payload: 'BBD-000042' });
     });
@@ -164,12 +173,16 @@ describe('routeScan', () => {
       });
     });
 
-    it('classifies BBS-sanding as a location the same way', () => {
-      expect(routeScan('BBS-sanding', null)).toEqual({
+    it('classifies BBS-rework as a location the same way', () => {
+      expect(routeScan('BBS-rework', null)).toEqual({
         action: 'location',
-        slug: 'sanding',
-        payload: 'BBS-sanding',
+        slug: 'rework',
+        payload: 'BBS-rework',
       });
+    });
+
+    it('keeps the legacy BBS-sanding label working as Rework', () => {
+      expect(routeScan('BBS-sanding', null)).toEqual({ action: 'location', slug: 'rework', payload: 'BBS-sanding' });
     });
 
     it('classifies a location payload the same way regardless of what station is open', () => {
@@ -188,15 +201,15 @@ describe('routeScan', () => {
       expect(routeScan('BBS-cleanup', null)).toEqual({ action: 'station', payload: 'BBS-cleanup' });
     });
 
-    it('classifies a BBR- code as a sanding-reason scan', () => {
+    it('classifies a BBR- code as a rework-reason scan', () => {
       expect(routeScan('BBR-doesnt-fit', null)).toEqual({
-        action: 'sanding-reason',
+        action: 'rework-reason',
         payload: 'BBR-doesnt-fit',
       });
     });
 
-    it('classifies a sanding-reason scan the same way regardless of station context', () => {
-      expect(routeScan('BBR-other', 'wip')).toEqual({ action: 'sanding-reason', payload: 'BBR-other' });
+    it('classifies a rework-reason scan the same way regardless of station context', () => {
+      expect(routeScan('BBR-other', 'wip')).toEqual({ action: 'rework-reason', payload: 'BBR-other' });
     });
   });
 

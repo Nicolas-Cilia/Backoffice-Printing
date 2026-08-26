@@ -12,6 +12,7 @@ import pytest
 from sqlalchemy import select
 
 from backend.app.models.floor_part import FloorLabeledPart
+from backend.app.models.library import LibraryFolderSection, LibrarySectionPart
 from backend.app.services.floor_codes import station_for_slug
 from backend.app.services.floor_parts import (
     HarvestPrinterResult,
@@ -19,10 +20,13 @@ from backend.app.services.floor_parts import (
     PartScanResult,
     ReplaceStickerReasonCode,
     ReplaceStickerResult,
-    SandingReasonCode,
+    ReworkReasonCode,
+    SetPartCodeResult,
     UnlinkReasonCode,
     archive_part,
+    find_part_code_thumbnail,
     list_needs_attention,
+    list_part_code_options,
     list_part_events,
     normalize_sticker_code,
     parse_sticker_code,
@@ -31,8 +35,9 @@ from backend.app.services.floor_parts import (
     scan_fit_check_part,
     scan_harvest_printer,
     scan_part,
-    scan_sanding_part,
+    scan_rework_part,
     search_completed_jobs,
+    set_part_code,
     unlink_part,
 )
 from backend.app.services.floor_sessions import (
@@ -54,8 +59,8 @@ async def _open_harvest(db_session, device_id: str):
 
 
 async def _harvest_one_part(db_session, printer_id: int, code: str = "BBD-000001"):
-    """Enroll one part via Harvest so a Fit Check/Sanding test has something
-    to scan. Leaves no session open afterward — Fit Check and Sanding are
+    """Enroll one part via Harvest so a Fit Check/Rework test has something
+    to scan. Leaves no session open afterward — Fit Check and Rework are
     locations, not stations, so there is nothing to open."""
     await _open_harvest(db_session, DEVICE_A)
     await scan_harvest_printer(db_session, DEVICE_A, f"BBP-{printer_id}")
@@ -548,7 +553,7 @@ class TestFitCheckPartScan:
         assert [e.action for e in events] == ["enrolled", "fit_checked"]
 
     @pytest.mark.asyncio
-    async def test_rescanning_an_already_checked_part_appends_again(self, db_session, printer_factory):
+    async def test_rescanning_an_already_checked_part_is_rejected(self, db_session, printer_factory):
         printer = await printer_factory()
         await _harvest_one_part(db_session, printer.id)
         await scan_fit_check_part(db_session, "BBD-000001")
@@ -557,9 +562,9 @@ class TestFitCheckPartScan:
         outcome = await scan_fit_check_part(db_session, "BBD-000001")
         await db_session.commit()
 
-        assert outcome.result is LocationScanResult.RECORDED
+        assert outcome.result is LocationScanResult.ALREADY_AT_LOCATION
         events = await list_part_events(db_session, outcome.part.id)
-        assert [e.action for e in events] == ["enrolled", "fit_checked", "fit_checked"]
+        assert [e.action for e in events] == ["enrolled", "fit_checked"]
 
     @pytest.mark.asyncio
     async def test_unknown_sticker_is_rejected(self, db_session):
@@ -590,22 +595,22 @@ class TestFitCheckPartScan:
         assert outcome.result is LocationScanResult.RECORDED
 
 
-class TestSandingPartScan:
-    """§5.4b: the third scan of its flow (part, then the Sanding location —
+class TestReworkPartScan:
+    """§5.4b: the third scan of its flow (part, then the Rework location —
     a pure UI transition with no server call, then this reason). Like Fit
-    Check, `scan_sanding_part` is a plain commit with no session concept."""
+    Check, `scan_rework_part` is a plain commit with no session concept."""
 
     @pytest.mark.asyncio
-    async def test_records_a_sanding_event_with_the_reason(self, db_session, printer_factory):
+    async def test_records_a_rework_event_with_the_reason(self, db_session, printer_factory):
         printer = await printer_factory()
         await _harvest_one_part(db_session, printer.id)
 
-        outcome = await scan_sanding_part(db_session, "BBD-000001", SandingReasonCode.DOESNT_FIT)
+        outcome = await scan_rework_part(db_session, "BBD-000001", ReworkReasonCode.DOESNT_FIT)
         await db_session.commit()
 
         assert outcome.result is LocationScanResult.RECORDED
         events = await list_part_events(db_session, outcome.part.id)
-        assert [e.action for e in events] == ["enrolled", "sanding"]
+        assert [e.action for e in events] == ["enrolled", "rework"]
         assert events[-1].details == {"reason_code": "doesnt_fit", "reason_text": None}
 
     @pytest.mark.asyncio
@@ -613,37 +618,36 @@ class TestSandingPartScan:
         printer = await printer_factory()
         await _harvest_one_part(db_session, printer.id)
 
-        outcome = await scan_sanding_part(db_session, "BBD-000001", SandingReasonCode.OTHER, "warped corner")
+        outcome = await scan_rework_part(db_session, "BBD-000001", ReworkReasonCode.OTHER, "warped corner")
         await db_session.commit()
 
         events = await list_part_events(db_session, outcome.part.id)
         assert events[-1].details == {"reason_code": "other", "reason_text": "warped corner"}
 
     @pytest.mark.asyncio
-    async def test_sanding_more_than_once_appends_each_time(self, db_session, printer_factory):
-        """No amendment concept here (unlike Cleanup's disposition, §5.5) —
-        a part can go back to Sanding more than once, and each visit is its
-        own event with its own reason."""
+    async def test_rework_more_than_once_is_rejected(self, db_session, printer_factory):
+        """A part cannot be sent to the same current location twice in a row."""
         printer = await printer_factory()
         await _harvest_one_part(db_session, printer.id)
-        await scan_sanding_part(db_session, "BBD-000001", SandingReasonCode.ROUGH_SURFACE)
+        await scan_rework_part(db_session, "BBD-000001", ReworkReasonCode.ROUGH_SURFACE)
         await db_session.commit()
 
-        outcome = await scan_sanding_part(db_session, "BBD-000001", SandingReasonCode.LAYER_LINES)
+        outcome = await scan_rework_part(db_session, "BBD-000001", ReworkReasonCode.LAYER_LINES)
         await db_session.commit()
 
         events = await list_part_events(db_session, outcome.part.id)
-        assert [e.action for e in events] == ["enrolled", "sanding", "sanding"]
+        assert outcome.result is LocationScanResult.ALREADY_AT_LOCATION
+        assert [e.action for e in events] == ["enrolled", "rework"]
 
     @pytest.mark.asyncio
     async def test_unknown_sticker_is_rejected(self, db_session):
-        outcome = await scan_sanding_part(db_session, "BBD-000001", SandingReasonCode.OTHER, "note")
+        outcome = await scan_rework_part(db_session, "BBD-000001", ReworkReasonCode.OTHER, "note")
 
         assert outcome.result is LocationScanResult.UNKNOWN_PART
 
     @pytest.mark.asyncio
     async def test_invalid_code_writes_nothing(self, db_session):
-        outcome = await scan_sanding_part(db_session, "not-a-code", SandingReasonCode.OTHER, "note")
+        outcome = await scan_rework_part(db_session, "not-a-code", ReworkReasonCode.OTHER, "note")
 
         assert outcome.result is LocationScanResult.INVALID_CODE
         assert outcome.part is None
@@ -867,3 +871,167 @@ class TestReplaceStickerCode:
         result = await replace_sticker_code(db_session, outcome.part.id, "BBD-000001", "damaged")
 
         assert result.result is ReplaceStickerResult.INVALID_CODE
+
+
+async def _make_section(db_session, name: str = "Production") -> int:
+    section = LibraryFolderSection(name=name, name_key=name.strip().lower())
+    db_session.add(section)
+    await db_session.flush()
+    await db_session.commit()
+    return section.id
+
+
+async def _add_section_part(
+    db_session, section_id: int, code: str, name: str | None = None, thumbnail_path: str | None = None
+) -> None:
+    db_session.add(
+        LibrarySectionPart(section_id=section_id, code=code, name=name or code, thumbnail_path=thumbnail_path)
+    )
+    await db_session.commit()
+
+
+async def _make_section_part(db_session, code: str, thumbnail_path: str | None) -> None:
+    section_id = await _make_section(db_session)
+    await _add_section_part(db_session, section_id, code, thumbnail_path=thumbnail_path)
+
+
+class TestFindPartCodeThumbnail:
+    """`find_part_code_thumbnail` — resolving a Production part code to the
+    3MF cover image Files already captured for it (§7)."""
+
+    @pytest.mark.asyncio
+    async def test_unknown_code_returns_none(self, db_session):
+        assert await find_part_code_thumbnail(db_session, "TOP") is None
+
+    @pytest.mark.asyncio
+    async def test_known_code_with_no_thumbnail_returns_none(self, db_session):
+        await _make_section_part(db_session, "TOP", None)
+        assert await find_part_code_thumbnail(db_session, "TOP") is None
+
+    @pytest.mark.asyncio
+    async def test_known_code_with_a_thumbnail_returns_its_path(self, db_session):
+        await _make_section_part(db_session, "TOP", "thumbnails/top.png")
+        assert await find_part_code_thumbnail(db_session, "TOP") == "thumbnails/top.png"
+
+    @pytest.mark.asyncio
+    async def test_lookup_is_case_and_whitespace_insensitive(self, db_session):
+        await _make_section_part(db_session, "TOP", "thumbnails/top.png")
+        assert await find_part_code_thumbnail(db_session, " top ") == "thumbnails/top.png"
+
+
+class TestListPartCodeOptions:
+    """Reads the same catalog (`LibrarySectionPart`, Files' "Section parts"
+    panel) that `find_part_code_thumbnail` does — not the `ProductionPart`
+    mirror table, which has no UI of its own and can drift out of sync with
+    what is actually configured in Files."""
+
+    @pytest.mark.asyncio
+    async def test_empty_catalog_returns_no_options(self, db_session):
+        assert await list_part_code_options(db_session) == []
+
+    @pytest.mark.asyncio
+    async def test_lists_the_catalog_sorted_by_code(self, db_session):
+        section_id = await _make_section(db_session)
+        await _add_section_part(db_session, section_id, "TOP", "Top Housing")
+        await _add_section_part(db_session, section_id, "BOT", "Bottom Housing")
+
+        options = await list_part_code_options(db_session)
+
+        assert [o.code for o in options] == ["BOT", "TOP"]
+        assert options[0].name == "Bottom Housing"
+
+    @pytest.mark.asyncio
+    async def test_deduplicates_a_code_curated_in_more_than_one_section(self, db_session):
+        first = await _make_section(db_session, "Production")
+        second = await _make_section(db_session, "Line B")
+        await _add_section_part(db_session, first, "TOP", "Top Housing")
+        await _add_section_part(db_session, second, "TOP", "Top Housing (Line B)")
+
+        options = await list_part_code_options(db_session)
+
+        assert [o.code for o in options] == ["TOP"]
+
+
+class TestSetPartCode:
+    """`set_part_code` — the office-side fallback for a labeled part harvest
+    could not resolve a Production code for (§7)."""
+
+    @pytest.mark.asyncio
+    async def test_assigns_a_known_code_and_records_an_event(self, db_session, printer_factory):
+        section_id = await _make_section(db_session)
+        await _add_section_part(db_session, section_id, "TOP", "Top Housing")
+        printer = await printer_factory()
+        outcome = await scan_part(db_session, DEVICE_A, "BBD-000001", printer_id_hint=printer.id)
+        await db_session.commit()
+        assert outcome.part.part_code is None
+
+        result = await set_part_code(db_session, outcome.part.id, "TOP")
+        await db_session.commit()
+
+        assert result.result is SetPartCodeResult.ASSIGNED
+        assert result.part.part_code == "TOP"
+        events = await list_part_events(db_session, outcome.part.id)
+        assert events[-1].action == "part_code_assigned"
+        assert events[-1].details == {"part_code": "TOP", "previous_code": None}
+
+    @pytest.mark.asyncio
+    async def test_normalizes_case_and_whitespace(self, db_session, printer_factory):
+        section_id = await _make_section(db_session)
+        await _add_section_part(db_session, section_id, "TOP", "Top Housing")
+        printer = await printer_factory()
+        outcome = await scan_part(db_session, DEVICE_A, "BBD-000001", printer_id_hint=printer.id)
+        await db_session.commit()
+
+        result = await set_part_code(db_session, outcome.part.id, " top \n")
+
+        assert result.result is SetPartCodeResult.ASSIGNED
+        assert result.part.part_code == "TOP"
+
+    @pytest.mark.asyncio
+    async def test_missing_part_is_not_found(self, db_session):
+        result = await set_part_code(db_session, 999999, "TOP")
+        assert result.result is SetPartCodeResult.NOT_FOUND
+
+    @pytest.mark.asyncio
+    async def test_refuses_an_unknown_code(self, db_session, printer_factory):
+        printer = await printer_factory()
+        outcome = await scan_part(db_session, DEVICE_A, "BBD-000001", printer_id_hint=printer.id)
+        await db_session.commit()
+
+        result = await set_part_code(db_session, outcome.part.id, "ZZZ")
+
+        assert result.result is SetPartCodeResult.UNKNOWN_CODE
+        # Refused, so left alone rather than written anyway.
+        assert (await db_session.get(FloorLabeledPart, outcome.part.id)).part_code is None
+
+    @pytest.mark.asyncio
+    async def test_changes_when_a_code_is_already_set(self, db_session, printer_factory, archive_factory):
+        """Part History can correct an existing manually or automatically set code."""
+        section_id = await _make_section(db_session)
+        await _add_section_part(db_session, section_id, "TOP", "Top Housing")
+        await _add_section_part(db_session, section_id, "BOT", "Bottom Housing")
+        printer = await printer_factory()
+        await archive_factory(printer_id=printer.id)
+        outcome = await scan_part(db_session, DEVICE_A, "BBD-000001", printer_id_hint=printer.id)
+        await db_session.commit()
+        outcome.part.part_code = "TOP"
+        await db_session.commit()
+
+        result = await set_part_code(db_session, outcome.part.id, "BOT")
+
+        assert result.result is SetPartCodeResult.ASSIGNED
+        assert (await db_session.get(FloorLabeledPart, outcome.part.id)).part_code == "BOT"
+
+    @pytest.mark.asyncio
+    async def test_refuses_on_an_archived_part(self, db_session, printer_factory):
+        section_id = await _make_section(db_session)
+        await _add_section_part(db_session, section_id, "TOP", "Top Housing")
+        printer = await printer_factory()
+        outcome = await scan_part(db_session, DEVICE_A, "BBD-000001", printer_id_hint=printer.id)
+        await db_session.commit()
+        await archive_part(db_session, outcome.part.id, archived=True)
+        await db_session.commit()
+
+        result = await set_part_code(db_session, outcome.part.id, "TOP")
+
+        assert result.result is SetPartCodeResult.ARCHIVED
