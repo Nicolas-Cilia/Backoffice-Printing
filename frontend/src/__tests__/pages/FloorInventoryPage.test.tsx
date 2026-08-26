@@ -429,7 +429,77 @@ describe("FloorInventoryPage", () => {
     ).toBeInTheDocument();
   });
 
-  it("uses green for fit checks and orange for sanding in the history timeline", async () => {
+  it("assigns a part code from the catalog and appends a timeline event", async () => {
+    const user = userEvent.setup();
+    mockPartHistory();
+    let assigned = false;
+    let parts = PARTS.map((part) => ({ ...part }));
+    server.use(
+      http.get("/api/v1/floor/inventory/parts", () =>
+        HttpResponse.json(parts),
+      ),
+      http.get("/api/v1/floor/parts/codes", () =>
+        HttpResponse.json([
+          { code: "TOP", name: "Top Housing" },
+          { code: "BOT", name: "Bottom Housing" },
+        ]),
+      ),
+      http.get("/api/v1/floor/inventory/parts/:id/events", ({ params }) => {
+        const events: unknown[] = [
+          {
+            id: 10,
+            action: "enrolled",
+            details: { archive_id: Number(params.id) === 1 ? 31 : null },
+            occurred_at: "2026-08-25T14:31:00",
+          },
+        ];
+        if (Number(params.id) === 1 && assigned) {
+          events.push({
+            id: 11,
+            action: "part_code_assigned",
+            details: { part_code: "TOP" },
+            occurred_at: "2026-08-25T16:20:00",
+          });
+        }
+        return HttpResponse.json(events);
+      }),
+      http.post(
+        "/api/v1/floor/inventory/parts/1/part-code",
+        async ({ request }) => {
+          const body = (await request.json()) as { code: string };
+          assigned = true;
+          parts = parts.map((part) =>
+            part.id === 1 ? { ...part, part_code: body.code } : part,
+          );
+          return HttpResponse.json(parts[0]);
+        },
+      ),
+    );
+    render(<FloorInventoryPage />);
+    await screen.findByText("BBD-000101");
+
+    await user.click(screen.getByText("BBD-000101"));
+    expect(
+      await screen.findByRole("heading", { name: "BBD-000101" }),
+    ).toBeInTheDocument();
+
+    await user.selectOptions(
+      screen.getByRole("combobox", { name: "Assign part code" }),
+      "TOP",
+    );
+    await user.click(screen.getByRole("button", { name: "Assign" }));
+
+    await waitFor(() =>
+      expect(
+        screen.queryByRole("combobox", { name: "Assign part code" }),
+      ).not.toBeInTheDocument(),
+    );
+    expect(
+      screen.getByText("Part code assigned · TOP"),
+    ).toBeInTheDocument();
+  });
+
+  it("uses green for fit checks and orange for rework in the history timeline", async () => {
     const user = userEvent.setup();
     mockPartHistory();
     server.use(
@@ -467,14 +537,14 @@ describe("FloorInventoryPage", () => {
     );
     render(<FloorInventoryPage />);
     await screen.findByText("BBD-000101");
-    expect(await screen.findByText("Sanding")).toBeInTheDocument();
+    expect(await screen.findByText("Rework")).toBeInTheDocument();
     await user.click(screen.getByText("BBD-000101"));
 
     expect(
       await screen.findByText("Fit checked · Initial QC passed"),
     ).toBeInTheDocument();
     await waitFor(() =>
-      expect(screen.getAllByText("Sanding")).toHaveLength(2),
+      expect(screen.getAllByText("Rework")).toHaveLength(2),
     );
     const timelineItems = await screen.findAllByRole("listitem");
     expect(timelineItems[1].querySelector("span")).toHaveClass("bg-green-500");

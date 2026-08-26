@@ -12,6 +12,9 @@ from __future__ import annotations
 import pytest
 from httpx import AsyncClient
 
+from backend.tests.integration.test_library_section_parts_api import _create_tracking_section_with_part
+from backend.tests.integration.test_production_api import _3mf, _config
+
 DEVICE_A = "device-a"
 DEVICE_B = "device-b"
 
@@ -41,16 +44,16 @@ async def _scan_fit_check_part(client: AsyncClient, code: str):
     return await client.post("/api/v1/floor/locations/fit-check/part", json={"payload": code})
 
 
-async def _scan_sanding_part(client: AsyncClient, code: str, reason_code: str, reason_text: str | None = None):
+async def _scan_rework_part(client: AsyncClient, code: str, reason_code: str, reason_text: str | None = None):
     body = {"payload": code, "reason_code": reason_code}
     if reason_text is not None:
         body["reason_text"] = reason_text
-    return await client.post("/api/v1/floor/locations/sanding/part", json=body)
+    return await client.post("/api/v1/floor/locations/rework/part", json=body)
 
 
 async def _harvest_one_part(client: AsyncClient, printer_id: int, device_id: str, code: str = "BBD-000001"):
-    """Enroll one part via Harvest so a Fit Check/Sanding test has something
-    to scan. Closes the Harvest session afterward — Fit Check and Sanding
+    """Enroll one part via Harvest so a Fit Check/Rework test has something
+    to scan. Closes the Harvest session afterward — Fit Check and Rework
     are locations, not stations, so there is nothing left open for them."""
     await _open_harvest(client, device_id)
     await _scan_printer(client, printer_id, device_id)
@@ -309,7 +312,7 @@ class TestFitCheckPartScan:
         assert body["printer"] == {"id": printer.id, "name": "Bench A"}
         assert body["archive"]["id"] == archive.id
 
-    async def test_rescanning_an_already_checked_part_is_not_an_error(self, async_client, printer_factory):
+    async def test_rescanning_an_already_checked_part_is_rejected(self, async_client, printer_factory):
         printer = await printer_factory()
         await _harvest_one_part(async_client, printer.id, DEVICE_A)
         await _scan_fit_check_part(async_client, "BBD-000001")
@@ -317,7 +320,7 @@ class TestFitCheckPartScan:
         resp = await _scan_fit_check_part(async_client, "BBD-000001")
 
         assert resp.status_code == 200
-        assert resp.json()["result"] == "recorded"
+        assert resp.json()["result"] == "already_at_location"
 
     async def test_unknown_sticker_is_rejected(self, async_client):
         resp = await _scan_fit_check_part(async_client, "BBD-000001")
@@ -368,17 +371,17 @@ class TestFitCheckPartScan:
 
 @pytest.mark.asyncio
 @pytest.mark.integration
-class TestSandingPartScan:
-    """§5.4b: the third scan of its flow (part, Sanding location — a pure UI
+class TestReworkPartScan:
+    """§5.4b: the third scan of its flow (part, Rework location — a pure UI
     transition with no server call, then reason). Like Fit Check, this is a
     plain commit with no session concept."""
 
-    async def test_records_a_sanding_event_with_the_reason(self, async_client, printer_factory, archive_factory):
+    async def test_records_a_rework_event_with_the_reason(self, async_client, printer_factory, archive_factory):
         printer = await printer_factory(name="Bench A")
         archive = await archive_factory(printer_id=printer.id, print_name="Bracket v4")
         await _harvest_one_part(async_client, printer.id, DEVICE_A)
 
-        resp = await _scan_sanding_part(async_client, "BBD-000001", "doesnt_fit")
+        resp = await _scan_rework_part(async_client, "BBD-000001", "doesnt_fit")
 
         assert resp.status_code == 200
         body = resp.json()
@@ -389,27 +392,27 @@ class TestSandingPartScan:
 
         events = await async_client.get(f"/api/v1/floor/inventory/parts/{body['part']['id']}/events")
         last_event = events.json()[-1]
-        assert last_event["action"] == "sanding"
+        assert last_event["action"] == "rework"
         assert last_event["details"] == {"reason_code": "doesnt_fit", "reason_text": None}
 
     async def test_other_reason_carries_free_text(self, async_client, printer_factory):
         printer = await printer_factory()
         await _harvest_one_part(async_client, printer.id, DEVICE_A)
 
-        resp = await _scan_sanding_part(async_client, "BBD-000001", "other", "warped corner")
+        resp = await _scan_rework_part(async_client, "BBD-000001", "other", "warped corner")
 
         part_id = resp.json()["part"]["id"]
         events = await async_client.get(f"/api/v1/floor/inventory/parts/{part_id}/events")
         assert events.json()[-1]["details"] == {"reason_code": "other", "reason_text": "warped corner"}
 
     async def test_unknown_sticker_is_rejected(self, async_client):
-        resp = await _scan_sanding_part(async_client, "BBD-000001", "other", "note")
+        resp = await _scan_rework_part(async_client, "BBD-000001", "other", "note")
 
         assert resp.status_code == 200
         assert resp.json()["result"] == "unknown_part"
 
     async def test_invalid_code(self, async_client):
-        resp = await _scan_sanding_part(async_client, "not-a-code", "other", "note")
+        resp = await _scan_rework_part(async_client, "not-a-code", "other", "note")
 
         assert resp.status_code == 200
         assert resp.json()["result"] == "invalid_code"
@@ -417,7 +420,7 @@ class TestSandingPartScan:
     async def test_session_scan_refuses_to_open_it_as_a_station(self, async_client):
         resp = await async_client.post(
             "/api/v1/floor/session/scan",
-            json={"payload": "BBS-sanding", "device_id": DEVICE_A},
+            json={"payload": "BBS-rework", "device_id": DEVICE_A},
         )
 
         assert resp.status_code == 404
@@ -769,3 +772,142 @@ class TestPartHistoryApi:
             json={"new_sticker_code": "BBD-000099", "reason_code": "damaged"},
         )
         assert replace_resp.status_code == 400
+
+
+def _seeded_3mf() -> bytes:
+    return _3mf(_config(), extra_files={"Metadata/plate_1.png": b"\x89PNG\r\n\x1a\n"})
+
+
+@pytest.mark.asyncio
+@pytest.mark.integration
+class TestPartCodeThumbnail:
+    """`GET /floor/parts/thumbnail/{code}` — the 3MF cover image already
+    captured in Files for a Production part code (§7), shown on the scan
+    page next to a resolved part. Unknown code and known-but-imageless code
+    are both a plain 404 — the scan page treats them the same."""
+
+    async def test_unknown_code_is_404(self, async_client):
+        resp = await async_client.get("/api/v1/floor/parts/thumbnail/ZZZ")
+        assert resp.status_code == 404
+
+    async def test_known_code_with_no_thumbnail_seeded_is_404(self, async_client):
+        await _create_tracking_section_with_part(async_client, code="TOP")
+        resp = await async_client.get("/api/v1/floor/parts/thumbnail/TOP")
+        assert resp.status_code == 404
+
+    async def test_seeded_code_serves_its_3mf_cover_image(self, async_client):
+        section_id, part_id = await _create_tracking_section_with_part(async_client, code="TOP")
+        seed = await async_client.post(
+            f"/api/v1/library/sections/{section_id}/parts/{part_id}/parameters",
+            files={"file": ("spec.3mf", _seeded_3mf(), "application/octet-stream")},
+        )
+        assert seed.status_code == 200, seed.text
+
+        resp = await async_client.get("/api/v1/floor/parts/thumbnail/TOP")
+        assert resp.status_code == 200
+        assert resp.content.startswith(b"\x89PNG")
+
+    async def test_code_lookup_is_case_and_whitespace_insensitive(self, async_client):
+        section_id, part_id = await _create_tracking_section_with_part(async_client, code="TOP")
+        await async_client.post(
+            f"/api/v1/library/sections/{section_id}/parts/{part_id}/parameters",
+            files={"file": ("spec.3mf", _seeded_3mf(), "application/octet-stream")},
+        )
+
+        resp = await async_client.get("/api/v1/floor/parts/thumbnail/%20top%20")
+        assert resp.status_code == 200
+        assert resp.content.startswith(b"\x89PNG")
+
+
+@pytest.mark.asyncio
+@pytest.mark.integration
+class TestPartCodeCatalogAndAssignment:
+    """`GET /floor/parts/codes` and `POST /floor/inventory/parts/{id}/part-code`
+    — Part history's "assign a part code" flow for a sticker harvest could
+    not resolve one for (§7)."""
+
+    async def test_lists_the_catalog(self, async_client):
+        section_id, _ = await _create_tracking_section_with_part(async_client, code="TOP")
+        await async_client.post(f"/api/v1/library/sections/{section_id}/parts", json={"code": "BOT", "name": "Bottom"})
+
+        resp = await async_client.get("/api/v1/floor/parts/codes")
+
+        assert resp.status_code == 200
+        codes = {row["code"] for row in resp.json()}
+        assert {"TOP", "BOT"} <= codes
+
+    async def test_assigns_a_code_to_a_part_with_none(self, async_client, printer_factory):
+        await _create_tracking_section_with_part(async_client, code="TOP")
+        printer = await printer_factory()
+        await _open_harvest(async_client, DEVICE_A)
+        await _scan_printer(async_client, printer.id, DEVICE_A)
+        scanned = await _scan_part(async_client, "BBD-000001", DEVICE_A)
+        part_id = scanned.json()["part"]["id"]
+        assert scanned.json()["part"]["part_code"] is None
+
+        resp = await async_client.post(f"/api/v1/floor/inventory/parts/{part_id}/part-code", json={"code": "TOP"})
+
+        assert resp.status_code == 200
+        assert resp.json()["part_code"] == "TOP"
+
+        events = await async_client.get(f"/api/v1/floor/inventory/parts/{part_id}/events")
+        assert events.json()[-1]["action"] == "part_code_assigned"
+        assert events.json()[-1]["details"] == {"part_code": "TOP", "previous_code": None}
+
+    async def test_normalizes_case_and_whitespace(self, async_client, printer_factory):
+        await _create_tracking_section_with_part(async_client, code="TOP")
+        printer = await printer_factory()
+        await _open_harvest(async_client, DEVICE_A)
+        await _scan_printer(async_client, printer.id, DEVICE_A)
+        scanned = await _scan_part(async_client, "BBD-000001", DEVICE_A)
+        part_id = scanned.json()["part"]["id"]
+
+        resp = await async_client.post(f"/api/v1/floor/inventory/parts/{part_id}/part-code", json={"code": " top "})
+
+        assert resp.status_code == 200
+        assert resp.json()["part_code"] == "TOP"
+
+    async def test_unknown_code_is_400(self, async_client, printer_factory):
+        printer = await printer_factory()
+        await _open_harvest(async_client, DEVICE_A)
+        await _scan_printer(async_client, printer.id, DEVICE_A)
+        scanned = await _scan_part(async_client, "BBD-000001", DEVICE_A)
+        part_id = scanned.json()["part"]["id"]
+
+        resp = await async_client.post(f"/api/v1/floor/inventory/parts/{part_id}/part-code", json={"code": "ZZZ"})
+
+        assert resp.status_code == 400
+
+    async def test_changes_when_a_code_is_already_set(self, async_client, printer_factory):
+        section_id, _ = await _create_tracking_section_with_part(async_client, code="TOP")
+        await async_client.post(f"/api/v1/library/sections/{section_id}/parts", json={"code": "BOT", "name": "Bottom"})
+        printer = await printer_factory()
+        await _open_harvest(async_client, DEVICE_A)
+        await _scan_printer(async_client, printer.id, DEVICE_A)
+        scanned = await _scan_part(async_client, "BBD-000001", DEVICE_A)
+        part_id = scanned.json()["part"]["id"]
+        first = await async_client.post(f"/api/v1/floor/inventory/parts/{part_id}/part-code", json={"code": "TOP"})
+        assert first.status_code == 200
+
+        resp = await async_client.post(f"/api/v1/floor/inventory/parts/{part_id}/part-code", json={"code": "BOT"})
+
+        assert resp.status_code == 200
+        assert resp.json()["part_code"] == "BOT"
+
+    async def test_missing_part_is_404(self, async_client):
+        resp = await async_client.post("/api/v1/floor/inventory/parts/999999/part-code", json={"code": "TOP"})
+        assert resp.status_code == 404
+
+    async def test_refuses_on_an_archived_part(self, async_client, printer_factory):
+        await _create_tracking_section_with_part(async_client, code="TOP")
+        printer = await printer_factory()
+        await _open_harvest(async_client, DEVICE_A)
+        await _scan_printer(async_client, printer.id, DEVICE_A)
+        scanned = await _scan_part(async_client, "BBD-000001", DEVICE_A)
+        part_id = scanned.json()["part"]["id"]
+        archived = await async_client.post(f"/api/v1/floor/inventory/parts/{part_id}/archive")
+        assert archived.status_code == 200
+
+        resp = await async_client.post(f"/api/v1/floor/inventory/parts/{part_id}/part-code", json={"code": "TOP"})
+
+        assert resp.status_code == 400

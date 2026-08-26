@@ -170,7 +170,7 @@ fine.
 | Harvest | Yes | Two people linking parts to jobs is a data conflict (§5.4) |
 | **Cleanup** | **No** | Per-device only — parallel cleanup on separate machines is normal work |
 
-**Fit Check and Sanding are not in this table.** They are locations, not
+**Fit Check and Rework are not in this table.** They are locations, not
 stations (§5.4a/§5.4b) — no session, so no lock question even arises. Two
 devices can each have their own part pending a location at once with no
 conflict; that is a local prompt on each screen, not a claim on shared
@@ -223,11 +223,11 @@ the office.
 
 | Label | Source | Stuck on |
 | --- | --- | --- |
-| Station QRs (`BBS-…`) | App → Codes → browser print | Shelf, bench, harvest area, fit-check bench, sanding bench |
+| Station QRs (`BBS-…`) | App → Codes → browser print | Shelf, bench, harvest area, fit-check bench, rework bench |
 | Printer QRs (`BBP-…`) | App → Codes | Each 3D printer |
 | Error QRs (`BBF-…`) | App → Codes | Cleanup bench |
 | Command QRs (`BBX-…`) | App → Codes | Cleanup bench (multi, rework) |
-| Sanding reason QRs (`BBR-…`) | App → Codes | Sanding bench |
+| Rework reason QRs (`BBR-…`) | App → Codes | Rework bench |
 | Part Data Matrix (`BBD-…`) | **Bought roll** | Each finished part |
 | Filament SKU | **Already on spool/box** | Never printed by us |
 
@@ -249,8 +249,8 @@ Under Floor (routes):
 | `/floor/codes` | Print QRs, register filament SKUs on products | Normal app chrome + sidebar |
 | `/floor/inventory` | **Stock by location** (storage vs WIP), movement history, and manual corrections (§6.3) | Normal app chrome + sidebar |
 
-Harvest, fit check, sanding and cleanup are **not** separate bookmark URLs
-for operators. The **station QR** selects harvest vs fit check vs sanding vs
+Harvest, fit check, rework and cleanup are **not** separate bookmark URLs
+for operators. The **station QR** selects harvest vs fit check vs rework vs
 cleanup vs WIP vs storage. The scan page is one harness.
 
 `/floor/inventory` is deliberately named for **inventory**, not filament.
@@ -268,9 +268,9 @@ controls added to those pages.
 Four tabs: Station labels, Locations, Printer labels, Error labels.
 
 **Station labels** — WIP, + Storage, Move, Harvest, Cleanup (each `BBS-…`).
-Fit Check and Sanding are **not** in this tab — see Locations below.
+Fit Check and Rework are **not** in this tab — see Locations below.
 
-**Locations** — Fit Check and Sanding (each `BBS-…`, same catalog and print
+**Locations** — Fit Check and Rework (each `BBS-…`, same catalog and print
 pipeline as Station labels, split out by a `category` field on the station
 entry, §5.4a/§5.4b). Printed and scanned identically to a station QR; the
 only difference is what scanning one *does* — no session opens.
@@ -282,13 +282,11 @@ Print → preview (QR + name + payload) → size → browser print dialog.
 name + `BBF-` slug with autofill, editable); built-in commands multi + rework
 (print only, no “add command” in v1).
 
-**Sanding reason labels (`BBR-…`) are not a Codes tab in v1.** An earlier
-pass of this doc proposed one, "same pattern as Error labels" (editable).
-That was reconsidered when Sanding's actual scan flow was built: the reason
-codes are a small fixed `SandingReasonCode` enum (§5.4b), the same
-not-user-editable shape as the office-side unlink/replace-sticker reason
-codes — and nothing yet prints their `BBR-…` QR labels. That is a real gap
-(the codes exist and are scannable once printed by some means, but the
+**Rework reason labels (`BBR-…`) are printed from the Error labels tab.**
+They use the same user-managed error-label registry as Discard, so operators
+can add, remove, and print the reasons that apply to Rework and Discard.
+The `BBR-…` labels are retained for compatibility with the original fixed
+reason flow, but new installations use the editable Error labels catalog.
 Codes page has no section for them), left for a follow-up rather than
 building a fourth catalog + tab in the same pass that fixed the station/
 location interaction bug.
@@ -306,15 +304,15 @@ The USB pistol types a string and Enter. Backend (or frontend router) classifies
 
 | Prefix | Example | Role |
 | --- | --- | --- |
-| `BBS-` | `BBS-wip`, `BBS-storage-receive`, `BBS-storage-move`, `BBS-harvest`, `BBS-cleanup` | Station: open/close session, set mode. `BBS-fit-check`/`BBS-sanding` are printed the same way but are **locations**, not sessions — see below |
+| `BBS-` | `BBS-wip`, `BBS-storage-receive`, `BBS-storage-move`, `BBS-harvest`, `BBS-cleanup` | Station: open/close session, set mode. `BBS-fit-check`/`BBS-rework` are printed the same way but are **locations**, not sessions — see below |
 | `BBP-` | `BBP-12` | Printer identity (harvest only) |
-| `BBD-` | `BBD-000042` | Unique physical part (harvest link, cleanup lookup; also the first scan of the Fit Check / Sanding location flow, §5.4a/§5.4b) |
+| `BBD-` | `BBD-000042` | Unique physical part (harvest link, cleanup lookup; also the first scan of the Fit Check / Rework location flow, §5.4a/§5.4b) |
 | `BBF-` | `BBF-horizontal`, `BBF-warping` | Defect type (cleanup) |
 | `BBX-` | `BBX-multi`, `BBX-rework` | Cleanup commands (v1: only these two) |
-| `BBR-` | `BBR-doesnt_fit`, `BBR-other` | Sanding reason (why the part needs sanding) — the part after `BBR-` is the reason code verbatim, not a slug translated elsewhere |
+| `BBR-` | `BBR-doesnt_fit`, `BBR-other` | Rework reason (why the part needs rework) — the part after `BBR-` is the reason code verbatim, not a slug translated elsewhere |
 | Factory barcode | digits/alphanumeric from vendor | Filament SKU → kg delta for a tracking product |
 
-**`BBS-fit-check` and `BBS-sanding` are not stations.** They print and
+**`BBS-fit-check` and `BBS-rework` are not stations.** They print and
 resolve as `BBS-…` payloads (same Codes-page mechanism, §3.3), but scanning
 one never opens/closes/switches a session — dispatch for them is not on
 (open station × prefix) the way every other station is. See §5.4a/§5.4b for
@@ -562,11 +560,11 @@ first" — rather than silently doing nothing or reading as an unknown code.
 
 **No pass/fail outcome in v1.** Fit Check records only that the checkpoint
 happened, not a verdict. A part that does not fit is handled physically by
-sending it to Sanding (§5.4b) — that is a bench decision, not a system
-transition, since Sanding is independent of Fit Check's result (see 5.4b).
-Recording a verdict here would duplicate the "why" question that Sanding
-already asks, for the one path (doesn't fit → sand it) that matters; other
-reasons a part visits Sanding never touch Fit Check at all.
+sending it to Rework (§5.4b) — that is a bench decision, not a system
+transition, since Rework is independent of Fit Check's result (see 5.4b).
+Recording a verdict here would duplicate the "why" question that Rework
+already asks, for the one path (doesn't fit → send it to Rework) that matters; other
+reasons a part visits Rework never touch Fit Check at all.
 
 **Screen:** Idle "Scan a code" as usual. After a part scan: the sticker code
 and "Scan a location." After the location scan commits: part model / printer
@@ -581,49 +579,46 @@ because there is no session to clean up. The pending part is just dropped.
 each have their own part pending at once with no conflict — they are
 independent local prompts, not competing claims on shared state.
 
-### 5.4b Sanding
+### 5.4b Rework
 
 **Also a location, not a station** — same correction as §5.4a, and the same
-consequence: no session, no lock, `BBS-sanding` is a printable payload with
+consequence: no session, no lock, `BBS-rework` is a printable payload with
 no open/close behavior.
 
 **Purpose:** An optional bench for parts that need surface work before
 Cleanup, for **any** reason — not only a failed Fit Check. Independent of
-Fit Check: a part can visit Sanding whether or not it has been fit-checked
-yet, and in either order. Sanding is **not** a gate — most parts never visit
-it, and Cleanup does not require a Sanding record the way it requires a Fit
+Fit Check: a part can visit Rework whether or not it has been fit-checked
+yet, and in either order. Rework is **not** a gate — most parts never visit
+it, and Cleanup does not require a Rework record the way it requires a Fit
 Check one (§5.4a).
 
 **Flow — scan a part, scan the location, scan why:**
 
 1. Scan part `BBD-…` with nothing else going on → pending-part prompt, same
    as Fit Check's step 1.
-2. Scan `BBS-sanding` → **not** a commit. This is a pure state transition on
-   the scan page: the screen now shows "Sanding — scan a reason." Nothing is
+2. Scan `BBS-rework` → **not** a commit. This is a pure state transition on
+   the scan page: the screen now shows "Rework — scan a reason." Nothing is
    written to the server by this scan on its own.
-3. Scan a reason code `BBR-…` → **commits**: saves a `sanding` event on the
+3. Scan a reason code `BBR-…` → **commits**: saves a `rework` event on the
    part with the reason code, and returns to idle. This is the only point in
-   Sanding's flow that writes anything.
+   Rework's flow that writes anything.
 4. `BBR-other` → **keyboard** types a note instead of (or alongside) the
    seeded reason, same as Cleanup's `BBF-other`.
 
-**Reason codes are a small fixed set in v1** (`doesnt_fit`, `rough_surface`,
-`layer_lines`, `other`), the same shape as the office-side unlink/
-replace-sticker reason codes (§7.2) — a `StrEnum`, not a user-editable
-registry. An earlier pass of this doc proposed an editable registry
-("same pattern as Error labels"); that is deferred, not built, pending real
-usage telling us whether the fixed set needs to grow.
+**Rework reasons come from the editable Error labels catalog.** Operators can
+add or remove the labels used by Rework and Discard, print the selected labels,
+and optionally add a short note after scanning `other`.
 
 **Abandoning a pending part or a pending reason** works the same way as Fit
 Check (§5.4a): scanning anything else just proceeds as that scan normally
 would, dropping whatever was pending. Scanning a different part while
 awaiting a reason restarts the flow on the new part.
 
-**Scanning `BBS-sanding` or a `BBR-…` code with nothing pending** is refused
-— "scan a part first" / "scan a part into Sanding first."
+**Scanning `BBS-rework` or a `BBR-…` code with nothing pending** is refused
+— "scan a part first" / "scan a part into Rework first."
 
 **After the reason is recorded, the part proceeds directly to Cleanup** — no
-forced return to Fit Check. Sanding is trusted to have fixed whatever the
+forced return to Fit Check. Rework is trusted to have fixed whatever the
 reason named.
 
 **No floor-wide lock**, same reasoning as Fit Check — there is no session to
@@ -638,7 +633,7 @@ lock.
 `fit_checked` event anywhere in its history is **refused**: error flash and
 tone, screen says which station is missing ("needs Fit Check first"),
 nothing is recorded. This is the one hard sequencing rule in the whole
-harvest → … → cleanup chain — everything else (Sanding included) is ordering
+harvest → … → cleanup chain — everything else (Rework included) is ordering
 by convention, not by enforcement.
 
 **Every part is scanned.** An earlier draft said good parts were not, to
@@ -974,12 +969,12 @@ reversible; generalizing a schema on speculation is neither.
 - **Cleanup records (plural, append-only):** outcome (`good` / `defective`),
   defect type where applicable (`BBF-` slug or other text), disposition
   (trash / rework), timestamp, and who recorded it
-- **Fit Check and Sanding events (plural, append-only, same table):**
-  `fit_checked` (§5.4a, no payload) and `sanding` (§5.4b, `BBR-` reason code
+- **Fit Check and Rework events (plural, append-only, same table):**
+  `fit_checked` (§5.4a, no payload) and `rework` (§5.4b, `BBR-` reason code
   or free text) — the same per-part event log that already carries
   `enrolled`/`scanned`/`archived`/`relinked`/etc., not a new table. This is
   what the Part history viewer (§15.8) reads to show the whole sequence for
-  one sticker, fit check and sanding included, without any schema change.
+  one sticker, fit check and rework included, without any schema change.
 
 Does **not** duplicate filament, temps, file path—join archive when needed.
 
@@ -1049,11 +1044,11 @@ operator QRs. Data should be queryable later from the same tables.
 | Part scanned but the printer has no finished job to bind to | **Record it anyway** — `printer_id` + `labeled_at`, `archive_id` null (§7.2). Screen says "linked to printer N, no job found". Surfaces in a needs-attention list to be matched later. The sticker is already on the part; refusing would create a labeled part the system never heard of |
 | Part scanned at **Cleanup** with no `fit_checked` event on record | **Refused** — error flash and tone, screen says "needs Fit Check first", nothing recorded (§5.4a). The one hard sequencing gate in the chain |
 | Part scanned (idle, nothing else going on), then re-scanned into `BBS-fit-check` a second time later | **Logged again**, not an error — appends another `fit_checked` event. There is no verdict to amend (§5.4a) |
-| `BBS-fit-check` or `BBS-sanding` scanned with no part currently pending | **Refused** — "scan a part first". Neither is a session, so there is nothing to open instead (§5.4a/§5.4b) |
+| `BBS-fit-check` or `BBS-rework` scanned with no part currently pending | **Refused** — "scan a part first". Neither is a session, so there is nothing to open instead (§5.4a/§5.4b) |
 | Part pending a location, then something other than a location is scanned (a station QR, a printer, another part) | **Abandoned, silently** — that scan proceeds exactly as it normally would; the pending part is just dropped, no special "cancelled" message (unlike Move's queue, §5.3, which is server-side and does announce its own abandonment) |
-| Part sent to **Sanding** (location scanned), then something other than a reason code is scanned | Same as above — the pending "awaiting reason" state is abandoned, nothing was written (Sanding's location scan never itself calls the backend, §5.4b) |
-| Reason code (`BBR-…`) scanned with no part pending a Sanding reason | **Refused** — "scan a part into Sanding first" |
-| Part scanned into Fit Check or Sanding that was never enrolled at Harvest | Error — no such sticker exists yet; enroll it at Harvest first |
+| Part sent to **Rework** (location scanned), then something other than a reason code is scanned | Same as above — the pending "awaiting reason" state is abandoned, nothing was written (Rework's location scan never itself calls the backend, §5.4b) |
+| Reason code (`BBR-…`) scanned with no part pending a Rework reason | **Refused** — "scan a part into Rework first" |
+| Part scanned into Fit Check or Rework that was never enrolled at Harvest | Error — no such sticker exists yet; enroll it at Harvest first |
 | SKU scan outside open station session | Error |
 | Move open, scan WIP | Complete move |
 | Move open, scan anything other than WIP | Discard queued kg (nothing was committed), show "Move cancelled — N kg not moved", switch to the new station |
@@ -1080,18 +1075,18 @@ phase 1:
 
 > **0 → 1a → 1b → 7 → 8 → 9a → 9b → 9c → 2 → 2b → 3 → 4 → 5 → 6**
 
-**Phase 9 was split into 9a/9b/9c** when Fit Check and Sanding were added
+**Phase 9 was split into 9a/9b/9c** when Fit Check and Rework were added
 (§5.4a, §5.4b) — 9 itself never started, so splitting it costs no history,
 unlike renumbering a phase already in flight. 9a (Fit Check) ships before 9c
 (Cleanup) because 9c's own gate depends on it — Cleanup cannot refuse an
 unchecked part in a world where Fit Check does not exist yet to have checked
-it. 9b (Sanding) sits between them: it does not gate anything, but it shares
+it. 9b (Rework) sits between them: it does not gate anything, but it shares
 9a's scan-part-then-location plumbing on the scan page, and Cleanup's own
-test gate wants to exercise "sanded, then straight to Cleanup" as one of its
+test gate wants to exercise "reworked, then straight to Cleanup" as one of its
 scenarios.
 
 **9a/9b were implemented once as station sessions, then corrected.** The
-first pass wired Fit Check and Sanding through the same open/close/floor-wide-
+first pass wired Fit Check and Rework through the same open/close/floor-wide-
 lock machinery as WIP/Harvest/Cleanup — wrong: neither is a station, and the
 real flow is scan-a-part-then-scan-a-location with no session at all. See
 §5.4a/§5.4b for the corrected design and §15.8's dated entry for what
@@ -1133,15 +1128,15 @@ The table stays in original numeric order — look a phase up by its number.
 | **7** | Printer labels tab in Codes (`BBP-{id}`) + the **printer info page** (§5.6): identity, state, last finished print, total print hours, maintenance due, log-maintenance action | Print `BBP-…` from Codes, scan it from idle → info page names the right printer, its latest finished job, and its hours. A printer with maintenance overdue says so; logging it from the page clears it. A printer with no finished job says there is nothing to harvest rather than going blank. Scanning it takes **no** harvest lock. |
 | **8** | Harvest part linking, via **both** entries (§5.4): Harvest station → printer, and printer-from-idle → parts. Lock and elapsed-time already shipped in 1b | Printer → `BBD-` parts → printer close. DB: parts → correct **archive**, not just printer. Same-printer rescan closes only (never reopens against a stale plate—see §5.4). **Both entries:** label parts via the Harvest station, and again via a bare printer scan — identical rows result. **No-job case:** scan a part against a printer with no finished job → part still recorded with `printer_id` + `labeled_at`, `archive_id` null, screen says "no job found", and it appears in the needs-attention list (§7.2). **Lock:** taken on first part scan from the info page, not on merely viewing it. |
 | **9a** | Fit Check location (§5.4a) — **no session**: scan-part-then-location on the scan page (`awaiting-location` status), `POST /floor/locations/fit-check/part` commits a `fit_checked` event, re-scan appends rather than errors. `BBS-fit-check` refused by the station-scan route (`category == "location"`). | Scan a harvested part at idle → "scan a location" prompt. Scan `BBS-fit-check` → recorded, screen shows part/printer, back to idle. Re-scan same part → logged again, no error. Part never harvested → error. `BBS-fit-check` with nothing pending → "scan a part first". |
-| **9b** | Sanding location (§5.4b) — same no-session shape as 9a, but three scans: part → `BBS-sanding` (pure UI transition, `awaiting-sanding-reason` status, no server call) → `BBR-…` reason (or `BBR-other` + keyboard), which is what actually calls `POST /floor/locations/sanding/part`. Reason codes are a fixed `SandingReasonCode` enum in v1, not an editable registry. | Scan a harvested part → "scan a location". Scan `BBS-sanding` → "scan a reason", nothing posted yet. Scan a reason → saved, back to idle. Scan a different part before the reason → first pending part dropped, second one pending. `BBR-other` → keyboard note saved. |
-| **9c** | Cleanup outcomes — **every part scanned, good ones included** (§5.5, §11.2), **gated on Fit Check** (§5.4a) | Part scan alone → recorded **good**, one scan, no confirmation step. Part → defect / rework / multi / other → recorded defective with disposition. Trash vs rework. Harvest codes ignored. **Yield check:** label a job's parts, mark some good and some defective, and confirm `good / produced` comes out right for that job — and that a part never scanned at cleanup reads as *uninspected*, not as good. **Amendment:** scan a part good, then re-scan it and mark it defective — the current disposition changes, the earlier one survives, and the pair is distinguishable from a straight-to-defective part (§5.5). **Gate check:** scan a part straight from Harvest, no Fit Check — refused, with the "needs Fit Check first" message. Fit-check it, then Cleanup accepts it. **Sanding path:** fit-check a part, sand it with a reason, confirm Cleanup accepts it straight through with no second Fit Check required. |
+| **9b** | Rework location (§5.4b) — same no-session shape as 9a, but three scans: part → `BBS-rework` (pure UI transition, `awaiting-rework-reason` status, no server call) → `BBR-…` reason (or `BBR-other` + keyboard), which is what actually calls `POST /floor/locations/rework/part`. Reasons come from the editable Error labels catalog. | Scan a harvested part → "scan a location". Scan `BBS-rework` → "scan a reason", nothing posted yet. Scan a reason → saved, back to idle. Scan a different part before the reason → first pending part dropped, second one pending. `BBR-other` → keyboard note saved. |
+| **9c** | Cleanup outcomes — **every part scanned, good ones included** (§5.5, §11.2), **gated on Fit Check** (§5.4a) | Part scan alone → recorded **good**, one scan, no confirmation step. Part → defect / rework / multi / other → recorded defective with disposition. Trash vs rework. Harvest codes ignored. **Yield check:** label a job's parts, mark some good and some defective, and confirm `good / produced` comes out right for that job — and that a part never scanned at cleanup reads as *uninspected*, not as good. **Amendment:** scan a part good, then re-scan it and mark it defective — the current disposition changes, the earlier one survives, and the pair is distinguishable from a straight-to-defective part (§5.5). **Gate check:** scan a part straight from Harvest, no Fit Check — refused, with the "needs Fit Check first" message. Fit-check it, then Cleanup accepts it. **Rework path:** fit-check a part, send it to Rework with a reason, confirm Cleanup accepts it straight through with no second Fit Check required. |
 
 **Suggested branch strategy:** one feature branch (`feat/floor-stations`) with
 sequential commits per phase, or sub-branches merged in order. Codes ships
 in slices tied to whichever phase first needs that tab to be printable —
-Station labels with phase 1 (§10 row above; the Fit Check and Sanding
+Station labels with phase 1 (§10 row above; the Fit Check and Rework
 stations join the same tab whenever 9a/9b need them printable), Printer
-labels with phase 7 (harvest needs a printable `BBP-…`). Sanding reason
+labels with phase 7 (harvest needs a printable `BBP-…`). Rework reason
 labels (`BBR-…`) are a hard dependency of 9b's own pistol test, the same way
 Error labels are a hard dependency of 9c's. General Codes polish (size
 picker refinement, error-type editor) isn't a hard dependency of any single
@@ -1363,11 +1358,11 @@ generalizes (§6.4).
 **Fit check (required before Cleanup):** part → Fit Check → done. (Not a
 station — no "open Fit Check" step; scan the part first, then the location.)
 
-**Sanding (only if needed, any time before Cleanup):** part → Sanding → reason QR → saved.
+**Rework (only if needed, any time before Cleanup):** part → Rework → reason QR → saved.
 
 **Bad part at cleanup:** Cleanup → part → (rework?) → defect QR → saved → wait. Refused if the part hasn't been through Fit Check yet.
 
-**Office:** register new factory barcode on product; print new station/printer/error/sanding-reason QR when needed.
+**Office:** register new factory barcode on product; print new station/printer/error/rework-reason QR when needed.
 
 ---
 
@@ -1396,7 +1391,7 @@ stay put.
 | **7** | Printer labels tab in Codes + printer info page (§5.6) + open-sessions view on `/floor` | **Done** (merged) | `feat/floor-p7-printer-codes`, [PR #96](https://github.com/Nicolas-Cilia/Backoffice-Printing/pull/96) |
 | **8** | Harvest part linking (lock and elapsed-time already shipped in 1b) | **In progress** — uncommitted on `feat/floor-p8-harvest-parts`: labeled-part harvest, `/floor/inventory` Part history (match unmatched records, archive, event timeline), unlabeled-build-plate backlog on `/floor`. Local only, not pushed | `feat/floor-p8-harvest-parts` |
 | **9a** | Fit Check location, no session — mandatory gate before Cleanup (§5.4a) | **In progress** — backend (`scan_fit_check_part`, `POST /floor/locations/fit-check/part`, `category`-based refusal in `/floor/session/scan`) and frontend (scan-part-then-location flow, Codes page Locations tab) built and tested locally; uncommitted | `feat/floor-p8-harvest-parts` |
-| **9b** | Sanding location, no session — optional, independent of Fit Check (§5.4b) | **In progress** — same state as 9a: `scan_sanding_part`, `POST /floor/locations/sanding/part`, fixed `SandingReasonCode` enum, three-scan flow on the scan page; no printable `BBR-` labels yet (Codes page gap, noted below) | `feat/floor-p8-harvest-parts` |
+| **9b** | Rework location, no session — optional, independent of Fit Check (§5.4b) | **In progress** — same state as 9a: `scan_rework_part`, `POST /floor/locations/rework/part`, editable Error labels, three-scan flow on the scan page; printable labels are available from Codes | `feat/floor-p8-harvest-parts` |
 | **9c** | Cleanup outcomes (every part scanned, good included), gated on Fit Check | Not started | — |
 | 2 | `filament_stock_movements` ledger + derived storage/WIP + `on_hand_grams` migration | Not started — deferred behind 7/8/9a/9b/9c | — |
 | 2b | `/floor/inventory` — movement history + manual corrections (adjust, manual move, reverse); same components on Filament Tracking | Not started | — |
@@ -1460,7 +1455,7 @@ manual clicking every time, so every phase starts from the same known state:
 - One SKU intentionally **not** registered (exercises "unknown barcode →
   error")
 - All 7 station QR payloads (WIP, + Storage receive, Move, Harvest, Fit
-  Check, Sanding, Cleanup) pre-rendered as one PDF, printed once, reused
+  Check, Rework, Cleanup) pre-rendered as one PDF, printed once, reused
   across every phase
 
 ### 15.5 Per-phase test gates
@@ -1478,8 +1473,8 @@ manual clicking every time, so every phase starts from the same known state:
 | 7 | Integration: printer QR → latest finished job | Print `BBP-…` for a virtual printer, scan → correct job |
 | 8 | Integration: part linking, defect save, same-printer-close, abandoned-session display | Full loop on a virtual printer's finished job: printer → parts → close. Then a real defect scan. Leave a session open, reload, confirm elapsed time shows and increments. |
 | 9a | Integration: `scan_fit_check_part` writes `fit_checked` regardless of any open session elsewhere; `/floor/session/scan` refuses `BBS-fit-check` (404, `category == "location"`); re-scan appends rather than errors; never-enrolled sticker rejected. Component (frontend): idle part scan → `awaiting-location`; location commits and flashes; no-part-pending location scan refused; abandoning a pending part on an unrelated scan | Scan a harvested part at idle → "scan a location". Scan `BBS-fit-check` → recorded, screen confirms, back to idle. Re-scan → logged again, no error. `BBS-fit-check` scanned bare → "scan a part first". |
-| 9b | Integration: `scan_sanding_part` writes one `sanding` event with the reason, atomically — no partial write from the location-only step, since that step never calls the backend. Component: part → `BBS-sanding` → `awaiting-sanding-reason` (no request sent yet) → reason → commits; abandoning a pending part or a pending reason by scanning something else | Scan a harvested part → "scan a location". Scan `BBS-sanding` → "scan a reason", confirm nothing was posted yet. Scan a reason → saved, back to idle. Scan a different part before the reason → first pending part dropped. `BBR-other` → keyboard note saved. |
-| 9c | Integration: cleanup outcome write, defect save, disposition amendment, **and the Fit Check gate** (refused without it, accepted with it, accepted after Sanding with no second Fit Check) | Full 9a→9c loop: fit-check a part, then Cleanup accepts it. Separately, skip Fit Check and confirm Cleanup refuses. Sand a part (with a reason), confirm Cleanup accepts it straight through. |
+| 9b | Integration: `scan_rework_part` writes one `rework` event with the reason, atomically — no partial write from the location-only step, since that step never calls the backend. Component: part → `BBS-rework` → `awaiting-rework-reason` (no request sent yet) → reason → commits; abandoning a pending part or a pending reason by scanning something else | Scan a harvested part → "scan a location". Scan `BBS-rework` → "scan a reason", confirm nothing was posted yet. Scan a reason → saved, back to idle. Scan a different part before the reason → first pending part dropped. `BBR-other` → keyboard note saved. |
+| 9c | Integration: cleanup outcome write, defect save, disposition amendment, **and the Fit Check gate** (refused without it, accepted with it, accepted after Rework with no second Fit Check) | Full 9a→9c loop: fit-check a part, then Cleanup accepts it. Separately, skip Fit Check and confirm Cleanup refuses. Sand a part (with a reason), confirm Cleanup accepts it straight through. |
 
 ### 15.6 Dry run before production
 
@@ -1509,56 +1504,55 @@ Dated entries, most recent first. Record what happened, not just what was
 planned—decisions made, deviations, blockers, and their resolutions.
 
 **2026-08-25 (in progress):** Corrected a real design mistake in phases
-9a/9b, caught after Fit Check was already built and Sanding was underway:
+9a/9b, caught after Fit Check was already built and Rework was underway:
 both had been implemented as **stations** — open/close session, floor-wide
 lock config, the whole 1b session machinery — mirroring Harvest and Cleanup.
 That is wrong. Neither is a station. The actual flow, per direct correction:
-scan a part, then scan a location, and (for Sanding) then a reason — three
+scan a part, then scan a location, and (for Rework) then a reason — three
 scans building up local, client-side state on the scan page, never a server
-session. Reworked before Sanding compounded the same mistake rather than
+session. Reworked before Rework compounded the same mistake rather than
 after.
 
 What changed, concretely:
 
-1. **No session for Fit Check or Sanding at all.** `POST /floor/session/scan`
+1. **No session for Fit Check or Rework at all.** `POST /floor/session/scan`
    now refuses to open one for either (`category == "location"` on the
    `FloorStation` entry, checked in the route — §5.4a). Both still live in
    the same station catalog and print through the same `BBS-…` pipeline as
    real stations (Codes page, §3.3) — only the *scanning* behavior differs,
    not the catalog or the label.
-2. **`scan_fit_check_part`/`scan_sanding_part` simplified to plain commits.**
+2. **`scan_fit_check_part`/`scan_rework_part` simplified to plain commits.**
    No `device_id`, no session lookup — just the sticker code (and for
-   Sanding, the reason). `FitCheckScanResult`/`FitCheckScanOutcome` collapsed
+   Rework, the reason). `FitCheckScanResult`/`FitCheckScanOutcome` collapsed
    into a shared `LocationScanResult`/`LocationScanOutcome` used by both,
    since they're now the same shape of operation. Routes moved to
    `POST /floor/locations/fit-check/part` and
-   `POST /floor/locations/sanding/part`.
-3. **Sanding's location scan is a pure state transition, not a request.**
-   Nothing is written when `BBS-sanding` is scanned — only when the reason
+   `POST /floor/locations/rework/part`.
+3. **Rework's location scan is a pure state transition, not a request.**
+   Nothing is written when `BBS-rework` is scanned — only when the reason
    is. This is the one place the three-scan flow is asymmetric: Fit Check
-   commits on its second scan (the location), Sanding only on its third.
-4. **Reason codes landed as a fixed `SandingReasonCode` enum** (`doesnt_fit`
-   / `rough_surface` / `layer_lines` / `other`), not the editable registry
-   an earlier pass of this doc proposed — same shape as the office-side
-   unlink/replace-sticker reason codes, deliberately smaller scope than a
-   fourth Codes-page catalog. Their `BBR-…` QR labels are **not yet
-   printable anywhere** — a real gap, left as a follow-up (§3.3).
+   commits on its second scan (the location), Rework only on its third.
+4. **Rework reasons use the editable Error labels registry** rather than a
+   fixed enum. The same labels are available for Discard, can be added or
+   removed by users, and are printable from the Codes page. The legacy
+   `BBR-…` reason route remains available for compatibility with existing
+   labels.
 5. **The scan page's pending state lives entirely in `Status`**, the same
    union already driving every other screen — `awaiting-location` and
-   `awaiting-sanding-reason` join it. This is what makes "abandon the
+   `awaiting-rework-reason` join it. This is what makes "abandon the
    pending part by scanning something else" free: any other scan just
    replaces `status` with whatever it normally means, no special cleanup
    code needed, unlike Move's server-side queue (§5.3) which needed its own
    cancellation message.
 6. Doc corrected throughout: §2.4's lock table no longer lists Fit Check/
-   Sanding (there is no lock question — no session), §4 notes `BBS-fit-check`/
-   `BBS-sanding` are not station dispatch, §5.4a/§5.4b rewritten around the
+   Rework (there is no lock question — no session), §4 notes `BBS-fit-check`/
+   `BBS-rework` are not station dispatch, §5.4a/§5.4b rewritten around the
    scan-part-then-location flow, §9's mis-scan rows updated, §10/§15.1/§15.5
    updated to describe the corrected shape rather than the retracted one.
 7. **What was already right and didn't change:** the Fit Check gate on
    Cleanup (§5.5, §9) — that's about whether a `fit_checked` *event* exists
    for a part, which is independent of how the scan that created it was
-   triggered. Sanding's independence from Fit Check's outcome, and its lack
+   triggered. Rework's independence from Fit Check's outcome, and its lack
    of a loop-back, also stand unchanged (§5.4b) — the earlier session-based
    version got what happens right and only how it's triggered wrong.
 
@@ -1616,26 +1610,26 @@ import-sort failure in `database.py`, and a TypeScript build error in
 `FloorScanPage.tsx` (`partFeedbackMessage` missing a return path).
 
 **2026-08-25:** Plan revision, before phase 9 (not started) was built: added
-**Fit Check** and **Sanding** as two new stations between Harvest and
+**Fit Check** and **Rework** as two new stations between Harvest and
 Cleanup (new §5.4a, §5.4b), and split phase 9 into 9a/9b/9c (§10, §15.1,
 §15.5) — splitting cost no history since phase 9 had no commits yet. Key
 decisions, each settled in conversation rather than assumed:
 
-1. **Fit Check is a hard gate, Sanding is not.** A part scanned at Cleanup
+1. **Fit Check is a hard gate, Rework is not.** A part scanned at Cleanup
    with no `fit_checked` event is refused outright (§5.5, §9) — the one hard
-   sequencing rule added. Sanding has no equivalent gate on either side: it
+   sequencing rule added. Rework has no equivalent gate on either side: it
    does not require Fit Check to have happened, and Cleanup does not require
-   Sanding.
-2. **Sanding is independent of Fit Check's outcome**, not its fail path.
+   Rework.
+2. **Rework is independent of Fit Check's outcome**, not its fail path.
    Fit Check records no pass/fail verdict at all in v1 — only that the
    checkpoint happened — because the one case a verdict would matter for
-   (doesn't fit → sand it) is a bench decision the operator makes physically,
-   and Sanding's own reason scan already captures "why" for that and every
-   other reason a part might need sanding.
-3. **No loop back to Fit Check after Sanding.** Once a reason is recorded at
-   Sanding, the part goes straight to Cleanup. Sanding is trusted to have
+   (doesn't fit → send it to Rework) is a bench decision the operator makes physically,
+   and Rework's own reason scan already captures "why" for that and every
+   other reason a part might need rework.
+3. **No loop back to Fit Check after Rework.** Once a reason is recorded at
+   Rework, the part goes straight to Cleanup. Rework is trusted to have
    fixed what it named.
-4. **Sanding's "why" is a scanned reason code**, `BBR-…`, following Cleanup's
+4. **Rework's "why" is a scanned reason code**, `BBR-…`, following Cleanup's
    existing `BBF-`/defect-type pattern exactly (seeded set, editable in
    Codes, `BBR-other` opens the keyboard) rather than free text or an
    on-screen picker — one less UI pattern to build, and it stays true to the
@@ -1643,13 +1637,13 @@ decisions, each settled in conversation rather than assumed:
    dropdowns).
 5. **No schema change.** Both stations write to the existing
    `floor_part_events` append-only table (§7.2) — `fit_checked` and
-   `sanding` join `enrolled`/`scanned`/`archived`/etc. as just more action
+   `rework` join `enrolled`/`scanned`/`archived`/etc. as just more action
    types with a JSON `details` payload. The Part history viewer being built
    in phase 8 (`/floor/inventory`, still uncommitted — see the entry below)
-   reads this same table, so Fit Check and Sanding events appear in a part's
+   reads this same table, so Fit Check and Rework events appear in a part's
    timeline for free once 9a/9b land; nothing about the viewer itself needs
    to change.
-6. Fit Check and Sanding get **no floor-wide lock** (§2.4), matching
+6. Fit Check and Rework get **no floor-wide lock** (§2.4), matching
    Cleanup's own reasoning: they are bench/inspection work, and parallel
    benches on separate machines are normal, not a data conflict the way two
    people racing to bind the same harvest plate would be.

@@ -24,11 +24,11 @@
  * share one result-handling path (`applyPartScanResponse`) so a `no_job` or
  * `no_job` reads identically regardless of which entry point triggered it.
  *
- * Phase 9a/9b add Fit Check and Sanding (§5.4a/§5.4b) — **not** stations, so
+ * Phase 9a/9b add Fit Check and Rework (§5.4a/§5.4b) — **not** stations, so
  * they add no session handling here at all. The flow is scan a part (from
- * idle, nothing open), then scan a location, and for Sanding a reason after
+ * idle, nothing open), then scan a location, and for Rework a reason after
  * that — three scans, tracked entirely as `Status` transitions on this page
- * (`awaiting-location` → `awaiting-sanding-reason` → commit), never on the
+ * (`awaiting-location` → `awaiting-rework-reason` → commit), never on the
  * server. Abandoning the flow needs no special code: scanning anything else
  * just replaces `status` with whatever that scan means, the same as every
  * other transition on this page.
@@ -43,13 +43,14 @@ import {
   type FloorLiveStatus,
   type FloorPlateArchive,
   type FloorPlatePrinter,
+  type FloorInventoryPart,
   type FloorLabeledPart,
   type FloorPrinterInfo,
   type FloorSession,
   type LocationScanResponse,
   type PartScanResponse,
   type PartScanResult,
-  type SandingReasonCode,
+  type ReworkReasonCode,
 } from '../api/client';
 import { getDeviceId } from '../utils/floorDevice';
 import { playScanErrorTone } from '../utils/floorSound';
@@ -95,20 +96,38 @@ type Status =
    *  since it is itself a prompt waiting for the next scan; abandoned by
    *  scanning anything that isn't a location code, same as every other
    *  status transition here. */
-  | { kind: 'awaiting-location'; payload: string }
-  /** The part's location was Sanding — a pure UI transition, no server call
+  | { kind: 'awaiting-location'; payload: string; part: PartImageIdentity | null }
+  /** The part's location was Rework — a pure UI transition, no server call
    *  (§5.4b) — now waiting for the reason that actually commits it. */
-  | { kind: 'awaiting-sanding-reason'; payload: string }
-  /** Fit Check or Sanding just committed — brief confirmation before the
+  | { kind: 'awaiting-rework-reason'; payload: string; part: PartImageIdentity | null }
+  | { kind: 'awaiting-discard-reason'; payload: string; part: PartImageIdentity | null }
+  | { kind: 'awaiting-custom-reason'; locationSlug: 'rework' | 'discard'; payload: string; reasonPayload: string; part: PartImageIdentity | null }
+  /** Fit Check or Rework just committed — brief confirmation before the
    *  screen returns to idle, same timing as `plate-closed`. */
   | {
       kind: 'location-recorded';
-      locationSlug: 'fit-check' | 'sanding';
+      locationSlug: 'fit-check' | 'rework' | 'discard';
       part: FloorLabeledPart | null;
       printer: FloorPlatePrinter | null;
       archive: FloorPlateArchive | null;
       reasonCode?: string;
     };
+
+type PartImageIdentity = Pick<FloorInventoryPart, 'part_code' | 'section_part_id' | 'part_name' | 'part_source' | 'labeled_at' | 'archived_at' | 'latest_event_action'> & {
+  printer_name: string | null;
+  printer_id: number | null;
+};
+
+function isAlreadyAtLocation(part: PartImageIdentity | null, locationSlug: 'fit-check' | 'rework' | 'discard') {
+  if (!part) return false;
+  if (locationSlug === 'fit-check') {
+    return part.latest_event_action === 'fit_check' || part.latest_event_action === 'fit_checked';
+  }
+  if (locationSlug === 'rework') {
+    return part.latest_event_action === 'rework' || part.latest_event_action === 'sanding';
+  }
+  return part.latest_event_action === 'discarded';
+}
 
 /** The plate currently bound under an open Harvest session (§5.4): which
  *  printer, its resolved job (null = no job found, §7.2), and the running
@@ -173,6 +192,8 @@ export function FloorScanPage() {
   // hint, §5.6) without closing over stale `status` state.
   const statusRef = useRef<Status>({ kind: 'idle' });
   statusRef.current = status;
+  const customReasonDraftRef = useRef<string | null>(null);
+  const customReasonPendingRef = useRef(false);
 
   const focusInput = useCallback(() => {
     inputRef.current?.focus();
@@ -182,7 +203,16 @@ export function FloorScanPage() {
   // whatever has focus IS the scan target.
   useEffect(() => {
     focusInput();
-    const onWindowClick = () => focusInput();
+    const onWindowClick = (event: MouseEvent) => {
+      const target = event.target;
+      if (
+        target instanceof HTMLElement &&
+        target.closest('button, input, textarea, select, [contenteditable="true"]')
+      ) {
+        return;
+      }
+      focusInput();
+    };
     window.addEventListener('click', onWindowClick);
     return () => window.removeEventListener('click', onWindowClick);
   }, [focusInput]);
@@ -208,7 +238,7 @@ export function FloorScanPage() {
     };
   }, [deviceId]);
 
-  // `locked`, `awaiting-location` and `awaiting-sanding-reason` are excluded
+  // `locked`, `awaiting-location` and `awaiting-rework-reason` are excluded
   // on purpose: each is a prompt waiting for a specific next scan, not a
   // flash. `plate-closed`/`location-recorded` join `error`/`closed` here for
   // the same reason those flash: each is a brief confirmation, not a
@@ -468,12 +498,12 @@ export function FloorScanPage() {
     [applyPartScanResponse, deviceId, failScan, t],
   );
 
-  // Fit Check and Sanding are locations, not stations (§5.4a/§5.4b) — no
+  // Fit Check and Rework are locations, not stations (§5.4a/§5.4b) — no
   // session touched by either commit below, and no device_id sent: the
-  // sticker code (and for Sanding, the reason) is everything the backend
+  // sticker code (and for Rework, the reason) is everything the backend
   // needs, already known locally by the time these are called.
   const applyLocationScanResponse = useCallback(
-    (locationSlug: 'fit-check' | 'sanding', resp: LocationScanResponse, reasonCode?: string) => {
+    (locationSlug: 'fit-check' | 'rework', resp: LocationScanResponse, reasonCode?: string) => {
       if (resp.result === 'invalid_code') {
         failScan(t('floor.scanInvalidCode', 'Invalid part code'));
         return;
@@ -483,8 +513,16 @@ export function FloorScanPage() {
         failScan(t('floor.locationUnknownPart', 'Not enrolled — scan it at Harvest first'));
         return;
       }
+      if (resp.result === 'already_at_location') {
+        failScan(
+          locationSlug === 'fit-check'
+            ? t('floor.fitCheckAlreadyRecorded', 'Part is already in Fit Check')
+            : t('floor.reworkAlreadyRecorded', 'Part is already in Rework'),
+        );
+        return;
+      }
       // recorded: for Fit Check, a first check or a re-check both land here
-      // (§5.4a) — there is no verdict to distinguish them by. For Sanding,
+      // (§5.4a) — there is no verdict to distinguish them by. For Rework,
       // every visit is its own event (§5.4b) — no amendment concept either.
       setStatus({
         kind: 'location-recorded',
@@ -492,7 +530,7 @@ export function FloorScanPage() {
         part: resp.part,
         printer: resp.printer,
         archive: resp.archive,
-        reasonCode,
+        reasonCode: resp.reason ?? reasonCode,
       });
     },
     [failScan, t],
@@ -514,24 +552,21 @@ export function FloorScanPage() {
     [applyLocationScanResponse, failScan, t],
   );
 
-  const submitSandingPartScan = useCallback(
-    async (payload: string, reasonPayload: string) => {
+  const submitReworkPartScan = useCallback(
+    async (payload: string, reasonPayload: string, reasonText?: string | null, showResult = true) => {
       setBusy(true);
       busyRef.current = true;
       try {
         // The reason payload is `BBR-<reason_code>` verbatim — the QR is
-        // printed with the backend's own SandingReasonCode values, so no
+        // printed with the backend's own ReworkReasonCode values, so no
         // translation happens here, just stripping the prefix. Not
         // statically checked against the union (it comes from a scan, not
         // a literal) — the backend accepts any non-empty string for this
         // field and stores it as-is (§5.4b), same latitude `BBF-other`-style
         // free-form codes get elsewhere in this app.
-        const reasonCode = reasonPayload.slice(PREFIX_REASON.length) as SandingReasonCode;
-        applyLocationScanResponse(
-          'sanding',
-          await api.scanSandingPart({ payload, reason_code: reasonCode }),
-          reasonCode,
-        );
+        const reasonCode = reasonPayload.slice(PREFIX_REASON.length) as ReworkReasonCode;
+        const response = await api.scanReworkPart({ payload, reason_code: reasonCode, reason_text: reasonText });
+        if (showResult) applyLocationScanResponse('rework', response, reasonCode);
       } catch {
         failScan(t('floor.scanFailed', 'Scan failed'), payload);
       } finally {
@@ -540,6 +575,50 @@ export function FloorScanPage() {
       }
     },
     [applyLocationScanResponse, failScan, t],
+  );
+
+  const submitReworkErrorScan = useCallback(
+    async (payload: string, errorPayload: string, reasonText?: string | null, showResult = true) => {
+      setBusy(true);
+      busyRef.current = true;
+      try {
+        const response = await api.scanReworkError({ payload, error_payload: errorPayload, reason_text: reasonText });
+        if (showResult) applyLocationScanResponse('rework', response);
+      } catch {
+        failScan(t('floor.scanFailed', 'Scan failed'), payload);
+      } finally {
+        setBusy(false);
+        busyRef.current = false;
+      }
+    },
+    [applyLocationScanResponse, failScan, t],
+  );
+
+  const submitDiscardScan = useCallback(
+    async (payload: string, errorPayload: string, reasonText?: string | null, showResult = true) => {
+      setBusy(true);
+      busyRef.current = true;
+      try {
+        const response = await api.discardFloorPart({ payload, error_payload: errorPayload, reason_text: reasonText });
+        if (response.result === 'already_at_location') {
+          if (!showResult) return;
+          failScan(t('floor.discardAlreadyRecorded', 'Part is already discarded'), payload);
+          return;
+        }
+        if (response.result !== 'recorded') {
+          if (!showResult) return;
+          failScan(t('floor.scanInvalidCode', 'Invalid part code'), payload);
+          return;
+        }
+        if (showResult) setStatus({ kind: 'location-recorded', locationSlug: 'discard', part: response.part, printer: response.printer, archive: response.archive, reasonCode: response.reason ?? undefined });
+      } catch {
+        failScan(t('floor.scanFailed', 'Scan failed'), payload);
+      } finally {
+        setBusy(false);
+        busyRef.current = false;
+      }
+    },
+    [failScan, t],
   );
 
   const handleScan = useCallback(
@@ -583,18 +662,66 @@ export function FloorScanPage() {
         // First half of scan-part-then-location (§5.4a/§5.4b). Overwrites
         // whatever was pending before, if anything — scanning a different
         // part just restarts the flow on the new one.
-        setStatus({ kind: 'awaiting-location', payload: route.payload });
+        const pendingCustomReason = statusRef.current.kind === 'awaiting-custom-reason'
+          ? statusRef.current
+          : null;
+        if (pendingCustomReason) {
+          const reasonText = customReasonDraftRef.current;
+          customReasonDraftRef.current = null;
+          customReasonPendingRef.current = false;
+          if (pendingCustomReason.locationSlug === 'discard') {
+            void submitDiscardScan(pendingCustomReason.payload, pendingCustomReason.reasonPayload, reasonText, false);
+          } else if (pendingCustomReason.reasonPayload.toLowerCase() === 'bbr-other') {
+            void submitReworkPartScan(pendingCustomReason.payload, pendingCustomReason.reasonPayload, reasonText, false);
+          } else {
+            void submitReworkErrorScan(pendingCustomReason.payload, pendingCustomReason.reasonPayload, reasonText, false);
+          }
+        }
+        setBusy(true);
+        busyRef.current = true;
+        void api.getFloorInventoryPartBySticker(route.payload)
+          .then((part) => {
+            setStatus({
+              kind: 'awaiting-location',
+              payload: route.payload,
+              part: {
+                part_code: part.part_code,
+                section_part_id: part.section_part_id,
+                part_name: part.part_name,
+                part_source: part.part_source,
+                printer_name: part.printer_name,
+                printer_id: part.printer_id,
+                labeled_at: part.labeled_at,
+                archived_at: part.archived_at,
+                latest_event_action: part.latest_event_action,
+              },
+            });
+          })
+          .catch(() => setStatus({ kind: 'awaiting-location', payload: route.payload, part: null }))
+          .finally(() => {
+            setBusy(false);
+            busyRef.current = false;
+          });
         return;
       }
       if (route.action === 'location') {
         if (statusRef.current.kind === 'awaiting-location') {
           const pendingPayload = statusRef.current.payload;
+          const pendingPart = statusRef.current.part;
           if (route.slug === 'fit-check') {
+            if (isAlreadyAtLocation(pendingPart, 'fit-check')) {
+              failScan(t('floor.fitCheckAlreadyRecorded', 'Part is already in Fit Check'), route.payload);
+              return;
+            }
             void submitFitCheckPartScan(pendingPayload);
           } else {
-            // Sanding's location scan is a pure state transition — no
+            if (isAlreadyAtLocation(pendingPart, 'rework')) {
+              failScan(t('floor.reworkAlreadyRecorded', 'Part is already in Rework'), route.payload);
+              return;
+            }
+            // Rework's location scan is a pure state transition — no
             // server call until the reason is known (§5.4b).
-            setStatus({ kind: 'awaiting-sanding-reason', payload: pendingPayload });
+            setStatus({ kind: 'awaiting-rework-reason', payload: pendingPayload, part: pendingPart });
           }
           return;
         }
@@ -603,12 +730,79 @@ export function FloorScanPage() {
         failScan(t('floor.locationNoPartPending', 'Scan a part first'), route.payload);
         return;
       }
-      if (route.action === 'sanding-reason') {
-        if (statusRef.current.kind === 'awaiting-sanding-reason') {
-          void submitSandingPartScan(statusRef.current.payload, route.payload);
+      if (route.action === 'rework-reason') {
+        if (statusRef.current.kind === 'awaiting-rework-reason') {
+          if (route.payload.toLowerCase() === 'bbr-other') {
+            if (customReasonPendingRef.current) return;
+            customReasonPendingRef.current = true;
+            customReasonDraftRef.current = null;
+            setStatus({
+              kind: 'awaiting-custom-reason',
+              locationSlug: 'rework',
+              payload: statusRef.current.payload,
+              reasonPayload: route.payload,
+              part: statusRef.current.part,
+            });
+            return;
+          }
+          void submitReworkPartScan(statusRef.current.payload, route.payload);
           return;
         }
-        failScan(t('floor.sandingReasonNoPartPending', 'Scan a part into Sanding first'), route.payload);
+        failScan(t('floor.reworkReasonNoPartPending', 'Scan a part into Rework first'), route.payload);
+        return;
+      }
+      if (route.action === 'command') {
+        if (route.payload === 'BBX-discard' && statusRef.current.kind === 'awaiting-location') {
+          if (isAlreadyAtLocation(statusRef.current.part, 'discard')) {
+            failScan(t('floor.discardAlreadyRecorded', 'Part is already discarded'), route.payload);
+            return;
+          }
+          setStatus({ kind: 'awaiting-discard-reason', payload: statusRef.current.payload, part: statusRef.current.part });
+          return;
+        }
+        if (route.payload === 'BBX-discard') {
+          failScan(t('floor.discardNoPartPending', 'Scan a part first, then Discard'), route.payload);
+          return;
+        }
+        failScan(t('floor.scanNotYetSupported', 'Not handled yet'), route.payload);
+        return;
+      }
+      if (route.action === 'error-label') {
+        if (statusRef.current.kind === 'awaiting-rework-reason') {
+          if (route.payload.toLowerCase() === 'bbf-other') {
+            if (customReasonPendingRef.current) return;
+            customReasonPendingRef.current = true;
+            customReasonDraftRef.current = null;
+            setStatus({
+              kind: 'awaiting-custom-reason',
+              locationSlug: 'rework',
+              payload: statusRef.current.payload,
+              reasonPayload: route.payload,
+              part: statusRef.current.part,
+            });
+            return;
+          }
+          void submitReworkErrorScan(statusRef.current.payload, route.payload);
+          return;
+        }
+        if (statusRef.current.kind === 'awaiting-discard-reason') {
+          if (route.payload.toLowerCase() === 'bbf-other') {
+            if (customReasonPendingRef.current) return;
+            customReasonPendingRef.current = true;
+            customReasonDraftRef.current = null;
+            setStatus({
+              kind: 'awaiting-custom-reason',
+              locationSlug: 'discard',
+              payload: statusRef.current.payload,
+              reasonPayload: route.payload,
+              part: statusRef.current.part,
+            });
+            return;
+          }
+          void submitDiscardScan(statusRef.current.payload, route.payload);
+          return;
+        }
+        failScan(t('floor.errorReasonNoPartPending', 'Scan a part, then Rework or Discard first'), route.payload);
         return;
       }
       failScan(t('floor.scanNotYetSupported', 'Not handled yet'), route.value);
@@ -620,7 +814,9 @@ export function FloorScanPage() {
       submitHarvestPrinterScan,
       submitPartScan,
       submitFitCheckPartScan,
-      submitSandingPartScan,
+      submitReworkPartScan,
+      submitReworkErrorScan,
+      submitDiscardScan,
       t,
     ],
   );
@@ -821,9 +1017,31 @@ export function FloorScanPage() {
       ) : status.kind === 'awaiting-location' ? (
         // First half of scan-part-then-location, done (§5.4a/§5.4b) — not a
         // station, so nothing about `session` is involved here at all.
-        <AwaitingLocationScreen payload={status.payload} t={t} />
-      ) : status.kind === 'awaiting-sanding-reason' ? (
-        <AwaitingSandingReasonScreen payload={status.payload} t={t} />
+        <AwaitingLocationScreen payload={status.payload} part={status.part} t={t} />
+      ) : status.kind === 'awaiting-rework-reason' ? (
+        <AwaitingReworkReasonScreen payload={status.payload} part={status.part} t={t} />
+      ) : status.kind === 'awaiting-discard-reason' ? (
+        <AwaitingDiscardReasonScreen payload={status.payload} part={status.part} t={t} />
+      ) : status.kind === 'awaiting-custom-reason' ? (
+        <AwaitingCustomReasonScreen
+          payload={status.payload}
+          part={status.part}
+          locationSlug={status.locationSlug}
+          t={t}
+          onDraftChange={(reasonText) => {
+            customReasonDraftRef.current = reasonText;
+          }}
+          onSubmit={(reasonText) => {
+            customReasonPendingRef.current = false;
+            if (status.locationSlug === 'discard') {
+              void submitDiscardScan(status.payload, status.reasonPayload, reasonText);
+            } else if (status.reasonPayload.toLowerCase() === 'bbr-other') {
+              void submitReworkPartScan(status.payload, status.reasonPayload, reasonText);
+            } else {
+              void submitReworkErrorScan(status.payload, status.reasonPayload, reasonText);
+            }
+          }}
+        />
       ) : status.kind === 'location-recorded' ? (
         <LocationRecordedFlash
           locationSlug={status.locationSlug}
@@ -963,6 +1181,108 @@ function partFeedbackMessage(
   };
 }
 
+/** The 3MF cover image Files already has on file for a scanned part's
+ *  Production code (TOP/BOT/KNB/BUT/…, §7), shown next to the result on the
+ *  scan page. Renders nothing when there is no code, and hides itself on
+ *  load failure — an unknown code and one with no thumbnail on file both
+ *  mean "nothing to show", not a broken-image icon. */
+function PartCodeThumbnail({ partCode, sectionPartId, className }: { partCode: string | null | undefined; sectionPartId?: number | null; className?: string }) {
+  const [failed, setFailed] = useState(false);
+  useEffect(() => {
+    setFailed(false);
+  }, [partCode, sectionPartId]);
+  if (!partCode || failed) return null;
+  return (
+    <img
+      src={api.getFloorPartCodeThumbnailUrl(partCode, sectionPartId)}
+      alt={partCode}
+      onError={() => setFailed(true)}
+      className={className ?? 'mx-auto h-20 w-20 rounded-lg object-cover bg-bambu-dark-secondary'}
+    />
+  );
+}
+
+function scanStatusLabel(
+  part: PartImageIdentity,
+  t: ReturnType<typeof useTranslation>['t'],
+) {
+  if (part.archived_at) return t('floor.inventoryStatusArchived', 'Archived');
+  switch (part.latest_event_action) {
+    case 'fit_check':
+    case 'fit_checked':
+      return t('floor.inventoryStatusFitCheckPass', 'Fit Check Pass');
+    case 'rework':
+    case 'sanding':
+      return t('floor.inventoryStatusRework', 'Rework');
+    case 'discarded':
+      return t('floor.inventoryStatusDiscarded', 'Discarded');
+    case 'cleanup':
+    case 'cleaned_up':
+      return t('floor.inventoryStatusCleanupPass', 'Cleanup Pass');
+    case 'wip':
+    case 'in_wip':
+      return t('floor.inventoryStatusWip', 'In WIP');
+    case 'shipped':
+      return t('floor.inventoryStatusShipped', 'Shipped');
+    default:
+      return t('floor.inventoryStatusLinked', 'Linked');
+  }
+}
+
+function scanStatusClass(part: PartImageIdentity) {
+  if (part.archived_at) return 'text-bambu-gray';
+  switch (part.latest_event_action) {
+    case 'fit_check':
+    case 'fit_checked':
+      return 'text-green-600 dark:text-green-400';
+    case 'rework':
+    case 'sanding':
+      return 'text-orange-600 dark:text-orange-400';
+    case 'discarded':
+      return 'text-red-600 dark:text-red-400';
+    case 'cleanup':
+    case 'cleaned_up':
+      return 'text-emerald-600 dark:text-emerald-400';
+    case 'wip':
+    case 'in_wip':
+      return 'text-amber-600 dark:text-amber-400';
+    case 'shipped':
+      return 'text-sky-600 dark:text-sky-400';
+    default:
+      return 'text-cyan-600 dark:text-cyan-400';
+  }
+}
+
+function PartSourceLabel({ part, t }: { part: PartImageIdentity | null; t: ReturnType<typeof useTranslation>['t'] }) {
+  if (!part || (!part.part_code && !part.part_name && !part.printer_name && !part.printer_id)) return null;
+  return (
+    <div className="mb-3 text-center">
+      {(part.part_code || part.part_name) && (
+        <p className="text-xl font-semibold text-white">
+          {[part.part_code, part.part_name].filter(Boolean).join(' · ')}
+        </p>
+      )}
+      {(part.part_source || part.printer_name || part.printer_id) && (
+        <p className="mt-1 text-lg text-bambu-gray">
+          From {[part.part_source, part.printer_name ?? (part.printer_id ? `Printer ${part.printer_id}` : null)]
+            .filter(Boolean)
+            .join(' · ')}
+        </p>
+      )}
+      {part.labeled_at && (
+        <p className="mt-1 text-base text-bambu-gray">
+          Registered {formatFloorDate(part.labeled_at, { year: 'numeric', month: '2-digit', day: '2-digit' })}
+        </p>
+      )}
+      {part && (
+        <p className={`mt-1 text-base font-medium ${scanStatusClass(part)}`}>
+          {scanStatusLabel(part, t)}
+        </p>
+      )}
+    </div>
+  );
+}
+
 /** The printer info page (§5.6) — what this machine is doing, and whether it
  *  needs anything, for an operator already standing in front of it.
  *
@@ -1038,12 +1358,13 @@ function PrinterInfoPanel({
           because the operator is standing at this same printer either way. */}
       {feedbackMsg && (
         <div
-          className={`mb-4 rounded-lg border px-4 py-3 ${
+          className={`mb-4 flex items-center gap-3 rounded-lg border px-4 py-3 ${
             feedbackMsg.tone === 'positive'
               ? 'border-bambu-green/40 bg-bambu-green/10'
               : 'border-bambu-dark-tertiary bg-bambu-dark-secondary'
           }`}
         >
+          <PartCodeThumbnail partCode={feedback?.part?.part_code} sectionPartId={feedback?.part?.section_part_id} className="h-12 w-12 shrink-0 rounded object-cover bg-bambu-dark" />
           <p className={feedbackMsg.tone === 'positive' ? 'text-bambu-green font-semibold' : 'text-white font-semibold'}>
             {feedbackMsg.text}
           </p>
@@ -1251,13 +1572,16 @@ function HarvestScreen({
       )}
 
       {feedbackMsg && (
-        <p
-          className={`mt-8 text-lg ${
-            feedbackMsg.tone === 'positive' ? 'text-bambu-green' : 'text-bambu-gray-light'
-          }`}
-        >
-          {feedbackMsg.text}
-        </p>
+        <div className="mt-8 flex flex-col items-center gap-2">
+          <PartCodeThumbnail partCode={feedback?.part?.part_code} sectionPartId={feedback?.part?.section_part_id} />
+          <p
+            className={`text-lg ${
+              feedbackMsg.tone === 'positive' ? 'text-bambu-green' : 'text-bambu-gray-light'
+            }`}
+          >
+            {feedbackMsg.text}
+          </p>
+        </div>
       )}
 
       <button
@@ -1280,14 +1604,18 @@ function HarvestScreen({
  *  else (handled generically — see `handleScan`'s `part-scanned` branch). */
 function AwaitingLocationScreen({
   payload,
+  part,
   t,
 }: {
   payload: string;
+  part: PartImageIdentity | null;
   t: ReturnType<typeof useTranslation>['t'];
 }) {
   return (
     <>
       <ScanLine className="w-16 h-16 mb-6 text-bambu-green" aria-hidden="true" />
+      <PartCodeThumbnail partCode={part?.part_code} sectionPartId={part?.section_part_id} className="mb-4 h-48 w-48 rounded-xl object-cover bg-bambu-dark-secondary" />
+      <PartSourceLabel part={part} t={t} />
       <p className="text-3xl font-bold text-white font-mono">{payload}</p>
       <p className="mt-3 text-2xl text-bambu-gray">
         {t('floor.locationScanLocation', 'Scan a location')}
@@ -1296,27 +1624,127 @@ function AwaitingLocationScreen({
   );
 }
 
-/** Second half of Sanding's flow: the part's location was Sanding (a pure
+/** Second half of Rework's flow: the part's location was Rework (a pure
  *  UI transition, no server call — §5.4b), now waiting for the reason that
  *  actually commits it. */
-function AwaitingSandingReasonScreen({
+function AwaitingReworkReasonScreen({
   payload,
+  part,
   t,
 }: {
   payload: string;
+  part: PartImageIdentity | null;
   t: ReturnType<typeof useTranslation>['t'];
 }) {
   return (
     <>
-      <ScanLine className="w-16 h-16 mb-6 text-bambu-green" aria-hidden="true" />
+      <ScanLine className="w-16 h-16 mb-6 text-orange-500" aria-hidden="true" />
+      <PartCodeThumbnail partCode={part?.part_code} sectionPartId={part?.section_part_id} className="mb-4 h-48 w-48 rounded-xl object-cover bg-bambu-dark-secondary" />
+      <PartSourceLabel part={part} t={t} />
       <p className="text-3xl font-bold text-white font-mono">{payload}</p>
-      <p className="mt-1 text-lg text-bambu-gray">{t('floor.locationSanding', 'Sanding')}</p>
-      <p className="mt-3 text-2xl text-bambu-gray">{t('floor.sandingScanReason', 'Scan a reason')}</p>
+      <p className="mt-1 text-lg text-orange-500">{t('floor.locationRework', 'Rework')}</p>
+      <p className="mt-3 text-2xl text-orange-500">{t('floor.reworkScanReason', 'Scan an error label')}</p>
     </>
   );
 }
 
-/** Brief confirmation after Fit Check or Sanding commits (§5.4a/§5.4b),
+function AwaitingDiscardReasonScreen({ payload, part, t }: { payload: string; part: PartImageIdentity | null; t: ReturnType<typeof useTranslation>['t'] }) {
+  return (
+    <>
+      <ScanLine className="w-16 h-16 mb-6 text-red-500" aria-hidden="true" />
+      <PartCodeThumbnail partCode={part?.part_code} sectionPartId={part?.section_part_id} className="mb-4 h-48 w-48 rounded-xl object-cover bg-bambu-dark-secondary" />
+      <PartSourceLabel part={part} t={t} />
+      <p className="text-3xl font-bold text-white font-mono">{payload}</p>
+      <p className="mt-1 text-lg text-bambu-gray">{t('floor.discard', 'Discard')}</p>
+      <p className="mt-3 text-2xl text-bambu-gray">{t('floor.discardScanReason', 'Scan an error label')}</p>
+    </>
+  );
+}
+
+function AwaitingCustomReasonScreen({
+  payload,
+  part,
+  locationSlug,
+  t,
+  onDraftChange,
+  onSubmit,
+}: {
+  payload: string;
+  part: PartImageIdentity | null;
+  locationSlug: 'rework' | 'discard';
+  t: ReturnType<typeof useTranslation>['t'];
+  onDraftChange: (reasonText: string) => void;
+  onSubmit: (reasonText: string | null) => void;
+}) {
+  const [description, setDescription] = useState('');
+  const [showDescription, setShowDescription] = useState(false);
+  const [secondsRemaining, setSecondsRemaining] = useState(10);
+  const descriptionRef = useRef('');
+  const onSubmitRef = useRef(onSubmit);
+  useEffect(() => {
+    onSubmitRef.current = onSubmit;
+  }, [onSubmit]);
+  useEffect(() => {
+    const timer = window.setInterval(() => {
+      setSecondsRemaining((seconds) => {
+        if (seconds <= 1) {
+          window.clearInterval(timer);
+          onSubmitRef.current(descriptionRef.current.trim() || null);
+          return 0;
+        }
+        return seconds - 1;
+      });
+    }, 1000);
+    return () => window.clearInterval(timer);
+  }, []);
+  const accent = locationSlug === 'discard' ? 'text-red-500' : 'text-orange-500';
+
+  return (
+    <>
+      <ScanLine className={`w-16 h-16 mb-6 ${accent}`} aria-hidden="true" />
+      <PartCodeThumbnail partCode={part?.part_code} sectionPartId={part?.section_part_id} className="mb-4 h-48 w-48 rounded-xl object-cover bg-bambu-dark-secondary" />
+      <PartSourceLabel part={part} t={t} />
+      <p className="text-3xl font-bold text-white font-mono">{payload}</p>
+      <p className={`mt-1 text-lg ${accent}`}>
+        {locationSlug === 'discard' ? t('floor.discard', 'Discard') : t('floor.locationRework', 'Rework')}
+      </p>
+      <p className={`mt-3 text-2xl ${accent}`}>
+        {t('floor.otherReasonSelected', 'Other reason selected')}
+      </p>
+      {showDescription && (
+        <input
+          autoFocus
+          value={description}
+          onChange={(event) => {
+            const value = event.target.value.slice(0, 120);
+            descriptionRef.current = value;
+            setDescription(value);
+            onDraftChange(value);
+          }}
+          placeholder={t('floor.otherReasonPlaceholder', 'Short description (optional)')}
+          maxLength={120}
+          className="mt-4 w-72 rounded-lg border border-bambu-dark-tertiary bg-bambu-dark-secondary px-3 py-2 text-sm text-white placeholder:text-bambu-gray focus:border-bambu-green focus:outline-none"
+        />
+      )}
+      <div className="mt-5 flex items-center gap-3">
+        <button
+          type="button"
+          onClick={() => setShowDescription((visible) => !visible)}
+          className="rounded-lg bg-bambu-dark-secondary px-4 py-2 text-sm text-bambu-gray-light transition-colors hover:text-white"
+        >
+          {showDescription
+            ? t('floor.otherReasonHideDescription', 'Hide description')
+            : t('floor.otherReasonAddDescription', 'Add short description')}
+        </button>
+        <span className="text-sm text-bambu-gray">
+          {t('floor.otherReasonAutoContinue', 'Continuing in {{seconds}}s', { seconds: secondsRemaining })}
+        </span>
+      </div>
+    </>
+  );
+}
+
+/** Brief confirmation after Fit Check or Rework commits (§5.4a/§5.4b),
  *  before the screen returns to idle — same timing as `PlateClosedFlash`. */
 function LocationRecordedFlash({
   locationSlug,
@@ -1326,7 +1754,7 @@ function LocationRecordedFlash({
   reasonCode,
   t,
 }: {
-  locationSlug: 'fit-check' | 'sanding';
+  locationSlug: 'fit-check' | 'rework' | 'discard';
   part: FloorLabeledPart | null;
   printer: FloorPlatePrinter | null;
   archive: FloorPlateArchive | null;
@@ -1335,17 +1763,25 @@ function LocationRecordedFlash({
 }) {
   return (
     <>
-      <ScanLine className="w-16 h-16 mb-6 text-bambu-green" aria-hidden="true" />
+      <ScanLine
+        className={`w-16 h-16 mb-6 ${locationSlug === 'discard' ? 'text-red-500' : locationSlug === 'rework' ? 'text-orange-500' : 'text-bambu-green'}`}
+        aria-hidden="true"
+      />
+      <PartCodeThumbnail partCode={part?.part_code} sectionPartId={part?.section_part_id} className="mb-4 h-20 w-20 rounded-lg object-cover bg-bambu-dark-secondary" />
       <p className="text-4xl font-bold text-white font-mono">{part?.sticker_code ?? ''}</p>
       <p className="mt-2 text-lg text-bambu-gray">
         {[printer?.name, archive?.print_name ?? (printer ? t('floor.printerUnnamedJob', 'Unnamed job') : null)]
           .filter(Boolean)
           .join(' · ')}
       </p>
-      <p className="mt-3 text-lg text-bambu-green">
+      <p className={`mt-3 text-lg ${locationSlug === 'discard' ? 'text-red-500' : locationSlug === 'rework' ? 'text-orange-500' : 'text-bambu-green'}`}>
         {locationSlug === 'fit-check'
           ? t('floor.fitCheckRecorded', 'Checked')
-          : t('floor.sandingRecorded', 'Sent to Sanding · {{reason}}', { reason: reasonCode })}
+          : locationSlug === 'discard'
+            ? t('floor.discardRecorded', 'Discarded')
+            : reasonCode
+              ? t('floor.reworkRecorded', 'Sent to Rework · {{reason}}', { reason: reasonCode })
+              : t('floor.reworkRecordedWithoutReason', 'Sent to Rework')}
       </p>
     </>
   );

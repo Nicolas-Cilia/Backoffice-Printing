@@ -778,6 +778,7 @@ export interface ArchiveSlim {
 export interface PrintLogEntry {
   id: number;
   archive_id: number | null;
+  part_code: string | null;
   print_name: string | null;
   printer_name: string | null;
   printer_id: number | null;
@@ -1262,10 +1263,17 @@ export interface FloorStation {
   name: string;
   description: string;
   /** "station" (WIP/+Storage/Move/Harvest/Cleanup) vs "location" (Fit
-   *  Check/Sanding) — which Codes-page tab this label prints under (§3.3).
+   *  Check/Rework) — which Codes-page tab this label prints under (§3.3).
    *  Purely a presentation grouping; every entry works identically as a
    *  scannable station regardless of category. */
   category: 'station' | 'location';
+}
+
+export interface FloorErrorLabel {
+  id: number;
+  name: string;
+  slug: string;
+  payload: string;
 }
 
 /** An open (or just-closed) claim on a floor station (docs/floor-plan.md §2.4).
@@ -1399,6 +1407,12 @@ export interface FloorLabeledPart {
   sticker_code: string;
   printer_id: number;
   archive_id: number | null;
+  /** Canonical Production part code (TOP/BOT/KNB/BUT/...) resolved at link
+   *  time, or null when that print isn't mapped to one (§7). */
+  part_code: string | null;
+  section_part_id: number | null;
+  part_name: string | null;
+  part_source: string | null;
   labeled_at: string;
 }
 
@@ -1451,29 +1465,30 @@ export interface PartScanResponse {
   blocking: FloorSession | null;
 }
 
-// ── Fit Check and Sanding (docs/floor-plan.md §5.4a/§5.4b) — phase 9a/9b ───
+// ── Fit Check and Rework (docs/floor-plan.md §5.4a/§5.4b) — phase 9a/9b ──
 //
 // Neither is a station — no session, no device/floor-wide state. Each is a
 // plain commit: scan-part-then-location (Fit Check), or scan-part-then-
-// location-then-reason (Sanding, where the location scan itself is a pure
+// location-then-reason (Rework, where the location scan itself is a pure
 // UI transition on the scan page and never reaches this API on its own).
 
 /** What a scan-part-then-location commit did. No verdict is recorded for
  *  Fit Check — `recorded` covers both a first check and a re-check
  *  (§5.4a); there is nothing to amend. */
-export type LocationScanResult = 'recorded' | 'unknown_part' | 'invalid_code';
+export type LocationScanResult = 'recorded' | 'already_at_location' | 'unknown_part' | 'invalid_code';
 
 export interface LocationScanResponse {
   result: LocationScanResult;
   part: FloorLabeledPart | null;
   printer: FloorPlatePrinter | null;
   archive: FloorPlateArchive | null;
+  reason: string | null;
 }
 
-/** Fixed, seeded reasons for Sanding (§5.4b) — not a user-editable registry,
+/** Fixed, seeded reasons for Rework (§5.4b) — not a user-editable registry,
  *  the same shape as the office-side unlink/replace-sticker reason codes.
- *  Mirrors `backend.app.services.floor_parts.SandingReasonCode`. */
-export type SandingReasonCode = 'doesnt_fit' | 'rough_surface' | 'layer_lines' | 'other';
+ *  Mirrors `backend.app.services.floor_parts.ReworkReasonCode`. */
+export type ReworkReasonCode = 'doesnt_fit' | 'rough_surface' | 'layer_lines' | 'other';
 
 /** One row of the `/floor` landing page's needs-attention panel (§7.2): a
  *  labeled part with no resolved job, waiting to be matched by hand. */
@@ -1500,6 +1515,12 @@ export interface FloorInventoryPart {
   printer_id: number | null;
   printer_name: string | null;
   archive_id: number | null;
+  /** Canonical Production part code (TOP/BOT/KNB/BUT/...), or null when
+   *  none has been resolved or assigned yet (§7). */
+  part_code: string | null;
+  section_part_id: number | null;
+  part_name: string | null;
+  part_source: string | null;
   print_name: string | null;
   labeled_at: string;
   archived_at: string | null;
@@ -1518,6 +1539,13 @@ export interface FloorPartJobCandidate {
   id: number;
   print_name: string;
   completed_at: string | null;
+}
+
+/** One assignable Production part code (TOP/BOT/KNB/BUT/...), for Part
+ *  history's "assign a part code" picker (§7). */
+export interface FloorPartCodeOption {
+  code: string;
+  name: string;
 }
 
 /** A cross-printer completed job result from the "search all jobs" escalation
@@ -5737,6 +5765,10 @@ export const api = {
     }),
   // ── Floor codes (docs/floor-plan.md §3.3) ──────────────────────────────
   getFloorStations: () => request<FloorStation[]>('/floor/stations'),
+  getFloorErrorLabels: () => request<FloorErrorLabel[]>('/floor/error-labels'),
+  createFloorErrorLabel: (data: { name: string; slug: string }) =>
+    request<FloorErrorLabel>('/floor/error-labels', { method: 'POST', body: JSON.stringify(data) }),
+  deleteFloorErrorLabel: (labelId: number) => request<void>(`/floor/error-labels/${labelId}`, { method: 'DELETE' }),
   printFloorStationLabels: async (data: {
     payloads: string[];
     width_mm: number;
@@ -5749,6 +5781,16 @@ export const api = {
       headers,
       body: JSON.stringify(data),
     });
+    if (!response.ok) {
+      const error = await response.json().catch(() => ({}));
+      throw new Error(error.detail || `HTTP ${response.status}`);
+    }
+    return response.blob();
+  },
+  printFloorErrorLabels: async (data: { payloads: string[]; width_mm: number; height_mm: number }): Promise<Blob> => {
+    const headers: Record<string, string> = { 'Content-Type': 'application/json' };
+    if (authToken) headers['Authorization'] = `Bearer ${authToken}`;
+    const response = await fetch(`${API_BASE}/floor/labels/errors`, { method: 'POST', headers, body: JSON.stringify(data) });
     if (!response.ok) {
       const error = await response.json().catch(() => ({}));
       throw new Error(error.detail || `HTTP ${response.status}`);
@@ -5798,7 +5840,13 @@ export const api = {
       method: 'POST',
       body: JSON.stringify(data),
     }),
-  // ── Fit Check and Sanding (docs/floor-plan.md §5.4a/§5.4b) — phase 9a/9b ─
+  /** The 3MF cover image Files already has on file for a Production part
+   *  code (§7), if any — 404s when the code is unknown or has none, so
+   *  callers should hide the `<img>` on load error rather than treat this
+   *  as a hard dependency. */
+  getFloorPartCodeThumbnailUrl: (code: string, sectionPartId?: number | null) =>
+    withStreamToken(`${API_BASE}/floor/parts/thumbnail/${encodeURIComponent(code)}${sectionPartId ? `?section_part_id=${sectionPartId}` : ''}`),
+  // ── Fit Check and Rework (docs/floor-plan.md §5.4a/§5.4b) — phase 9a/9b ─
   // Neither is a station — a plain commit, not gated on any open session.
   /** Commit "this part is at Fit Check" — the second of two scans (part,
    *  then this location). Re-scanning an already-checked part is not an
@@ -5808,14 +5856,18 @@ export const api = {
       method: 'POST',
       body: JSON.stringify(data),
     }),
-  /** Commit "this part is at Sanding, because …" — the third scan of its
-   *  flow (part, Sanding location — a pure UI transition, never a call of
+  /** Commit "this part is at Rework, because …" — the third scan of its
+   *  flow (part, Rework location — a pure UI transition, never a call of
    *  its own — then this reason). */
-  scanSandingPart: (data: { payload: string; reason_code: SandingReasonCode; reason_text?: string | null }) =>
-    request<LocationScanResponse>('/floor/locations/sanding/part', {
+  scanReworkPart: (data: { payload: string; reason_code: ReworkReasonCode; reason_text?: string | null }) =>
+    request<LocationScanResponse>('/floor/locations/rework/part', {
       method: 'POST',
       body: JSON.stringify(data),
     }),
+  scanReworkError: (data: { payload: string; error_payload: string; reason_text?: string | null }) =>
+    request<LocationScanResponse>('/floor/locations/rework/error', { method: 'POST', body: JSON.stringify(data) }),
+  discardFloorPart: (data: { payload: string; error_payload: string; reason_text?: string | null }) =>
+    request<LocationScanResponse>('/floor/parts/discard', { method: 'POST', body: JSON.stringify(data) }),
   /** Parts with no resolved job, newest first — office matching lives on
    *  Part history (`/floor/inventory`); this list is the same unmatched set. */
   getFloorNeedsAttentionParts: (limit = 50) =>
@@ -5827,6 +5879,8 @@ export const api = {
   getHarvestSummary: (sessionId: number) => request<HarvestSummaryLine[]>(`/floor/harvest/sessions/${sessionId}/summary`),
   getFloorInventoryParts: (includeArchived = false) =>
     request<FloorInventoryPart[]>(`/floor/inventory/parts?include_archived=${includeArchived}`),
+  getFloorInventoryPartBySticker: (stickerCode: string) =>
+    request<FloorInventoryPart>(`/floor/inventory/parts/by-sticker/${encodeURIComponent(stickerCode)}`),
   getFloorInventoryPartEvents: (partId: number) =>
     request<FloorInventoryPartEvent[]>(`/floor/inventory/parts/${partId}/events`),
   getFloorInventoryPartJobCandidates: (partId: number) =>
@@ -5843,6 +5897,13 @@ export const api = {
     request<JobSearchResult[]>(`/floor/inventory/jobs/search?q=${encodeURIComponent(query)}&limit=${limit}`),
   replaceFloorInventoryPartSticker: (partId: number, newStickerCode: string, reasonCode: string, reasonText?: string | null) =>
     request<FloorInventoryPart>(`/floor/inventory/parts/${partId}/replace-sticker`, { method: 'POST', body: JSON.stringify({ new_sticker_code: newStickerCode, reason_code: reasonCode, reason_text: reasonText ?? null }) }),
+  /** The Production catalog (§7), for Part history's "assign a part code"
+   *  picker on a part harvest couldn't resolve one for. */
+  getFloorPartCodeOptions: () => request<FloorPartCodeOption[]>('/floor/parts/codes'),
+  setFloorInventoryPartCode: (partId: number, code: string) =>
+    request<FloorInventoryPart>(`/floor/inventory/parts/${partId}/part-code`, { method: 'POST', body: JSON.stringify({ code }) }),
+  clearFloorInventoryPartCode: (partId: number) =>
+    request<FloorInventoryPart>(`/floor/inventory/parts/${partId}/part-code`, { method: 'DELETE' }),
   getSpoolCatalog: () =>
     request<SpoolCatalogEntry[]>('/inventory/catalog'),
   addCatalogEntry: (data: { name: string; weight: number }) =>

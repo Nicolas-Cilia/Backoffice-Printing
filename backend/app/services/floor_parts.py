@@ -33,10 +33,10 @@ from dataclasses import dataclass
 from datetime import datetime
 from enum import StrEnum
 
-from sqlalchemy import delete, func, select
+from sqlalchemy import delete, func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from backend.app.models.floor_part import FloorDismissedBuildPlate, FloorLabeledPart, FloorPartEvent
+from backend.app.models.floor_part import FloorDismissedBuildPlate, FloorErrorLabel, FloorLabeledPart, FloorPartEvent
 from backend.app.models.floor_session import FloorStationSession
 from backend.app.models.printer import Printer
 from backend.app.models.settings import Settings
@@ -71,13 +71,13 @@ _CODE_DIGIT_LEN = 6
 # payload to resolve it from in the first place.
 HARVEST_STATION_SLUG = "harvest"
 
-# Fit Check and Sanding are locations, not stations (§5.4a/§5.4b) — nothing
+# Fit Check and Rework are locations, not stations (§5.4a/§5.4b) — nothing
 # ever opens a session for them (`floor_codes.FloorStation.category ==
 # "location"`, enforced in the `/floor/session/scan` route). These slugs are
 # only used to label which location a scan-part-then-location flow landed
 # on; there is no session to key them against.
 FIT_CHECK_LOCATION_SLUG = "fit-check"
-SANDING_LOCATION_SLUG = "sanding"
+REWORK_LOCATION_SLUG = "rework"
 
 
 # ── Sticker codes (§7.1) ──────────────────────────────────────────────────
@@ -150,6 +150,98 @@ async def _count_plate_parts(db: AsyncSession, session_id: int, printer_id: int)
         .where(FloorLabeledPart.session_id == session_id, FloorLabeledPart.printer_id == printer_id)
     )
     return int(result.scalar_one() or 0)
+
+
+async def _part_code_for_archive(db: AsyncSession, archive_id: int | None) -> str | None:
+    """Resolve one canonical Production code from an archive's source file."""
+    if archive_id is None:
+        return None
+    from backend.app.models.archive import PrintArchive
+    from backend.app.models.library import LibraryFile
+    from backend.app.models.production import ProductionPart, ProductionPartInstance
+
+    codes = (
+        await db.execute(
+            select(ProductionPart.code)
+            .join(ProductionPartInstance, ProductionPartInstance.part_id == ProductionPart.id)
+            .join(LibraryFile, LibraryFile.folder_id == ProductionPartInstance.folder_id)
+            .join(PrintArchive, PrintArchive.library_file_id == LibraryFile.id)
+            .where(PrintArchive.id == archive_id)
+            .distinct()
+        )
+    ).scalars().all()
+    return codes[0] if len(codes) == 1 else None
+
+
+async def _section_part_for_archive(db: AsyncSession, archive_id: int | None) -> tuple[str | None, int | None]:
+    """Resolve the exact Section Part represented by an archived print."""
+    if archive_id is None:
+        return None, None
+    from backend.app.models.archive import PrintArchive
+    from backend.app.models.library import LibraryFile, LibraryFolder, LibrarySectionPart
+    from backend.app.models.production import ProductionPart, ProductionPartInstance
+
+    rows = (
+        await db.execute(
+            select(LibrarySectionPart.code, LibrarySectionPart.id)
+            .join(LibraryFolder, LibraryFolder.section_id == LibrarySectionPart.section_id)
+            .join(LibraryFile, LibraryFile.folder_id == LibraryFolder.id)
+            .join(PrintArchive, PrintArchive.library_file_id == LibraryFile.id)
+            .join(ProductionPartInstance, ProductionPartInstance.folder_id == LibraryFolder.id)
+            .join(ProductionPart, ProductionPart.id == ProductionPartInstance.part_id)
+            .where(PrintArchive.id == archive_id, ProductionPart.code == LibrarySectionPart.code)
+            .distinct()
+        )
+    ).all()
+    return rows[0] if len(rows) == 1 else (None, None)
+
+
+async def backfill_missing_part_codes(db: AsyncSession) -> int:
+    """Populate codes for existing linked stickers when their source maps cleanly."""
+    parts = (
+        await db.execute(
+            select(FloorLabeledPart).where(
+                FloorLabeledPart.archive_id.is_not(None),
+                or_(FloorLabeledPart.part_code.is_(None), FloorLabeledPart.section_part_id.is_(None)),
+            )
+        )
+    ).scalars().all()
+    count = 0
+    for part in parts:
+        code, section_part_id = await _section_part_for_archive(db, part.archive_id)
+        if code is not None:
+            part.part_code = code
+            part.section_part_id = section_part_id
+            count += 1
+    return count
+
+
+async def find_part_code_thumbnail(db: AsyncSession, code: str, section_part_id: int | None = None) -> str | None:
+    """Resolve a Production part code (e.g. ``TOP``) to its 3MF cover image.
+
+    Section-part thumbnails (``LibrarySectionPart.thumbnail_path``) are
+    captured in Files whenever someone seeds a part's print-settings
+    contract from a 3MF (``library_sections.seed_section_part_parameters``)
+    — the same ``code`` a labeled part resolves to at harvest
+    (``_part_code_for_archive``). Returns the relative thumbnail path, or
+    ``None`` if the code is unknown or has no thumbnail on file; the caller
+    treats both the same — nothing to show, not an error.
+    """
+    from backend.app.models.library import LibrarySectionPart
+
+    normalized = code.strip().upper()
+    result = await db.execute(
+        select(LibrarySectionPart.thumbnail_path)
+        .where(
+            LibrarySectionPart.thumbnail_path.is_not(None),
+            LibrarySectionPart.id == section_part_id
+            if section_part_id is not None
+            else LibrarySectionPart.code == normalized,
+        )
+        .order_by(LibrarySectionPart.id)
+        .limit(1)
+    )
+    return result.scalar_one_or_none()
 
 
 async def scan_harvest_printer(db: AsyncSession, device_id: str, payload: str) -> HarvestPrinterOutcome:
@@ -351,11 +443,19 @@ async def scan_part(
         # part against a station that isn't harvest.
         return PartScanOutcome(result=PartScanResult.NO_PRINTER, session=session)
 
-    part = FloorLabeledPart(sticker_code=code, printer_id=printer_id, archive_id=archive_id, session_id=session.id)
+    part_code, section_part_id = await _section_part_for_archive(db, archive_id)
+    part = FloorLabeledPart(
+        sticker_code=code,
+        printer_id=printer_id,
+        archive_id=archive_id,
+        part_code=part_code,
+        section_part_id=section_part_id,
+        session_id=session.id,
+    )
     db.add(part)
     await db.flush()
     db.add(
-        FloorPartEvent(part_id=part.id, action="enrolled", details={"printer_id": printer_id, "archive_id": archive_id})
+        FloorPartEvent(part_id=part.id, action="enrolled", details={"printer_id": printer_id, "archive_id": archive_id, "part_code": part_code})
     )
     await db.flush()
 
@@ -376,16 +476,16 @@ async def scan_part(
     )
 
 
-# ── Fit Check and Sanding (§5.4a, §5.4b) ────────────────────────────────────
+# ── Fit Check and Rework (§5.4a, §5.4b) ───────────────────────────────────
 #
 # Neither is a station: there is no open/close/switch, no floor-wide lock,
 # no session at all. The flow is scan-a-part-then-scan-a-location — "scan a
 # part, scan a location, now that part is at that location" — and the
 # *pending* half of that (which part is waiting for a location, or which
-# part is waiting for a sanding reason) lives entirely in the scan page's
+# part is waiting for a Rework reason) lives entirely in the scan page's
 # own local state, not on the server. These two functions are the commit
 # step only: by the time either is called, the caller already has every
-# piece of information it needs (the sticker code, and for Sanding, the
+# piece of information it needs (the sticker code, and for Rework, the
 # reason), so there is nothing here to look up beyond the part itself.
 
 
@@ -393,18 +493,20 @@ class LocationScanResult(StrEnum):
     """What a scan-part-then-location commit did."""
 
     RECORDED = "recorded"
+    ALREADY_AT_LOCATION = "already_at_location"
     UNKNOWN_PART = "unknown_part"
     INVALID_CODE = "invalid_code"
 
 
 @dataclass(frozen=True)
 class LocationScanOutcome:
-    """The result of committing one part to a location (Fit Check or Sanding)."""
+    """The result of committing one part to a location (Fit Check or Rework)."""
 
     result: LocationScanResult
     part: FloorLabeledPart | None = None
     printer: Printer | None = None
     archive: LastPrint | None = None
+    reason: str | None = None
 
 
 async def _resolve_part_for_location(
@@ -420,21 +522,48 @@ async def _resolve_part_for_location(
     return LocationScanResult.RECORDED, part
 
 
+async def _part_is_at_location(
+    db: AsyncSession, part_id: int, action: str
+) -> bool:
+    metadata_actions = (
+        "scanned",
+        "archived",
+        "restored",
+        "part_code_assigned",
+        "part_code_changed",
+        "part_code_removed",
+    )
+    latest_action = await db.scalar(
+        select(FloorPartEvent.action)
+        .where(
+            FloorPartEvent.part_id == part_id,
+            FloorPartEvent.action.notin_(metadata_actions),
+        )
+        .order_by(FloorPartEvent.occurred_at.desc(), FloorPartEvent.id.desc())
+        .limit(1)
+    )
+    return latest_action == action
+
+
 async def _to_location_outcome(
-    db: AsyncSession, result: LocationScanResult, part: FloorLabeledPart | None
+    db: AsyncSession,
+    result: LocationScanResult,
+    part: FloorLabeledPart | None,
+    *,
+    reason: str | None = None,
 ) -> LocationScanOutcome:
     if part is None:
         return LocationScanOutcome(result=result)
     printer = await get_printer(db, part.printer_id) if part.printer_id is not None else None
     archive = await get_archive_summary(db, part.archive_id) if part.archive_id is not None else None
-    return LocationScanOutcome(result=result, part=part, printer=printer, archive=archive)
+    return LocationScanOutcome(result=result, part=part, printer=printer, archive=archive, reason=reason)
 
 
 async def scan_fit_check_part(db: AsyncSession, payload: str) -> LocationScanOutcome:
     """Commit "part BBD-… is at Fit Check" (§5.4a, §9).
 
     Records only that the checkpoint happened — no pass/fail verdict, per
-    the doc's reasoning that Sanding's own reason scan already covers "why"
+    the doc's reasoning that Rework's own reason scan already covers "why"
     for the one case (doesn't fit) a verdict here would otherwise duplicate.
     Re-scanning an already-checked part is not an error: it appends another
     `fit_checked` event rather than refusing or amending, since there is no
@@ -442,13 +571,15 @@ async def scan_fit_check_part(db: AsyncSession, payload: str) -> LocationScanOut
     """
     result, part = await _resolve_part_for_location(db, payload)
     if part is not None:
+        if await _part_is_at_location(db, part.id, "fit_checked"):
+            return await _to_location_outcome(db, LocationScanResult.ALREADY_AT_LOCATION, part)
         db.add(FloorPartEvent(part_id=part.id, action="fit_checked"))
         await db.flush()
     return await _to_location_outcome(db, result, part)
 
 
-class SandingReasonCode(StrEnum):
-    """Why a part needs sanding (§5.4b), scanned as a `BBR-…` code.
+class ReworkReasonCode(StrEnum):
+    """Why a part needs rework (§5.4b), scanned as a `BBR-…` code.
 
     A small fixed set, the same shape as `UnlinkReasonCode` /
     `ReplaceStickerReasonCode` above — not a user-editable registry. Free
@@ -463,27 +594,94 @@ class SandingReasonCode(StrEnum):
     OTHER = "other"
 
 
-async def scan_sanding_part(
+async def scan_rework_part(
     db: AsyncSession, payload: str, reason_code: str, reason_text: str | None = None
 ) -> LocationScanOutcome:
-    """Commit "part BBD-… is at Sanding, because …" (§5.4b, §9).
+    """Commit "part BBD-… is at Rework, because …" (§5.4b, §9).
 
     Unlike Fit Check, this is the *third* scan of its flow (part, then the
-    Sanding location — which is a pure UI transition on the scan page, no
+    Rework location — which is a pure UI transition on the scan page, no
     server call — then this reason). Nothing commits until the reason is
-    known, which is why there is no separate "part is now at Sanding, reason
+    known, which is why there is no separate "part is now at Rework, reason
     pending" server state to represent: the two facts are written together,
     in one event, or not at all.
     """
     result, part = await _resolve_part_for_location(db, payload)
     if part is not None:
+        if await _part_is_at_location(db, part.id, "rework"):
+            return await _to_location_outcome(db, LocationScanResult.ALREADY_AT_LOCATION, part)
         db.add(
             FloorPartEvent(
-                part_id=part.id, action="sanding", details={"reason_code": reason_code, "reason_text": reason_text}
+                part_id=part.id, action="rework", details={"reason_code": reason_code, "reason_text": reason_text}
             )
         )
         await db.flush()
-    return await _to_location_outcome(db, result, part)
+    return await _to_location_outcome(db, result, part, reason=reason_text or reason_code)
+
+
+async def _error_label_for_payload(db: AsyncSession, payload: str) -> FloorErrorLabel | None:
+    normalized = payload.strip().upper()
+    if not normalized.startswith("BBF-"):
+        return None
+    return await db.scalar(select(FloorErrorLabel).where(FloorErrorLabel.slug == normalized[4:].lower()))
+
+
+async def scan_rework_error(
+    db: AsyncSession, payload: str, error_payload: str, reason_text: str | None = None
+) -> LocationScanOutcome:
+    """Record a Rework visit using a user-managed error label."""
+    result, part = await _resolve_part_for_location(db, payload)
+    label = await _error_label_for_payload(db, error_payload)
+    if part is not None and label is None:
+        return LocationScanOutcome(result=LocationScanResult.INVALID_CODE)
+    if part is not None and label is not None:
+        if await _part_is_at_location(db, part.id, "rework"):
+            return await _to_location_outcome(db, LocationScanResult.ALREADY_AT_LOCATION, part)
+        db.add(
+            FloorPartEvent(
+                part_id=part.id,
+                action="rework",
+                details={
+                    "error_label_id": label.id,
+                    "error_payload": f"BBF-{label.slug}",
+                    "error_name": label.name,
+                    "reason_text": reason_text,
+                },
+            )
+        )
+        await db.flush()
+    return await _to_location_outcome(
+        db, result, part, reason=reason_text or (label.name if label is not None else None)
+    )
+
+
+async def discard_part(
+    db: AsyncSession, payload: str, error_payload: str, reason_text: str | None = None
+) -> LocationScanOutcome:
+    """Discard a part with a required, user-managed error label."""
+    result, part = await _resolve_part_for_location(db, payload)
+    label = await _error_label_for_payload(db, error_payload)
+    if part is not None and label is None:
+        return LocationScanOutcome(result=LocationScanResult.INVALID_CODE)
+    if part is not None and label is not None:
+        if await _part_is_at_location(db, part.id, "discarded"):
+            return await _to_location_outcome(db, LocationScanResult.ALREADY_AT_LOCATION, part)
+        db.add(
+            FloorPartEvent(
+                part_id=part.id,
+                action="discarded",
+                details={
+                    "error_label_id": label.id,
+                    "error_payload": f"BBF-{label.slug}",
+                    "error_name": label.name,
+                    "reason_text": reason_text,
+                },
+            )
+        )
+        await db.flush()
+    return await _to_location_outcome(
+        db, result, part, reason=reason_text or (label.name if label is not None else None)
+    )
 
 
 # ── Needs-attention (§7.2, §9) ─────────────────────────────────────────────
@@ -507,6 +705,10 @@ class InventoryPart:
     printer_id: int | None
     printer_name: str | None
     archive_id: int | None
+    part_code: str | None
+    section_part_id: int | None
+    part_name: str | None
+    part_source: str | None
     print_name: str | None
     labeled_at: datetime
     archived_at: datetime | None
@@ -661,15 +863,38 @@ async def list_inventory_parts(db: AsyncSession, *, include_archived: bool = Fal
 
     latest_event_action = (
         select(FloorPartEvent.action)
-        .where(FloorPartEvent.part_id == FloorLabeledPart.id)
+        .where(
+            FloorPartEvent.part_id == FloorLabeledPart.id,
+            FloorPartEvent.action.notin_(
+                (
+                    "scanned",
+                    "archived",
+                    "restored",
+                    "part_code_assigned",
+                    "part_code_changed",
+                    "part_code_removed",
+                )
+            ),
+        )
         .order_by(FloorPartEvent.occurred_at.desc(), FloorPartEvent.id.desc())
         .limit(1)
         .scalar_subquery()
     )
+    from backend.app.models.library import LibraryFolderSection, LibrarySectionPart
+
     statement = (
-        select(FloorLabeledPart, Printer.name, PrintArchive.print_name, latest_event_action)
+        select(
+            FloorLabeledPart,
+            Printer.name,
+            PrintArchive.print_name,
+            latest_event_action,
+            LibrarySectionPart.name,
+            LibraryFolderSection.name,
+        )
         .outerjoin(Printer, Printer.id == FloorLabeledPart.printer_id)
         .outerjoin(PrintArchive, PrintArchive.id == FloorLabeledPart.archive_id)
+        .outerjoin(LibrarySectionPart, LibrarySectionPart.id == FloorLabeledPart.section_part_id)
+        .outerjoin(LibraryFolderSection, LibraryFolderSection.id == LibrarySectionPart.section_id)
     )
     if not include_archived:
         statement = statement.where(FloorLabeledPart.archived_at.is_(None))
@@ -681,14 +906,26 @@ async def list_inventory_parts(db: AsyncSession, *, include_archived: bool = Fal
             p.printer_id,
             printer_name,
             p.archive_id,
+            p.part_code,
+            p.section_part_id,
+            part_name,
+            part_source,
             print_name,
             p.labeled_at,
             p.archived_at,
             p.released_at,
             event_action,
         )
-        for p, printer_name, print_name, event_action in result.all()
+        for p, printer_name, print_name, event_action, part_name, part_source in result.all()
     ]
+
+
+async def get_inventory_part_by_sticker(db: AsyncSession, sticker_code: str) -> InventoryPart | None:
+    normalized = parse_sticker_code(sticker_code)
+    if normalized is None:
+        return None
+    parts = await list_inventory_parts(db, include_archived=True)
+    return next((part for part in parts if part.sticker_code == normalized), None)
 
 
 async def archive_part(db: AsyncSession, part_id: int, *, archived: bool) -> FloorLabeledPart | None:
@@ -1013,11 +1250,137 @@ async def replace_sticker_code(
     return ReplaceStickerOutcome(result=ReplaceStickerResult.REPLACED, part=part)
 
 
+@dataclass(frozen=True)
+class PartCodeOption:
+    """One assignable Production part code, for Part history's "assign a
+    part code" picker."""
+
+    code: str
+    name: str
+
+
+async def list_part_code_options(db: AsyncSession) -> list[PartCodeOption]:
+    """Every part code curated in Files' Section Parts (§7), not scoped to
+    any one section — the picker is choosing which physical part an
+    already-labeled sticker represents, not seeding a new catalog entry.
+
+    Reads `LibrarySectionPart`, the same table `find_part_code_thumbnail`
+    reads, rather than the `ProductionPart` mirror table: Section Parts is
+    where these codes are actually curated (Files → a section's "Section
+    parts" panel — name, thumbnail, print-settings contract), so it is the
+    picker's source of truth. `ProductionPart` is kept in sync by
+    `get_or_create_part` on every create/reseed, but it has no UI of its
+    own and nothing guarantees every existing row was created through that
+    path — reading it directly risked a code that is visibly configured in
+    Files not showing up here.
+    """
+    from backend.app.models.library import LibrarySectionPart
+
+    rows = (
+        await db.execute(
+            select(LibrarySectionPart.code, LibrarySectionPart.name)
+            .order_by(LibrarySectionPart.code, LibrarySectionPart.id)
+        )
+    ).all()
+    seen: dict[str, str] = {}
+    for code, name in rows:
+        seen.setdefault(code, name)
+    return [PartCodeOption(code=code, name=name) for code, name in seen.items()]
+
+
+class SetPartCodeResult(StrEnum):
+    """What a part-code assignment request did."""
+
+    ASSIGNED = "assigned"
+    NOT_FOUND = "not_found"
+    ARCHIVED = "archived"
+    ALREADY_SET = "already_set"
+    UNKNOWN_CODE = "unknown_code"
+
+
+@dataclass(frozen=True)
+class SetPartCodeOutcome:
+    result: SetPartCodeResult
+    part: FloorLabeledPart | None = None
+
+
+async def set_part_code(db: AsyncSession, part_id: int, code: str) -> SetPartCodeOutcome:
+    """Assign a Production part code to a labeled part that doesn't have one.
+
+    Harvest resolves `part_code` automatically when a job maps to exactly
+    one code (`_part_code_for_archive`) — this is the office-side fallback
+    for everything that doesn't: a `no_job` part, one whose job maps to zero
+    or several codes, or one enrolled before that backfill existed. Only
+    fills a gap: an already-set code is established evidence the same way a
+    job link is (see `relink_part`'s docstring), so this refuses rather than
+    overwrites — nothing today asks for "the code was wrong", only "there is
+    no code yet".
+
+    Validated against `LibrarySectionPart`, the same catalog
+    `list_part_code_options` offers — see that function's docstring for why
+    this reads Section Parts rather than the `ProductionPart` mirror table.
+    """
+    from backend.app.models.library import LibrarySectionPart
+
+    part = await db.get(FloorLabeledPart, part_id)
+    if part is None:
+        return SetPartCodeOutcome(result=SetPartCodeResult.NOT_FOUND)
+    if part.archived_at is not None:
+        return SetPartCodeOutcome(result=SetPartCodeResult.ARCHIVED)
+    normalized = code.strip().upper()
+    known = (
+        await db.execute(
+            select(LibrarySectionPart.id)
+            .where(LibrarySectionPart.code == normalized)
+            .order_by(LibrarySectionPart.id)
+            .limit(1)
+        )
+    ).scalar_one_or_none()
+    if known is None:
+        return SetPartCodeOutcome(result=SetPartCodeResult.UNKNOWN_CODE)
+
+    previous_code = part.part_code
+    part.part_code = normalized
+    part.section_part_id = known
+    db.add(
+        FloorPartEvent(
+            part_id=part.id,
+            action="part_code_changed" if previous_code else "part_code_assigned",
+            details={"part_code": normalized, "previous_code": previous_code},
+        )
+    )
+    await db.flush()
+    return SetPartCodeOutcome(result=SetPartCodeResult.ASSIGNED, part=part)
+
+
+async def clear_part_code(db: AsyncSession, part_id: int) -> FloorLabeledPart | None:
+    """Remove only the part-code association, preserving the part and its history."""
+    part = await db.get(FloorLabeledPart, part_id)
+    if part is None or part.archived_at is not None:
+        return None
+    if part.part_code is None and part.section_part_id is None:
+        return part
+    previous_code = part.part_code
+    part.part_code = None
+    part.section_part_id = None
+    db.add(
+        FloorPartEvent(
+            part_id=part.id,
+            action="part_code_removed",
+            details={"previous_code": previous_code},
+        )
+    )
+    await db.flush()
+    return part
+
+
 __all__ = [
     "PART_PREFIX",
+    "backfill_missing_part_codes",
+    "find_part_code_thumbnail",
     "HARVEST_STATION_SLUG",
     "FIT_CHECK_LOCATION_SLUG",
-    "SANDING_LOCATION_SLUG",
+    "REWORK_LOCATION_SLUG",
     "normalize_sticker_code",
     "parse_sticker_code",
     "HarvestPrinterResult",
@@ -1029,11 +1392,14 @@ __all__ = [
     "LocationScanResult",
     "LocationScanOutcome",
     "scan_fit_check_part",
-    "SandingReasonCode",
-    "scan_sanding_part",
+    "ReworkReasonCode",
+    "scan_rework_part",
+    "scan_rework_error",
+    "discard_part",
     "NeedsAttentionPart",
     "list_needs_attention",
     "list_inventory_parts",
+    "get_inventory_part_by_sticker",
     "list_part_events",
     "backfill_missing_enrolled_events",
     "list_part_job_candidates",
@@ -1049,4 +1415,10 @@ __all__ = [
     "ReplaceStickerReasonCode",
     "replace_sticker_code",
     "has_labeled_parts_for_archive",
+    "PartCodeOption",
+    "list_part_code_options",
+    "SetPartCodeResult",
+    "SetPartCodeOutcome",
+    "set_part_code",
+    "clear_part_code",
 ]

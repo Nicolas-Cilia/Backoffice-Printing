@@ -319,19 +319,21 @@ describe('FloorScanPage (Phase 1b sessions)', () => {
       // "Not built yet" and "that code means nothing" send an operator to
       // different places, so they must not render identically (§4). BBD- is
       // not used for this any more — phase 9a/9b gave it a meaning at idle
-      // (see the "fit check and sanding" describe block).
+      // (see the "fit check and rework" describe block). BBF- is not used
+      // for this either any more — it is now recognised (Rework/Discard's
+      // error step, see below), just contextually rejected with nothing
+      // pending. A factory SKU is still genuinely unimplemented.
       mockNoSession();
       render(<FloorScanPage />);
       await screen.findByText('Scan a code');
 
-      await scan('BBF-warping');
+      await scan('4001234567890');
 
       expect(await screen.findByText('Not handled yet')).toBeInTheDocument();
-      expect(screen.getByText('BBF-warping')).toBeInTheDocument();
+      expect(screen.getByText('4001234567890')).toBeInTheDocument();
     });
 
     it.each([
-      ['BBF-warping', 'defect'],
       ['BBX-rework', 'command'],
       ['4001234567890', 'factory SKU'],
     ])('treats %s (%s) as not-yet-handled rather than unknown', async (payload) => {
@@ -342,6 +344,20 @@ describe('FloorScanPage (Phase 1b sessions)', () => {
       await scan(payload);
 
       expect(await screen.findByText('Not handled yet')).toBeInTheDocument();
+    });
+
+    it('asks for a part first when a defect code is scanned with nothing pending', async () => {
+      // BBF- is recognised (it commits Rework's/Discard's error step), just
+      // meaningless without a part already pending — a distinct message from
+      // both "unknown" and the generic "not handled yet" (§4, §9).
+      mockNoSession();
+      render(<FloorScanPage />);
+      await screen.findByText('Scan a code');
+
+      await scan('BBF-warping');
+
+      expect(await screen.findByText('Scan a part, then Rework or Discard first')).toBeInTheDocument();
+      expect(screen.getByText('BBF-warping')).toBeInTheDocument();
     });
 
     it('ignores a bare Enter with no scanned content', async () => {
@@ -1189,7 +1205,7 @@ describe('FloorScanPage (Phase 1b sessions)', () => {
     });
   });
 
-  describe('fit check and sanding (§5.4a/§5.4b, phase 9a/9b) — locations, not stations', () => {
+  describe('fit check and rework (§5.4a/§5.4b, phase 9a/9b) — locations, not stations', () => {
     const RECORDED_PART = { id: 42, sticker_code: 'BBD-000042', printer_id: 12, archive_id: 88, labeled_at: '2026-08-24T10:00:00' };
     const RECORDED_PRINTER = { id: 12, name: 'P1S-3' };
     const RECORDED_ARCHIVE = { id: 88, print_name: 'bracket_v4', completed_at: '2026-08-24T14:32:00', quantity: 4 };
@@ -1205,10 +1221,10 @@ describe('FloorScanPage (Phase 1b sessions)', () => {
       return captured;
     }
 
-    function mockSandingScan(response: unknown, status = 200) {
+    function mockReworkScan(response: unknown, status = 200) {
       const captured: { body: Record<string, unknown> | null } = { body: null };
       server.use(
-        http.post('/api/v1/floor/locations/sanding/part', async ({ request }) => {
+        http.post('/api/v1/floor/locations/rework/part', async ({ request }) => {
           captured.body = (await request.json()) as Record<string, unknown>;
           return HttpResponse.json(response, { status });
         }),
@@ -1313,45 +1329,45 @@ describe('FloorScanPage (Phase 1b sessions)', () => {
       expect(screen.queryByText('Scan a location')).not.toBeInTheDocument();
     });
 
-    it('does not commit on the Sanding location scan — it only advances to asking why', async () => {
+    it('does not commit on the Rework location scan — it only advances to asking why', async () => {
       mockNoSession();
-      const sandingCall = mockSandingScan({ result: 'recorded', part: RECORDED_PART, printer: RECORDED_PRINTER, archive: RECORDED_ARCHIVE });
+      const reworkCall = mockReworkScan({ result: 'recorded', part: RECORDED_PART, printer: RECORDED_PRINTER, archive: RECORDED_ARCHIVE });
       render(<FloorScanPage />);
       await screen.findByText('Scan a code');
       await scan('BBD-000042');
       await screen.findByText('Scan a location');
 
-      await scan('BBS-sanding');
+      await scan('BBS-rework');
 
-      expect(await screen.findByText('Scan a reason')).toBeInTheDocument();
-      expect(screen.getByText('Sanding')).toBeInTheDocument();
-      expect(sandingCall.body).toBeNull();
+      expect(await screen.findByText('Scan an error label')).toBeInTheDocument();
+      expect(screen.getByText('Rework')).toBeInTheDocument();
+      expect(reworkCall.body).toBeNull();
     });
 
-    it('commits Sanding on the reason scan, sending the bare reason code', async () => {
+    it('commits Rework on the reason scan, sending the bare reason code', async () => {
       mockNoSession();
-      const captured = mockSandingScan({ result: 'recorded', part: RECORDED_PART, printer: RECORDED_PRINTER, archive: RECORDED_ARCHIVE });
+      const captured = mockReworkScan({ result: 'recorded', part: RECORDED_PART, printer: RECORDED_PRINTER, archive: RECORDED_ARCHIVE });
       render(<FloorScanPage />);
       await screen.findByText('Scan a code');
       await scan('BBD-000042');
       await screen.findByText('Scan a location');
-      await scan('BBS-sanding');
-      await screen.findByText('Scan a reason');
+      await scan('BBS-rework');
+      await screen.findByText('Scan an error label');
 
       await scan('BBR-doesnt_fit');
 
-      expect(await screen.findByText('Sent to Sanding · doesnt_fit')).toBeInTheDocument();
+      expect(await screen.findByText('Sent to Rework · doesnt_fit')).toBeInTheDocument();
       expect(captured.body).toEqual({ payload: 'BBD-000042', reason_code: 'doesnt_fit' });
     });
 
-    it('rejects a reason scan with no part pending in Sanding', async () => {
+    it('rejects a reason scan with no part pending in Rework', async () => {
       mockNoSession();
       render(<FloorScanPage />);
       await screen.findByText('Scan a code');
 
       await scan('BBR-other');
 
-      expect(await screen.findByText('Scan a part into Sanding first')).toBeInTheDocument();
+      expect(await screen.findByText('Scan a part into Rework first')).toBeInTheDocument();
     });
   });
 
@@ -1426,7 +1442,7 @@ describe('FloorScanPage (Phase 1b sessions)', () => {
       render(<FloorScanPage />);
       await screen.findByText('Scan a code');
 
-      await scan('BBF-warping');
+      await scan('4001234567890');
       expect(await screen.findByText('Not handled yet')).toBeInTheDocument();
 
       act(() => {

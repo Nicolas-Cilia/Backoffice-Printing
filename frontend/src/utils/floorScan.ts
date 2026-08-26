@@ -23,7 +23,7 @@
  * takes an optional `viewingPrinterId` — everything else stays keyed on the
  * open station alone.
  *
- * Fit Check and Sanding (§5.4a/§5.4b) are **not** stations, despite printing
+ * Fit Check and Rework (§5.4a/§5.4b) are **not** stations, despite printing
  * `BBS-…` QRs like one — there is no session, no open/close, and dispatch
  * for them is not on (open station × prefix) at all. The flow is scan a
  * part, then scan a location: "part scanned, awaiting a location" is a tiny
@@ -47,14 +47,16 @@ export const PREFIX_REASON = 'BBR-';
  *  constant means a slug typo can't silently desync the two. */
 export const HARVEST_STATION_SLUG = 'harvest';
 
-/** Fit Check and Sanding's slugs and payloads (§5.4a/§5.4b). Not stations —
+/** Fit Check and Rework's slugs and payloads (§5.4a/§5.4b). Not stations —
  *  these exist so `routeScan` can recognise their exact `BBS-…` payload and
  *  pull it out of the generic 'station' classification, same reasoning as
  *  `HARVEST_STATION_SLUG` above. */
 export const FIT_CHECK_LOCATION_SLUG = 'fit-check';
-export const SANDING_LOCATION_SLUG = 'sanding';
+export const REWORK_LOCATION_SLUG = 'rework';
 export const FIT_CHECK_PAYLOAD = `${PREFIX_STATION}${FIT_CHECK_LOCATION_SLUG}`;
-export const SANDING_PAYLOAD = `${PREFIX_STATION}${SANDING_LOCATION_SLUG}`;
+export const REWORK_PAYLOAD = `${PREFIX_STATION}${REWORK_LOCATION_SLUG}`;
+/** Legacy label compatibility. New labels use `BBS-rework`. */
+export const LEGACY_SANDING_PAYLOAD = `${PREFIX_STATION}sanding`;
 
 export function formatFloorDate(value: string, options?: Intl.DateTimeFormatOptions): string {
   const zoned = /(?:Z|[+-]\d{2}:\d{2})$/i.test(value) ? value : `${value}Z`;
@@ -118,15 +120,17 @@ export type ScanAction =
    *  start of the scan-part-then-location flow (§5.4a/§5.4b). The page
    *  remembers this as the pending part; nothing is written yet. */
   | { action: 'part-scanned'; payload: string }
-  /** A `BBS-fit-check` or `BBS-sanding` scan — pulled out of the generic
+  /** A `BBS-fit-check` or `BBS-rework` scan — pulled out of the generic
    *  'station' classification because neither is a session (§5.4a/§5.4b).
    *  Meaningless without a part already pending; the *page* decides that,
    *  since this router has no notion of pending state. */
-  | { action: 'location'; slug: 'fit-check' | 'sanding'; payload: string }
-  /** A `BBR-…` reason code — only meaningful mid-Sanding-flow (a part is
-   *  pending and its location was Sanding); same "page decides" reasoning
+  | { action: 'location'; slug: 'fit-check' | 'rework'; payload: string }
+  /** A `BBR-…` reason code — only meaningful mid-Rework-flow (a part is
+   *  pending and its location was Rework); same "page decides" reasoning
    *  as 'location' above. */
-  | { action: 'sanding-reason'; payload: string }
+  | { action: 'rework-reason'; payload: string }
+  | { action: 'error-label'; payload: string }
+  | { action: 'command'; payload: string }
   /** A real code whose handling lands in a later phase. */
   | { action: 'not-implemented'; kind: ScanKind; value: string }
   /** Nothing scannable. */
@@ -154,21 +158,25 @@ export function routeScan(
   if (scan.kind === 'empty') return { action: 'ignore' };
 
   if (scan.kind === 'station') {
-    // Fit Check and Sanding print `BBS-…` QRs but are not sessions
+    // Fit Check and Rework print `BBS-…` QRs but are not sessions
     // (§5.4a/§5.4b) — pull their two exact payloads out before the generic
     // station-scan path, unconditionally: whether this is meaningful right
     // now (is a part actually pending?) is the page's call, not the
     // router's, so this classification never depends on `stationSlug`.
     if (scan.value === FIT_CHECK_PAYLOAD) return { action: 'location', slug: 'fit-check', payload: scan.value };
-    if (scan.value === SANDING_PAYLOAD) return { action: 'location', slug: 'sanding', payload: scan.value };
+    if (scan.value === REWORK_PAYLOAD || scan.value === LEGACY_SANDING_PAYLOAD)
+      return { action: 'location', slug: 'rework', payload: scan.value };
     return { action: 'station', payload: scan.value };
   }
 
   if (scan.kind === 'reason') {
-    // Only meaningful mid-Sanding-flow; the page checks that, not this
+    // Only meaningful mid-Rework-flow; the page checks that, not this
     // router (same reasoning as 'location' above).
-    return { action: 'sanding-reason', payload: scan.value };
+    return { action: 'rework-reason', payload: scan.value };
   }
+
+  if (scan.kind === 'defect') return { action: 'error-label', payload: scan.value };
+  if (scan.kind === 'command') return { action: 'command', payload: scan.value };
 
   if (scan.kind === 'printer') {
     // With no station open, a printer scan is a lookup, not a claim: it shows
