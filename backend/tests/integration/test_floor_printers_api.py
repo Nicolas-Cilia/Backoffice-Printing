@@ -34,9 +34,7 @@ class TestListPrinters:
         ids = [p["id"] for p in resp.json()]
         assert printer.id in ids
 
-    async def test_ordered_by_name_so_the_sheet_matches_the_screen(
-        self, async_client, printer_factory
-    ):
+    async def test_ordered_by_name_so_the_sheet_matches_the_screen(self, async_client, printer_factory):
         await printer_factory(name="Zulu")
         await printer_factory(name="Alpha")
 
@@ -64,9 +62,7 @@ class TestRenderPrinterLabels:
         # the browser, which reads as a corrupt label rather than a bug here.
         assert int(resp.headers["content-length"]) == len(resp.content)
 
-    async def test_refuses_an_unknown_printer_rather_than_skipping_it(
-        self, async_client, printer_factory
-    ):
+    async def test_refuses_an_unknown_printer_rather_than_skipping_it(self, async_client, printer_factory):
         """A silently-short PDF is worse than an error: the missing label is
         only noticed once someone is standing at the machine."""
         printer = await printer_factory()
@@ -92,9 +88,7 @@ class TestRenderPrinterLabels:
         assert resp.status_code == 400
 
     @pytest.mark.parametrize(("w", "h"), [(5, 60), (60, 5), (500, 60), (60, 500)])
-    async def test_rejects_sizes_outside_the_supported_range(
-        self, async_client, printer_factory, w, h
-    ):
+    async def test_rejects_sizes_outside_the_supported_range(self, async_client, printer_factory, w, h):
         printer = await printer_factory()
 
         resp = await async_client.post(
@@ -137,9 +131,7 @@ class TestPrinterInfo:
 
         assert resp.json()["total_print_hours"] == pytest.approx(3.5)
 
-    async def test_reports_the_last_finished_print(
-        self, async_client, printer_factory, archive_factory
-    ):
+    async def test_reports_the_last_finished_print(self, async_client, printer_factory, archive_factory):
         printer = await printer_factory()
         archive = await archive_factory(
             printer_id=printer.id,
@@ -156,6 +148,56 @@ class TestPrinterInfo:
         assert last["quantity"] == 6
         # Phase 8 fills this in; until then "nothing labeled" is correct.
         assert last["has_labeled_parts"] is False
+
+    async def test_exposes_and_records_a_recent_stopped_print_reason(
+        self, async_client, printer_factory, archive_factory
+    ):
+        printer = await printer_factory(name="Bench A")
+        await archive_factory(
+            printer_id=printer.id,
+            print_name="TOP bracket",
+            run_status="stopped",
+        )
+
+        before = await async_client.get(f"/api/v1/floor/printers/BBP-{printer.id}/info")
+        recent = before.json()["recent_stopped_print"]
+        assert recent["print_name"] == "TOP bracket"
+        assert recent["status"] == "stopped"
+        assert recent["reason_code"] is None
+
+        saved = await async_client.post(
+            f"/api/v1/floor/printers/{printer.id}/stopped-print/reason",
+            json={"reason_code": "warping"},
+        )
+
+        assert saved.status_code == 200
+        assert saved.json()["reason_code"] == "warping"
+        after = await async_client.get(f"/api/v1/floor/printers/BBP-{printer.id}/info")
+        assert after.json()["recent_stopped_print"]["reason_code"] == "warping"
+        log = await async_client.get("/api/v1/floor/inventory/print-failures")
+        assert log.json()[0]["printer_id"] == printer.id
+        assert log.json()[0]["reason_code"] == "warping"
+
+    async def test_requires_text_for_other_stopped_print_reason(self, async_client, printer_factory, archive_factory):
+        printer = await printer_factory()
+        await archive_factory(printer_id=printer.id, run_status="cancelled")
+
+        response = await async_client.post(
+            f"/api/v1/floor/printers/{printer.id}/stopped-print/reason",
+            json={"reason_code": "other"},
+        )
+
+        assert response.status_code == 422
+
+    async def test_exposes_a_recent_failed_print_for_reason_logging(
+        self, async_client, printer_factory, archive_factory
+    ):
+        printer = await printer_factory()
+        await archive_factory(printer_id=printer.id, print_name="Bottom bracket", run_status="failed")
+
+        response = await async_client.get(f"/api/v1/floor/printers/BBP-{printer.id}/info")
+
+        assert response.json()["recent_stopped_print"]["status"] == "failed"
 
     async def test_picks_the_most_recently_completed_not_the_newest_row(
         self, async_client, printer_factory, archive_factory
@@ -179,9 +221,7 @@ class TestPrinterInfo:
 
         assert resp.json()["last_print"]["archive_id"] == recent.id
 
-    async def test_ignores_another_printers_jobs(
-        self, async_client, printer_factory, archive_factory
-    ):
+    async def test_ignores_another_printers_jobs(self, async_client, printer_factory, archive_factory):
         mine = await printer_factory(name="Mine")
         theirs = await printer_factory(name="Theirs")
         await archive_factory(printer_id=theirs.id, print_name="Not mine")
@@ -190,9 +230,7 @@ class TestPrinterInfo:
 
         assert resp.json()["last_print"] is None
 
-    async def test_ignores_unfinished_jobs(
-        self, async_client, printer_factory, archive_factory
-    ):
+    async def test_ignores_unfinished_jobs(self, async_client, printer_factory, archive_factory):
         """Only a completed job has parts on the bed to label."""
         printer = await printer_factory()
         await archive_factory(printer_id=printer.id, status="failed", print_name="Failed run")
@@ -220,9 +258,7 @@ class TestPrinterInfo:
         assert isinstance(body["maintenance_due_count"], int)
         assert isinstance(body["maintenance_warning_count"], int)
 
-    async def test_live_status_is_null_when_the_printer_has_no_client(
-        self, async_client, printer_factory
-    ):
+    async def test_live_status_is_null_when_the_printer_has_no_client(self, async_client, printer_factory):
         """Distinct from connected=False: no MQTT client at all means we
         cannot say anything, which the page renders as 'Status unavailable'
         rather than implying idle."""
@@ -233,9 +269,7 @@ class TestPrinterInfo:
         assert resp.status_code == 200
         assert resp.json()["live"] is None
 
-    async def test_reports_live_status_when_connected(
-        self, async_client, printer_factory, monkeypatch
-    ):
+    async def test_reports_live_status_when_connected(self, async_client, printer_factory, monkeypatch):
         printer = await printer_factory()
 
         class _State:
@@ -286,9 +320,7 @@ class TestPrinterInfo:
 
         assert resp.json()["live"]["current_print"] == "bracket.gcode"
 
-    async def test_a_broken_mqtt_layer_does_not_break_the_page(
-        self, async_client, printer_factory, monkeypatch
-    ):
+    async def test_a_broken_mqtt_layer_does_not_break_the_page(self, async_client, printer_factory, monkeypatch):
         """An operator scanning a printer to see its last job must not get an
         error page because MQTT is unhappy."""
         printer = await printer_factory()
@@ -320,9 +352,7 @@ class TestPrinterInfo:
 
         assert resp.status_code == 404
 
-    async def test_viewing_a_printer_takes_no_harvest_lock(
-        self, async_client, printer_factory
-    ):
+    async def test_viewing_a_printer_takes_no_harvest_lock(self, async_client, printer_factory):
         """§5.6: looking must not block whoever wants to clear the bed. The
         device still holds nothing after an info lookup."""
         printer = await printer_factory()
@@ -335,9 +365,7 @@ class TestPrinterInfo:
 
 @pytest.mark.asyncio
 @pytest.mark.integration
-async def test_recently_completed_beats_null_completed_at(
-    async_client, printer_factory, archive_factory
-):
+async def test_recently_completed_beats_null_completed_at(async_client, printer_factory, archive_factory):
     """A legacy archive with no completion timestamp must not outrank a real
     one.
 

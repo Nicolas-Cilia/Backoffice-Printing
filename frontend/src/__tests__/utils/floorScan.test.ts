@@ -82,14 +82,14 @@ describe('routeScan', () => {
     // (phase 8 only teaches Harvest what to do with `BBP-`) — the
     // (station × prefix) dispatch in action, and the reason the router takes
     // the open station as a parameter at all.
-    const route = routeScan('BBP-12', 'cleanup');
+    const route = routeScan('BBP-12', 'wip');
     expect(route.action).toBe('not-implemented');
   });
 
   it('carries the scan kind through, so later phases can dispatch on it', () => {
-    // Cleanup also accepts `BBD-` per §5.5, but that handling is phase 9 —
-    // out of scope here, so it stays recognised-but-unhandled same as ever.
-    const route = routeScan('BBD-000042', 'cleanup');
+    // Part-first handling is available from idle; an active station still
+    // leaves unrelated part scans recognised-but-unhandled.
+    const route = routeScan('BBD-000042', 'wip');
     expect(route).toMatchObject({ action: 'not-implemented', kind: 'part' });
   });
 
@@ -198,7 +198,7 @@ describe('routeScan', () => {
 
     it('every other BBS- payload still routes as a normal station scan', () => {
       expect(routeScan('BBS-harvest', null)).toEqual({ action: 'station', payload: 'BBS-harvest' });
-      expect(routeScan('BBS-cleanup', null)).toEqual({ action: 'station', payload: 'BBS-cleanup' });
+      expect(routeScan('BBS-storage-move', null)).toEqual({ action: 'station', payload: 'BBS-storage-move' });
     });
 
     it('classifies a BBR- code as a rework-reason scan', () => {

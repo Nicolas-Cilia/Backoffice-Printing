@@ -86,12 +86,17 @@ from backend.app.services.floor_parts import (
     unlink_part,
 )
 from backend.app.services.floor_printers import (
+    FLOOR_STOP_REASON_CODES,
     LastPrint,
+    delete_floor_stop_reason,
     get_printer,
     get_printer_info,
+    list_floor_stop_reasons,
     list_printers_for_labels,
     printer_id_for_payload,
     printer_payload,
+    record_floor_stop_reason,
+    update_floor_stop_reason,
 )
 from backend.app.services.floor_sessions import (
     ScanResult,
@@ -115,7 +120,7 @@ class FloorStationResponse(BaseModel):
     payload: str
     name: str
     description: str
-    # "station" (WIP/+Storage/Move/Harvest/Cleanup) vs "location" (Fit
+    # "station" (WIP/+Storage/Move/Harvest) vs "location" (Fit
     # Check/Rework) — which Codes-page tab this label prints under (§3.3).
     category: str
 
@@ -510,6 +515,17 @@ class LastPrintResponse(BaseModel):
     has_labeled_parts: bool
 
 
+class RecentStoppedPrintResponse(BaseModel):
+    print_log_id: int
+    archive_id: int | None
+    print_name: str | None
+    part_code: str | None
+    status: str
+    stopped_at: datetime
+    reason_code: str | None
+    reason_text: str | None
+
+
 class PrinterInfoResponse(BaseModel):
     """The printer info page (§5.6)."""
 
@@ -528,6 +544,20 @@ class PrinterInfoResponse(BaseModel):
     # None when the printer has no MQTT client at all — distinct from
     # connected=False, which means we know it and it is unreachable.
     live: LiveStatusResponse | None
+    recent_stopped_print: RecentStoppedPrintResponse | None
+
+
+class FloorStopReasonRequest(BaseModel):
+    reason_code: str = Field(..., min_length=1, max_length=64)
+    reason_text: str | None = Field(default=None, max_length=500)
+
+    @model_validator(mode="after")
+    def validate_reason(self) -> FloorStopReasonRequest:
+        if self.reason_code not in FLOOR_STOP_REASON_CODES:
+            raise ValueError(f"reason_code must be one of {list(FLOOR_STOP_REASON_CODES)}")
+        if self.reason_code == "other" and not (self.reason_text or "").strip():
+            raise ValueError("reason_text is required when reason_code is 'other'")
+        return self
 
 
 @router.get("/printers", response_model=list[FloorPrinterResponse])
@@ -652,6 +682,48 @@ async def get_floor_printer_info(
             if info.live
             else None
         ),
+        recent_stopped_print=(
+            RecentStoppedPrintResponse(
+                print_log_id=info.recent_stopped_print.print_log_id,
+                archive_id=info.recent_stopped_print.archive_id,
+                print_name=info.recent_stopped_print.print_name,
+                part_code=info.recent_stopped_print.part_code,
+                status=info.recent_stopped_print.status,
+                stopped_at=info.recent_stopped_print.stopped_at,
+                reason_code=info.recent_stopped_print.reason_code,
+                reason_text=info.recent_stopped_print.reason_text,
+            )
+            if info.recent_stopped_print
+            else None
+        ),
+    )
+
+
+@router.post("/printers/{printer_id}/stopped-print/reason", response_model=RecentStoppedPrintResponse)
+async def record_stopped_print_reason(
+    printer_id: int,
+    body: FloorStopReasonRequest,
+    db: AsyncSession = Depends(get_db),
+    _: User | None = RequirePermissionIfAuthEnabled(Permission.FLOOR_SCAN),
+) -> RecentStoppedPrintResponse:
+    try:
+        stopped = await record_floor_stop_reason(
+            db,
+            printer_id,
+            body.reason_code,
+            body.reason_text,
+        )
+    except LookupError as exc:
+        raise HTTPException(409, str(exc)) from exc
+    return RecentStoppedPrintResponse(
+        print_log_id=stopped.print_log_id,
+        archive_id=stopped.archive_id,
+        print_name=stopped.print_name,
+        part_code=stopped.part_code,
+        status=stopped.status,
+        stopped_at=stopped.stopped_at,
+        reason_code=stopped.reason_code,
+        reason_text=stopped.reason_text,
     )
 
 
@@ -847,9 +919,7 @@ async def scan_part_route(
     outcome = await scan_part(db, body.device_id, body.payload, printer_id_hint=body.printer_id)
     await db.commit()
     presentation = (
-        await get_inventory_part_by_sticker(db, outcome.part.sticker_code)
-        if outcome.part is not None
-        else None
+        await get_inventory_part_by_sticker(db, outcome.part.sticker_code) if outcome.part is not None else None
     )
 
     logger.info(
@@ -1090,6 +1160,19 @@ class InventoryPartResponse(BaseModel):
     archived_at: datetime | None
     released_at: datetime | None
     latest_event_action: str | None
+    latest_event_reason: str | None
+
+
+class PrintFailureReasonResponse(BaseModel):
+    id: int
+    printer_id: int
+    printer_name: str | None
+    archive_id: int | None
+    print_name: str | None
+    part_code: str | None
+    reason_code: str
+    reason_text: str | None
+    stopped_at: datetime
 
 
 class RelinkPartRequest(BaseModel):
@@ -1148,6 +1231,47 @@ class JobSearchResultResponse(BaseModel):
     printer_id: int | None
     printer_name: str | None
     completed_at: datetime | None
+
+
+@router.get("/inventory/print-failures", response_model=list[PrintFailureReasonResponse])
+async def get_print_failure_reasons(
+    limit: int = 20,
+    db: AsyncSession = Depends(get_db),
+    _: User | None = RequirePermissionIfAuthEnabled(Permission.FLOOR_SCAN),
+) -> list[PrintFailureReasonResponse]:
+    capped_limit = max(1, min(limit, 100))
+    return [
+        PrintFailureReasonResponse(**record.__dict__)
+        for record in await list_floor_stop_reasons(db, limit=capped_limit)
+    ]
+
+
+@router.patch("/inventory/print-failures/{reason_id}", response_model=PrintFailureReasonResponse)
+async def edit_print_failure_reason(
+    reason_id: int,
+    body: FloorStopReasonRequest,
+    db: AsyncSession = Depends(get_db),
+    _: User | None = RequirePermissionIfAuthEnabled(Permission.FLOOR_SCAN),
+) -> PrintFailureReasonResponse:
+    updated = await update_floor_stop_reason(
+        db,
+        reason_id,
+        body.reason_code,
+        body.reason_text,
+    )
+    if updated is None:
+        raise HTTPException(404, "Print failure reason not found")
+    return PrintFailureReasonResponse(**updated.__dict__)
+
+
+@router.delete("/inventory/print-failures/{reason_id}", status_code=204)
+async def discard_print_failure_reason(
+    reason_id: int,
+    db: AsyncSession = Depends(get_db),
+    _: User | None = RequirePermissionIfAuthEnabled(Permission.FLOOR_SCAN),
+) -> None:
+    if not await delete_floor_stop_reason(db, reason_id):
+        raise HTTPException(404, "Print failure reason not found")
 
 
 @router.get("/inventory/parts", response_model=list[InventoryPartResponse])

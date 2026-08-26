@@ -4,6 +4,7 @@ import { useMutation, useQueries, useQuery, useQueryClient } from "@tanstack/rea
 import {
   Archive,
   ArchiveRestore,
+  AlertTriangle,
   CheckCircle2,
   ChevronDown,
   Clock3,
@@ -22,6 +23,8 @@ import {
   api,
   type FloorInventoryPart,
   type FloorInventoryPartEvent,
+  type FloorPrintFailureReason,
+  type FloorStopReasonCode,
   type FloorPartCodeOption,
   type FloorPartJobCandidate,
   type JobSearchResult,
@@ -29,7 +32,7 @@ import {
 import { useToast } from "../contexts/ToastContext";
 import { formatFloorDate } from "../utils/floorScan";
 
-type PartFilter = "all" | "attention" | "linked" | "archived";
+type PartFilter = "all" | "attention" | "linked" | "archived" | "failures";
 const EMPTY_PARTS: FloorInventoryPart[] = [];
 const NON_STATUS_EVENT_ACTIONS = new Set([
   "scanned",
@@ -39,31 +42,105 @@ const NON_STATUS_EVENT_ACTIONS = new Set([
   "part_code_changed",
   "part_code_removed",
 ]);
+const FAILURE_REASON_OPTIONS: Array<{ value: FloorStopReasonCode; label: string }> = [
+  { value: "first_layer_issue", label: "First layer issue" },
+  { value: "warping", label: "Warping" },
+  { value: "layer_lines", label: "Layer lines" },
+  { value: "filament_issue", label: "Filament issue" },
+  { value: "other", label: "Other" },
+];
+const STATUS_SEARCH_SHORTCUTS = [
+  { label: "Fit checks", query: "fit check" },
+  { label: "Reworks", query: "rework" },
+  { label: "WIP", query: "wip" },
+  { label: "Shipped", query: "shipped" },
+  { label: "Failed", query: "failed" },
+  { label: "Discarded", query: "discarded" },
+];
+const DISCARDED_STATUS_CLASS =
+  "border border-red-600 bg-red-100 text-red-800 shadow-sm shadow-red-500/20 dark:border-red-400/50 dark:bg-red-500/20 dark:text-red-300";
 
-function isAttention(part: FloorInventoryPart) {
-  return !part.archived_at && part.archive_id === null;
+function isDiscarded(
+  part: FloorInventoryPart,
+  latestEventAction = part.latest_event_action,
+) {
+  return latestEventAction === "discarded";
 }
-function isLinked(part: FloorInventoryPart) {
-  return !part.archived_at && part.archive_id !== null;
+function isAttention(
+  part: FloorInventoryPart,
+  latestEventAction?: string | null,
+) {
+  return (
+    !part.archived_at &&
+    part.archive_id === null &&
+    !isDiscarded(part, latestEventAction)
+  );
+}
+function isLinked(
+  part: FloorInventoryPart,
+  latestEventAction?: string | null,
+) {
+  return (
+    !part.archived_at &&
+    part.archive_id !== null &&
+    !isDiscarded(part, latestEventAction)
+  );
 }
 
 export function FloorInventoryPage() {
   const { t } = useTranslation();
   const { showToast } = useToast();
   const queryClient = useQueryClient();
-  const [filter, setFilter] = useState<PartFilter>("all");
+  const [filter, setFilter] = useState<PartFilter>("linked");
   const [search, setSearch] = useState("");
+  const [searchFocused, setSearchFocused] = useState(false);
   const [selectedId, setSelectedId] = useState<number | null>(null);
+  const [selectedFailure, setSelectedFailure] = useState<FloorPrintFailureReason | null>(null);
+  const handleSearchChange = (value: string) => {
+    setSearch(value);
+    if (value.trim()) {
+      setFilter("all");
+    }
+  };
   const filters: Array<{ id: PartFilter; label: string }> = [
-    { id: "all", label: t("floor.inventoryFilterAll", "All parts") },
+    { id: "linked", label: t("floor.inventoryFilterLinked", "Registered Parts") },
+    { id: "failures", label: t("floor.printFailureLogTitle", "Print failure log") },
     { id: "attention", label: t("floor.inventoryFilterAttention", "Needs matching") },
-    { id: "linked", label: t("floor.inventoryFilterLinked", "Linked parts") },
-    { id: "archived", label: t("floor.inventoryFilterArchived", "Archived") },
+    { id: "all", label: t("floor.inventoryFilterAll", "All parts") },
   ];
   const partsQuery = useQuery({
     queryKey: ["floor-inventory-parts"],
     queryFn: () => api.getFloorInventoryParts(true),
     refetchOnMount: "always",
+  });
+  const failureReasonsQuery = useQuery({
+    queryKey: ["floor-print-failure-reasons"],
+    queryFn: () => api.getFloorPrintFailureReasons(12),
+    staleTime: 30_000,
+  });
+  const updateFailureMutation = useMutation({
+    mutationFn: ({
+      id,
+      reason_code,
+      reason_text,
+    }: {
+      id: number;
+      reason_code: FloorStopReasonCode;
+      reason_text: string | null;
+    }) => api.updateFloorPrintFailureReason(id, { reason_code, reason_text }),
+    onSuccess: async (updated) => {
+      setSelectedFailure(updated);
+      await queryClient.invalidateQueries({ queryKey: ["floor-print-failure-reasons"] });
+      showToast(t("floor.printFailureLogUpdated", "Failure reason updated"), "success");
+    },
+  });
+  const discardFailureMutation = useMutation({
+    mutationFn: (id: number) => api.discardFloorPrintFailureReason(id),
+    onSuccess: async () => {
+      setSelectedFailure(null);
+      await queryClient.invalidateQueries({ queryKey: ["floor-print-failure-reasons"] });
+      showToast(t("floor.printFailureLogDiscarded", "Failure reason discarded"), "success");
+    },
   });
   const records = partsQuery.data ?? EMPTY_PARTS;
   const activeRecords = records.filter((part) => !part.archived_at);
@@ -338,11 +415,22 @@ export function FloorInventoryPage() {
   });
   const counts = useMemo(
     () => ({
-      active: records.filter(isLinked).length,
-      attention: records.filter(isAttention).length,
+      active: records.filter((part) =>
+        isLinked(part, latestEventActions.get(part.id)),
+      ).length,
+      attention: records.filter((part) =>
+        isAttention(part, latestEventActions.get(part.id)),
+      ).length,
       archived: records.filter((part) => part.archived_at).length,
     }),
-    [records],
+    [latestEventActions, records],
+  );
+  const discardedParts = useMemo(
+    () =>
+      activeRecords.filter((part) =>
+        isDiscarded(part, latestEventActions.get(part.id)),
+      ),
+    [activeRecords, latestEventActions],
   );
   const visibleParts = useMemo(() => {
     const term = search.trim().toLowerCase();
@@ -351,25 +439,45 @@ export function FloorInventoryPage() {
         filter === "all"
           ? !part.archived_at
           : filter === "attention"
-            ? isAttention(part)
+            ? isAttention(part, latestEventActions.get(part.id))
             : filter === "linked"
-              ? isLinked(part)
+              ? isLinked(part, latestEventActions.get(part.id))
               : Boolean(part.archived_at);
       return (
         included &&
         (!term ||
-          [part.sticker_code, part.part_code, part.print_name, part.printer_name].some(
-            (value) => value?.toLowerCase().includes(term),
+          partSearchValues(part, latestEventActions.get(part.id)).some((value) =>
+            value.includes(term),
           ))
       );
     });
-  }, [filter, records, search]);
+  }, [filter, latestEventActions, records, search]);
+  const visibleFailureRecords = useMemo(() => {
+    if (filter !== "all") return [];
+    const term = search.trim().toLowerCase();
+    return (failureReasonsQuery.data ?? []).filter((record) =>
+      !term ||
+      [
+        record.part_code,
+        record.print_name,
+        record.printer_name,
+        record.reason_text,
+        "failed",
+        "failure",
+        printFailureReasonLabel(record.reason_code, record.reason_text, t),
+      ]
+        .some((value) => value?.toLowerCase().includes(term)),
+    );
+  }, [failureReasonsQuery.data, filter, search, t]);
+  const visibleRecordCount = visibleParts.length + visibleFailureRecords.length;
+  const failureLogCount =
+    (failureReasonsQuery.data?.length ?? 0) + discardedParts.length;
   const hiddenByFilter =
     !partsQuery.isLoading &&
     !partsQuery.isError &&
     !search.trim() &&
-    records.length > 0 &&
-    visibleParts.length === 0;
+    records.length + (failureReasonsQuery.data?.length ?? 0) > 0 &&
+    visibleRecordCount === 0;
   const saveError =
     archiveMutation.isError ||
     relinkMutation.isError ||
@@ -397,24 +505,75 @@ export function FloorInventoryPage() {
             )}
           </p>
         </div>
-        <label className="relative block w-full lg:w-80">
-          <span className="sr-only">
-            {t("floor.inventorySearchLabel", "Search part history")}
-          </span>
-          <Search
-            className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-bambu-gray"
-            aria-hidden="true"
-          />
-          <input
-            className="w-full rounded-lg border border-bambu-dark-tertiary bg-bambu-dark-secondary py-2.5 pl-9 pr-3 text-sm text-white placeholder:text-bambu-gray focus:border-bambu-green focus:outline-none"
-            placeholder={t(
-              "floor.inventorySearchPlaceholder",
-              "Search sticker, job, or printer",
+        <div
+          className="relative w-full lg:w-80"
+          onBlur={(event) => {
+            const nextTarget = event.relatedTarget as Node | null;
+            if (!nextTarget || !event.currentTarget.contains(nextTarget)) {
+              setSearchFocused(false);
+            }
+          }}
+        >
+          <label className="relative block">
+            <span className="sr-only">
+              {t("floor.inventorySearchLabel", "Search part history")}
+            </span>
+            <Search
+              className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-bambu-gray"
+              aria-hidden="true"
+            />
+            <input
+              className="w-full rounded-lg border border-bambu-dark-tertiary bg-bambu-dark-secondary py-2.5 pl-9 pr-9 text-sm text-white placeholder:text-bambu-gray focus:border-bambu-green focus:outline-none"
+              placeholder={t(
+                "floor.inventorySearchPlaceholder",
+                "Search sticker, job, printer, or status",
+              )}
+              value={search}
+              onFocus={() => setSearchFocused(true)}
+              onChange={(event) => handleSearchChange(event.target.value)}
+            />
+            {search && (
+              <button
+                type="button"
+                aria-label={t("common.clearSearch", "Clear search")}
+                className="absolute right-2 top-1/2 -translate-y-1/2 rounded p-1 text-bambu-gray transition-colors hover:text-white focus:outline-none focus:ring-2 focus:ring-bambu-green"
+                onMouseDown={(event) => event.preventDefault()}
+                onClick={() => handleSearchChange("")}
+              >
+                <X className="h-4 w-4" aria-hidden="true" />
+              </button>
             )}
-            value={search}
-            onChange={(event) => setSearch(event.target.value)}
-          />
-        </label>
+          </label>
+          {searchFocused && (
+            <div className="absolute inset-x-0 top-full z-30 mt-2 overflow-hidden rounded-lg border border-bambu-dark-tertiary bg-bambu-dark-secondary shadow-xl shadow-black/30">
+              <div className="border-b border-bambu-dark-tertiary px-3 py-2">
+                <p className="text-xs font-semibold text-white">
+                  {t("floor.inventorySearchSuggestions", "Suggested status filters")}
+                </p>
+                <p className="mt-0.5 text-xs text-bambu-gray">
+                  {t("floor.inventorySearchSuggestionHint", "Search by status or choose a shortcut.")}
+                </p>
+              </div>
+              <div className="p-1.5">
+                {STATUS_SEARCH_SHORTCUTS.map((shortcut) => (
+                  <button
+                    key={shortcut.query}
+                    type="button"
+                    onMouseDown={(event) => event.preventDefault()}
+                    onClick={() => {
+                      handleSearchChange(shortcut.query);
+                      setSearchFocused(false);
+                    }}
+                    className="flex w-full items-center justify-between rounded-md px-3 py-2 text-left text-sm text-bambu-gray-light transition-colors hover:bg-bambu-dark-tertiary hover:text-white"
+                  >
+                    <span>{shortcut.label}</span>
+                    <span className="font-mono text-xs text-bambu-gray">{shortcut.query}</span>
+                  </button>
+                ))}
+              </div>
+            </div>
+          )}
+        </div>
       </div>
       <div className="grid max-w-3xl grid-cols-1 gap-3 sm:grid-cols-3">
         <SummaryCard
@@ -424,7 +583,7 @@ export function FloorInventoryPage() {
           onClick={() => setFilter("attention")}
         />
         <SummaryCard
-          label={t("floor.inventoryActiveLinked", "Active linked parts")}
+          label={t("floor.inventoryActiveLinked", "Actively registered parts")}
           count={counts.active}
           accent="green"
           onClick={() => setFilter("linked")}
@@ -438,8 +597,9 @@ export function FloorInventoryPage() {
       </div>
       <div className="grid gap-6 xl:grid-cols-[minmax(0,1fr)_24rem] xl:items-start">
         <section className="overflow-hidden rounded-lg border border-bambu-dark-tertiary bg-bambu-dark-secondary">
-          <div className="flex flex-col gap-3 border-b border-bambu-dark-tertiary p-4 sm:flex-row sm:items-center sm:justify-between">
-            <div className="inline-flex self-start rounded-lg bg-bambu-dark p-1">
+          <div className="flex flex-col gap-3 border-b border-bambu-dark-tertiary p-4 sm:flex-row sm:items-start sm:justify-between">
+            <div className="flex items-center">
+              <div className="inline-flex rounded-lg bg-bambu-dark p-1">
               {filters.map((item) => (
                 <button
                   key={item.id}
@@ -453,18 +613,53 @@ export function FloorInventoryPage() {
                     : ""}
                 </button>
               ))}
+              </div>
             </div>
-            <p className="text-sm text-bambu-gray">
-              {visibleParts.length === 1
+            <div className="flex flex-col items-start gap-2 sm:items-end">
+              <button
+                type="button"
+                onClick={() => setFilter("archived")}
+                className={`rounded-md border px-3 py-1.5 text-sm transition-colors ${filter === "archived" ? "border-bambu-green bg-bambu-green text-white" : "border-bambu-dark-tertiary bg-bambu-dark-tertiary text-white hover:border-bambu-gray hover:bg-bambu-dark hover:text-white"}`}
+              >
+                {t("floor.inventoryShowArchived", "Show archived")}
+              </button>
+              <p className="text-sm text-bambu-gray">
+              {filter === "failures"
+                ? failureLogCount === 1
+                  ? t("floor.inventoryRecordCountOne", "{{count}} record", {
+                      count: failureLogCount,
+                    })
+                  : t("floor.inventoryRecordCountMany", "{{count}} records", {
+                      count: failureLogCount,
+                    })
+                : visibleRecordCount === 1
                 ? t("floor.inventoryRecordCountOne", "{{count}} record", {
-                    count: visibleParts.length,
+                    count: visibleRecordCount,
                   })
                 : t("floor.inventoryRecordCountMany", "{{count}} records", {
-                    count: visibleParts.length,
+                      count: visibleRecordCount,
                   })}
-            </p>
+              </p>
+            </div>
           </div>
-          {partsQuery.isLoading ? (
+          {filter === "failures" ? (
+            <PrintFailureReasonLog
+              records={failureReasonsQuery.data ?? []}
+              discardedParts={discardedParts}
+              loading={failureReasonsQuery.isLoading}
+              t={t}
+              selectedId={selectedId}
+              selectedFailure={selectedFailure}
+              onSelectFailure={(record) => {
+                setSelectedId(null);
+                setSelectedFailure(record);
+              }}
+              onSelectPart={(part) => {
+                setSelectedFailure(null);
+                setSelectedId(part.id);
+              }}
+            />
+          ) : partsQuery.isLoading ? (
             <div className="flex items-center justify-center gap-2 px-4 py-16 text-bambu-gray">
               <Loader2 className="h-5 w-5 animate-spin" />
               {t("floor.inventoryLoading", "Loading part history…")}
@@ -482,7 +677,7 @@ export function FloorInventoryPage() {
                 {t("common.retry", "Retry")}
               </Button>
             </div>
-          ) : visibleParts.length === 0 ? (
+          ) : visibleRecordCount === 0 ? (
             <div className="px-4 py-16 text-center text-bambu-gray">
               {hiddenByFilter ? (
                 <div className="space-y-3">
@@ -560,6 +755,52 @@ export function FloorInventoryPage() {
                   </tr>
                 </thead>
                 <tbody>
+                  {visibleFailureRecords.map((record) => (
+                    <tr
+                      key={`failure-${record.id}`}
+                      tabIndex={0}
+                      onClick={() => {
+                        setSelectedId(null);
+                        setSelectedFailure(record);
+                      }}
+                      onKeyDown={(event) => {
+                        if (event.key === "Enter" || event.key === " ") {
+                          setSelectedId(null);
+                          setSelectedFailure(record);
+                        }
+                      }}
+                      className={`cursor-pointer border-b border-bambu-dark-tertiary last:border-0 transition-colors hover:bg-bambu-dark-tertiary/60 focus:bg-bambu-dark-tertiary/60 focus:outline-none ${selectedFailure?.id === record.id ? "bg-red-100/50 dark:bg-red-500/10" : ""}`}
+                    >
+                      <td className="px-4 py-3 font-mono font-medium text-bambu-gray">
+                        —
+                      </td>
+                      <td className="px-4 py-3">
+                        <span className={`inline-flex rounded-full px-2 py-1 text-xs font-medium ${DISCARDED_STATUS_CLASS}`}>
+                          {t("floor.inventoryStatusFailed", "Failed")}
+                        </span>
+                      </td>
+                      <td className="px-4 py-3 text-white">
+                        {record.part_code && (
+                          <span className="mr-2 font-mono text-bambu-green-light">
+                            {record.part_code}
+                          </span>
+                        )}
+                        {record.print_name ?? t("floor.inventoryNoJob", "No completed job")}
+                        <span className="ml-2 text-red-800 dark:text-red-300">
+                          {printFailureReasonLabel(record.reason_code, record.reason_text, t)}
+                        </span>
+                      </td>
+                      <td className="px-4 py-3 text-bambu-gray-light">
+                        {record.printer_name ?? t("floor.inventoryDeletedPrinter", "Deleted printer")}
+                      </td>
+                      <td className="whitespace-nowrap px-4 py-3 text-bambu-gray">
+                        {formatFloorDate(record.stopped_at, {
+                          dateStyle: "medium",
+                          timeStyle: "short",
+                        })}
+                      </td>
+                    </tr>
+                  ))}
                   {visibleParts.map((part) => {
                     const latestEventAction =
                       latestEventActions.get(part.id) ??
@@ -569,7 +810,10 @@ export function FloorInventoryPage() {
                     <tr
                       key={part.id}
                       tabIndex={0}
-                      onClick={() => setSelectedId(part.id)}
+                      onClick={() => {
+                        setSelectedFailure(null);
+                        setSelectedId(part.id);
+                      }}
                       onKeyDown={(event) => {
                         if (event.key === "Enter" || event.key === " ")
                           setSelectedId(part.id);
@@ -612,6 +856,22 @@ export function FloorInventoryPage() {
             </div>
           )}
         </section>
+        {selectedFailure ? (
+          <PrintFailureDetail
+            record={selectedFailure}
+            updatePending={updateFailureMutation.isPending}
+            discardPending={discardFailureMutation.isPending}
+            onClose={() => setSelectedFailure(null)}
+            onUpdate={(reasonCode, reasonText) =>
+              updateFailureMutation.mutate({
+                id: selectedFailure.id,
+                reason_code: reasonCode,
+                reason_text: reasonText,
+              })
+            }
+            onDiscard={() => discardFailureMutation.mutate(selectedFailure.id)}
+          />
+        ) : (
         <PartDetail
           part={selectedPart}
           events={eventsQuery.data ?? []}
@@ -656,9 +916,373 @@ export function FloorInventoryPage() {
           onClearPartCode={() => selectedPart && clearPartCodeMutation.mutate(selectedPart.id)}
           onDelete={() => selectedPart && deleteMutation.mutate(selectedPart.id)}
         />
+        )}
       </div>
     </div>
   );
+}
+
+function PrintFailureDetail({
+  record,
+  updatePending,
+  discardPending,
+  onClose,
+  onUpdate,
+  onDiscard,
+}: {
+  record: FloorPrintFailureReason;
+  updatePending: boolean;
+  discardPending: boolean;
+  onClose: () => void;
+  onUpdate: (reasonCode: FloorStopReasonCode, reasonText: string | null) => void;
+  onDiscard: () => void;
+}) {
+  const { t } = useTranslation();
+  const [editing, setEditing] = useState(false);
+  const [reasonCode, setReasonCode] = useState<FloorStopReasonCode>(record.reason_code);
+  const [reasonText, setReasonText] = useState(record.reason_text ?? "");
+  const [discardOpen, setDiscardOpen] = useState(false);
+
+  useEffect(() => {
+    setEditing(false);
+    setReasonCode(record.reason_code);
+    setReasonText(record.reason_text ?? "");
+    setDiscardOpen(false);
+  }, [record.id, record.reason_code, record.reason_text]);
+
+  const reasonLabel = printFailureReasonLabel(record.reason_code, record.reason_text, t);
+  const canSave = reasonCode !== "other" || reasonText.trim().length > 0;
+
+  return (
+    <aside
+      className="rounded-lg border border-bambu-dark-tertiary bg-bambu-dark-secondary xl:sticky xl:top-6 xl:flex xl:max-h-[calc(100vh-3rem)] xl:flex-col xl:overflow-hidden"
+      aria-label={t("floor.printFailureDetailLabel", "Print failure detail")}
+    >
+      <div className="flex shrink-0 items-start justify-between gap-3 border-b border-bambu-dark-tertiary p-4">
+        <div>
+          <p className="text-xs uppercase tracking-wide text-red-600 dark:text-red-400">
+            {t("floor.printFailureDetailEyebrow", "Print failure")}
+          </p>
+          <h2 className="mt-1 font-mono text-lg font-semibold text-white">
+            {record.part_code ?? t("floor.stoppedPrintPartCodeUnknown", "Part code unavailable")}
+          </h2>
+        </div>
+        <button
+          type="button"
+          className="rounded p-1 text-bambu-gray hover:bg-bambu-dark-tertiary hover:text-white"
+          onClick={onClose}
+          aria-label={t("floor.printFailureDetailClose", "Close failure detail")}
+        >
+          <X className="h-5 w-5" />
+        </button>
+      </div>
+      <div className="min-h-0 flex-1 overflow-y-auto p-4">
+        <div className="flex items-center gap-2">
+          <span className={`inline-flex rounded-full px-2 py-1 text-xs font-medium ${DISCARDED_STATUS_CLASS}`}>
+            {t("floor.inventoryStatusFailed", "Failed")}
+          </span>
+        </div>
+        <dl className="mt-5 grid grid-cols-2 gap-x-4 gap-y-4 text-sm">
+          <div className="col-span-2">
+            <dt className="text-bambu-gray">{t("floor.inventoryCompletedJob", "Job")}</dt>
+            <dd className="mt-0.5 text-white">
+              {record.print_name ?? t("floor.inventoryNoJobLinked", "No job linked")}
+            </dd>
+          </div>
+          <div>
+            <dt className="text-bambu-gray">{t("floor.inventoryColPrinter", "Printer")}</dt>
+            <dd className="mt-0.5 text-white">
+              {record.printer_name ?? t("floor.inventoryDeletedPrinter", "Deleted printer")}
+            </dd>
+          </div>
+          <div>
+            <dt className="text-bambu-gray">{t("floor.printFailureStoppedAt", "Stopped")}</dt>
+            <dd className="mt-0.5 text-white">
+              {formatFloorDate(record.stopped_at, { dateStyle: "medium", timeStyle: "short" })}
+            </dd>
+          </div>
+          <div className="col-span-2">
+            <dt className="text-bambu-gray">{t("floor.printFailureReason", "Failure reason")}</dt>
+            {!editing ? (
+              <dd className="mt-1 text-red-800 dark:text-red-300">{reasonLabel}</dd>
+            ) : (
+              <dd className="mt-2 space-y-3">
+                <div className="grid grid-cols-2 gap-2">
+                  {FAILURE_REASON_OPTIONS.map((option) => (
+                    <button
+                      key={option.value}
+                      type="button"
+                      aria-pressed={reasonCode === option.value}
+                      onClick={() => setReasonCode(option.value)}
+                      className={`rounded-lg border px-3 py-2 text-left text-xs transition-colors ${
+                        reasonCode === option.value
+                          ? "border-red-600 bg-red-100 text-red-800 dark:border-red-400/50 dark:bg-red-500/15 dark:text-red-300"
+                          : "border-bambu-dark-tertiary bg-bambu-dark text-bambu-gray-light hover:border-red-600 hover:text-red-800 dark:hover:border-red-400/60 dark:hover:text-white"
+                      }`}
+                    >
+                      {option.label}
+                    </button>
+                  ))}
+                </div>
+                {reasonCode === "other" && (
+                  <textarea
+                    value={reasonText}
+                    onChange={(event) => setReasonText(event.target.value)}
+                    rows={3}
+                    maxLength={500}
+                    autoFocus
+                    placeholder={t("floor.failureReasonOtherPlaceholder", "Describe why the print failed…")}
+                    className="w-full resize-y rounded-lg border border-bambu-dark-tertiary bg-bambu-dark px-3 py-2 text-sm text-white placeholder:text-bambu-gray focus:border-red-400 focus:outline-none"
+                  />
+                )}
+                <div className="flex justify-end gap-2">
+                  <Button size="sm" variant="secondary" onClick={() => setEditing(false)}>
+                    {t("common.cancel", "Cancel")}
+                  </Button>
+                  <Button
+                    size="sm"
+                    disabled={!canSave || updatePending}
+                    onClick={() => onUpdate(reasonCode, reasonCode === "other" ? reasonText.trim() : null)}
+                  >
+                    {updatePending ? <Loader2 className="h-4 w-4 animate-spin" /> : null}
+                    {t("common.save", "Save")}
+                  </Button>
+                </div>
+              </dd>
+            )}
+          </div>
+        </dl>
+      </div>
+      <div className="shrink-0 border-t border-bambu-dark-tertiary p-4">
+        {!editing && !discardOpen && (
+          <div className="flex flex-wrap gap-2">
+            <Button size="sm" variant="secondary" onClick={() => setEditing(true)}>
+              {t("floor.printFailureEditReason", "Edit reason")}
+            </Button>
+            <Button size="sm" variant="danger" onClick={() => setDiscardOpen(true)}>
+              {t("floor.printFailureDiscardReason", "Discard reason")}
+            </Button>
+          </div>
+        )}
+        {discardOpen && (
+          <div className="space-y-3">
+            <p className="text-sm text-white">
+              {t("floor.printFailureDiscardConfirm", "Discard this failure reason? This removes it from Part history.")}
+            </p>
+            <div className="flex justify-end gap-2">
+              <Button size="sm" variant="secondary" onClick={() => setDiscardOpen(false)}>
+                {t("common.cancel", "Cancel")}
+              </Button>
+              <Button size="sm" variant="danger" disabled={discardPending} onClick={onDiscard}>
+                {discardPending ? <Loader2 className="h-4 w-4 animate-spin" /> : null}
+                {t("floor.printFailureConfirmDiscard", "Discard reason")}
+              </Button>
+            </div>
+          </div>
+        )}
+      </div>
+    </aside>
+  );
+}
+
+function PrintFailureReasonLog({
+  records,
+  discardedParts,
+  loading,
+  t,
+  selectedId,
+  selectedFailure,
+  onSelectFailure,
+  onSelectPart,
+}: {
+  records: FloorPrintFailureReason[];
+  discardedParts: FloorInventoryPart[];
+  loading: boolean;
+  t: ReturnType<typeof useTranslation>["t"];
+  selectedId: number | null;
+  selectedFailure: FloorPrintFailureReason | null;
+  onSelectFailure: (record: FloorPrintFailureReason) => void;
+  onSelectPart: (part: FloorInventoryPart) => void;
+}) {
+  const entries = [
+    ...records.map((record) => ({ type: "failure" as const, record })),
+    ...discardedParts.map((part) => ({ type: "discarded" as const, part })),
+  ].sort((left, right) => {
+    const leftDate = left.type === "failure" ? left.record.stopped_at : left.part.labeled_at;
+    const rightDate = right.type === "failure" ? right.record.stopped_at : right.part.labeled_at;
+    return new Date(rightDate).getTime() - new Date(leftDate).getTime();
+  });
+
+  return (
+    <div className="overflow-hidden">
+      <div className="flex items-center gap-2 border-b border-bambu-dark-tertiary px-4 py-3">
+        <AlertTriangle className="h-4 w-4 text-red-600 dark:text-red-400" aria-hidden="true" />
+        <div>
+          <h2 className="text-sm font-semibold text-white">
+            {t("floor.printFailureLogTitle", "Print failure log")}
+          </h2>
+          <p className="text-xs text-bambu-gray">
+            {t("floor.printFailureLogDescription", "Stopped, failed, and discarded prints recorded from the floor.")}
+          </p>
+        </div>
+      </div>
+      {loading ? (
+        <div className="px-4 py-4 text-sm text-bambu-gray">
+          {t("floor.printFailureLogLoading", "Loading failure log…")}
+        </div>
+      ) : entries.length === 0 ? (
+        <div className="px-4 py-4 text-sm text-bambu-gray">
+          {t("floor.printFailureLogEmpty", "No print failure reasons logged yet.")}
+        </div>
+      ) : (
+        <div className="overflow-x-auto">
+          <table className="w-full min-w-[680px] text-left text-sm">
+            <thead className="border-b border-bambu-dark-tertiary text-xs uppercase tracking-wide text-bambu-gray">
+              <tr>
+                <th className="px-4 py-3 font-medium">
+                  {t("floor.inventoryColSticker", "Sticker")}
+                </th>
+                <th className="px-4 py-3 font-medium">
+                  {t("floor.inventoryColStatus", "Status")}
+                </th>
+                <th className="px-4 py-3 font-medium">
+                  {t("floor.inventoryColJob", "Job / part")}
+                </th>
+                <th className="px-4 py-3 font-medium">
+                  {t("floor.inventoryColPrinter", "Printer")}
+                </th>
+                <th className="px-4 py-3 font-medium">
+                  {t("floor.inventoryColLabeled", "Labeled")}
+                </th>
+              </tr>
+            </thead>
+            <tbody>
+              {entries.map((entry) => {
+                const isFailure = entry.type === "failure";
+                const selected = isFailure
+                  ? selectedFailure?.id === entry.record.id
+                  : selectedId === entry.part.id;
+                const select = () => {
+                  if (entry.type === "failure") onSelectFailure(entry.record);
+                  else onSelectPart(entry.part);
+                };
+                return (
+                  <tr
+                    key={`${entry.type}-${isFailure ? entry.record.id : entry.part.id}`}
+                    tabIndex={0}
+                    onClick={select}
+                    onKeyDown={(event) => {
+                      if (event.key === "Enter" || event.key === " ") {
+                        select();
+                      }
+                    }}
+                    className={`cursor-pointer border-b border-bambu-dark-tertiary last:border-0 transition-colors hover:bg-bambu-dark-tertiary/60 focus:bg-bambu-dark-tertiary/60 focus:outline-none ${selected ? isFailure ? "bg-red-100/50 dark:bg-red-500/10" : "bg-bambu-dark-tertiary/60" : ""}`}
+                  >
+                    <td className={`px-4 py-3 font-mono font-medium ${isFailure ? "text-bambu-gray" : "text-white"}`}>
+                      {isFailure ? "—" : entry.part.sticker_code}
+                    </td>
+                    <td className="px-4 py-3">
+                      <span className={`inline-flex rounded-full px-2 py-1 text-xs font-medium ${isFailure ? DISCARDED_STATUS_CLASS : statusClass(entry.part, "discarded")}`}>
+                        {isFailure
+                          ? t("floor.inventoryStatusFailed", "Failed")
+                          : statusLabel(entry.part, t, "discarded")}
+                      </span>
+                    </td>
+                    <td className="px-4 py-3 text-white">
+                      {isFailure ? (
+                        <>
+                          {entry.record.part_code && (
+                            <span className="mr-2 font-mono text-bambu-green-light">
+                              {entry.record.part_code}
+                            </span>
+                          )}
+                          {entry.record.print_name ?? t("floor.inventoryNoJob", "No completed job")}
+                          <span className="ml-2 text-red-800 dark:text-red-300">
+                            {printFailureReasonLabel(entry.record.reason_code, entry.record.reason_text, t)}
+                          </span>
+                        </>
+                      ) : (
+                        <>
+                          {entry.part.part_code && (
+                            <span className="mr-2 font-mono text-bambu-green-light">
+                              {entry.part.part_code}
+                            </span>
+                          )}
+                          {entry.part.print_name ?? (
+                            <span className="text-bambu-gray">
+                              {t("floor.inventoryNoJob", "No completed job")}
+                            </span>
+                          )}
+                        </>
+                      )}
+                    </td>
+                    <td className="px-4 py-3 text-bambu-gray-light">
+                      {(isFailure ? entry.record.printer_name : entry.part.printer_name) ??
+                        t("floor.inventoryDeletedPrinter", "Deleted printer")}
+                    </td>
+                    <td className="whitespace-nowrap px-4 py-3 text-bambu-gray">
+                      {formatFloorDate(isFailure ? entry.record.stopped_at : entry.part.labeled_at, {
+                        dateStyle: "medium",
+                        timeStyle: "short",
+                      })}
+                    </td>
+                  </tr>
+                );
+              })}
+            </tbody>
+          </table>
+        </div>
+      )}
+    </div>
+  );
+}
+
+function printFailureReasonLabel(
+  reasonCode: FloorPrintFailureReason["reason_code"],
+  reasonText: string | null,
+  t: ReturnType<typeof useTranslation>["t"],
+) {
+  if (reasonCode === "other") return reasonText || t("floor.stopReasonOther", "Other");
+  const labels: Record<Exclude<FloorPrintFailureReason["reason_code"], "other">, string> = {
+    first_layer_issue: "First layer issue",
+    warping: "Warping",
+    layer_lines: "Layer lines",
+    filament_issue: "Filament issue",
+  };
+  return labels[reasonCode];
+}
+
+function partSearchValues(part: FloorInventoryPart, latestEventAction: string | null | undefined) {
+  const statusTerms = part.archived_at
+    ? ["archived"]
+    : ["registered", "registered parts", "linked", "linked parts", "active"];
+  const action = latestEventAction ?? part.latest_event_action ?? null;
+  const actionTerms =
+    action === "fit_check" || action === "fit_checked"
+      ? ["fit", "fit check", "fit checks", "fit check pass"]
+      : action === "rework" || action === "sanding"
+        ? ["rework", "reworks", "sanding"]
+        : action === "wip" || action === "in_wip"
+          ? ["wip", "in wip", "in_wip"]
+          : action === "shipped"
+            ? ["shipped", "shipping"]
+            : action === "discarded"
+              ? ["discarded", "discard"]
+              : action === "cleanup" || action === "cleaned_up"
+                ? ["cleanup", "cleanup pass"]
+                : part.archive_id === null
+                  ? ["needs matching", "matching", "attention", "unmatched"]
+                  : [];
+  return [
+    part.sticker_code,
+    part.part_code,
+    part.print_name,
+    part.printer_name,
+    ...statusTerms,
+    ...actionTerms,
+  ]
+    .filter((value): value is string => Boolean(value))
+    .map((value) => value.toLowerCase());
 }
 
 function statusLabel(
@@ -696,7 +1320,7 @@ function statusClass(
     : latestEventAction === "rework" || latestEventAction === "sanding"
       ? "border border-orange-600 bg-orange-100 text-orange-800 shadow-sm shadow-orange-500/20 dark:border-orange-400/50 dark:bg-orange-500/20 dark:text-orange-300"
     : latestEventAction === "discarded"
-      ? "border border-red-600 bg-red-100 text-red-800 shadow-sm shadow-red-500/20 dark:border-red-400/50 dark:bg-red-500/20 dark:text-red-300"
+      ? DISCARDED_STATUS_CLASS
     : latestEventAction === "cleanup" || latestEventAction === "cleaned_up"
       ? "border border-emerald-600 bg-emerald-100 text-emerald-800 shadow-sm shadow-emerald-500/20 dark:border-emerald-400/50 dark:bg-emerald-500/20 dark:text-emerald-300"
     : latestEventAction === "wip" || latestEventAction === "in_wip"

@@ -111,11 +111,10 @@ class TestLockAndTakeover:
 
     @pytest.mark.asyncio
     @pytest.mark.integration
-    async def test_cleanup_is_not_locked(self, async_client: AsyncClient):
-        await _scan(async_client, "BBS-cleanup", DEVICE_A)
-        resp = await _scan(async_client, "BBS-cleanup", DEVICE_B)
+    async def test_removed_cleanup_code_is_rejected(self, async_client: AsyncClient):
+        resp = await _scan(async_client, "BBS-cleanup", DEVICE_A)
 
-        assert resp.json()["result"] == "opened"
+        assert resp.status_code == 404
 
     @pytest.mark.asyncio
     @pytest.mark.integration
@@ -178,15 +177,11 @@ class TestCurrentSession:
     async def test_close_endpoint_is_idempotent(self, async_client: AsyncClient):
         await _scan(async_client, "BBS-wip", DEVICE_A)
 
-        resp = await async_client.request(
-            "DELETE", "/api/v1/floor/session", params={"device_id": DEVICE_A}
-        )
+        resp = await async_client.request("DELETE", "/api/v1/floor/session", params={"device_id": DEVICE_A})
         assert resp.status_code == 200
         assert resp.json()["station_slug"] == "wip"
 
-        resp = await async_client.request(
-            "DELETE", "/api/v1/floor/session", params={"device_id": DEVICE_A}
-        )
+        resp = await async_client.request("DELETE", "/api/v1/floor/session", params={"device_id": DEVICE_A})
         assert resp.status_code == 200
         assert resp.json() is None
 

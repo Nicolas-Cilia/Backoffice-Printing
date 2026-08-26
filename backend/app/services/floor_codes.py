@@ -63,15 +63,14 @@ class FloorStation:
     name: str
     description: str
     # Whether this station takes a floor-wide lock (§2.4): at most one open
-    # session across every device. True for all but Cleanup, where parallel
-    # work on separate machines is normal. Note this is *not* the same as
+    # session across every device. Note this is *not* the same as
     # "one session per device" — that rule is universal and holds regardless.
     exclusive: bool = True
     # Which Codes-page tab this station's printable label sits under (§3.3).
     # Purely a presentation grouping — every station here is identical
     # session-machinery-wise (open/close/switch, `exclusive`, scan dispatch
-    # keyed by slug) regardless of category. "station" covers the original
-    # workflow-mode benches (WIP/+Storage/Move/Harvest/Cleanup); "location"
+    # keyed by slug) regardless of category. "station" covers the workflow
+    # stations (WIP/+Storage/Move/Harvest); "location"
     # covers QC checkpoints a part passes through (Fit Check/Rework) — an
     # operator's mental model the label sheet should match, even though
     # nothing in the backend actually treats the two groups differently.
@@ -108,28 +107,18 @@ FLOOR_STATIONS: tuple[FloorStation, ...] = (
     FloorStation(
         slug="fit-check",
         name="Fit Check",
-        description="Mandatory checkpoint before Cleanup. Scan each part to record it as checked.",
-        # No floor-wide lock (§2.4/§5.4a): parallel fit-check benches are
-        # normal work, same reasoning as Cleanup below.
+        description="Mandatory first QC checkpoint. Scan each part to record it as checked.",
+        # No floor-wide lock: parallel fit-check benches are normal work.
         exclusive=False,
         category="location",
     ),
     FloorStation(
         slug="rework",
         name="Rework",
-        description="Optional shelf for parts that need rework before Cleanup.",
-        # No floor-wide lock (§2.4/§5.4b), same reasoning as Fit Check.
+        description="Optional shelf for parts that need rework before returning to production.",
+        # No floor-wide lock: parallel rework benches are normal work.
         exclusive=False,
         category="location",
-    ),
-    FloorStation(
-        slug="cleanup",
-        name="Cleanup",
-        description="Log defects at support removal.",
-        # The one station without a floor-wide lock (§5.5): two benches
-        # clearing supports at once is ordinary parallel work, and their
-        # scans never touch the same record.
-        exclusive=False,
     ),
 )
 

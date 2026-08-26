@@ -18,7 +18,7 @@ class TestListStations:
         assert resp.status_code == 200
 
         stations = resp.json()
-        assert len(stations) == 7
+        assert len(stations) == 6
 
         payloads = [s["payload"] for s in stations]
         assert payloads == [
@@ -28,7 +28,6 @@ class TestListStations:
             "BBS-harvest",
             "BBS-fit-check",
             "BBS-rework",
-            "BBS-cleanup",
         ]
         # Order is the documented workflow order (§5), not alphabetical — the
         # Codes page prints them in this sequence.
@@ -39,7 +38,6 @@ class TestListStations:
         assert by_slug["fit-check"]["category"] == "location"
         assert by_slug["rework"]["category"] == "location"
         assert by_slug["wip"]["category"] == "station"
-        assert by_slug["cleanup"]["category"] == "station"
 
 
 class TestRenderStationLabels:
@@ -48,7 +46,7 @@ class TestRenderStationLabels:
     async def test_renders_a_pdf(self, async_client: AsyncClient):
         resp = await async_client.post(
             "/api/v1/floor/labels/stations",
-            json={"payloads": ["BBS-wip", "BBS-cleanup"], "width_mm": 60, "height_mm": 60},
+            json={"payloads": ["BBS-wip", "BBS-harvest"], "width_mm": 60, "height_mm": 60},
         )
         assert resp.status_code == 200
         assert resp.headers["content-type"] == "application/pdf"

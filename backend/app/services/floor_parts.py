@@ -29,6 +29,7 @@ phase 1b's tests.
 from __future__ import annotations
 
 import logging
+import re
 from dataclasses import dataclass
 from datetime import datetime
 from enum import StrEnum
@@ -161,20 +162,33 @@ async def _part_code_for_archive(db: AsyncSession, archive_id: int | None) -> st
     from backend.app.models.production import ProductionPart, ProductionPartInstance
 
     codes = (
-        await db.execute(
-            select(ProductionPart.code)
-            .join(ProductionPartInstance, ProductionPartInstance.part_id == ProductionPart.id)
-            .join(LibraryFile, LibraryFile.folder_id == ProductionPartInstance.folder_id)
-            .join(PrintArchive, PrintArchive.library_file_id == LibraryFile.id)
-            .where(PrintArchive.id == archive_id)
-            .distinct()
+        (
+            await db.execute(
+                select(ProductionPart.code)
+                .join(ProductionPartInstance, ProductionPartInstance.part_id == ProductionPart.id)
+                .join(LibraryFile, LibraryFile.folder_id == ProductionPartInstance.folder_id)
+                .join(PrintArchive, PrintArchive.library_file_id == LibraryFile.id)
+                .where(PrintArchive.id == archive_id)
+                .distinct()
+            )
         )
-    ).scalars().all()
+        .scalars()
+        .all()
+    )
     return codes[0] if len(codes) == 1 else None
 
 
 async def _section_part_for_archive(db: AsyncSession, archive_id: int | None) -> tuple[str | None, int | None]:
-    """Resolve the exact Section Part represented by an archived print."""
+    """Resolve the exact Section Part represented by an archived print.
+
+    Prefer the precise Files/Production relationship when it exists. Older
+    archives and printer-created jobs often lack that relationship, though,
+    while their build-plate name still follows the production convention
+    (for example ``TOP x3 - 1.13.2 - X1C``). In that case, fall back to one
+    unambiguous configured code found in the archive's display name or
+    filename. A title mentioning multiple codes remains unassigned rather
+    than guessing which physical part a sticker represents.
+    """
     if archive_id is None:
         return None, None
     from backend.app.models.archive import PrintArchive
@@ -193,19 +207,61 @@ async def _section_part_for_archive(db: AsyncSession, archive_id: int | None) ->
             .distinct()
         )
     ).all()
-    return rows[0] if len(rows) == 1 else (None, None)
+    if len(rows) == 1:
+        return rows[0]
+
+    archive = await db.get(PrintArchive, archive_id)
+    if archive is None:
+        return None, None
+
+    source_names = tuple(name for name in (archive.print_name, archive.filename) if name)
+    if not source_names:
+        return None, None
+
+    section_parts = (
+        await db.execute(
+            select(LibrarySectionPart.code, LibrarySectionPart.id).order_by(
+                LibrarySectionPart.code,
+                LibrarySectionPart.id,
+            )
+        )
+    ).all()
+    matches: dict[str, list[int]] = {}
+    for code, section_part_id in section_parts:
+        normalized_code = code.strip().upper()
+        if not normalized_code:
+            continue
+        # `_` and `-` are intentionally separators: both occur in printer
+        # build-plate names. Alphanumerics on either side are not, so `TOP`
+        # does not accidentally match a name such as `TOPPER`.
+        pattern = re.compile(rf"(?<![A-Z0-9]){re.escape(normalized_code)}(?![A-Z0-9])")
+        if any(pattern.search(name.upper()) for name in source_names):
+            matches.setdefault(normalized_code, []).append(section_part_id)
+
+    if len(matches) != 1:
+        return None, None
+
+    code, section_part_ids = next(iter(matches.items()))
+    # A repeated code across sections is still enough to enroll the visible
+    # part code. Leave the exact section unset so thumbnail lookup can use
+    # the code-level fallback rather than claiming a potentially wrong 3MF.
+    return code, section_part_ids[0] if len(section_part_ids) == 1 else None
 
 
 async def backfill_missing_part_codes(db: AsyncSession) -> int:
     """Populate codes for existing linked stickers when their source maps cleanly."""
     parts = (
-        await db.execute(
-            select(FloorLabeledPart).where(
-                FloorLabeledPart.archive_id.is_not(None),
-                or_(FloorLabeledPart.part_code.is_(None), FloorLabeledPart.section_part_id.is_(None)),
+        (
+            await db.execute(
+                select(FloorLabeledPart).where(
+                    FloorLabeledPart.archive_id.is_not(None),
+                    or_(FloorLabeledPart.part_code.is_(None), FloorLabeledPart.section_part_id.is_(None)),
+                )
             )
         )
-    ).scalars().all()
+        .scalars()
+        .all()
+    )
     count = 0
     for part in parts:
         code, section_part_id = await _section_part_for_archive(db, part.archive_id)
@@ -438,8 +494,8 @@ async def scan_part(
         archive_id = session.bound_archive_id
 
     else:
-        # This device holds a session for a different station (e.g.
-        # cleanup). Harvest "ignores" other codes (§5.4) — do not write a
+        # This device holds a session for a different station. Harvest
+        # "ignores" other codes (§5.4) — do not write a
         # part against a station that isn't harvest.
         return PartScanOutcome(result=PartScanResult.NO_PRINTER, session=session)
 
@@ -455,7 +511,11 @@ async def scan_part(
     db.add(part)
     await db.flush()
     db.add(
-        FloorPartEvent(part_id=part.id, action="enrolled", details={"printer_id": printer_id, "archive_id": archive_id, "part_code": part_code})
+        FloorPartEvent(
+            part_id=part.id,
+            action="enrolled",
+            details={"printer_id": printer_id, "archive_id": archive_id, "part_code": part_code},
+        )
     )
     await db.flush()
 
@@ -516,15 +576,15 @@ async def _resolve_part_for_location(
     if code is None:
         return LocationScanResult.INVALID_CODE, None
     part = await _get_part_by_code(db, code)
-    if part is None:
-        # Never enrolled at Harvest — the sticker doesn't exist yet (§9).
+    if part is None or part.archive_id is None:
+        # Location work requires both a registered sticker and a resolved
+        # print link. A no-job harvest record must be matched in Part history
+        # first; an unknown sticker must be enrolled at Harvest first (§9).
         return LocationScanResult.UNKNOWN_PART, None
     return LocationScanResult.RECORDED, part
 
 
-async def _part_is_at_location(
-    db: AsyncSession, part_id: int, action: str
-) -> bool:
+async def _part_is_at_location(db: AsyncSession, part_id: int, action: str) -> bool:
     metadata_actions = (
         "scanned",
         "archived",
@@ -556,7 +616,13 @@ async def _to_location_outcome(
         return LocationScanOutcome(result=result)
     printer = await get_printer(db, part.printer_id) if part.printer_id is not None else None
     archive = await get_archive_summary(db, part.archive_id) if part.archive_id is not None else None
-    return LocationScanOutcome(result=result, part=part, printer=printer, archive=archive, reason=reason)
+    return LocationScanOutcome(
+        result=result,
+        part=part,
+        printer=printer,
+        archive=archive,
+        reason=reason,
+    )
 
 
 async def scan_fit_check_part(db: AsyncSession, payload: str) -> LocationScanOutcome:
@@ -714,6 +780,7 @@ class InventoryPart:
     archived_at: datetime | None
     released_at: datetime | None
     latest_event_action: str | None
+    latest_event_reason: str | None
 
 
 @dataclass(frozen=True)
@@ -858,11 +925,60 @@ async def has_labeled_parts_for_archive(db: AsyncSession, archive_id: int) -> bo
     return result.scalar_one_or_none() is not None
 
 
+def _latest_event_reason(action: str | None, details: dict | None) -> str | None:
+    """Return the concise Rework reason shown when a part is scanned.
+
+    The scan screen needs the current reason, not the full event payload or
+    history.  Keep this derivation here so inventory and single-part lookups
+    always agree about what a Rework event means.
+    """
+    if action not in {"rework", "sanding"} or not isinstance(details, dict):
+        return None
+
+    error_name = details.get("error_name")
+    reason_code = details.get("reason_code")
+    reason_text = details.get("reason_text")
+    if isinstance(error_name, str) and error_name.strip():
+        label = error_name.strip()
+    elif isinstance(reason_code, str) and reason_code.strip():
+        labels = {
+            ReworkReasonCode.DOESNT_FIT.value: "Doesn't fit",
+            ReworkReasonCode.ROUGH_SURFACE.value: "Rough surface",
+            ReworkReasonCode.LAYER_LINES.value: "Layer lines",
+            ReworkReasonCode.OTHER.value: "Other",
+        }
+        label = labels.get(reason_code, reason_code.replace("_", " ").capitalize())
+    else:
+        label = None
+
+    description = reason_text.strip() if isinstance(reason_text, str) and reason_text.strip() else None
+    return " · ".join(value for value in (label, description) if value) or None
+
+
 async def list_inventory_parts(db: AsyncSession, *, include_archived: bool = False) -> list[InventoryPart]:
     from backend.app.models.archive import PrintArchive
 
     latest_event_action = (
         select(FloorPartEvent.action)
+        .where(
+            FloorPartEvent.part_id == FloorLabeledPart.id,
+            FloorPartEvent.action.notin_(
+                (
+                    "scanned",
+                    "archived",
+                    "restored",
+                    "part_code_assigned",
+                    "part_code_changed",
+                    "part_code_removed",
+                )
+            ),
+        )
+        .order_by(FloorPartEvent.occurred_at.desc(), FloorPartEvent.id.desc())
+        .limit(1)
+        .scalar_subquery()
+    )
+    latest_event_details = (
+        select(FloorPartEvent.details)
         .where(
             FloorPartEvent.part_id == FloorLabeledPart.id,
             FloorPartEvent.action.notin_(
@@ -888,6 +1004,7 @@ async def list_inventory_parts(db: AsyncSession, *, include_archived: bool = Fal
             Printer.name,
             PrintArchive.print_name,
             latest_event_action,
+            latest_event_details,
             LibrarySectionPart.name,
             LibraryFolderSection.name,
         )
@@ -915,8 +1032,9 @@ async def list_inventory_parts(db: AsyncSession, *, include_archived: bool = Fal
             p.archived_at,
             p.released_at,
             event_action,
+            _latest_event_reason(event_action, event_details),
         )
-        for p, printer_name, print_name, event_action, part_name, part_source in result.all()
+        for p, printer_name, print_name, event_action, event_details, part_name, part_source in result.all()
     ]
 
 
@@ -1278,8 +1396,9 @@ async def list_part_code_options(db: AsyncSession) -> list[PartCodeOption]:
 
     rows = (
         await db.execute(
-            select(LibrarySectionPart.code, LibrarySectionPart.name)
-            .order_by(LibrarySectionPart.code, LibrarySectionPart.id)
+            select(LibrarySectionPart.code, LibrarySectionPart.name).order_by(
+                LibrarySectionPart.code, LibrarySectionPart.id
+            )
         )
     ).all()
     seen: dict[str, str] = {}

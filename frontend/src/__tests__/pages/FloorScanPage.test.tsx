@@ -571,6 +571,75 @@ describe('FloorScanPage (Phase 1b sessions)', () => {
       expect(screen.getByText(/37 min left/)).toBeInTheDocument();
     });
 
+    it('offers and saves a reason for a recent stopped print', async () => {
+      mockNoSession();
+      mockInfo({
+        recent_stopped_print: {
+          print_log_id: 101,
+          archive_id: 88,
+          print_name: 'Bracket v3',
+          part_code: 'TOP',
+          status: 'stopped',
+          stopped_at: '2026-08-26T11:00:00',
+          reason_code: null,
+          reason_text: null,
+        },
+      });
+      let captured: Record<string, unknown> | null = null;
+      server.use(
+        http.post('/api/v1/floor/printers/12/stopped-print/reason', async ({ request }) => {
+          captured = (await request.json()) as Record<string, unknown>;
+          return HttpResponse.json({
+            print_log_id: 101,
+            archive_id: 88,
+            print_name: 'Bracket v3',
+            part_code: 'TOP',
+            status: 'stopped',
+            stopped_at: '2026-08-26T11:00:00',
+            reason_code: 'warping',
+            reason_text: null,
+          });
+        }),
+      );
+      const user = userEvent.setup();
+      render(<FloorScanPage />);
+      await screen.findByText('Scan a code');
+
+      await scan('BBP-12');
+      await user.click(await screen.findByRole('button', { name: 'Log stop reason' }));
+      expect(screen.getByRole('button', { name: 'First layer issue' })).toBeInTheDocument();
+      expect(screen.getByRole('button', { name: 'Layer lines' })).toBeInTheDocument();
+
+      await user.click(screen.getByRole('button', { name: 'Warping' }));
+      await user.click(screen.getByRole('button', { name: 'Save' }));
+
+      expect(captured).toEqual({ reason_code: 'warping', reason_text: null });
+      expect(await screen.findByText('Reason logged')).toBeInTheDocument();
+    });
+
+    it('offers failure reason logging for a recent failed print', async () => {
+      mockNoSession();
+      mockInfo({
+        recent_stopped_print: {
+          print_log_id: 102,
+          archive_id: 89,
+          print_name: 'Bottom bracket',
+          part_code: 'BOTTOM',
+          status: 'failed',
+          stopped_at: '2026-08-26T11:05:00',
+          reason_code: null,
+          reason_text: null,
+        },
+      });
+      render(<FloorScanPage />);
+      await screen.findByText('Scan a code');
+
+      await scan('BBP-12');
+
+      expect(await screen.findByText('Recent print failed')).toBeInTheDocument();
+      expect(screen.getByRole('button', { name: 'Log failure reason' })).toBeInTheDocument();
+    });
+
     it.each([
       ['PAUSE', 'Paused'],
       ['FINISH', 'Finished'],
@@ -690,6 +759,69 @@ describe('FloorScanPage (Phase 1b sessions)', () => {
 
       expect(await screen.findByText('Printing')).toBeInTheDocument();
       expect(screen.queryByText('Bed ready to clear')).not.toBeInTheDocument();
+    });
+
+    it('opens maintenance details from the scanned printer page', async () => {
+      mockNoSession();
+      mockInfo();
+      server.use(
+        http.get('/api/v1/maintenance/printers/12', () => HttpResponse.json({
+          printer_id: 12,
+          printer_name: 'Bench A',
+          printer_model: 'X1C',
+          total_print_hours: 412.6,
+          maintenance_items: [
+            {
+              id: 7,
+              printer_id: 12,
+              maintenance_type_id: 1,
+              maintenance_type_name: 'Clean Build Plate',
+              maintenance_type_icon: 'Square',
+              maintenance_type_wiki_url: null,
+              enabled: true,
+              interval_hours: 25,
+              interval_type: 'hours',
+              current_hours: 412.6,
+              hours_since_maintenance: 30,
+              hours_until_due: -5,
+              days_since_maintenance: null,
+              days_until_due: null,
+              is_due: true,
+              is_warning: false,
+              last_performed_at: null,
+            },
+          ],
+          due_count: 1,
+          warning_count: 0,
+          total_maintenance_cost: 0,
+        })),
+        http.get('/api/v1/maintenance/printers/12/history', () => HttpResponse.json([
+          {
+            id: 9,
+            printer_maintenance_id: 7,
+            printer_id: 12,
+            performed_at: '2026-08-24T14:32:00Z',
+            hours_at_maintenance: 382.6,
+            notes: 'Wiped plate',
+            title: 'Clean Build Plate',
+            part_url: null,
+            cost: null,
+            job_name: 'Clean Build Plate',
+            is_custom: false,
+          },
+        ])),
+      );
+      const user = userEvent.setup();
+      render(<FloorScanPage />);
+      await screen.findByText('Scan a code');
+      await scan('BBP-12');
+
+      await user.click(await screen.findByRole('button', { name: 'Maintenance' }));
+
+      expect(await screen.findByRole('dialog', { name: 'Bench A' })).toBeInTheDocument();
+      expect(screen.getAllByText('Clean Build Plate')).toHaveLength(2);
+      expect(screen.getByText(/Wiped plate/)).toBeInTheDocument();
+      expect(screen.getByText('1 due')).toBeInTheDocument();
     });
 
     it('reports an unknown printer as an unknown code', async () => {
@@ -1210,6 +1342,31 @@ describe('FloorScanPage (Phase 1b sessions)', () => {
     const RECORDED_PRINTER = { id: 12, name: 'P1S-3' };
     const RECORDED_ARCHIVE = { id: 88, print_name: 'bracket_v4', completed_at: '2026-08-24T14:32:00', quantity: 4 };
 
+    beforeEach(() => {
+      // Idle part scans validate against inventory before they can enter the
+      // location flow. Keep the existing location-flow tests focused on
+      // their respective commit by giving them a linked part by default.
+      server.use(
+        http.get('/api/v1/floor/inventory/parts/by-sticker/:stickerCode', ({ params }) => HttpResponse.json({
+          id: 42,
+          sticker_code: params.stickerCode,
+          printer_id: 12,
+          printer_name: 'P1S-3',
+          archive_id: 88,
+          part_code: 'TOP',
+          section_part_id: null,
+          part_name: 'Top Housing',
+          part_source: 'Production',
+          print_name: 'bracket_v4',
+          labeled_at: '2026-08-24T10:00:00',
+          archived_at: null,
+          released_at: null,
+          latest_event_action: null,
+          latest_event_reason: null,
+        })),
+      );
+    });
+
     function mockFitCheckScan(response: unknown, status = 200) {
       const captured: { body: Record<string, unknown> | null } = { body: null };
       server.use(
@@ -1232,7 +1389,7 @@ describe('FloorScanPage (Phase 1b sessions)', () => {
       return captured;
     }
 
-    it('prompts for a location on a bare part scan at idle, with no station opened', async () => {
+    it('prompts for a location only after confirming the part is registered and linked', async () => {
       mockNoSession();
       render(<FloorScanPage />);
       await screen.findByText('Scan a code');
@@ -1261,7 +1418,7 @@ describe('FloorScanPage (Phase 1b sessions)', () => {
       await screen.findByText('Scan a location');
       await scan('BBS-fit-check');
 
-      expect(await screen.findByText('Checked')).toBeInTheDocument();
+      expect(await screen.findByText('Fit Checked')).toBeInTheDocument();
       expect(screen.getByText('BBD-000042')).toBeInTheDocument();
       expect(captured.body).toEqual({ payload: 'BBD-000042' });
     });
@@ -1275,7 +1432,7 @@ describe('FloorScanPage (Phase 1b sessions)', () => {
       await scan('BBD-000042');
       await screen.findByText('Scan a location');
       await scan('BBS-fit-check');
-      await screen.findByText('Checked');
+      await screen.findByText('Fit Checked');
 
       await act(async () => {
         vi.advanceTimersByTime(3100);
@@ -1296,17 +1453,48 @@ describe('FloorScanPage (Phase 1b sessions)', () => {
       expect(floorSound.playScanErrorTone).toHaveBeenCalled();
     });
 
-    it('reports an unenrolled sticker without touching Harvest at all', async () => {
+    it('rejects an unregistered sticker without entering the location flow', async () => {
       mockNoSession();
-      mockFitCheckScan({ result: 'unknown_part', part: null, printer: null, archive: null });
+      server.use(
+        http.get('/api/v1/floor/inventory/parts/by-sticker/:stickerCode', () => new HttpResponse(null, { status: 404 })),
+      );
       render(<FloorScanPage />);
       await screen.findByText('Scan a code');
 
       await scan('BBD-000042');
-      await screen.findByText('Scan a location');
-      await scan('BBS-fit-check');
 
-      expect(await screen.findByText('Not enrolled — scan it at Harvest first')).toBeInTheDocument();
+      expect(await screen.findByText('Part is not registered — scan it at Harvest first')).toBeInTheDocument();
+      expect(screen.queryByText('Scan a location')).not.toBeInTheDocument();
+    });
+
+    it('rejects a registered sticker that has no print link', async () => {
+      mockNoSession();
+      server.use(
+        http.get('/api/v1/floor/inventory/parts/by-sticker/:stickerCode', ({ params }) => HttpResponse.json({
+          id: 42,
+          sticker_code: params.stickerCode,
+          printer_id: 12,
+          printer_name: 'P1S-3',
+          archive_id: null,
+          part_code: null,
+          section_part_id: null,
+          part_name: null,
+          part_source: null,
+          print_name: null,
+          labeled_at: '2026-08-24T10:00:00',
+          archived_at: null,
+          released_at: null,
+          latest_event_action: null,
+          latest_event_reason: null,
+        })),
+      );
+      render(<FloorScanPage />);
+      await screen.findByText('Scan a code');
+
+      await scan('BBD-000042');
+
+      expect(await screen.findByText('Part is not linked to a print — match it in Part history first')).toBeInTheDocument();
+      expect(screen.queryByText('Scan a location')).not.toBeInTheDocument();
     });
 
     it('abandons a pending part when a station code is scanned instead of a location', async () => {

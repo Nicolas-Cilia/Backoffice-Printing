@@ -45,6 +45,7 @@ const PARTS = [
 function mockPartHistory() {
   server.use(
     http.get("/api/v1/floor/inventory/parts", () => HttpResponse.json(PARTS)),
+    http.get("/api/v1/floor/inventory/print-failures", () => HttpResponse.json([])),
     http.get("/api/v1/floor/inventory/parts/:id/events", ({ params }) =>
       HttpResponse.json([
         {
@@ -68,6 +69,83 @@ function mockPartHistory() {
 }
 
 describe("FloorInventoryPage", () => {
+  it("shows logged print failure reasons above the part history table", async () => {
+    mockPartHistory();
+    server.use(
+      http.get("/api/v1/floor/inventory/print-failures", () =>
+        HttpResponse.json([
+          {
+            id: 9,
+            printer_id: 4,
+            printer_name: "X1 Carbon 04",
+            archive_id: 31,
+            print_name: "Cable guide",
+            part_code: "TOP",
+            reason_code: "warping",
+            reason_text: null,
+            stopped_at: "2026-08-26T11:00:00",
+          },
+        ]),
+      ),
+    );
+    render(<FloorInventoryPage />);
+
+    await userEvent.setup().click(screen.getByRole("button", { name: "Print failure log" }));
+    expect(screen.getByRole("button", { name: "Print failure log" })).toBeInTheDocument();
+    expect(await screen.findByText("Warping")).toBeInTheDocument();
+    expect(screen.getByText("TOP")).toBeInTheDocument();
+    expect(screen.getByRole("columnheader", { name: "Status" })).toBeInTheDocument();
+    expect(screen.getByRole("cell", { name: "Failed" })).toBeInTheDocument();
+  });
+
+  it("keeps discarded parts out of Registered Parts and groups them into the failure log", async () => {
+    const user = userEvent.setup();
+    mockPartHistory();
+    const discardedPart = {
+      ...PARTS[0],
+      id: 4,
+      sticker_code: "BBD-000104",
+      latest_event_action: "discarded",
+    };
+    server.use(
+      http.get("/api/v1/floor/inventory/parts", () =>
+        HttpResponse.json([...PARTS, discardedPart]),
+      ),
+      http.get("/api/v1/floor/inventory/parts/:id/events", ({ params }) =>
+        HttpResponse.json(
+          Number(params.id) === discardedPart.id
+            ? [
+                {
+                  id: 40,
+                  action: "discarded",
+                  details: null,
+                  occurred_at: "2026-08-26T10:50:00",
+                },
+              ]
+            : [
+                {
+                  id: 10,
+                  action: "enrolled",
+                  details: { archive_id: Number(params.id) === 1 ? 31 : null },
+                  occurred_at: "2026-08-25T14:32:00",
+                },
+              ],
+        ),
+      ),
+    );
+    render(<FloorInventoryPage />);
+
+    expect(await screen.findByText("BBD-000101")).toBeInTheDocument();
+    expect(screen.queryByText("BBD-000104")).not.toBeInTheDocument();
+
+    await user.click(screen.getByRole("button", { name: "Print failure log" }));
+    expect(await screen.findByText("BBD-000104")).toBeInTheDocument();
+    expect(screen.getByRole("cell", { name: "Discarded" })).toBeInTheDocument();
+
+    await user.click(screen.getByRole("button", { name: "Registered Parts" }));
+    expect(screen.queryByText("BBD-000104")).not.toBeInTheDocument();
+  });
+
   it("prioritizes unresolved records and filters the searchable index", async () => {
     const user = userEvent.setup();
     mockPartHistory();
@@ -85,20 +163,82 @@ describe("FloorInventoryPage", () => {
     expect(await screen.findByText("BBD-000102")).toBeInTheDocument();
     expect(screen.queryByText("BBD-000101")).not.toBeInTheDocument();
 
-    await user.click(screen.getByRole("button", { name: "Linked parts" }));
+    await user.click(screen.getByRole("button", { name: "Registered Parts" }));
     expect(await screen.findByText("BBD-000101")).toBeInTheDocument();
     expect(screen.queryByText("BBD-000102")).not.toBeInTheDocument();
     expect(screen.queryByText("BBD-000103")).not.toBeInTheDocument();
 
-    await user.click(screen.getByRole("button", { name: "Archived" }));
+    await user.click(screen.getByRole("button", { name: "Show archived" }));
     expect(await screen.findByText("BBD-000103")).toBeInTheDocument();
     await user.type(
       screen.getByRole("textbox", { name: "Search part history" }),
       "000102",
     );
-    expect(
-      await screen.findByText("No part records match that search."),
-    ).toBeInTheDocument();
+    expect(await screen.findByText("BBD-000102")).toBeInTheDocument();
+    expect(screen.queryByText("BBD-000103")).not.toBeInTheDocument();
+  });
+
+  it("switches to All parts for searches and shows failed parts from the failure log", async () => {
+    const user = userEvent.setup();
+    mockPartHistory();
+    server.use(
+      http.get("/api/v1/floor/inventory/print-failures", () =>
+        HttpResponse.json([
+          {
+            id: 12,
+            printer_id: 4,
+            printer_name: "X1 Carbon 04",
+            archive_id: 31,
+            print_name: "Failed bracket",
+            part_code: "TOP",
+            reason_code: "warping",
+            reason_text: null,
+            stopped_at: "2026-08-26T11:00:00",
+          },
+        ]),
+      ),
+    );
+    render(<FloorInventoryPage />);
+
+    const search = screen.getByRole("textbox", { name: "Search part history" });
+    await user.click(search);
+    await user.click(screen.getByRole("button", { name: /Failed failed/ }));
+
+    expect(screen.getByRole("button", { name: "All parts" })).toHaveClass("bg-bambu-green");
+    const failedPrint = await screen.findByText("Failed bracket");
+    expect(failedPrint).toBeInTheDocument();
+    expect(screen.getByText("Failed", { selector: "span" })).toHaveClass("bg-red-100", "text-red-800");
+
+    await user.click(failedPrint);
+    expect(failedPrint.closest("tr")).toHaveClass("bg-red-100/50");
+
+    await user.clear(search);
+    await user.click(screen.getByRole("button", { name: "Registered Parts" }));
+    await user.type(search, "bracket");
+    expect(screen.getByRole("button", { name: "All parts" })).toHaveClass("bg-bambu-green");
+  });
+
+  it("offers discarded as a suggested status search", async () => {
+    const user = userEvent.setup();
+    mockPartHistory();
+    render(<FloorInventoryPage />);
+
+    await user.click(screen.getByRole("textbox", { name: "Search part history" }));
+
+    expect(screen.getByRole("button", { name: /Discarded discarded/ })).toBeInTheDocument();
+  });
+
+  it("clears the search from the inline X button", async () => {
+    const user = userEvent.setup();
+    mockPartHistory();
+    render(<FloorInventoryPage />);
+
+    const search = screen.getByRole("textbox", { name: "Search part history" });
+    await user.type(search, "bracket");
+    await user.click(screen.getByRole("button", { name: "Clear search" }));
+
+    expect(search).toHaveValue("");
+    expect(screen.queryByRole("button", { name: "Clear search" })).not.toBeInTheDocument();
   });
 
   it("shows harvest history and offers only same-printer job candidates for a match", async () => {
@@ -119,6 +259,7 @@ describe("FloorInventoryPage", () => {
       ),
     );
     render(<FloorInventoryPage />);
+    await user.click(screen.getByRole("button", { name: "Needs matching" }));
     await screen.findByText("BBD-000102");
 
     await user.click(screen.getByText("BBD-000102"));
@@ -302,6 +443,7 @@ describe("FloorInventoryPage", () => {
       ),
     );
     render(<FloorInventoryPage />);
+    await user.click(screen.getByRole("button", { name: "Needs matching" }));
     await screen.findByText("BBD-000102");
 
     await user.click(screen.getByText("BBD-000102"));
@@ -412,7 +554,7 @@ describe("FloorInventoryPage", () => {
     render(<FloorInventoryPage />);
     await screen.findByText("BBD-000101");
 
-    await user.click(screen.getByRole("button", { name: "Archived" }));
+    await user.click(screen.getByRole("button", { name: "Show archived" }));
     await user.click(await screen.findByText("BBD-000103"));
     expect(
       await screen.findByRole("heading", { name: "BBD-000103" }),

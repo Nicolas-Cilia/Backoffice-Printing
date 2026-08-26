@@ -10,10 +10,10 @@
 import { useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { useNavigate } from 'react-router-dom';
-import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
+import { useMutation, useQueries, useQuery, useQueryClient } from '@tanstack/react-query';
 import { ScanLine, QrCode, Loader2, AlertTriangle, ClipboardList } from 'lucide-react';
 import { Button } from '../components/Button';
-import { api, type FloorSession } from '../api/client';
+import { api, type FloorInventoryPart, type FloorSession } from '../api/client';
 import { getDeviceId } from '../utils/floorDevice';
 import { formatElapsed } from '../utils/floorScan';
 
@@ -36,19 +36,21 @@ export function FloorLandingPage() {
         <p className="text-bambu-gray mt-1 max-w-2xl">
           {t(
             'floor.landingSubtitle',
-            'Scan is the pistol-input station. Part history traces stickered parts back to their jobs. Codes prints the QR labels the floor scans.',
+            'Quick access to floor scanning, code printing, and your part history.',
           )}
         </p>
       </div>
 
-      <div className="grid grid-cols-1 sm:grid-cols-2 gap-4 max-w-3xl">
-        <article className="bg-bambu-dark-secondary rounded-lg p-6 flex flex-col">
+      <FloorStats t={t} />
+
+      <div className="grid grid-cols-1 sm:grid-cols-3 gap-4 w-full">
+        <article className="bg-bambu-dark-secondary rounded-lg p-5 flex flex-col">
           <ScanLine className="w-8 h-8 text-bambu-green mb-3" aria-hidden="true" />
           <h2 className="text-white font-semibold text-lg">{t('floor.landingScanTitle', 'Scan')}</h2>
           <p className="text-sm text-bambu-gray mt-1 flex-1">
             {t(
               'floor.landingScanDescription',
-              'Pistol-input station for the printer line, cleanup bench, WIP shelf, and warehouse.',
+              'Log a completed part from the floor station.',
             )}
           </p>
           <Button className="mt-4 self-start" onClick={() => navigate('/floor/scan')}>
@@ -56,7 +58,7 @@ export function FloorLandingPage() {
           </Button>
         </article>
 
-        <article className="bg-bambu-dark-secondary rounded-lg p-6 flex flex-col">
+        <article className="bg-bambu-dark-secondary rounded-lg p-5 flex flex-col">
           <ClipboardList className="w-8 h-8 text-bambu-green mb-3" aria-hidden="true" />
           <h2 className="text-white font-semibold text-lg">
             {t('floor.inventoryTitle', 'Part history')}
@@ -64,7 +66,7 @@ export function FloorLandingPage() {
           <p className="text-sm text-bambu-gray mt-1 flex-1">
             {t(
               'floor.landingInventoryDescription',
-              'Review linked parts and their job history.',
+              'Review linked parts and their print history.',
             )}
           </p>
           <Button className="mt-4 self-start" onClick={() => navigate('/floor/inventory')}>
@@ -72,7 +74,7 @@ export function FloorLandingPage() {
           </Button>
         </article>
 
-        <article className="bg-bambu-dark-secondary rounded-lg p-6 flex flex-col">
+        <article className="bg-bambu-dark-secondary rounded-lg p-5 flex flex-col">
           <QrCode className="w-8 h-8 text-bambu-green mb-3" aria-hidden="true" />
           <h2 className="text-white font-semibold text-lg">{t('floor.landingCodesTitle', 'Codes')}</h2>
           <p className="text-sm text-bambu-gray mt-1 flex-1">
@@ -87,8 +89,87 @@ export function FloorLandingPage() {
         </article>
       </div>
 
-      <SessionsPanel t={t} />
-      <UnlabeledBuildPlatesPanel t={t} />
+      <div className="grid grid-cols-1 2xl:grid-cols-2 gap-4 w-full">
+        <SessionsPanel t={t} />
+        <UnlabeledBuildPlatesPanel t={t} />
+      </div>
+    </div>
+  );
+}
+
+function FloorStats({ t }: { t: ReturnType<typeof useTranslation>['t'] }) {
+  const partsQuery = useQuery({
+    queryKey: ['floor-inventory-parts'],
+    queryFn: () => api.getFloorInventoryParts(true),
+    staleTime: 30_000,
+  });
+  const sessionsQuery = useQuery({
+    queryKey: ['floor-sessions'],
+    queryFn: () => api.getFloorSessions(),
+    staleTime: 15_000,
+  });
+  const parts = partsQuery.data ?? [];
+  const activeParts = parts.filter((part: FloorInventoryPart) => !part.archived_at && !part.released_at);
+  const fitCheckQueries = useQueries({
+    queries: activeParts.map((part) => ({
+      queryKey: ['floor-inventory-part-events', part.id],
+      queryFn: () => api.getFloorInventoryPartEvents(part.id),
+      staleTime: 60_000,
+    })),
+  });
+  const today = new Date();
+  const scannedToday = parts.filter((part: FloorInventoryPart) => {
+    const labeledAt = new Date(part.labeled_at);
+    return labeledAt.toDateString() === today.toDateString();
+  }).length;
+  const needsAttention = parts.filter(
+    (part: FloorInventoryPart) => !part.archived_at && part.archive_id === null,
+  ).length;
+  const awaitingFitCheck = activeParts.filter((_, index) =>
+    !(fitCheckQueries[index]?.data ?? []).some(
+      (event) => event.action === 'fit_check' || event.action === 'fit_checked',
+    ),
+  ).length;
+  const openStations = sessionsQuery.data?.open.length ?? 0;
+  const statsLoading =
+    partsQuery.isLoading ||
+    sessionsQuery.isLoading ||
+    fitCheckQueries.some((query) => query.isLoading);
+
+  return (
+    <div className="grid grid-cols-2 sm:grid-cols-4 gap-2 w-full sm:w-auto sm:max-w-[920px]">
+      <div className="border border-bambu-dark-tertiary bg-bambu-dark-secondary rounded-lg px-4 py-3">
+        <div className="text-xs text-bambu-gray">
+          {t('floor.statsScannedToday', 'Parts scanned today')}
+        </div>
+        <div className="text-2xl font-bold text-white mt-1">
+          {statsLoading ? '—' : scannedToday}
+        </div>
+      </div>
+      <div className="border border-bambu-dark-tertiary bg-bambu-dark-secondary rounded-lg px-4 py-3">
+        <div className="text-xs text-bambu-gray">
+          {t('floor.statsNeedsAttention', 'Needs attention')}
+        </div>
+        <div className="text-2xl font-bold text-white mt-1">
+          {statsLoading ? '—' : needsAttention}
+        </div>
+      </div>
+      <div className="border border-bambu-dark-tertiary bg-bambu-dark-secondary rounded-lg px-4 py-3">
+        <div className="text-xs text-bambu-gray">
+          {t('floor.statsAwaitingFitCheck', 'Parts awaiting Fit Check')}
+        </div>
+        <div className="text-2xl font-bold text-white mt-1">
+          {statsLoading ? '—' : awaitingFitCheck}
+        </div>
+      </div>
+      <div className="border border-bambu-dark-tertiary bg-bambu-dark-secondary rounded-lg px-4 py-3">
+        <div className="text-xs text-bambu-gray">
+          {t('floor.statsOpenStations', 'Open stations')}
+        </div>
+        <div className="text-2xl font-bold text-white mt-1">
+          {statsLoading ? '—' : openStations}
+        </div>
+      </div>
     </div>
   );
 }
@@ -122,7 +203,7 @@ function SessionsPanel({ t }: { t: ReturnType<typeof useTranslation>['t'] }) {
   const recent = sessionsQuery.data?.recent ?? [];
 
   return (
-    <section className="bg-bambu-dark-secondary rounded-lg overflow-hidden max-w-3xl">
+    <section className="bg-bambu-dark-secondary rounded-lg overflow-hidden w-full">
       <div className="px-4 py-3 border-b border-bambu-dark-tertiary flex flex-wrap items-center justify-between gap-3">
         <div>
           <h2 className="text-white font-semibold">
@@ -274,7 +355,7 @@ function UnlabeledBuildPlatesPanel({ t }: { t: ReturnType<typeof useTranslation>
   });
 
   return (
-    <section className="bg-bambu-dark-secondary rounded-lg overflow-hidden max-w-3xl">
+    <section className="bg-bambu-dark-secondary rounded-lg overflow-hidden w-full">
       <div className="px-4 py-3 border-b border-bambu-dark-tertiary">
         <h2 className="text-white font-semibold">
           {t('floor.needsAttentionHeading', 'Build plates needing linking')}

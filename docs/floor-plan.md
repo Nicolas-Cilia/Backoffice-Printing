@@ -541,10 +541,12 @@ printer → Cleanup directly. This is a hard gate, not a convention: Cleanup
 
 **Flow — scan a part, then scan a location:**
 
-1. Scan part `BBD-…` with nothing else going on (idle, no station open, no
-   printer being viewed) → the screen shows the sticker code and prompts
-   for a location. Nothing is written yet; this is a client-side "pending
-   part" prompt, not a server call.
+1. Scan a **registered, job-linked** part `BBD-…` with nothing else going on
+   (idle, no station open, no printer being viewed) → the screen shows the
+   sticker code and prompts for a location. Nothing is written yet; this is a
+   client-side "pending part" prompt, not a server call. An unknown sticker
+   or a registered sticker without a job link is refused with an error and
+   must be resolved through Harvest / Part history first.
 2. Scan `BBS-fit-check` → **commits**: records a `fit_checked` event against
    that part and returns to idle. One scan-pair, no confirmation step — the
    common case is "checked, fine," and it must be the shortest path, same
@@ -594,8 +596,9 @@ Check one (§5.4a).
 
 **Flow — scan a part, scan the location, scan why:**
 
-1. Scan part `BBD-…` with nothing else going on → pending-part prompt, same
-   as Fit Check's step 1.
+1. Scan a **registered, job-linked** part `BBD-…` with nothing else going on
+   → pending-part prompt, same as Fit Check's step 1. Unknown or unlinked
+   stickers are refused before the prompt appears.
 2. Scan `BBS-rework` → **not** a commit. This is a pure state transition on
    the scan page: the screen now shows "Rework — scan a reason." Nothing is
    written to the server by this scan on its own.
@@ -1040,6 +1043,7 @@ operator QRs. Data should be queryable later from the same tables.
 | Defect / rework / multi without part in cleanup | Ignore |
 | Part scan with no cleanup part in front | Ignore (or error) |
 | Part already scanned at harvest | Error flash and tone; do not relink or change the current plate |
+| Unknown or unlinked part scanned from idle | **Refused** — error flash and tone; register it at Harvest or resolve its job link in Part history before sending it to a location |
 | Part re-scanned at cleanup after a disposition was recorded | **Amend** — show the current disposition and its age, let the operator change it. Appends rather than overwrites, so `good → defective` stays visible as a post-processing loss (§5.5) |
 | Part scanned but the printer has no finished job to bind to | **Record it anyway** — `printer_id` + `labeled_at`, `archive_id` null (§7.2). Screen says "linked to printer N, no job found". Surfaces in a needs-attention list to be matched later. The sticker is already on the part; refusing would create a labeled part the system never heard of |
 | Part scanned at **Cleanup** with no `fit_checked` event on record | **Refused** — error flash and tone, screen says "needs Fit Check first", nothing recorded (§5.4a). The one hard sequencing gate in the chain |

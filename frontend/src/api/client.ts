@@ -1262,7 +1262,7 @@ export interface FloorStation {
   payload: string;
   name: string;
   description: string;
-  /** "station" (WIP/+Storage/Move/Harvest/Cleanup) vs "location" (Fit
+  /** "station" (WIP/+Storage/Move/Harvest) vs "location" (Fit
    *  Check/Rework) — which Codes-page tab this label prints under (§3.3).
    *  Purely a presentation grouping; every entry works identically as a
    *  scannable station regardless of category. */
@@ -1356,6 +1356,36 @@ export interface FloorLiveStatus {
   total_layers: number;
 }
 
+export type FloorStopReasonCode =
+  | 'first_layer_issue'
+  | 'warping'
+  | 'layer_lines'
+  | 'filament_issue'
+  | 'other';
+
+export interface FloorRecentStoppedPrint {
+  print_log_id: number;
+  archive_id: number | null;
+  print_name: string | null;
+  part_code: string | null;
+  status: 'stopped' | 'cancelled' | 'failed';
+  stopped_at: string;
+  reason_code: FloorStopReasonCode | null;
+  reason_text: string | null;
+}
+
+export interface FloorPrintFailureReason {
+  id: number;
+  printer_id: number;
+  printer_name: string | null;
+  archive_id: number | null;
+  print_name: string | null;
+  part_code: string | null;
+  reason_code: FloorStopReasonCode;
+  reason_text: string | null;
+  stopped_at: string;
+}
+
 /** The printer info page (§5.6): what this machine is doing, and whether it
  *  needs anything. Shown when a `BBP-` code is scanned with no station open. */
 export interface FloorPrinterInfo {
@@ -1374,6 +1404,7 @@ export interface FloorPrinterInfo {
   maintenance_due_count: number;
   maintenance_warning_count: number;
   live: FloorLiveStatus | null;
+  recent_stopped_print: FloorRecentStoppedPrint | null;
 }
 
 // ── Harvest (docs/floor-plan.md §5.4/§7) — phase 8 ─────────────────────────
@@ -1526,6 +1557,8 @@ export interface FloorInventoryPart {
   archived_at: string | null;
   released_at: string | null;
   latest_event_action?: string | null;
+  /** Concise reason attached to the current Rework event, if there is one. */
+  latest_event_reason?: string | null;
 }
 
 export interface FloorInventoryPartEvent {
@@ -5822,6 +5855,23 @@ export const api = {
    *  parsing that could drift from the backend's idea of a valid code. */
   getFloorPrinterInfo: (payload: string) =>
     request<FloorPrinterInfo>(`/floor/printers/${encodeURIComponent(payload)}/info`),
+  recordFloorPrinterStopReason: (printerId: number, data: { reason_code: FloorStopReasonCode; reason_text?: string | null }) =>
+    request<FloorRecentStoppedPrint>(`/floor/printers/${printerId}/stopped-print/reason`, {
+      method: 'POST',
+      body: JSON.stringify(data),
+    }),
+  getFloorPrintFailureReasons: (limit = 20) =>
+    request<FloorPrintFailureReason[]>(`/floor/inventory/print-failures?limit=${limit}`),
+  updateFloorPrintFailureReason: (
+    reasonId: number,
+    data: { reason_code: FloorStopReasonCode; reason_text?: string | null },
+  ) =>
+    request<FloorPrintFailureReason>(`/floor/inventory/print-failures/${reasonId}`, {
+      method: 'PATCH',
+      body: JSON.stringify(data),
+    }),
+  discardFloorPrintFailureReason: (reasonId: number) =>
+    request<void>(`/floor/inventory/print-failures/${reasonId}`, { method: 'DELETE' }),
   // ── Harvest (docs/floor-plan.md §5.4/§7) — phase 8 ─────────────────────
   /** A `BBP-` scan made while this device holds an open harvest session:
    *  binds the plate, rebinds to a different printer, or (on a repeat scan

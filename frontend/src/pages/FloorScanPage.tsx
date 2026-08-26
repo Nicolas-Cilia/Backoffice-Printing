@@ -1,5 +1,5 @@
 /**
- * Floor: stations, filament kg, harvest, cleanup — `/floor/scan` (docs/floor-plan.md).
+ * Floor: stations, filament kg, harvest, fit check, rework — `/floor/scan` (docs/floor-plan.md).
  *
  * Phase 1b (§2.4, §5): station sessions. A USB barcode pistol types a string
  * and Enter into whatever has focus, so this page keeps one hidden input
@@ -36,22 +36,32 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { useNavigate } from 'react-router-dom';
-import { useQueryClient } from '@tanstack/react-query';
-import { Loader2, Lock, Printer, ScanLine } from 'lucide-react';
+import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
+import { Check, History, Loader2, Lock, Plus, Printer, ScanLine, Wrench, X } from 'lucide-react';
 import {
+  ApiError,
   api,
   type FloorLiveStatus,
   type FloorPlateArchive,
   type FloorPlatePrinter,
   type FloorInventoryPart,
   type FloorLabeledPart,
+  type FloorRecentStoppedPrint,
   type FloorPrinterInfo,
   type FloorSession,
   type LocationScanResponse,
+  type MaintenanceHistory,
+  type MaintenanceStatus,
   type PartScanResponse,
   type PartScanResult,
+  type PrinterMaintenanceOverview,
   type ReworkReasonCode,
+  type FloorStopReasonCode,
 } from '../api/client';
+import { StartPrintModal } from '../components/StartPrintModal';
+import { ConfirmModal } from '../components/ConfirmModal';
+import { useAuth } from '../contexts/AuthContext';
+import { useToast } from '../contexts/ToastContext';
 import { getDeviceId } from '../utils/floorDevice';
 import { playScanErrorTone } from '../utils/floorSound';
 import {
@@ -113,10 +123,22 @@ type Status =
       reasonCode?: string;
     };
 
-type PartImageIdentity = Pick<FloorInventoryPart, 'part_code' | 'section_part_id' | 'part_name' | 'part_source' | 'labeled_at' | 'archived_at' | 'latest_event_action'> & {
+type PartImageIdentity = Pick<FloorInventoryPart, 'part_code' | 'section_part_id' | 'part_name' | 'part_source' | 'labeled_at' | 'archived_at' | 'latest_event_action' | 'latest_event_reason'> & {
   printer_name: string | null;
   printer_id: number | null;
 };
+
+const FLOOR_STOP_REASON_OPTIONS: Array<{
+  value: FloorStopReasonCode;
+  key: string;
+  fallback: string;
+}> = [
+  { value: 'first_layer_issue', key: 'floor.stopReasonFirstLayer', fallback: 'First layer issue' },
+  { value: 'warping', key: 'floor.stopReasonWarping', fallback: 'Warping' },
+  { value: 'layer_lines', key: 'floor.stopReasonLayerLines', fallback: 'Layer lines' },
+  { value: 'filament_issue', key: 'floor.stopReasonFilament', fallback: 'Filament issue' },
+  { value: 'other', key: 'floor.stopReasonOther', fallback: 'Other' },
+];
 
 function isAlreadyAtLocation(part: PartImageIdentity | null, locationSlug: 'fit-check' | 'rework' | 'discard') {
   if (!part) return false;
@@ -509,7 +531,7 @@ export function FloorScanPage() {
         return;
       }
       if (resp.result === 'unknown_part') {
-        // §9: never enrolled at Harvest — the sticker doesn't exist yet.
+        // §9: the sticker is unknown or still has no resolved job link.
         failScan(t('floor.locationUnknownPart', 'Not enrolled — scan it at Harvest first'));
         return;
       }
@@ -681,6 +703,13 @@ export function FloorScanPage() {
         busyRef.current = true;
         void api.getFloorInventoryPartBySticker(route.payload)
           .then((part) => {
+            if (part.archive_id === null) {
+              failScan(
+                t('floor.scanPartNotLinked', 'Part is not linked to a print — match it in Part history first'),
+                route.payload,
+              );
+              return;
+            }
             setStatus({
               kind: 'awaiting-location',
               payload: route.payload,
@@ -694,10 +723,20 @@ export function FloorScanPage() {
                 labeled_at: part.labeled_at,
                 archived_at: part.archived_at,
                 latest_event_action: part.latest_event_action,
+                latest_event_reason: part.latest_event_reason,
               },
             });
           })
-          .catch(() => setStatus({ kind: 'awaiting-location', payload: route.payload, part: null }))
+          .catch((error: unknown) => {
+            if (error instanceof ApiError && error.status === 404) {
+              failScan(
+                t('floor.scanPartNotRegistered', 'Part is not registered — scan it at Harvest first'),
+                route.payload,
+              );
+              return;
+            }
+            failScan(t('floor.scanFailed', 'Scan failed'), route.payload);
+          })
           .finally(() => {
             setBusy(false);
             busyRef.current = false;
@@ -922,12 +961,21 @@ export function FloorScanPage() {
         value={value}
         onChange={handleChange}
         onKeyDown={handleKeyDown}
-        onBlur={focusInput}
         aria-label={t('floor.scanFieldLabel', 'Scan field')}
         autoComplete="off"
         autoCorrect="off"
         autoCapitalize="off"
         spellCheck={false}
+        onBlur={(event) => {
+          const next = event.relatedTarget;
+          if (
+            next instanceof HTMLElement &&
+            next.closest('button, input, textarea, select, [contenteditable="true"]')
+          ) {
+            return;
+          }
+          focusInput();
+        }}
         className="sr-only"
       />
 
@@ -1262,11 +1310,9 @@ function PartSourceLabel({ part, t }: { part: PartImageIdentity | null; t: Retur
           {[part.part_code, part.part_name].filter(Boolean).join(' · ')}
         </p>
       )}
-      {(part.part_source || part.printer_name || part.printer_id) && (
+      {(part.printer_name || part.printer_id) && (
         <p className="mt-1 text-lg text-bambu-gray">
-          From {[part.part_source, part.printer_name ?? (part.printer_id ? `Printer ${part.printer_id}` : null)]
-            .filter(Boolean)
-            .join(' · ')}
+          From {part.printer_name ?? `Printer ${part.printer_id}`}
         </p>
       )}
       {part.labeled_at && (
@@ -1277,6 +1323,9 @@ function PartSourceLabel({ part, t }: { part: PartImageIdentity | null; t: Retur
       {part && (
         <p className={`mt-1 text-base font-medium ${scanStatusClass(part)}`}>
           {scanStatusLabel(part, t)}
+          {(part.latest_event_action === 'rework' || part.latest_event_action === 'sanding') && part.latest_event_reason
+            ? ` · ${part.latest_event_reason}`
+            : ''}
         </p>
       )}
     </div>
@@ -1306,6 +1355,29 @@ function PrinterInfoPanel({
   const live = info.live;
   const isPrinting = live?.connected === true && live.state === 'RUNNING';
   const feedbackMsg = feedback ? partFeedbackMessage(feedback, t) : null;
+  const [maintenanceOpen, setMaintenanceOpen] = useState(false);
+  const [sendPrintOpen, setSendPrintOpen] = useState(false);
+  const [stopReasonOpen, setStopReasonOpen] = useState(false);
+  const [selectedStopReason, setSelectedStopReason] = useState<FloorStopReasonCode | null>(null);
+  const [stopReasonText, setStopReasonText] = useState('');
+  const [recordedStop, setRecordedStop] = useState<FloorRecentStoppedPrint | null>(null);
+  const recentStop = recordedStop ?? info.recent_stopped_print;
+  const recentStopIsFailure = recentStop?.status === 'failed';
+  const stopReasonMutation = useMutation({
+    mutationFn: () => {
+      if (!selectedStopReason) throw new Error('Choose a stop reason');
+      return api.recordFloorPrinterStopReason(info.id, {
+        reason_code: selectedStopReason,
+        reason_text: selectedStopReason === 'other' ? stopReasonText : null,
+      });
+    },
+    onSuccess: (savedStop) => {
+      setRecordedStop(savedStop);
+      setStopReasonOpen(false);
+      setSelectedStopReason(null);
+      setStopReasonText('');
+    },
+  });
 
   // A finished job still on the bed is exactly "there is something here to
   // harvest", so it leads rather than sitting among the stats.
@@ -1382,6 +1454,69 @@ function PrinterInfoPanel({
         </div>
       )}
 
+      {recentStop && (
+        <section className="mb-4 rounded-lg border border-bambu-dark-tertiary bg-bambu-dark-secondary px-4 py-3">
+          <div className="flex items-center justify-between gap-4">
+            <div className="min-w-0">
+              <p className="text-white font-semibold">
+                {recentStopIsFailure
+                  ? t('floor.recentFailedPrint', 'Recent print failed')
+                  : t('floor.recentStoppedPrint', 'Recent print stopped')}
+              </p>
+              <p className="text-sm text-bambu-gray mt-0.5 truncate">
+                {recentStop.print_name ?? t('floor.printerUnnamedJob', 'Unnamed job')}
+                {' · '}
+                {recentStop.part_code
+                  ? t('floor.stoppedPrintPartCode', 'Part {{code}}', { code: recentStop.part_code })
+                  : t('floor.stoppedPrintPartCodeUnknown', 'Part code unavailable')}
+              </p>
+            </div>
+            {recentStop.reason_code ? (
+              <span className="shrink-0 text-xs text-bambu-green">
+                {t('floor.stopReasonLogged', 'Reason logged')}
+              </span>
+            ) : !stopReasonOpen ? (
+              <button
+                type="button"
+                onClick={() => setStopReasonOpen(true)}
+                className="shrink-0 rounded-lg border border-red-500/50 bg-red-500/15 px-3 py-2 text-xs font-medium text-red-300 transition-colors hover:border-red-400 hover:bg-red-500/25 hover:text-white"
+              >
+                {recentStopIsFailure
+                  ? t('floor.logFailureReason', 'Log failure reason')
+                  : t('floor.logStopReason', 'Log stop reason')}
+              </button>
+            ) : null}
+          </div>
+          {recentStop.reason_code && (
+            <p className="mt-2 text-xs text-bambu-gray-light">
+              {t('floor.stopReasonLabel', 'Reason')}: {stopReasonLabel(recentStop.reason_code, recentStop.reason_text, t)}
+            </p>
+          )}
+          {stopReasonOpen && !recentStop.reason_code && (
+            <StoppedPrintReasonEditor
+              isFailure={recentStopIsFailure}
+              selectedReason={selectedStopReason}
+              reasonText={stopReasonText}
+              busy={stopReasonMutation.isPending}
+              onSelect={(reason) => {
+                setSelectedStopReason(reason);
+                if (reason !== 'other') setStopReasonText('');
+              }}
+              onReasonTextChange={setStopReasonText}
+              onCancel={() => {
+                if (!stopReasonMutation.isPending) {
+                  setStopReasonOpen(false);
+                  setSelectedStopReason(null);
+                  setStopReasonText('');
+                }
+              }}
+              onSave={() => stopReasonMutation.mutate()}
+              t={t}
+            />
+          )}
+        </section>
+      )}
+
       <dl className="space-y-3">
         <div className="flex items-baseline justify-between gap-4 border-b border-bambu-dark-secondary pb-3">
           <dt className="text-bambu-gray">{t('floor.printerLastPrint', 'Last finished print')}</dt>
@@ -1439,14 +1574,425 @@ function PrinterInfoPanel({
         </div>
       </dl>
 
-      <button
-        type="button"
-        onClick={onDismiss}
-        className="mt-8 px-4 py-2 text-sm rounded-lg bg-bambu-dark-secondary text-bambu-gray hover:text-white transition-colors"
-      >
-        {t('floor.printerDismiss', 'Done')}
-      </button>
+      <div className="mt-8 flex flex-wrap items-center gap-3">
+        <button
+          type="button"
+          onClick={() => setMaintenanceOpen(true)}
+          className="inline-flex items-center gap-2 px-4 py-2.5 text-sm rounded-lg border border-bambu-dark-tertiary bg-bambu-dark-secondary text-white hover:border-bambu-green/50 hover:text-bambu-green transition-colors"
+        >
+          <Wrench className="w-4 h-4" aria-hidden="true" />
+          {t('floor.printerMaintenanceOpen', 'Maintenance')}
+        </button>
+        <button
+          type="button"
+          onClick={() => setSendPrintOpen(true)}
+          className="inline-flex items-center gap-2 px-4 py-2.5 text-sm rounded-lg bg-bambu-green text-white hover:bg-bambu-green-light transition-colors"
+        >
+          <Printer className="w-4 h-4" aria-hidden="true" />
+          {t('floor.printerSendPrint', 'Send print')}
+        </button>
+        <button
+          type="button"
+          onClick={onDismiss}
+          className="ml-auto px-4 py-2.5 text-sm rounded-lg bg-bambu-dark-secondary text-bambu-gray hover:text-white transition-colors"
+        >
+          {t('floor.printerDismiss', 'Done')}
+        </button>
+      </div>
+
+      {maintenanceOpen && (
+        <PrinterMaintenanceModal
+          printerId={info.id}
+          printerName={info.name}
+          onClose={() => setMaintenanceOpen(false)}
+          t={t}
+        />
+      )}
+      {sendPrintOpen && (
+        <StartPrintModal
+          printerName={info.name}
+          printerModel={info.model}
+          printerId={info.id}
+          onClose={() => setSendPrintOpen(false)}
+          onSuccess={() => setSendPrintOpen(false)}
+        />
+      )}
     </div>
+  );
+}
+
+function stopReasonLabel(
+  reasonCode: FloorStopReasonCode,
+  reasonText: string | null,
+  t: ReturnType<typeof useTranslation>['t'],
+) {
+  if (reasonCode === 'other') return reasonText || t('floor.stopReasonOther', 'Other');
+  const option = FLOOR_STOP_REASON_OPTIONS.find((candidate) => candidate.value === reasonCode);
+  return option ? t(option.key, option.fallback) : reasonCode;
+}
+
+function StoppedPrintReasonEditor({
+  isFailure,
+  selectedReason,
+  reasonText,
+  busy,
+  onSelect,
+  onReasonTextChange,
+  onCancel,
+  onSave,
+  t,
+}: {
+  isFailure: boolean;
+  selectedReason: FloorStopReasonCode | null;
+  reasonText: string;
+  busy: boolean;
+  onSelect: (reason: FloorStopReasonCode) => void;
+  onReasonTextChange: (text: string) => void;
+  onCancel: () => void;
+  onSave: () => void;
+  t: ReturnType<typeof useTranslation>['t'];
+}) {
+  const canSave = selectedReason !== null && (selectedReason !== 'other' || reasonText.trim().length > 0);
+
+  return (
+    <div className="mt-4 border-t border-bambu-dark-tertiary pt-4">
+      <p className="text-sm font-semibold text-white">
+        {isFailure
+          ? t('floor.failureReasonQuestion', 'Why did this print fail?')
+          : t('floor.stopReasonQuestion', 'Why was this print stopped?')}
+      </p>
+      <div className="mt-3 grid grid-cols-2 gap-2 sm:grid-cols-3">
+        {FLOOR_STOP_REASON_OPTIONS.map((option) => (
+          <button
+            key={option.value}
+            type="button"
+            aria-pressed={selectedReason === option.value}
+            onClick={() => onSelect(option.value)}
+            className={`rounded-lg border px-3 py-2 text-left text-xs transition-colors ${
+              selectedReason === option.value
+                ? 'border-bambu-green bg-bambu-green/10 text-bambu-green'
+                : 'border-bambu-dark-tertiary bg-bambu-dark text-bambu-gray-light hover:border-bambu-green/50 hover:text-white'
+            }`}
+          >
+            {t(option.key, option.fallback)}
+          </button>
+        ))}
+      </div>
+      {selectedReason === 'other' && (
+        <textarea
+          value={reasonText}
+          onChange={(event) => onReasonTextChange(event.target.value)}
+          rows={3}
+          maxLength={500}
+          autoFocus
+          placeholder={
+            isFailure
+              ? t('floor.failureReasonOtherPlaceholder', 'Describe why the print failed…')
+              : t('floor.stopReasonOtherPlaceholder', 'Describe why the print was stopped…')
+          }
+          className="mt-3 w-full resize-y rounded-lg border border-bambu-dark-tertiary bg-bambu-dark px-3 py-2 text-sm text-white placeholder:text-bambu-gray focus:border-bambu-green focus:outline-none"
+        />
+      )}
+      <div className="mt-3 flex justify-end gap-2">
+        <button
+          type="button"
+          onClick={onCancel}
+          disabled={busy}
+          className="rounded-lg bg-bambu-dark-tertiary px-3 py-2 text-xs text-white hover:bg-bambu-dark disabled:opacity-50"
+        >
+          {t('common.cancel', 'Cancel')}
+        </button>
+        <button
+          type="button"
+          onClick={onSave}
+          disabled={!canSave || busy}
+          className="rounded-lg bg-bambu-green px-3 py-2 text-xs font-medium text-white hover:bg-bambu-green-light disabled:cursor-not-allowed disabled:opacity-50"
+        >
+          {busy ? t('common.saving', 'Saving…') : t('common.save', 'Save')}
+        </button>
+      </div>
+    </div>
+  );
+}
+
+function PrinterMaintenanceModal({
+  printerId,
+  printerName,
+  onClose,
+  t,
+}: {
+  printerId: number;
+  printerName: string;
+  onClose: () => void;
+  t: ReturnType<typeof useTranslation>['t'];
+}) {
+  const queryClient = useQueryClient();
+  const { hasPermission } = useAuth();
+  const { showToast } = useToast();
+  const canUpdate = hasPermission('maintenance:update');
+  const [performItem, setPerformItem] = useState<MaintenanceStatus | null>(null);
+  const [performNotes, setPerformNotes] = useState('');
+  const [customTitle, setCustomTitle] = useState('');
+  const [customNotes, setCustomNotes] = useState('');
+
+  const overviewQuery = useQuery<PrinterMaintenanceOverview>({
+    queryKey: ['floor-printer-maintenance', printerId],
+    queryFn: () => api.getPrinterMaintenance(printerId),
+  });
+  const historyQuery = useQuery<MaintenanceHistory[]>({
+    queryKey: ['floor-printer-maintenance-history', printerId],
+    queryFn: () => api.getPrinterMaintenanceHistory(printerId),
+  });
+
+  const refreshMaintenance = async () => {
+    await Promise.all([
+      queryClient.invalidateQueries({ queryKey: ['floor-printer-maintenance', printerId] }),
+      queryClient.invalidateQueries({ queryKey: ['floor-printer-maintenance-history', printerId] }),
+      queryClient.invalidateQueries({ queryKey: ['floor-printer-info'] }),
+    ]);
+  };
+
+  const performMutation = useMutation({
+    mutationFn: ({ itemId, notes }: { itemId: number; notes?: string }) =>
+      api.performMaintenance(itemId, notes ? { notes } : undefined),
+    onSuccess: async () => {
+      await refreshMaintenance();
+      setPerformItem(null);
+      setPerformNotes('');
+      showToast(t('floor.printerMaintenanceLogged', 'Maintenance logged'));
+    },
+    onError: (error: Error) => {
+      showToast(error.message || t('floor.printerMaintenanceFailed', 'Could not log maintenance'), 'error');
+    },
+  });
+
+  const customMutation = useMutation({
+    mutationFn: () => api.logCustomMaintenanceJob(printerId, {
+      title: customTitle.trim(),
+      notes: customNotes.trim() || undefined,
+    }),
+    onSuccess: async () => {
+      await refreshMaintenance();
+      setCustomTitle('');
+      setCustomNotes('');
+      showToast(t('floor.printerMaintenanceLogged', 'Maintenance logged'));
+    },
+    onError: (error: Error) => {
+      showToast(error.message || t('floor.printerMaintenanceFailed', 'Could not log maintenance'), 'error');
+    },
+  });
+
+  const overview = overviewQuery.data;
+  const items = [...(overview?.maintenance_items ?? [])].sort((a, b) => {
+    if (a.is_due !== b.is_due) return a.is_due ? -1 : 1;
+    if (a.is_warning !== b.is_warning) return a.is_warning ? -1 : 1;
+    return a.maintenance_type_name.localeCompare(b.maintenance_type_name);
+  });
+
+  return (
+    <>
+      <div
+        className="fixed inset-0 z-[70] flex items-center justify-center bg-black/80 p-4 text-left"
+        onClick={onClose}
+      >
+        <div
+          role="dialog"
+          aria-modal="true"
+          aria-labelledby="floor-printer-maintenance-title"
+          className="flex max-h-[calc(100vh-2rem)] w-full max-w-2xl flex-col overflow-hidden rounded-xl border border-bambu-dark-tertiary bg-bambu-dark-secondary shadow-2xl"
+          onClick={(event) => event.stopPropagation()}
+        >
+          <div className="flex items-start justify-between gap-4 border-b border-bambu-dark-tertiary px-5 py-4">
+            <div>
+              <p className="text-xs uppercase tracking-wider text-bambu-gray">
+                {t('floor.printerMaintenance', 'Maintenance')}
+              </p>
+              <h2 id="floor-printer-maintenance-title" className="mt-1 text-xl font-semibold text-white">
+                {printerName}
+              </h2>
+            </div>
+            <button
+              type="button"
+              onClick={onClose}
+              className="rounded-lg p-1.5 text-bambu-gray hover:bg-bambu-dark-tertiary hover:text-white"
+              aria-label={t('common.close')}
+            >
+              <X className="h-5 w-5" />
+            </button>
+          </div>
+
+          <div className="min-h-0 flex-1 overflow-y-auto p-5">
+            {overviewQuery.isLoading ? (
+              <div className="flex justify-center py-10">
+                <Loader2 className="h-7 w-7 animate-spin text-bambu-green" />
+              </div>
+            ) : overviewQuery.isError ? (
+              <p className="rounded-lg border border-red-500/40 bg-red-500/10 px-4 py-3 text-sm text-red-300">
+                {t('floor.printerMaintenanceLoadFailed', 'Could not load maintenance details.')}
+              </p>
+            ) : (
+              <>
+                <div className="mb-5 flex flex-wrap items-center gap-3 rounded-lg border border-bambu-dark-tertiary bg-bambu-dark px-4 py-3">
+                  <span className="text-sm text-bambu-gray">
+                    {overview?.total_print_hours.toFixed(1)} {t('common.hours')}
+                  </span>
+                  <span className="text-bambu-dark-tertiary">·</span>
+                  {overview?.due_count ? (
+                    <span className="text-sm font-medium text-red-400">
+                      {t('floor.printerMaintenanceDue', '{{count}} due', { count: overview.due_count })}
+                    </span>
+                  ) : overview?.warning_count ? (
+                    <span className="text-sm font-medium text-amber-400">
+                      {t('floor.printerMaintenanceSoon', '{{count}} due soon', { count: overview.warning_count })}
+                    </span>
+                  ) : (
+                    <span className="inline-flex items-center gap-1.5 text-sm font-medium text-bambu-green">
+                      <Check className="h-4 w-4" />
+                      {t('floor.printerMaintenanceOk', 'Nothing due')}
+                    </span>
+                  )}
+                </div>
+
+                <section>
+                  <h3 className="mb-3 text-sm font-semibold text-white">
+                    {t('floor.printerMaintenanceTasks', 'Maintenance tasks')}
+                  </h3>
+                  <div className="space-y-2">
+                    {items.length === 0 ? (
+                      <p className="text-sm text-bambu-gray">{t('floor.printerMaintenanceNoTasks', 'No maintenance tasks assigned.')}</p>
+                    ) : items.map((item) => (
+                      <div key={item.id} className="flex items-center justify-between gap-3 rounded-lg border border-bambu-dark-tertiary bg-bambu-dark px-3 py-3">
+                        <div className="min-w-0">
+                          <p className="truncate text-sm font-medium text-white">{item.maintenance_type_name}</p>
+                          <p className={`mt-0.5 text-xs ${item.is_due ? 'text-red-400' : item.is_warning ? 'text-amber-400' : 'text-bambu-gray'}`}>
+                            {item.is_due
+                              ? t('common.overdue')
+                              : item.is_warning
+                                ? t('maintenance.dueSoon')
+                                : item.interval_type === 'days'
+                                  ? `${Math.max(0, Math.round(item.days_until_due ?? 0))} ${t('maintenance.days', { count: Math.max(0, Math.round(item.days_until_due ?? 0)) })}`
+                                  : `${Math.max(0, Math.round(item.hours_until_due))}h`}
+                          </p>
+                        </div>
+                        <button
+                          type="button"
+                          disabled={!canUpdate || !item.enabled || performMutation.isPending}
+                          onClick={() => {
+                            setPerformNotes('');
+                            setPerformItem(item);
+                          }}
+                          className="shrink-0 rounded-lg bg-bambu-dark-tertiary px-3 py-2 text-xs font-medium text-white hover:bg-bambu-green disabled:cursor-not-allowed disabled:opacity-50"
+                        >
+                          {t('maintenance.logReset', 'Log & reset')}
+                        </button>
+                      </div>
+                    ))}
+                  </div>
+                </section>
+
+                {canUpdate && (
+                  <section className="mt-6 border-t border-bambu-dark-tertiary pt-5">
+                    <h3 className="mb-1 text-sm font-semibold text-white">
+                      {t('floor.printerMaintenanceCustom', 'Log custom maintenance')}
+                    </h3>
+                    <p className="mb-3 text-xs text-bambu-gray">
+                      {t('floor.printerMaintenanceCustomHint', 'For repairs, replacements, or other one-off work.')}
+                    </p>
+                    <div className="space-y-2">
+                      <input
+                        value={customTitle}
+                        onChange={(event) => setCustomTitle(event.target.value)}
+                        maxLength={100}
+                        placeholder={t('maintenance.jobNamePlaceholder', 'e.g. Replace nozzle')}
+                        className="w-full rounded-lg border border-bambu-dark-tertiary bg-bambu-dark px-3 py-2 text-sm text-white placeholder:text-bambu-gray focus:border-bambu-green focus:outline-none"
+                      />
+                      <textarea
+                        value={customNotes}
+                        onChange={(event) => setCustomNotes(event.target.value)}
+                        rows={2}
+                        placeholder={t('maintenance.notesPlaceholder', 'Optional notes…')}
+                        className="w-full resize-y rounded-lg border border-bambu-dark-tertiary bg-bambu-dark px-3 py-2 text-sm text-white placeholder:text-bambu-gray focus:border-bambu-green focus:outline-none"
+                      />
+                      <button
+                        type="button"
+                        disabled={!customTitle.trim() || customMutation.isPending}
+                        onClick={() => customMutation.mutate()}
+                        className="inline-flex items-center gap-2 rounded-lg bg-bambu-green px-3 py-2 text-sm font-medium text-white hover:bg-bambu-green-light disabled:cursor-not-allowed disabled:opacity-50"
+                      >
+                        {customMutation.isPending ? <Loader2 className="h-4 w-4 animate-spin" /> : <Plus className="h-4 w-4" />}
+                        {t('maintenance.saveLog', 'Save to log')}
+                      </button>
+                    </div>
+                  </section>
+                )}
+
+                <section className="mt-6 border-t border-bambu-dark-tertiary pt-5">
+                  <h3 className="mb-3 flex items-center gap-2 text-sm font-semibold text-white">
+                    <History className="h-4 w-4 text-bambu-gray" />
+                    {t('maintenance.printerLog', 'Printer log')}
+                  </h3>
+                  {historyQuery.isLoading ? (
+                    <Loader2 className="h-5 w-5 animate-spin text-bambu-gray" />
+                  ) : historyQuery.data && historyQuery.data.length > 0 ? (
+                    <ul className="space-y-2">
+                      {historyQuery.data.map((entry) => (
+                        <li key={entry.id} className="rounded-lg bg-bambu-dark px-3 py-2.5">
+                          <div className="flex items-start justify-between gap-3">
+                            <div className="min-w-0">
+                              <p className="truncate text-sm text-white">{entry.job_name}</p>
+                              <p className="mt-0.5 text-xs text-bambu-gray">
+                                {new Date(entry.performed_at).toLocaleString()}
+                                {entry.notes ? ` · ${entry.notes}` : ''}
+                              </p>
+                            </div>
+                            {entry.cost != null && <span className="shrink-0 text-xs text-white">${entry.cost.toFixed(2)}</span>}
+                          </div>
+                        </li>
+                      ))}
+                    </ul>
+                  ) : (
+                    <p className="text-sm text-bambu-gray">{t('maintenance.noHistory')}</p>
+                  )}
+                </section>
+              </>
+            )}
+          </div>
+
+          <div className="flex justify-end border-t border-bambu-dark-tertiary px-5 py-3">
+            <button
+              type="button"
+              onClick={onClose}
+              className="rounded-lg bg-bambu-dark-tertiary px-4 py-2 text-sm text-white hover:bg-bambu-dark"
+            >
+              {t('common.close')}
+            </button>
+          </div>
+        </div>
+      </div>
+      {performItem && (
+        <ConfirmModal
+          overlayZIndex="z-[80]"
+          title={t('maintenance.logResetTitle', { name: performItem.maintenance_type_name, defaultValue: 'Reset {{name}}?' })}
+          message={t('maintenance.logResetMessage', 'This resets the interval and adds it to the printer log. Leave a note only if something came up.')}
+          confirmText={t('maintenance.logReset', 'Log & reset')}
+          isLoading={performMutation.isPending}
+          onConfirm={() => performMutation.mutate({ itemId: performItem.id, notes: performNotes.trim() || undefined })}
+          onCancel={() => {
+            if (!performMutation.isPending) setPerformItem(null);
+          }}
+        >
+          <label className="block text-xs text-bambu-gray mb-1">{t('maintenance.notes', 'Notes')}</label>
+          <textarea
+            value={performNotes}
+            onChange={(event) => setPerformNotes(event.target.value)}
+            rows={2}
+            className="w-full resize-y rounded-lg border border-bambu-dark-tertiary bg-bambu-dark px-3 py-2 text-sm text-white"
+            placeholder={t('maintenance.resetNotesPlaceholder', 'Optional notes…')}
+            autoFocus
+          />
+        </ConfirmModal>
+      )}
+    </>
   );
 }
 
@@ -1596,12 +2142,12 @@ function HarvestScreen({
   );
 }
 
-/** First half of scan-part-then-location, done (§5.4a/§5.4b): a part is
- *  pending, waiting for its location. No lookup here — the sticker code is
- *  shown verbatim rather than fetched, keeping this the same "no premature
- *  validation" shape as the rest of the scan page. Persists rather than
- *  flashing: it is itself a prompt, abandoned only by scanning something
- *  else (handled generically — see `handleScan`'s `part-scanned` branch). */
+/** First half of scan-part-then-location, done (§5.4a/§5.4b): a registered,
+ *  job-linked part is pending, waiting for its location. The page validates
+ *  the sticker before showing this prompt; unknown and no-job stickers flash
+ *  an error instead. Persists rather than flashing: it is itself a prompt,
+ *  abandoned only by scanning something else (handled generically — see
+ *  `handleScan`'s `part-scanned` branch). */
 function AwaitingLocationScreen({
   payload,
   part,
@@ -1764,7 +2310,7 @@ function LocationRecordedFlash({
   return (
     <>
       <ScanLine
-        className={`w-16 h-16 mb-6 ${locationSlug === 'discard' ? 'text-red-500' : locationSlug === 'rework' ? 'text-orange-500' : 'text-bambu-green'}`}
+        className={`w-16 h-16 mb-6 ${locationSlug === 'discard' ? 'text-red-500' : locationSlug === 'rework' ? 'text-orange-500' : 'text-green-500'}`}
         aria-hidden="true"
       />
       <PartCodeThumbnail partCode={part?.part_code} sectionPartId={part?.section_part_id} className="mb-4 h-20 w-20 rounded-lg object-cover bg-bambu-dark-secondary" />
@@ -1774,9 +2320,9 @@ function LocationRecordedFlash({
           .filter(Boolean)
           .join(' · ')}
       </p>
-      <p className={`mt-3 text-lg ${locationSlug === 'discard' ? 'text-red-500' : locationSlug === 'rework' ? 'text-orange-500' : 'text-bambu-green'}`}>
+      <p className={`mt-3 text-lg ${locationSlug === 'discard' ? 'text-red-500' : locationSlug === 'rework' ? 'text-orange-500' : 'text-green-500'}`}>
         {locationSlug === 'fit-check'
-          ? t('floor.fitCheckRecorded', 'Checked')
+          ? t('floor.fitCheckRecorded', 'Fit Checked')
           : locationSlug === 'discard'
             ? t('floor.discardRecorded', 'Discarded')
             : reasonCode

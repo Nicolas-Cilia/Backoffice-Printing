@@ -25,6 +25,7 @@ from backend.app.services.floor_parts import (
     UnlinkReasonCode,
     archive_part,
     find_part_code_thumbnail,
+    list_inventory_parts,
     list_needs_attention,
     list_part_code_options,
     list_part_events,
@@ -50,7 +51,7 @@ DEVICE_A = "device-a"
 DEVICE_B = "device-b"
 
 HARVEST = station_for_slug("harvest")
-CLEANUP = station_for_slug("cleanup")
+RECEIVE = station_for_slug("storage-receive")
 
 
 async def _open_harvest(db_session, device_id: str):
@@ -234,9 +235,9 @@ class TestHarvestPrinterBinding:
     @pytest.mark.asyncio
     async def test_a_non_harvest_session_reports_no_session(self, db_session, printer_factory):
         """This endpoint is only meaningful for a harvest session; a device
-        in cleanup calling it should not be handled as if it were harvest."""
+        in another station calling it should not be handled as if it were harvest."""
         printer = await printer_factory()
-        await apply_station_scan(db_session, CLEANUP, DEVICE_A)
+        await apply_station_scan(db_session, RECEIVE, DEVICE_A)
         await db_session.commit()
 
         outcome = await scan_harvest_printer(db_session, DEVICE_A, f"BBP-{printer.id}")
@@ -261,6 +262,53 @@ class TestPartScanFromHarvest:
         assert outcome.part.printer_id == printer.id
         assert outcome.part.archive_id == archive.id
         assert outcome.part_count == 1
+
+    @pytest.mark.asyncio
+    async def test_assigns_a_part_code_from_an_unambiguous_build_plate_name(
+        self, db_session, printer_factory, archive_factory
+    ):
+        section_id = await _make_section(db_session)
+        await _add_section_part(db_session, section_id, "TOP", "Top Housing")
+        await _add_section_part(db_session, section_id, "BOT", "Bottom Housing")
+        printer = await printer_factory()
+        archive = await archive_factory(
+            printer_id=printer.id,
+            print_name="TOP x3 - 1.13.2 - X1C",
+            filename="TOP x3 - 1.13.2 - X1C.gcode.3mf",
+        )
+        await _open_harvest(db_session, DEVICE_A)
+        await scan_harvest_printer(db_session, DEVICE_A, f"BBP-{printer.id}")
+        await db_session.commit()
+
+        outcome = await scan_part(db_session, DEVICE_A, "BBD-000001")
+
+        assert outcome.part is not None
+        assert outcome.part.archive_id == archive.id
+        assert outcome.part.part_code == "TOP"
+        assert outcome.part.section_part_id is not None
+
+    @pytest.mark.asyncio
+    async def test_does_not_guess_when_a_build_plate_name_contains_multiple_codes(
+        self, db_session, printer_factory, archive_factory
+    ):
+        section_id = await _make_section(db_session)
+        await _add_section_part(db_session, section_id, "TOP", "Top Housing")
+        await _add_section_part(db_session, section_id, "BOT", "Bottom Housing")
+        printer = await printer_factory()
+        await archive_factory(
+            printer_id=printer.id,
+            print_name="TOP and BOT - combined plate",
+            filename="TOP-and-BOT.gcode.3mf",
+        )
+        await _open_harvest(db_session, DEVICE_A)
+        await scan_harvest_printer(db_session, DEVICE_A, f"BBP-{printer.id}")
+        await db_session.commit()
+
+        outcome = await scan_part(db_session, DEVICE_A, "BBD-000001")
+
+        assert outcome.part is not None
+        assert outcome.part.part_code is None
+        assert outcome.part.section_part_id is None
 
     @pytest.mark.asyncio
     async def test_part_count_increments_per_plate(self, db_session, printer_factory, archive_factory):
@@ -338,11 +386,11 @@ class TestPartScanFromHarvest:
 
     @pytest.mark.asyncio
     async def test_a_different_stations_session_is_ignored(self, db_session, printer_factory, archive_factory):
-        """§5.4: harvest 'ignores' other codes; a cleanup session must not
-        get a part written against it."""
+        """§5.4: harvest 'ignores' other codes; another station must not get a
+        part written against it."""
         printer = await printer_factory()
         await archive_factory(printer_id=printer.id)
-        await apply_station_scan(db_session, CLEANUP, DEVICE_A)
+        await apply_station_scan(db_session, RECEIVE, DEVICE_A)
         await db_session.commit()
 
         outcome = await scan_part(db_session, DEVICE_A, "BBD-000001")
@@ -553,8 +601,9 @@ class TestFitCheckPartScan:
         assert [e.action for e in events] == ["enrolled", "fit_checked"]
 
     @pytest.mark.asyncio
-    async def test_rescanning_an_already_checked_part_is_rejected(self, db_session, printer_factory):
+    async def test_rescanning_an_already_checked_part_is_rejected(self, db_session, printer_factory, archive_factory):
         printer = await printer_factory()
+        await archive_factory(printer_id=printer.id)
         await _harvest_one_part(db_session, printer.id)
         await scan_fit_check_part(db_session, "BBD-000001")
         await db_session.commit()
@@ -574,6 +623,17 @@ class TestFitCheckPartScan:
         assert outcome.result is LocationScanResult.UNKNOWN_PART
 
     @pytest.mark.asyncio
+    async def test_unlinked_harvest_record_is_rejected(self, db_session, printer_factory):
+        """A no-job record must be matched before it can enter a location."""
+        printer = await printer_factory()
+        await _harvest_one_part(db_session, printer.id)
+
+        outcome = await scan_fit_check_part(db_session, "BBD-000001")
+
+        assert outcome.result is LocationScanResult.UNKNOWN_PART
+        assert outcome.part is None
+
+    @pytest.mark.asyncio
     async def test_invalid_code_writes_nothing(self, db_session):
         outcome = await scan_fit_check_part(db_session, "not-a-code")
 
@@ -581,10 +641,13 @@ class TestFitCheckPartScan:
         assert outcome.part is None
 
     @pytest.mark.asyncio
-    async def test_commits_regardless_of_whatever_station_is_open_elsewhere(self, db_session, printer_factory):
+    async def test_commits_regardless_of_whatever_station_is_open_elsewhere(
+        self, db_session, printer_factory, archive_factory
+    ):
         """Not a station, so it is not gated on — or affected by — any real
         station session. WIP being open on some device must not block it."""
         printer = await printer_factory()
+        await archive_factory(printer_id=printer.id)
         await _harvest_one_part(db_session, printer.id)
         WIP = station_for_slug("wip")
         await apply_station_scan(db_session, WIP, DEVICE_B)
@@ -601,8 +664,9 @@ class TestReworkPartScan:
     Check, `scan_rework_part` is a plain commit with no session concept."""
 
     @pytest.mark.asyncio
-    async def test_records_a_rework_event_with_the_reason(self, db_session, printer_factory):
+    async def test_records_a_rework_event_with_the_reason(self, db_session, printer_factory, archive_factory):
         printer = await printer_factory()
+        await archive_factory(printer_id=printer.id)
         await _harvest_one_part(db_session, printer.id)
 
         outcome = await scan_rework_part(db_session, "BBD-000001", ReworkReasonCode.DOESNT_FIT)
@@ -614,8 +678,9 @@ class TestReworkPartScan:
         assert events[-1].details == {"reason_code": "doesnt_fit", "reason_text": None}
 
     @pytest.mark.asyncio
-    async def test_other_reason_carries_free_text(self, db_session, printer_factory):
+    async def test_other_reason_carries_free_text(self, db_session, printer_factory, archive_factory):
         printer = await printer_factory()
+        await archive_factory(printer_id=printer.id)
         await _harvest_one_part(db_session, printer.id)
 
         outcome = await scan_rework_part(db_session, "BBD-000001", ReworkReasonCode.OTHER, "warped corner")
@@ -625,9 +690,23 @@ class TestReworkPartScan:
         assert events[-1].details == {"reason_code": "other", "reason_text": "warped corner"}
 
     @pytest.mark.asyncio
-    async def test_rework_more_than_once_is_rejected(self, db_session, printer_factory):
+    async def test_inventory_part_exposes_its_current_rework_reason(self, db_session, printer_factory, archive_factory):
+        printer = await printer_factory()
+        await archive_factory(printer_id=printer.id)
+        await _harvest_one_part(db_session, printer.id)
+        await scan_rework_part(db_session, "BBD-000001", ReworkReasonCode.OTHER, "warped corner")
+        await db_session.commit()
+
+        [part] = await list_inventory_parts(db_session)
+
+        assert part.latest_event_action == "rework"
+        assert part.latest_event_reason == "Other · warped corner"
+
+    @pytest.mark.asyncio
+    async def test_rework_more_than_once_is_rejected(self, db_session, printer_factory, archive_factory):
         """A part cannot be sent to the same current location twice in a row."""
         printer = await printer_factory()
+        await archive_factory(printer_id=printer.id)
         await _harvest_one_part(db_session, printer.id)
         await scan_rework_part(db_session, "BBD-000001", ReworkReasonCode.ROUGH_SURFACE)
         await db_session.commit()
