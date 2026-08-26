@@ -10,6 +10,7 @@ from backend.app.models.filament_tracking import (
     FilamentColorUsage,
     FilamentSlotAssignment,
 )
+from backend.app.models.floor_part import FloorDismissedBuildPlate, FloorLabeledPart, FloorPartEvent
 from backend.app.models.floor_session import FloorStationSession
 from backend.app.models.github_backup import GitHubBackupConfig, GitHubBackupLog
 from backend.app.models.group import Group, user_groups
@@ -63,6 +64,9 @@ __all__ = [
     "FilamentColorUsage",
     "FilamentSlotAssignment",
     "FloorStationSession",
+    "FloorLabeledPart",
+    "FloorPartEvent",
+    "FloorDismissedBuildPlate",
     "Settings",
     "SmartPlug",
     "SmartPlugEnergySnapshot",

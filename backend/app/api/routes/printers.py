@@ -397,9 +397,11 @@ async def delete_printer(
         delete_archives: If True (default), delete all print archives for this printer.
                         If False, keep archives but remove their printer association.
     """
-    from sqlalchemy import delete as sql_delete
+    from sqlalchemy import delete as sql_delete, update
 
     from backend.app.models.archive import PrintArchive
+    from backend.app.models.floor_part import FloorLabeledPart
+    from backend.app.models.floor_session import FloorStationSession
     from backend.app.models.maintenance import MaintenanceHistory, PrinterMaintenance
     from backend.app.models.spoolman_slot_assignment import SpoolmanSlotAssignment
 
@@ -411,13 +413,45 @@ async def delete_printer(
     printer_manager.disconnect_printer(printer_id)
 
     if delete_archives:
+        # Labeled parts must degrade to needs-attention, not go dangling,
+        # when their archive disappears (docs/floor-plan.md §7.2) — the same
+        # promise `archive_id`'s `ondelete="SET NULL"` makes, done explicitly
+        # here because SQLite doesn't enforce it. Read the archive ids
+        # *before* deleting the archives: once they're gone there is no
+        # `printer_id` left on them to join against.
+        archive_ids = (
+            (await db.execute(select(PrintArchive.id).where(PrintArchive.printer_id == printer_id))).scalars().all()
+        )
+        if archive_ids:
+            await db.execute(
+                update(FloorLabeledPart).where(FloorLabeledPart.archive_id.in_(archive_ids)).values(archive_id=None)
+            )
         # Delete all archives for this printer
         await db.execute(sql_delete(PrintArchive).where(PrintArchive.printer_id == printer_id))
     else:
         # Orphan the archives instead of deleting them
-        from sqlalchemy import update
-
         await db.execute(update(PrintArchive).where(PrintArchive.printer_id == printer_id).values(printer_id=None))
+
+    # Orphan labeled parts (docs/floor-plan.md §7.2), never delete them: a
+    # part is a physical, permanently-stickered object, and the point of
+    # storing printer_id directly on it (rather than only reaching it
+    # through the archive) is precisely so it survives losing either one.
+    # Deleting the printer must not delete the part history that traces back
+    # to it — it degrades those rows to the needs-attention list, same as an
+    # archive being purged. Explicit, like the archive orphaning above,
+    # because SQLite doesn't enforce the column's `ondelete="SET NULL"` (see
+    # FloorLabeledPart's docstring for why printer_id is nullable at all).
+    await db.execute(update(FloorLabeledPart).where(FloorLabeledPart.printer_id == printer_id).values(printer_id=None))
+
+    # Clear any harvest plate still bound to this printer. Cheap and
+    # defensive: a session referencing a since-deleted printer would
+    # otherwise resolve to nothing on its next scan rather than cleanly
+    # reporting "no plate open".
+    await db.execute(
+        update(FloorStationSession)
+        .where(FloorStationSession.bound_printer_id == printer_id)
+        .values(bound_printer_id=None, bound_archive_id=None)
+    )
 
     # Delete slot assignments for this printer (SQLite doesn't enforce FK cascades)
     await db.execute(sql_delete(SpoolmanSlotAssignment).where(SpoolmanSlotAssignment.printer_id == printer_id))

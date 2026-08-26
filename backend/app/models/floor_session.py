@@ -29,7 +29,7 @@ off ``session_id``. Both are additive.
 
 from datetime import datetime
 
-from sqlalchemy import Boolean, DateTime, Index, String, func, text
+from sqlalchemy import Boolean, DateTime, ForeignKey, Index, String, func, text
 from sqlalchemy.orm import Mapped, mapped_column
 
 from backend.app.core.database import Base
@@ -80,6 +80,26 @@ class FloorStationSession(Base):
     # Set when another device took this session over, so a stale-session
     # takeover is distinguishable from a normal close after the fact.
     closed_by_takeover: Mapped[bool] = mapped_column(Boolean, default=False)
+
+    # The plate binding (phase 8, §5.4). Both null = a harvest session is
+    # open but no printer/job is bound yet. Set together, cleared together —
+    # never one without the other, since a plate with a printer but no
+    # resolved archive is exactly the "no job found" case and is represented
+    # by `bound_archive_id` being null while `bound_printer_id` is set, not
+    # by leaving `bound_printer_id` null. Additive and nullable so existing
+    # rows (and every non-harvest station) are unaffected; see the ALTER
+    # migration in `core/database.py` for upgrading an existing install.
+    #
+    # Generic on this table (any station could use it) rather than harvest-
+    # specific, matching this module's own forecast in the header comment.
+    # `floor_sessions.py` only ever sets or clears these two columns
+    # mechanically (`bind_plate`); deciding *when* to do so — resolving a
+    # printer, resolving its archive, interpreting bound/rebound/plate_closed
+    # — is phase 8 business logic and lives in `services/floor_parts.py`.
+    bound_printer_id: Mapped[int | None] = mapped_column(ForeignKey("printers.id", ondelete="SET NULL"), nullable=True)
+    bound_archive_id: Mapped[int | None] = mapped_column(
+        ForeignKey("print_archives.id", ondelete="SET NULL"), nullable=True
+    )
 
     @property
     def is_open(self) -> bool:

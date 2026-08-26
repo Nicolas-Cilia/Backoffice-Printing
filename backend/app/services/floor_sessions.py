@@ -165,11 +165,20 @@ def _close(session: FloorStationSession, *, by_takeover: bool = False) -> None:
     session.closed_by_takeover = by_takeover
 
 
-async def _open(db: AsyncSession, station: FloorStation, device_id: str) -> FloorStationSession:
+async def _open(
+    db: AsyncSession,
+    station: FloorStation,
+    device_id: str,
+    *,
+    bound_printer_id: int | None = None,
+    bound_archive_id: int | None = None,
+) -> FloorStationSession:
     session = FloorStationSession(
         station_slug=station.slug,
         device_id=device_id,
         exclusive=station.exclusive,
+        bound_printer_id=bound_printer_id,
+        bound_archive_id=bound_archive_id,
     )
     db.add(session)
     await db.flush()
@@ -229,6 +238,77 @@ async def apply_station_scan(
         session=session,
         previous=previous,
     )
+
+
+async def bind_plate(
+    db: AsyncSession,
+    session: FloorStationSession,
+    *,
+    printer_id: int | None,
+    archive_id: int | None,
+) -> None:
+    """Set (or clear) ``session``'s plate binding and flush.
+
+    Purely mechanical — this module has no idea what a printer or an archive
+    *is*, only that they are two nullable ids on the row. Deciding when to
+    bind, rebind, or clear (phase 8's bound/rebound/plate_closed, and
+    resolving the ids in the first place) is harvest-specific business logic
+    that lives in ``services/floor_parts.py``; this is the one place both
+    that resolution and ``claim_exclusive_station`` below funnel through, so
+    a plate is never partially written (printer set, archive not, or vice
+    versa) by construction. Pass ``printer_id=None, archive_id=None`` to
+    clear a plate closed.
+    """
+    session.bound_printer_id = printer_id
+    session.bound_archive_id = archive_id
+    await db.flush()
+
+
+async def claim_exclusive_station(
+    db: AsyncSession,
+    station: FloorStation,
+    device_id: str,
+    *,
+    bound_printer_id: int | None = None,
+    bound_archive_id: int | None = None,
+) -> ScanOutcome:
+    """Open ``station`` for a device holding **no** session at all, pre-bound.
+
+    The mechanical half of phase 8's harvest-lock-claim-on-first-part-scan
+    (§5.4, entry #2): a `BBD-` scan from the printer info page, with no
+    prior `BBS-harvest` scan, still has to pass the same floor-wide lock
+    check and race-safe insert as a normal station scan — it just also seeds
+    the plate binding in the same insert, so the session is never observed
+    open and unbound in between. Reuses the exact partial-unique-index +
+    `IntegrityError` handling ``apply_station_scan`` already has rather than
+    a second copy of it, so the two can't quietly drift apart.
+
+    Unlike ``apply_station_scan``, this does not check for or close a prior
+    session on ``device_id`` — callers (``floor_parts.scan_part``) only take
+    this path once they already know the device holds nothing, which is the
+    condition entry #2 requires anyway (§5.4: printer_id hint is used *only*
+    when the device has no open harvest session yet).
+    """
+    if station.exclusive:
+        blocking = await get_open_session_for_station(db, station.slug)
+        if blocking is not None and blocking.device_id != device_id:
+            return ScanOutcome(result=ScanResult.LOCKED, station=station, blocking=blocking)
+
+    try:
+        session = await _open(
+            db,
+            station,
+            device_id,
+            bound_printer_id=bound_printer_id,
+            bound_archive_id=bound_archive_id,
+        )
+    except IntegrityError:
+        await db.rollback()
+        blocking = await get_open_session_for_station(db, station.slug)
+        logger.info("Station %s lost open race for device %s (bound claim)", station.slug, device_id)
+        return ScanOutcome(result=ScanResult.LOCKED, station=station, blocking=blocking)
+
+    return ScanOutcome(result=ScanResult.OPENED, station=station, session=session)
 
 
 async def take_over(db: AsyncSession, station: FloorStation, device_id: str) -> ScanOutcome:
@@ -291,6 +371,8 @@ __all__ = [
     "ScanResult",
     "ScanOutcome",
     "apply_station_scan",
+    "bind_plate",
+    "claim_exclusive_station",
     "take_over",
     "close_session_for_device",
     "get_open_session_for_device",
