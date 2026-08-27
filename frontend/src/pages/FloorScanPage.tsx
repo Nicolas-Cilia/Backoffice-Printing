@@ -916,8 +916,13 @@ export function FloorScanPage() {
         }
         if (
           statusRef.current.kind === 'awaiting-bin-location' &&
-          route.payload === statusRef.current.payload
+          route.payload === statusRef.current.payload &&
+          statusRef.current.batch.status === 'harvested'
         ) {
+          // Only a bin that hasn't been through visual QC yet advances here
+          // on a re-scan — one already QC-passed or in WIP has nothing left
+          // to enter, so re-scanning it just re-shows its real status below
+          // instead of re-opening the quantity form.
           setStatus({
             kind: 'awaiting-bin-qc-quantity',
             payload: statusRef.current.payload,
@@ -2637,6 +2642,24 @@ function BinQcQuantityScreen({
   );
 }
 
+/** The bin's actual lifecycle status (docs/floor-plan.md § bin QC — matches
+ *  the wording already used on the office-side Bin Management page), so a
+ *  bin that already passed QC or is already in WIP reads as that, not as
+ *  "scan again for visual QC" regardless of what already happened — the
+ *  same parity with tops/bottoms that `PartSourceLabel`'s status pill gives
+ *  individually-stickered parts. */
+function binLifecycleStatusLabel(status: string, t: ReturnType<typeof useTranslation>['t']) {
+  if (status === 'visual_qc_passed') return t('floor.binStatusQcPassed', 'Visual QC pass');
+  if (status === 'wip') return t('floor.binStatusWip', 'In WIP');
+  return t('floor.binStatusAwaitingQc', 'Awaiting visual QC');
+}
+
+function binLifecycleStatusClass(status: string) {
+  if (status === 'visual_qc_passed') return 'text-green-500';
+  if (status === 'wip') return 'text-sky-400';
+  return 'text-amber-400';
+}
+
 function BinLocationScreen({ batch, t }: { batch: FloorBinBatch; t: ReturnType<typeof useTranslation>['t'] }) {
   return (
     <>
@@ -2648,8 +2671,26 @@ function BinLocationScreen({ batch, t }: { batch: FloorBinBatch; t: ReturnType<t
       <p className="text-4xl font-bold text-white">{batch.part_code} bin</p>
       <p className="mt-2 text-6xl font-bold text-bambu-green tabular-nums">{batch.quantity}</p>
       <p className="mt-1 text-lg text-bambu-gray">{batch.printer_name ?? 'Printer'}</p>
-      <p className="mt-8 text-2xl text-white">{t('floor.binScanAgainForQc', 'Scan this bin again for visual QC')}</p>
-      <p className="mt-2 text-lg text-bambu-gray">{t('floor.binScanFitCheckAlternative', 'Or scan the Fit Check label')}</p>
+      <p className={`mt-4 text-xl font-medium ${binLifecycleStatusClass(batch.status)}`}>
+        {binLifecycleStatusLabel(batch.status, t)}
+        {batch.status === 'visual_qc_passed' && typeof batch.qc_passed_quantity === 'number'
+          ? ` · ${batch.qc_passed_quantity} / ${batch.quantity} passed`
+          : ''}
+      </p>
+      {batch.status === 'harvested' ? (
+        <>
+          <p className="mt-8 text-2xl text-white">{t('floor.binScanAgainForQc', 'Scan this bin again for visual QC')}</p>
+          <p className="mt-2 text-lg text-bambu-gray">{t('floor.binScanFitCheckAlternative', 'Or scan the Fit Check label')}</p>
+        </>
+      ) : batch.status === 'visual_qc_passed' ? (
+        <p className="mt-8 text-lg text-bambu-gray">
+          {t('floor.binAlreadyPassedQcHint', 'Scan WIP when this bin goes into use')}
+        </p>
+      ) : (
+        <p className="mt-8 text-lg text-bambu-gray">
+          {t('floor.binInWipHint', 'Scan Empty when this bin is used up')}
+        </p>
+      )}
     </>
   );
 }

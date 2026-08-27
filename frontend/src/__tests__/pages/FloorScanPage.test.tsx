@@ -1085,6 +1085,127 @@ describe('FloorScanPage (Phase 1b sessions)', () => {
         expect(qcRequest.body).toEqual({ payload: 'BBN-BUT-1', passed_quantity: 20 });
       });
 
+      it('shows a bin that already passed visual QC as passed, not as awaiting QC', async () => {
+        // Regression: resolving a bin used to show the same "scan again for
+        // visual QC" prompt no matter its real status.
+        mockNoSession();
+        server.use(
+          http.post('/api/v1/floor/bins/resolve', () =>
+            HttpResponse.json({
+              result: 'ready_for_qc',
+              bin: { payload: 'BBN-BUT-1', bin_number: 1, part_code: 'BUT', part_name: 'Button bin' },
+              batch: {
+                id: 91,
+                payload: 'BBN-BUT-1',
+                bin_number: 1,
+                printer_id: 12,
+                printer_name: 'P1S-3',
+                archive_id: 88,
+                print_name: 'button_plate',
+                part_code: 'BUT',
+                quantity: 25,
+                qc_passed_quantity: 20,
+                remaining_quantity: 20,
+                status: 'visual_qc_passed',
+                harvested_at: '2026-08-26T14:35:00',
+              },
+              printer: null,
+              session: null,
+              blocking: null,
+              archive: null,
+            }),
+          ),
+        );
+        render(<FloorScanPage />);
+        await screen.findByText('Scan a code');
+
+        await scan('BBN-BUT-1');
+
+        expect(await screen.findByText('Visual QC pass · 20 / 25 passed')).toBeInTheDocument();
+        expect(screen.queryByText('Scan this bin again for visual QC')).not.toBeInTheDocument();
+      });
+
+      it('does not re-open the QC quantity form for a bin already past QC', async () => {
+        mockNoSession();
+        server.use(
+          http.post('/api/v1/floor/bins/resolve', () =>
+            HttpResponse.json({
+              result: 'ready_for_qc',
+              bin: { payload: 'BBN-BUT-1', bin_number: 1, part_code: 'BUT', part_name: 'Button bin' },
+              batch: {
+                id: 91,
+                payload: 'BBN-BUT-1',
+                bin_number: 1,
+                printer_id: 12,
+                printer_name: 'P1S-3',
+                archive_id: 88,
+                print_name: 'button_plate',
+                part_code: 'BUT',
+                quantity: 25,
+                qc_passed_quantity: 20,
+                remaining_quantity: 20,
+                status: 'wip',
+                harvested_at: '2026-08-26T14:35:00',
+              },
+              printer: null,
+              session: null,
+              blocking: null,
+              archive: null,
+            }),
+          ),
+        );
+        render(<FloorScanPage />);
+        await screen.findByText('Scan a code');
+        await scan('BBN-BUT-1');
+        await screen.findByText('In WIP');
+
+        await scan('BBN-BUT-1');
+
+        expect(screen.queryByText('How many parts passed visual QC?')).not.toBeInTheDocument();
+        expect(await screen.findByText('In WIP')).toBeInTheDocument();
+      });
+
+      it('names Rework specifically as unsupported for a bin, rather than a generic redirect', async () => {
+        mockNoSession();
+        server.use(
+          http.post('/api/v1/floor/bins/resolve', () =>
+            HttpResponse.json({
+              result: 'ready_for_qc',
+              bin: { payload: 'BBN-BUT-1', bin_number: 1, part_code: 'BUT', part_name: 'Button bin' },
+              batch: {
+                id: 91,
+                payload: 'BBN-BUT-1',
+                bin_number: 1,
+                printer_id: 12,
+                printer_name: 'P1S-3',
+                archive_id: 88,
+                print_name: 'button_plate',
+                part_code: 'BUT',
+                quantity: 25,
+                qc_passed_quantity: null,
+                remaining_quantity: 25,
+                status: 'harvested',
+                harvested_at: '2026-08-26T14:35:00',
+              },
+              printer: null,
+              session: null,
+              blocking: null,
+              archive: null,
+            }),
+          ),
+        );
+        render(<FloorScanPage />);
+        await screen.findByText('Scan a code');
+        await scan('BBN-BUT-1');
+        await screen.findByText('Scan this bin again for visual QC');
+
+        await scan('BBS-rework');
+
+        expect(
+          await screen.findByText("Bins aren't supported for Rework — scan a part instead"),
+        ).toBeInTheDocument();
+      });
+
       it('states plainly when the printer has no finished job, without an error flash or tone', async () => {
         mockHarvestSession();
         mockHarvestPrinterScan({
