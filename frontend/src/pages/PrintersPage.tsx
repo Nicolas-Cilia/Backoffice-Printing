@@ -118,7 +118,6 @@ import { useToast } from '../contexts/ToastContext';
 import { ChamberLight } from '../components/icons/ChamberLight';
 import { PlateClearedIcon } from '../components/icons/PlateClearedIcon';
 import { SkipObjectsModal, SkipObjectsIcon } from '../components/SkipObjectsModal';
-import { PrintModal } from '../components/PrintModal';
 import { StartPrintModal } from '../components/StartPrintModal';
 import { PrinterInfoModal } from '../components/PrinterInfoModal';
 import { getAmsLabel, getGlobalTrayId, getFillBarColor, getSpoolmanFillLevel, getFallbackSpoolTag, isBambuLabSpool, resolveSlotNozzleDiameter } from '../utils/amsHelpers';
@@ -1879,8 +1878,10 @@ function PrinterCard({
   const [printAfterUpload, setPrintAfterUpload] = useState<{
     id: number;
     filename: string;
-    cleanup?: boolean;
     slicedForModel?: string | null;
+    thumbnailPath?: string | null;
+    fileSize?: number;
+    fileType?: string;
   } | null>(null);
   // AMS drying popover state: which AMS unit has the popover open
   const [dryingPopoverAmsId, setDryingPopoverAmsId] = useState<number | null>(null);
@@ -3065,7 +3066,14 @@ function PrinterCard({
         return;
       }
 
-      setPrintAfterUpload({ id: result.id, filename: result.filename, cleanup: true });
+      setPrintAfterUpload({
+        id: result.id,
+        filename: result.filename,
+        slicedForModel: slicedFor ?? null,
+        thumbnailPath: result.thumbnail_path,
+        fileSize: result.file_size,
+        fileType: result.file_type,
+      });
     } catch {
       showToast(t('common.uploadFailed', 'Upload failed'), 'error');
     } finally {
@@ -6271,17 +6279,22 @@ function PrinterCard({
         />
       )}
 
-      {/* Print Modal after drag-and-drop upload onto the card */}
+      {/* Use the same file-management workspace after drag-and-drop upload. */}
       {printAfterUpload && (
-        <PrintModal
-          mode="create"
-          libraryFileId={printAfterUpload.id}
-          archiveName={printAfterUpload.filename}
-          slicedForModel={printAfterUpload.slicedForModel}
-          initialSelectedPrinterIds={[printer.id]}
+        <StartPrintModal
+          printerName={printer.name}
+          printerModel={mapModelCode(printer.model) || null}
+          printerId={printer.id}
+          initialFile={{
+            id: printAfterUpload.id,
+            filename: printAfterUpload.filename,
+            slicedForModel: printAfterUpload.slicedForModel,
+            thumbnailPath: printAfterUpload.thumbnailPath ?? null,
+            fileSize: printAfterUpload.fileSize ?? null,
+            fileType: printAfterUpload.fileType ?? null,
+          }}
           onClose={() => setPrintAfterUpload(null)}
           onSuccess={() => setPrintAfterUpload(null)}
-          cleanupLibraryAfterDispatch={printAfterUpload.cleanup}
         />
       )}
 

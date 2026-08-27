@@ -51,6 +51,31 @@ logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/queue", tags=["queue"])
 
 
+async def _discard_transient_library_file(db: AsyncSession, item: PrintQueueItem) -> None:
+    """Hide an unsaved manual upload when its print will not be dispatched.
+
+    The printer-card / Start Print upload flow sets
+    ``cleanup_library_after_dispatch`` so the scheduler consumes the library
+    row when it creates the print archive. If the pending item is cancelled or
+    removed before dispatch, that scheduler path never runs, so clean up the
+    transient row here instead. Soft-deleting keeps the normal trash recovery
+    behavior and never removes any PrintArchive history.
+    """
+    if not item.cleanup_library_after_dispatch or item.library_file_id is None:
+        return
+
+    library_file = await db.get(LibraryFile, item.library_file_id)
+    if library_file is None or library_file.deleted_at is not None:
+        return
+
+    library_file.deleted_at = datetime.now(timezone.utc)
+    logger.info(
+        "Soft-deleted transient library file %s after queue item %s was not dispatched",
+        library_file.id,
+        item.id,
+    )
+
+
 def _extract_filament_types_from_3mf(file_path: Path, plate_id: int | None = None) -> list[str]:
     """Extract unique filament types from a 3MF file.
 
@@ -1030,6 +1055,7 @@ async def cancel_batch(
     cancelled_count = 0
     for item in pending_items:
         item.status = "cancelled"
+        await _discard_transient_library_file(db, item)
         cancelled_count += 1
 
     batch.status = "cancelled"
@@ -1264,6 +1290,7 @@ async def delete_queue_item(
     if item.status == "printing":
         raise HTTPException(400, "Cannot delete item that is currently printing")
 
+    await _discard_transient_library_file(db, item)
     await db.delete(item)
     await db.commit()
 
@@ -1376,6 +1403,7 @@ async def cancel_queue_item(
 
     item.status = "cancelled"
     item.completed_at = datetime.now(timezone.utc)
+    await _discard_transient_library_file(db, item)
     await db.commit()
 
     logger.info("Cancelled queue item %s", item_id)
