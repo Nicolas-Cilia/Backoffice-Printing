@@ -1529,7 +1529,8 @@ export type BinScanResult =
   | 'already_empty'
   | 'empty_requires_wip'
   | 'quantity_overridden'
-  | 'unlinked';
+  | 'unlinked'
+  | 'discarded';
 
 export interface FloorBinBatch {
   id: number;
@@ -1621,7 +1622,7 @@ export interface FloorNeedsAttentionResponse {
   total: number;
 }
 export interface FloorUnlabeledBuildPlate { id: number; print_name: string | null; printer_name: string | null; completed_at: string | null; }
-export interface HarvestSummaryLine { printer_id: number | null; printer_name: string | null; print_name: string | null; part_count: number; }
+export interface HarvestSummaryLine { printer_id: number | null; printer_name: string | null; print_name: string | null; part_count: number; bin_quantity: number; }
 
 export interface FloorInventoryPart {
   id: number;
@@ -6030,6 +6031,15 @@ export const api = {
     }),
   scanEmptyBin: (data: { payload: string }) =>
     request<BinScanResponse>('/floor/bins/empty', {
+      method: 'POST',
+      body: JSON.stringify(data),
+    }),
+  /** Discard a bin's whole active fill from the kiosk: unlinks it from its
+   *  printer/job and clears its quantity in one commit. The kiosk gates this
+   *  behind its own two-scan confirmation (Discard, then Discard again)
+   *  before calling it — no reason code, unlike part discard. */
+  discardFloorBin: (data: { payload: string }) =>
+    request<BinScanResponse>('/floor/bins/discard', {
       method: 'POST',
       body: JSON.stringify(data),
     }),

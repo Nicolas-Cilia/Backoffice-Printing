@@ -240,7 +240,7 @@ describe('FloorCodesPage', () => {
     const tabs = screen.getByRole('button', { name: 'Station labels' }).parentElement as HTMLElement;
     // Printers and Locations shipped in phases 7 and 9a/9b; Error labels
     // shipped alongside Rework/Discard's error-label step.
-    expect(within(tabs).getByRole('button', { name: 'Locations' })).toBeEnabled();
+    expect(within(tabs).getByRole('button', { name: 'Processes' })).toBeEnabled();
     expect(within(tabs).getByRole('button', { name: 'Printer labels' })).toBeEnabled();
     expect(within(tabs).getByRole('button', { name: 'Error labels' })).toBeEnabled();
   });
@@ -252,7 +252,7 @@ describe('FloorCodesPage', () => {
       render(<FloorCodesPage />);
       await screen.findByText('WIP');
 
-      await user.click(screen.getByRole('button', { name: 'Locations' }));
+      await user.click(screen.getByRole('button', { name: 'Processes' }));
 
       expect(await screen.findByText('Initial QC Pass')).toBeInTheDocument();
       expect(screen.getByText('Rework')).toBeInTheDocument();
@@ -267,7 +267,7 @@ describe('FloorCodesPage', () => {
       render(<FloorCodesPage />);
       await screen.findByText('WIP');
 
-      await user.click(screen.getByRole('button', { name: 'Locations' }));
+      await user.click(screen.getByRole('button', { name: 'Processes' }));
       await screen.findByText('Initial QC Pass');
       await user.click(screen.getByRole('checkbox', { name: 'Rework' }));
       await user.click(screen.getByRole('button', { name: /Print selected \(1\)/ }));
@@ -283,7 +283,7 @@ describe('FloorCodesPage', () => {
       await screen.findByText('WIP');
       expect(screen.getByRole('button', { name: /Print selected \(3\)/ })).toBeEnabled();
 
-      await user.click(screen.getByRole('button', { name: 'Locations' }));
+      await user.click(screen.getByRole('button', { name: 'Processes' }));
       await screen.findByText('Initial QC Pass');
 
       expect(screen.getByRole('button', { name: /Print selected \(2\)/ })).toBeEnabled();

@@ -1154,3 +1154,83 @@ class TestReusableBinFlow:
         active_again = await async_client.get("/api/v1/floor/inventory/bins")
         active_item = next(item for item in active_again.json() if item["payload"] == "BBN-BUT-1")
         assert active_item["batch"]["archive_id"] == replacement_job.id
+
+    async def test_harvest_summary_reports_bins_instead_of_zero_parts(
+        self, async_client, printer_factory, archive_factory
+    ):
+        """A Harvest session that only harvested KNB/BUT bins used to
+        summarize as zero parts (docs bug report): the summary only ever
+        counted ``FloorLabeledPart`` rows, never ``FloorBinBatch`` ones."""
+        printer = await printer_factory(name="Bench A")
+        await archive_factory(printer_id=printer.id, print_name="Button plate")
+        await _open_harvest(async_client, DEVICE_A)
+        await _scan_printer(async_client, printer.id, DEVICE_A)
+        await async_client.post(
+            "/api/v1/floor/harvest/bin",
+            json={"device_id": DEVICE_A, "payload": "BBN-BUT-1", "quantity": 12},
+        )
+        session = await async_client.get("/api/v1/floor/session", params={"device_id": DEVICE_A})
+        session_id = session.json()["id"]
+
+        summary = await async_client.get(f"/api/v1/floor/harvest/sessions/{session_id}/summary")
+
+        assert summary.status_code == 200
+        assert summary.json() == [
+            {
+                "printer_id": printer.id,
+                "printer_name": "Bench A",
+                "print_name": "Button plate",
+                "part_count": 0,
+                "bin_quantity": 12,
+            }
+        ]
+
+    async def test_discard_clears_the_bin_and_unlinks_it_in_one_action(
+        self, async_client, printer_factory, archive_factory
+    ):
+        """The kiosk's bin discard combines what the office side does as two
+        separate steps (unlink, then mark empty) — no reason is collected,
+        unlike a part's discard."""
+        printer = await printer_factory(name="Bench A")
+        await archive_factory(printer_id=printer.id, print_name="Button plate")
+        await _open_harvest(async_client, DEVICE_A)
+        await _scan_printer(async_client, printer.id, DEVICE_A)
+        await async_client.post(
+            "/api/v1/floor/harvest/bin",
+            json={"device_id": DEVICE_A, "payload": "BBN-BUT-1", "quantity": 12},
+        )
+
+        discarded = await async_client.post(
+            "/api/v1/floor/bins/discard",
+            json={"payload": "BBN-BUT-1"},
+        )
+        assert discarded.status_code == 200
+        body = discarded.json()
+        assert body["result"] == "discarded"
+        assert body["batch"]["status"] == "empty"
+        assert body["batch"]["remaining_quantity"] == 0
+
+        # Both steps land in the audit trail, oldest first.
+        events = await async_client.get(f"/api/v1/floor/inventory/bins/batches/{body['batch']['id']}/events")
+        actions = [event["action"] for event in events.json()]
+        assert actions[-2:] == ["unlinked", "empty"]
+
+        # Reads as available everywhere — not stuck needing a manual relink.
+        available = await async_client.get("/api/v1/floor/inventory/bins")
+        item = next(i for i in available.json() if i["payload"] == "BBN-BUT-1")
+        assert item["batch"] is None
+        assert item["status"] == "available"
+
+        # Immediately reusable at Harvest, unlike a plain office-side unlink.
+        reharvested = await async_client.post(
+            "/api/v1/floor/harvest/bin",
+            json={"device_id": DEVICE_A, "payload": "BBN-BUT-1", "quantity": 5},
+        )
+        assert reharvested.json()["result"] == "recorded"
+
+    async def test_discard_requires_an_active_fill(self, async_client):
+        response = await async_client.post(
+            "/api/v1/floor/bins/discard",
+            json={"payload": "BBN-KNB-2"},
+        )
+        assert response.json()["result"] == "no_batch"

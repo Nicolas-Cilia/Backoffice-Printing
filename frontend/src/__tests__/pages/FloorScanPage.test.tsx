@@ -761,6 +761,55 @@ describe('FloorScanPage (Phase 1b sessions)', () => {
       expect(screen.queryByText('Bed ready to clear')).not.toBeInTheDocument();
     });
 
+    it('shows only the failed reprint when it happened after the still-unharvested job', async () => {
+      // A finished job sat unharvested, then a reprint attempt on top of it
+      // failed — the reprint is the more recent event, so it alone should
+      // show rather than stacking "Bed ready to clear" on top of it.
+      mockNoSession();
+      mockInfo({
+        recent_stopped_print: {
+          print_log_id: 103,
+          archive_id: 90,
+          print_name: 'Bracket v3 (reprint)',
+          part_code: 'BUT',
+          status: 'cancelled',
+          stopped_at: '2026-08-25T09:00:00',
+          reason_code: null,
+          reason_text: null,
+        },
+      });
+      render(<FloorScanPage />);
+      await screen.findByText('Scan a code');
+
+      await scan('BBP-12');
+
+      expect(await screen.findByText('Recent print stopped')).toBeInTheDocument();
+      expect(screen.queryByText('Bed ready to clear')).not.toBeInTheDocument();
+    });
+
+    it('still prompts to clear the bed when the stop reason predates the finished job', async () => {
+      mockNoSession();
+      mockInfo({
+        recent_stopped_print: {
+          print_log_id: 104,
+          archive_id: 87,
+          print_name: 'Older attempt',
+          part_code: 'BUT',
+          status: 'failed',
+          stopped_at: '2026-08-20T09:00:00',
+          reason_code: null,
+          reason_text: null,
+        },
+      });
+      render(<FloorScanPage />);
+      await screen.findByText('Scan a code');
+
+      await scan('BBP-12');
+
+      expect(await screen.findByText('Bed ready to clear')).toBeInTheDocument();
+      expect(screen.queryByText('Recent print failed')).not.toBeInTheDocument();
+    });
+
     it('opens maintenance details from the scanned printer page', async () => {
       mockNoSession();
       mockInfo();
@@ -1034,6 +1083,127 @@ describe('FloorScanPage (Phase 1b sessions)', () => {
 
         expect(await screen.findByText('20 / 25 passed QC')).toBeInTheDocument();
         expect(qcRequest.body).toEqual({ payload: 'BBN-BUT-1', passed_quantity: 20 });
+      });
+
+      it('shows a bin that already passed visual QC as passed, not as awaiting QC', async () => {
+        // Regression: resolving a bin used to show the same "scan again for
+        // visual QC" prompt no matter its real status.
+        mockNoSession();
+        server.use(
+          http.post('/api/v1/floor/bins/resolve', () =>
+            HttpResponse.json({
+              result: 'ready_for_qc',
+              bin: { payload: 'BBN-BUT-1', bin_number: 1, part_code: 'BUT', part_name: 'Button bin' },
+              batch: {
+                id: 91,
+                payload: 'BBN-BUT-1',
+                bin_number: 1,
+                printer_id: 12,
+                printer_name: 'P1S-3',
+                archive_id: 88,
+                print_name: 'button_plate',
+                part_code: 'BUT',
+                quantity: 25,
+                qc_passed_quantity: 20,
+                remaining_quantity: 20,
+                status: 'visual_qc_passed',
+                harvested_at: '2026-08-26T14:35:00',
+              },
+              printer: null,
+              session: null,
+              blocking: null,
+              archive: null,
+            }),
+          ),
+        );
+        render(<FloorScanPage />);
+        await screen.findByText('Scan a code');
+
+        await scan('BBN-BUT-1');
+
+        expect(await screen.findByText('Visual QC pass · 20 / 25 passed')).toBeInTheDocument();
+        expect(screen.queryByText('Scan this bin again for visual QC')).not.toBeInTheDocument();
+      });
+
+      it('does not re-open the QC quantity form for a bin already past QC', async () => {
+        mockNoSession();
+        server.use(
+          http.post('/api/v1/floor/bins/resolve', () =>
+            HttpResponse.json({
+              result: 'ready_for_qc',
+              bin: { payload: 'BBN-BUT-1', bin_number: 1, part_code: 'BUT', part_name: 'Button bin' },
+              batch: {
+                id: 91,
+                payload: 'BBN-BUT-1',
+                bin_number: 1,
+                printer_id: 12,
+                printer_name: 'P1S-3',
+                archive_id: 88,
+                print_name: 'button_plate',
+                part_code: 'BUT',
+                quantity: 25,
+                qc_passed_quantity: 20,
+                remaining_quantity: 20,
+                status: 'wip',
+                harvested_at: '2026-08-26T14:35:00',
+              },
+              printer: null,
+              session: null,
+              blocking: null,
+              archive: null,
+            }),
+          ),
+        );
+        render(<FloorScanPage />);
+        await screen.findByText('Scan a code');
+        await scan('BBN-BUT-1');
+        await screen.findByText('In WIP');
+
+        await scan('BBN-BUT-1');
+
+        expect(screen.queryByText('How many parts passed visual QC?')).not.toBeInTheDocument();
+        expect(await screen.findByText('In WIP')).toBeInTheDocument();
+      });
+
+      it('names Rework specifically as unsupported for a bin, rather than a generic redirect', async () => {
+        mockNoSession();
+        server.use(
+          http.post('/api/v1/floor/bins/resolve', () =>
+            HttpResponse.json({
+              result: 'ready_for_qc',
+              bin: { payload: 'BBN-BUT-1', bin_number: 1, part_code: 'BUT', part_name: 'Button bin' },
+              batch: {
+                id: 91,
+                payload: 'BBN-BUT-1',
+                bin_number: 1,
+                printer_id: 12,
+                printer_name: 'P1S-3',
+                archive_id: 88,
+                print_name: 'button_plate',
+                part_code: 'BUT',
+                quantity: 25,
+                qc_passed_quantity: null,
+                remaining_quantity: 25,
+                status: 'harvested',
+                harvested_at: '2026-08-26T14:35:00',
+              },
+              printer: null,
+              session: null,
+              blocking: null,
+              archive: null,
+            }),
+          ),
+        );
+        render(<FloorScanPage />);
+        await screen.findByText('Scan a code');
+        await scan('BBN-BUT-1');
+        await screen.findByText('Scan this bin again for visual QC');
+
+        await scan('BBS-rework');
+
+        expect(
+          await screen.findByText("Bins aren't supported for Rework — scan a part instead"),
+        ).toBeInTheDocument();
       });
 
       it('states plainly when the printer has no finished job, without an error flash or tone', async () => {
@@ -1454,6 +1624,147 @@ describe('FloorScanPage (Phase 1b sessions)', () => {
         expect(floorSound.playScanErrorTone).toHaveBeenCalled();
       });
     });
+
+    describe('closing harvest reports a summary', () => {
+      it('reports bins collected instead of zero parts for a bin-only harvest', async () => {
+        // KNB/BUT bins are tracked separately from stickered parts — a
+        // session that only harvested bins used to summarize as "0 parts
+        // linked" even though real quantity was collected.
+        mockHarvestSession();
+        server.use(
+          http.get('/api/v1/floor/harvest/sessions/5/summary', () =>
+            HttpResponse.json([
+              { printer_id: 12, printer_name: 'P1S-3', print_name: 'bracket_v4', part_count: 0, bin_quantity: 12 },
+            ]),
+          ),
+        );
+        mockScan({ result: 'closed', station_slug: 'harvest', station_name: 'Harvest', session: null, blocking: null });
+        render(<FloorScanPage />);
+        await screen.findByText('Harvest');
+
+        await scan('BBS-harvest');
+
+        expect(await screen.findByText('Harvest complete')).toBeInTheDocument();
+        expect(screen.getByText('12 bins collected')).toBeInTheDocument();
+        expect(screen.getByText('12 bins')).toBeInTheDocument();
+        expect(screen.queryByText(/parts linked/)).not.toBeInTheDocument();
+      });
+
+      it('still reports parts linked for a parts-only harvest', async () => {
+        mockHarvestSession();
+        server.use(
+          http.get('/api/v1/floor/harvest/sessions/5/summary', () =>
+            HttpResponse.json([
+              { printer_id: 12, printer_name: 'P1S-3', print_name: 'bracket_v4', part_count: 4, bin_quantity: 0 },
+            ]),
+          ),
+        );
+        mockScan({ result: 'closed', station_slug: 'harvest', station_name: 'Harvest', session: null, blocking: null });
+        render(<FloorScanPage />);
+        await screen.findByText('Harvest');
+
+        await scan('BBS-harvest');
+
+        expect(await screen.findByText('Harvest complete')).toBeInTheDocument();
+        expect(screen.getByText('4 parts linked')).toBeInTheDocument();
+        expect(screen.queryByText(/bins collected/)).not.toBeInTheDocument();
+      });
+    });
+  });
+
+  describe('bin discard (floor kiosk)', () => {
+    const DISCARD_BATCH = {
+      id: 91,
+      payload: 'BBN-BUT-1',
+      bin_number: 1,
+      printer_id: 12,
+      printer_name: 'P1S-3',
+      archive_id: 88,
+      print_name: 'button_plate',
+      part_code: 'BUT',
+      quantity: 25,
+      qc_passed_quantity: null,
+      remaining_quantity: 25,
+      status: 'harvested',
+      harvested_at: '2026-08-26T14:35:00',
+    };
+
+    function mockBinResolve(batch: Record<string, unknown> = DISCARD_BATCH) {
+      server.use(
+        http.post('/api/v1/floor/bins/resolve', () =>
+          HttpResponse.json({
+            result: 'ready_for_qc',
+            bin: { payload: 'BBN-BUT-1', bin_number: 1, part_code: 'BUT', part_name: 'Button bin' },
+            batch,
+            printer: null,
+            session: null,
+            blocking: null,
+            archive: null,
+          }),
+        ),
+      );
+    }
+
+    function mockBinDiscard(response: unknown, status = 200) {
+      const captured: { body: Record<string, unknown> | null } = { body: null };
+      server.use(
+        http.post('/api/v1/floor/bins/discard', async ({ request }) => {
+          captured.body = (await request.json()) as Record<string, unknown>;
+          return HttpResponse.json(response, { status });
+        }),
+      );
+      return captured;
+    }
+
+    it('warns before discarding and requires Discard to be scanned twice, with no reason step', async () => {
+      mockNoSession();
+      mockBinResolve();
+      const discardCall = mockBinDiscard({
+        result: 'discarded',
+        bin: { payload: 'BBN-BUT-1', bin_number: 1, part_code: 'BUT', part_name: 'Button bin' },
+        batch: { ...DISCARD_BATCH, status: 'empty', remaining_quantity: 0 },
+        printer: null,
+        session: null,
+        blocking: null,
+        archive: null,
+      });
+      render(<FloorScanPage />);
+      await screen.findByText('Scan a code');
+
+      await scan('BBN-BUT-1');
+      await screen.findByText('Scan this bin again for visual QC');
+
+      await scan('BBX-discard');
+      expect(
+        await screen.findByText('This clears the whole bin and unlinks it from this printer.'),
+      ).toBeInTheDocument();
+      expect(screen.getByText('Scan Discard again to confirm')).toBeInTheDocument();
+      // No reason prompt, unlike a part's discard — the first Discard scan
+      // must not have committed anything yet either.
+      expect(screen.queryByText('Scan an error label')).not.toBeInTheDocument();
+      expect(discardCall.body).toBeNull();
+
+      await scan('BBX-discard');
+
+      expect(await screen.findByText('Bin discarded and unlinked')).toBeInTheDocument();
+      expect(discardCall.body).toEqual({ payload: 'BBN-BUT-1' });
+    });
+
+    it('abandons the discard confirmation if anything else is scanned instead', async () => {
+      mockNoSession();
+      mockBinResolve();
+      const discardCall = mockBinDiscard({ result: 'discarded' });
+      render(<FloorScanPage />);
+      await screen.findByText('Scan a code');
+      await scan('BBN-BUT-1');
+      await screen.findByText('Scan this bin again for visual QC');
+      await scan('BBX-discard');
+      await screen.findByText('Scan Discard again to confirm');
+
+      await scan('BBN-KNB-1');
+
+      expect(discardCall.body).toBeNull();
+    });
   });
 
   describe('fit check and rework (§5.4a/§5.4b, phase 9a/9b) — locations, not stations', () => {
@@ -1675,6 +1986,38 @@ describe('FloorScanPage (Phase 1b sessions)', () => {
       await scan('BBR-other');
 
       expect(await screen.findByText('Scan a part into Rework first')).toBeInTheDocument();
+    });
+
+    it('blocks a bin from being scanned into Rework instead of silently abandoning the pending part', async () => {
+      mockNoSession();
+      const reworkCall = mockReworkScan({ result: 'recorded', part: RECORDED_PART, printer: RECORDED_PRINTER, archive: RECORDED_ARCHIVE });
+      render(<FloorScanPage />);
+      await screen.findByText('Scan a code');
+      await scan('BBD-000042');
+      await screen.findByText('Scan a location');
+      await scan('BBS-rework');
+      await screen.findByText('Scan an error label');
+
+      await scan('BBN-BUT-1');
+
+      expect(
+        await screen.findByText("Bins aren't supported for Rework — scan a part instead"),
+      ).toBeInTheDocument();
+      expect(reworkCall.body).toBeNull();
+    });
+
+    it('blocks a bin from interrupting a part pending at the location prompt', async () => {
+      mockNoSession();
+      render(<FloorScanPage />);
+      await screen.findByText('Scan a code');
+      await scan('BBD-000042');
+      await screen.findByText('Scan a location');
+
+      await scan('BBN-KNB-1');
+
+      expect(
+        await screen.findByText('A part is still pending — scan its location, not a bin'),
+      ).toBeInTheDocument();
     });
   });
 

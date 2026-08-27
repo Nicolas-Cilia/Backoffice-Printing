@@ -262,7 +262,7 @@ export function FloorCodesPage() {
             tab === 'locations' ? 'bg-bambu-green text-white' : 'text-bambu-gray hover:text-white'
           }`}
         >
-          {t('floor.codesTabLocations', 'Locations')}
+          {t('floor.codesTabLocations', 'Processes')}
         </button>
         <button
           type="button"
@@ -301,7 +301,7 @@ export function FloorCodesPage() {
               {tab === 'stations'
                 ? t('floor.codesStationsHeading', 'Station labels')
                 : tab === 'locations'
-                  ? t('floor.codesLocationsHeading', 'Locations')
+                  ? t('floor.codesLocationsHeading', 'Processes')
                   : tab === 'errors'
                     ? t('floor.codesErrorsHeading', 'Error labels')
                   : tab === 'bins'

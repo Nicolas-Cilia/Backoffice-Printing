@@ -44,6 +44,7 @@ from backend.app.models.user import User
 from backend.app.services.floor_bins import (
     BinScanOutcome,
     BinScanResult,
+    discard_bin,
     list_bin_batch_events,
     list_bin_job_candidates,
     list_floor_bin_history,
@@ -1219,6 +1220,22 @@ async def scan_empty_bin_route(
     return _to_bin_scan_response(outcome)
 
 
+@router.post("/bins/discard", response_model=BinScanResponse)
+async def discard_bin_route(
+    body: BinFlowRequest,
+    db: AsyncSession = Depends(get_db),
+    _: User | None = RequirePermissionIfAuthEnabled(Permission.FLOOR_SCAN),
+) -> BinScanResponse:
+    """Discard a bin's active fill entirely from the floor kiosk: unlinks it
+    from its printer/job and clears its quantity in one commit (§ bin
+    discard). The kiosk gates this behind its own two-scan confirmation
+    before ever calling this route — no reason is collected, unlike part
+    discard."""
+    outcome = await discard_bin(db, body.payload)
+    await db.commit()
+    return _to_bin_scan_response(outcome)
+
+
 @router.post("/harvest/printer", response_model=HarvestScanResponse)
 async def scan_harvest_printer_route(
     body: HarvestPrinterScanRequest,
@@ -1485,6 +1502,7 @@ class HarvestSummaryLineResponse(BaseModel):
     printer_name: str | None
     print_name: str | None
     part_count: int
+    bin_quantity: int
 
 
 @router.get("/harvest/sessions/{session_id}/summary", response_model=list[HarvestSummaryLineResponse])
