@@ -157,6 +157,99 @@ function SetupRoute({ children }: { children: React.ReactNode }) {
   return <>{children}</>;
 }
 
+// Redirect the legacy Floor part-history URL to its new home at /inventory,
+// preserving any query string (e.g. ?tab=bins) so deep links keep working.
+function FloorInventoryRedirect() {
+  const location = useLocation();
+  return <Navigate to={`/inventory${location.search}`} replace />;
+}
+
+// /inventory used to be filament inventory. Bookmarks like ?spool= or
+// ?tab=spools|tracking must keep landing on filament; bare /inventory and
+// floor-only queries (?tab=bins) stay on FloorInventoryPage.
+function InventoryOrLegacyFilamentRedirect() {
+  const location = useLocation();
+  const params = new URLSearchParams(location.search);
+  const tab = params.get('tab');
+  const isLegacyFilament =
+    params.has('spool') || tab === 'spools' || tab === 'tracking';
+  if (isLegacyFilament) {
+    return <Navigate to={`/filament${location.search}`} replace />;
+  }
+  return <FloorInventoryPage />;
+}
+
+export function AppRoutes() {
+  return (
+    <Routes>
+      {/* Setup page - only accessible if auth not enabled */}
+      <Route path="/setup" element={<SetupRoute><SetupPage /></SetupRoute>} />
+
+      {/* Login page */}
+      <Route path="/login" element={<LoginPage />} />
+
+      {/* Camera page - standalone, no layout, no WebSocket (doesn't need real-time updates) */}
+      <Route path="/camera/:printerId" element={<CameraPage />} />
+
+      {/* Stream overlay page - standalone for OBS/streaming embeds, no auth required */}
+      <Route path="/overlay/:printerId" element={<StreamOverlayPage />} />
+
+      {/* Cam Wall on its own URL (#2531). Outside ProtectedRoute because a
+          ?token= kiosk has no session to protect; the page itself sends a
+          tokenless visitor to /login, and the backend gates the feed. */}
+      <Route path="/camwall" element={<CamWallPage />} />
+
+      {/* SpoolBuddy kiosk UI */}
+      <Route element={<ProtectedRoute><WebSocketProvider><SpoolBuddyLayout /></WebSocketProvider></ProtectedRoute>}>
+        <Route path="spoolbuddy" element={<SpoolBuddyDashboard />} />
+        <Route path="spoolbuddy/ams" element={<SpoolBuddyAmsPage />} />
+        <Route path="spoolbuddy/write-tag" element={<SpoolBuddyWriteTagPage />} />
+        <Route path="spoolbuddy/inventory" element={<SpoolBuddyInventoryPage />} />
+        <Route path="spoolbuddy/settings" element={<SpoolBuddySettingsPage />} />
+        <Route path="spoolbuddy/calibration" element={<SpoolBuddyCalibrationPage />} />
+      </Route>
+
+      {/* Main app with WebSocket for real-time updates */}
+      <Route element={<ProtectedRoute><WebSocketProvider><Layout /></WebSocketProvider></ProtectedRoute>}>
+        <Route index element={<PrintersPage />} />
+        <Route path="queue" element={<QueuePage />} />
+        {/* Slicer Pipelines (#1425) — Pipelines tab lives on the
+            Print Queue page (Queue + History + Timeline +
+            Pipelines). Old standalone URL redirects. */}
+        <Route path="pipelines/runs" element={<Navigate to="/queue?tab=pipelines" replace />} />
+        <Route path="stats" element={<StatsPage />} />
+        <Route path="profiles" element={<ProfilesPage />} />
+        <Route path="maintenance" element={<MaintenancePage />} />
+        {/* Floor parts inventory lives at /inventory; filament inventory at
+            /filament. The legacy /floor/inventory URL redirects to /inventory.
+            Filament-shaped /inventory?… deep links redirect to /filament. */}
+        <Route path="inventory" element={<InventoryOrLegacyFilamentRedirect />} />
+        <Route path="filament" element={<InventoryPage />} />
+        <Route path="files" element={<FileManagerPage />} />
+        <Route path="files/trash" element={<LibraryTrashPage />} />
+        <Route path="settings" element={<PermissionRoute permission="settings:read"><SettingsPage /></PermissionRoute>} />
+        <Route path="groups/new" element={<PermissionRoute permission="groups:create"><GroupEditPage /></PermissionRoute>} />
+        <Route path="groups/:id/edit" element={<PermissionRoute permission="groups:update"><GroupEditPage /></PermissionRoute>} />
+        <Route path="users" element={<Navigate to="/settings?tab=users" replace />} />
+        <Route path="groups" element={<Navigate to="/settings?tab=users" replace />} />
+        <Route path="system" element={<SystemInfoPage />} />
+        <Route path="notifications" element={<NotificationsPage />} />
+        <Route path="gcode-viewer" element={<GCodeViewerPage />} />
+        {/* Floor (docs/floor-plan.md §3.1). /floor is the sidebar
+            item's destination — a Scan/Codes picker, not a kiosk
+            bookmark. Floor-bench PCs bookmark /floor/scan directly
+            so they never see the picker on reload (§2.1). */}
+        <Route path="floor" element={<FloorLandingPage />} />
+        <Route path="floor/scan" element={<FloorScanPage />} />
+        <Route path="floor/codes" element={<FloorCodesPage />} />
+        <Route path="floor/inventory" element={<FloorInventoryRedirect />} />
+        <Route path="external/:id" element={<ExternalLinkPage />} />
+        <Route path="camera-tokens" element={<Navigate to="/settings?tab=apikeys#card-camera-tokens" replace />} />
+      </Route>
+    </Routes>
+  );
+}
+
 function App() {
   return (
     <ErrorBoundary>
@@ -175,68 +268,7 @@ function App() {
             <SliceJobTrackerProvider>
             <StreamTokenSync />
             <BrowserRouter>
-              <Routes>
-                {/* Setup page - only accessible if auth not enabled */}
-                <Route path="/setup" element={<SetupRoute><SetupPage /></SetupRoute>} />
-
-                {/* Login page */}
-                <Route path="/login" element={<LoginPage />} />
-
-                {/* Camera page - standalone, no layout, no WebSocket (doesn't need real-time updates) */}
-                <Route path="/camera/:printerId" element={<CameraPage />} />
-
-                {/* Stream overlay page - standalone for OBS/streaming embeds, no auth required */}
-                <Route path="/overlay/:printerId" element={<StreamOverlayPage />} />
-
-                {/* Cam Wall on its own URL (#2531). Outside ProtectedRoute because a
-                    ?token= kiosk has no session to protect; the page itself sends a
-                    tokenless visitor to /login, and the backend gates the feed. */}
-                <Route path="/camwall" element={<CamWallPage />} />
-
-                {/* SpoolBuddy kiosk UI */}
-                <Route element={<ProtectedRoute><WebSocketProvider><SpoolBuddyLayout /></WebSocketProvider></ProtectedRoute>}>
-                  <Route path="spoolbuddy" element={<SpoolBuddyDashboard />} />
-                  <Route path="spoolbuddy/ams" element={<SpoolBuddyAmsPage />} />
-                  <Route path="spoolbuddy/write-tag" element={<SpoolBuddyWriteTagPage />} />
-                  <Route path="spoolbuddy/inventory" element={<SpoolBuddyInventoryPage />} />
-                  <Route path="spoolbuddy/settings" element={<SpoolBuddySettingsPage />} />
-                  <Route path="spoolbuddy/calibration" element={<SpoolBuddyCalibrationPage />} />
-                </Route>
-
-                {/* Main app with WebSocket for real-time updates */}
-                <Route element={<ProtectedRoute><WebSocketProvider><Layout /></WebSocketProvider></ProtectedRoute>}>
-                  <Route index element={<PrintersPage />} />
-                  <Route path="queue" element={<QueuePage />} />
-                  {/* Slicer Pipelines (#1425) — Pipelines tab lives on the
-                      Print Queue page (Queue + History + Timeline +
-                      Pipelines). Old standalone URL redirects. */}
-                  <Route path="pipelines/runs" element={<Navigate to="/queue?tab=pipelines" replace />} />
-                  <Route path="stats" element={<StatsPage />} />
-                  <Route path="profiles" element={<ProfilesPage />} />
-                  <Route path="maintenance" element={<MaintenancePage />} />
-                  <Route path="inventory" element={<InventoryPage />} />
-                  <Route path="files" element={<FileManagerPage />} />
-                  <Route path="files/trash" element={<LibraryTrashPage />} />
-                  <Route path="settings" element={<PermissionRoute permission="settings:read"><SettingsPage /></PermissionRoute>} />
-                  <Route path="groups/new" element={<PermissionRoute permission="groups:create"><GroupEditPage /></PermissionRoute>} />
-                  <Route path="groups/:id/edit" element={<PermissionRoute permission="groups:update"><GroupEditPage /></PermissionRoute>} />
-                  <Route path="users" element={<Navigate to="/settings?tab=users" replace />} />
-                  <Route path="groups" element={<Navigate to="/settings?tab=users" replace />} />
-                  <Route path="system" element={<SystemInfoPage />} />
-                  <Route path="notifications" element={<NotificationsPage />} />
-                  <Route path="gcode-viewer" element={<GCodeViewerPage />} />
-                  {/* Floor (docs/floor-plan.md §3.1). /floor is the sidebar
-                      item's destination — a Scan/Codes picker, not a kiosk
-                      bookmark. Floor-bench PCs bookmark /floor/scan directly
-                      so they never see the picker on reload (§2.1). */}
-                  <Route path="floor" element={<FloorLandingPage />} />
-                  <Route path="floor/scan" element={<FloorScanPage />} />
-                  <Route path="floor/codes" element={<FloorCodesPage />} />
-                  <Route path="floor/inventory" element={<FloorInventoryPage />} />
-                  <Route path="external/:id" element={<ExternalLinkPage />} />
-                  <Route path="camera-tokens" element={<Navigate to="/settings?tab=apikeys#card-camera-tokens" replace />} />
-                </Route>
-              </Routes>
+              <AppRoutes />
             </BrowserRouter>
             </SliceJobTrackerProvider>
             </ColorCatalogProvider>

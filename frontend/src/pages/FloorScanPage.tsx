@@ -1424,7 +1424,7 @@ export function FloorScanPage() {
             className="mt-6 px-4 py-2 text-sm rounded-lg bg-blue-600 text-white hover:bg-blue-700"
             onClick={() => {
               void queryClient.invalidateQueries({ queryKey: ['floor-inventory-parts'] });
-              navigate('/floor/inventory');
+              navigate('/inventory');
             }}
           >
             {t('floor.harvestViewPartHistory', 'View part history')}
