@@ -1254,6 +1254,27 @@ async def _enroll_linked_part_with_code(
     return sticker
 
 
+async def _seed_completed_archive(async_client, db_session, printer_factory, archive_factory, **archive_kwargs):
+    """Set up part tracking and a completed build plate that shows up in the
+    unlabeled list, so a test can dismiss and then restore it."""
+    from backend.app.models.settings import Settings
+
+    db_session.add(
+        Settings(
+            key="floor_part_tracking_started_at",
+            value=(datetime.now() - timedelta(minutes=1)).isoformat(),
+        )
+    )
+    await db_session.commit()
+    printer = await printer_factory(name="Bench A")
+    archive = await archive_factory(
+        printer_id=printer.id,
+        completed_at=datetime.now() + timedelta(minutes=1),
+        **archive_kwargs,
+    )
+    return archive
+
+
 @pytest.mark.asyncio
 @pytest.mark.integration
 class TestPartLocationApi:
@@ -1399,3 +1420,94 @@ class TestBinLocationApi:
             json={"payload": "BBN-KNB-1", "location_slug": "fit-check"},
         )
         assert resp.status_code == 404
+
+class TestDismissedBuildPlates:
+    async def test_lists_a_dismissed_plate_with_its_job_and_printer(
+        self, async_client, db_session, printer_factory, archive_factory
+    ):
+        archive = await _seed_completed_archive(
+            async_client, db_session, printer_factory, archive_factory, print_name="Cable guide"
+        )
+        dismissed = await async_client.post(f"/api/v1/floor/parts/unlabeled-build-plates/{archive.id}/dismiss")
+        assert dismissed.status_code == 200
+
+        resp = await async_client.get("/api/v1/floor/parts/dismissed-build-plates")
+
+        assert resp.status_code == 200
+        body = resp.json()
+        assert len(body) == 1
+        assert body[0]["id"] == archive.id
+        assert body[0]["print_name"] == "Cable guide"
+        assert body[0]["printer_name"] == "Bench A"
+        assert body[0]["dismissed_at"] is not None
+
+    async def test_dismissed_plate_is_absent_from_the_unlabeled_list(
+        self, async_client, db_session, printer_factory, archive_factory
+    ):
+        archive = await _seed_completed_archive(async_client, db_session, printer_factory, archive_factory)
+        before = await async_client.get("/api/v1/floor/parts/unlabeled-build-plates")
+        assert any(plate["id"] == archive.id for plate in before.json())
+
+        await async_client.post(f"/api/v1/floor/parts/unlabeled-build-plates/{archive.id}/dismiss")
+
+        after = await async_client.get("/api/v1/floor/parts/unlabeled-build-plates")
+        assert not any(plate["id"] == archive.id for plate in after.json())
+
+    async def test_restore_returns_it_to_the_unlabeled_list(
+        self, async_client, db_session, printer_factory, archive_factory
+    ):
+        archive = await _seed_completed_archive(async_client, db_session, printer_factory, archive_factory)
+        await async_client.post(f"/api/v1/floor/parts/unlabeled-build-plates/{archive.id}/dismiss")
+
+        restored = await async_client.post(f"/api/v1/floor/parts/dismissed-build-plates/{archive.id}/restore")
+
+        assert restored.status_code == 200
+        assert restored.json()["status"] == "restored"
+
+        dismissed = await async_client.get("/api/v1/floor/parts/dismissed-build-plates")
+        assert not any(plate["id"] == archive.id for plate in dismissed.json())
+
+        unlabeled = await async_client.get("/api/v1/floor/parts/unlabeled-build-plates")
+        assert any(plate["id"] == archive.id for plate in unlabeled.json())
+
+    async def test_restore_of_a_plate_that_is_not_dismissed_is_404(
+        self, async_client, db_session, printer_factory, archive_factory
+    ):
+        archive = await _seed_completed_archive(async_client, db_session, printer_factory, archive_factory)
+
+        resp = await async_client.post(f"/api/v1/floor/parts/dismissed-build-plates/{archive.id}/restore")
+
+        assert resp.status_code == 404
+
+    async def test_empty_when_nothing_dismissed(self, async_client):
+        resp = await async_client.get("/api/v1/floor/parts/dismissed-build-plates")
+
+        assert resp.status_code == 200
+        assert resp.json() == []
+
+    async def test_dismissed_plate_drops_from_list_after_it_is_linked(
+        self, async_client, db_session, printer_factory, archive_factory
+    ):
+        """Harvest while dismissed must not leave a Restore that can't return
+        the plate to needing-linking — omit linked archives from the list."""
+        from backend.app.models.floor_part import FloorLabeledPart
+
+        archive = await _seed_completed_archive(async_client, db_session, printer_factory, archive_factory)
+        await async_client.post(f"/api/v1/floor/parts/unlabeled-build-plates/{archive.id}/dismiss")
+        before = await async_client.get("/api/v1/floor/parts/dismissed-build-plates")
+        assert any(plate["id"] == archive.id for plate in before.json())
+
+        db_session.add(
+            FloorLabeledPart(
+                sticker_code="BBD-009901",
+                printer_id=archive.printer_id,
+                archive_id=archive.id,
+            )
+        )
+        await db_session.commit()
+
+        after = await async_client.get("/api/v1/floor/parts/dismissed-build-plates")
+        assert not any(plate["id"] == archive.id for plate in after.json())
+
+        unlabeled = await async_client.get("/api/v1/floor/parts/unlabeled-build-plates")
+        assert not any(plate["id"] == archive.id for plate in unlabeled.json())

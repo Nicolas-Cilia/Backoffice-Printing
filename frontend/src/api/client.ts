@@ -1648,6 +1648,7 @@ export interface FloorNeedsAttentionResponse {
   total: number;
 }
 export interface FloorUnlabeledBuildPlate { id: number; print_name: string | null; printer_name: string | null; completed_at: string | null; }
+export interface FloorDismissedBuildPlate { id: number; print_name: string | null; printer_name: string | null; completed_at: string | null; dismissed_at: string | null; }
 export interface HarvestSummaryLine { printer_id: number | null; printer_name: string | null; print_name: string | null; part_count: number; bin_quantity: number; }
 
 export interface FloorInventoryPart {
@@ -6127,6 +6128,10 @@ export const api = {
     request<FloorUnlabeledBuildPlate[]>(`/floor/parts/unlabeled-build-plates?limit=${limit}`),
   dismissFloorUnlabeledBuildPlate: (archiveId: number) =>
     request<{ status: string }>(`/floor/parts/unlabeled-build-plates/${archiveId}/dismiss`, { method: 'POST' }),
+  getFloorDismissedBuildPlates: (limit = 50) =>
+    request<FloorDismissedBuildPlate[]>(`/floor/parts/dismissed-build-plates?limit=${limit}`),
+  restoreFloorDismissedBuildPlate: (archiveId: number) =>
+    request<{ status: string }>(`/floor/parts/dismissed-build-plates/${archiveId}/restore`, { method: 'POST' }),
   getHarvestSummary: (sessionId: number) => request<HarvestSummaryLine[]>(`/floor/harvest/sessions/${sessionId}/summary`),
   getFloorInventoryParts: (includeArchived = false) =>
     request<FloorInventoryPart[]>(`/floor/inventory/parts?include_archived=${includeArchived}`),
