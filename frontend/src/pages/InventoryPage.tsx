@@ -506,7 +506,7 @@ export default function InventoryPageRouter() {
     spoolmanSettings?.spoolman_enabled === 'true' && !!spoolmanSettings?.spoolman_url;
 
   if (isLegacyBinTab(searchParams)) {
-    return <Navigate to="/floor/inventory?tab=bins" replace />;
+    return <Navigate to="/inventory?tab=bins" replace />;
   }
 
   if (pageTab === 'tracking') {

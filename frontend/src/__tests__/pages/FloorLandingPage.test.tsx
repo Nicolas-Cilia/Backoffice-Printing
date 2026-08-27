@@ -59,13 +59,13 @@ describe('FloorLandingPage', () => {
     expect(mockNavigate).toHaveBeenCalledWith('/floor/codes');
   });
 
-  it('navigates to /floor/inventory when Part history is opened', async () => {
+  it('navigates to /inventory when Part history is opened', async () => {
     const user = userEvent.setup();
     render(<FloorLandingPage />);
 
     await user.click(screen.getByRole('button', { name: 'Open Part history' }));
 
-    expect(mockNavigate).toHaveBeenCalledWith('/floor/inventory');
+    expect(mockNavigate).toHaveBeenCalledWith('/inventory');
   });
 });
 

@@ -69,7 +69,7 @@ export function FloorLandingPage() {
               'Review linked parts and their print history.',
             )}
           </p>
-          <Button className="mt-4 self-start" onClick={() => navigate('/floor/inventory')}>
+          <Button className="mt-4 self-start" onClick={() => navigate('/inventory')}>
             {t('floor.landingInventoryAction', 'Open Part history')}
           </Button>
         </article>
