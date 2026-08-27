@@ -1551,6 +1551,101 @@ describe('FloorScanPage (Phase 1b sessions)', () => {
     });
   });
 
+  describe('bin discard (floor kiosk)', () => {
+    const DISCARD_BATCH = {
+      id: 91,
+      payload: 'BBN-BUT-1',
+      bin_number: 1,
+      printer_id: 12,
+      printer_name: 'P1S-3',
+      archive_id: 88,
+      print_name: 'button_plate',
+      part_code: 'BUT',
+      quantity: 25,
+      qc_passed_quantity: null,
+      remaining_quantity: 25,
+      status: 'harvested',
+      harvested_at: '2026-08-26T14:35:00',
+    };
+
+    function mockBinResolve(batch: Record<string, unknown> = DISCARD_BATCH) {
+      server.use(
+        http.post('/api/v1/floor/bins/resolve', () =>
+          HttpResponse.json({
+            result: 'ready_for_qc',
+            bin: { payload: 'BBN-BUT-1', bin_number: 1, part_code: 'BUT', part_name: 'Button bin' },
+            batch,
+            printer: null,
+            session: null,
+            blocking: null,
+            archive: null,
+          }),
+        ),
+      );
+    }
+
+    function mockBinDiscard(response: unknown, status = 200) {
+      const captured: { body: Record<string, unknown> | null } = { body: null };
+      server.use(
+        http.post('/api/v1/floor/bins/discard', async ({ request }) => {
+          captured.body = (await request.json()) as Record<string, unknown>;
+          return HttpResponse.json(response, { status });
+        }),
+      );
+      return captured;
+    }
+
+    it('warns before discarding and requires Discard to be scanned twice, with no reason step', async () => {
+      mockNoSession();
+      mockBinResolve();
+      const discardCall = mockBinDiscard({
+        result: 'discarded',
+        bin: { payload: 'BBN-BUT-1', bin_number: 1, part_code: 'BUT', part_name: 'Button bin' },
+        batch: { ...DISCARD_BATCH, status: 'empty', remaining_quantity: 0 },
+        printer: null,
+        session: null,
+        blocking: null,
+        archive: null,
+      });
+      render(<FloorScanPage />);
+      await screen.findByText('Scan a code');
+
+      await scan('BBN-BUT-1');
+      await screen.findByText('Scan this bin again for visual QC');
+
+      await scan('BBX-discard');
+      expect(
+        await screen.findByText('This clears the whole bin and unlinks it from this printer.'),
+      ).toBeInTheDocument();
+      expect(screen.getByText('Scan Discard again to confirm')).toBeInTheDocument();
+      // No reason prompt, unlike a part's discard — the first Discard scan
+      // must not have committed anything yet either.
+      expect(screen.queryByText('Scan an error label')).not.toBeInTheDocument();
+      expect(discardCall.body).toBeNull();
+
+      await scan('BBX-discard');
+
+      expect(await screen.findByText('Bin discarded and unlinked')).toBeInTheDocument();
+      expect(discardCall.body).toEqual({ payload: 'BBN-BUT-1' });
+    });
+
+    it('abandons the discard confirmation if anything else is scanned instead', async () => {
+      mockNoSession();
+      mockBinResolve();
+      const discardCall = mockBinDiscard({ result: 'discarded' });
+      render(<FloorScanPage />);
+      await screen.findByText('Scan a code');
+      await scan('BBN-BUT-1');
+      await screen.findByText('Scan this bin again for visual QC');
+      await scan('BBX-discard');
+      await screen.findByText('Scan Discard again to confirm');
+
+      await scan('BBN-KNB-1');
+
+      expect(discardCall.body).toBeNull();
+    });
+  });
+
   describe('fit check and rework (§5.4a/§5.4b, phase 9a/9b) — locations, not stations', () => {
     const RECORDED_PART = { id: 42, sticker_code: 'BBD-000042', printer_id: 12, archive_id: 88, part_code: 'TOP', labeled_at: '2026-08-24T10:00:00' };
     const RECORDED_PRINTER = { id: 12, name: 'P1S-3' };
@@ -1770,6 +1865,38 @@ describe('FloorScanPage (Phase 1b sessions)', () => {
       await scan('BBR-other');
 
       expect(await screen.findByText('Scan a part into Rework first')).toBeInTheDocument();
+    });
+
+    it('blocks a bin from being scanned into Rework instead of silently abandoning the pending part', async () => {
+      mockNoSession();
+      const reworkCall = mockReworkScan({ result: 'recorded', part: RECORDED_PART, printer: RECORDED_PRINTER, archive: RECORDED_ARCHIVE });
+      render(<FloorScanPage />);
+      await screen.findByText('Scan a code');
+      await scan('BBD-000042');
+      await screen.findByText('Scan a location');
+      await scan('BBS-rework');
+      await screen.findByText('Scan an error label');
+
+      await scan('BBN-BUT-1');
+
+      expect(
+        await screen.findByText("Bins aren't supported for Rework — scan a part instead"),
+      ).toBeInTheDocument();
+      expect(reworkCall.body).toBeNull();
+    });
+
+    it('blocks a bin from interrupting a part pending at the location prompt', async () => {
+      mockNoSession();
+      render(<FloorScanPage />);
+      await screen.findByText('Scan a code');
+      await scan('BBD-000042');
+      await screen.findByText('Scan a location');
+
+      await scan('BBN-KNB-1');
+
+      expect(
+        await screen.findByText('A part is still pending — scan its location, not a bin'),
+      ).toBeInTheDocument();
     });
   });
 

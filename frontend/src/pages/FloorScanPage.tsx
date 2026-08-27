@@ -120,6 +120,11 @@ type Status =
   | { kind: 'awaiting-bin-location'; payload: string; batch: FloorBinBatch }
   | { kind: 'awaiting-bin-qc-quantity'; payload: string; batch: FloorBinBatch }
   | { kind: 'awaiting-bin-empty'; payload: string; batch: FloorBinBatch }
+  /** Discard was scanned once for this bin — a pure UI transition, no
+   *  server call yet, mirroring Rework's location step. Scanning Discard
+   *  again commits it; scanning anything else abandons it like every other
+   *  pending state here. No reason is collected, unlike part discard. */
+  | { kind: 'awaiting-bin-discard-confirm'; payload: string; batch: FloorBinBatch }
   /** Fit Check or Rework just committed — brief confirmation before the
    *  screen returns to idle, same timing as `plate-closed`. */
   | {
@@ -130,7 +135,7 @@ type Status =
       archive: FloorPlateArchive | null;
       reasonCode?: string;
     }
-  | { kind: 'bin-recorded'; action: 'harvested' | 'qc' | 'wip' | 'empty'; batch: FloorBinBatch | null };
+  | { kind: 'bin-recorded'; action: 'harvested' | 'qc' | 'wip' | 'empty' | 'discarded'; batch: FloorBinBatch | null };
 
 type PartImageIdentity = Pick<FloorInventoryPart, 'part_code' | 'section_part_id' | 'part_name' | 'part_source' | 'labeled_at' | 'archived_at' | 'latest_event_action' | 'latest_event_reason'> & {
   printer_name: string | null;
@@ -671,6 +676,29 @@ export function FloorScanPage() {
     [failScan, t],
   );
 
+  const submitBinDiscard = useCallback(
+    async (payload: string) => {
+      setBusy(true);
+      busyRef.current = true;
+      try {
+        const response = await api.discardFloorBin({ payload });
+        if (response.result === 'discarded') {
+          setStatus({ kind: 'bin-recorded', action: 'discarded', batch: response.batch });
+        } else if (response.result === 'no_batch') {
+          failScan(t('floor.binNoBatch', 'No active quantity found for this bin'), payload);
+        } else {
+          failScan(t('floor.scanInvalidCode', 'Invalid bin code'), payload);
+        }
+      } catch {
+        failScan(t('floor.scanFailed', 'Scan failed'), payload);
+      } finally {
+        setBusy(false);
+        busyRef.current = false;
+      }
+    },
+    [failScan, t],
+  );
+
   const submitBinResolve = useCallback(
     async (payload: string) => {
       setBusy(true);
@@ -868,6 +896,24 @@ export function FloorScanPage() {
         return;
       }
       if (route.action === 'bin-scanned') {
+        // A KNB/BUT bin has no place in the part-only Fit Check/Rework/
+        // Discard flow (§5.4a/§5.4b) — without this, the bin scan would
+        // silently abandon whichever part is pending and jump into the bin
+        // flow instead, with no indication the part was ever dropped.
+        if (
+          statusRef.current.kind === 'awaiting-location' ||
+          statusRef.current.kind === 'awaiting-rework-reason' ||
+          statusRef.current.kind === 'awaiting-discard-reason' ||
+          statusRef.current.kind === 'awaiting-custom-reason'
+        ) {
+          failScan(
+            statusRef.current.kind === 'awaiting-rework-reason'
+              ? t('floor.reworkBinNotAllowed', "Bins aren't supported for Rework — scan a part instead")
+              : t('floor.locationBinNotAllowed', 'A part is still pending — scan its location, not a bin'),
+            route.payload,
+          );
+          return;
+        }
         if (
           statusRef.current.kind === 'awaiting-bin-location' &&
           route.payload === statusRef.current.payload
@@ -954,7 +1000,10 @@ export function FloorScanPage() {
           if (route.slug === 'fit-check') {
             void submitBinFlow(statusRef.current.payload, 'qc');
           } else {
-            failScan(t('floor.binQcLocationRequired', 'Scan Fit Check for this bin'), route.payload);
+            failScan(
+              t('floor.reworkBinNotAllowed', "Bins aren't supported for Rework — scan a part instead"),
+              route.payload,
+            );
           }
           return;
         }
@@ -1013,8 +1062,21 @@ export function FloorScanPage() {
           setStatus({ kind: 'awaiting-discard-reason', payload: statusRef.current.payload, part: statusRef.current.part });
           return;
         }
+        // A bin's discard has no reason step, unlike a part's: scan Discard
+        // once to see the warning (what will be cleared/unlinked), scan it
+        // again to commit. Mirrors the bin-empty re-scan-to-confirm pattern,
+        // but confirms by re-scanning Discard rather than the bin itself,
+        // since the bin was already identified by the first scan.
+        if (route.payload === 'BBX-discard' && statusRef.current.kind === 'awaiting-bin-location') {
+          setStatus({ kind: 'awaiting-bin-discard-confirm', payload: statusRef.current.payload, batch: statusRef.current.batch });
+          return;
+        }
+        if (route.payload === 'BBX-discard' && statusRef.current.kind === 'awaiting-bin-discard-confirm') {
+          void submitBinDiscard(statusRef.current.payload);
+          return;
+        }
         if (route.payload === 'BBX-discard') {
-          failScan(t('floor.discardNoPartPending', 'Scan a part first, then Discard'), route.payload);
+          failScan(t('floor.discardNoPartPending', 'Scan a part or bin first, then Discard'), route.payload);
           return;
         }
         failScan(t('floor.scanNotYetSupported', 'Not handled yet'), route.payload);
@@ -1068,6 +1130,7 @@ export function FloorScanPage() {
       submitHarvestBinScan,
       submitBinFlow,
       submitBinResolve,
+      submitBinDiscard,
       submitBinEmpty,
       submitPartScan,
       submitFitCheckPartScan,
@@ -1272,6 +1335,8 @@ export function FloorScanPage() {
         <BinLocationScreen batch={status.batch} t={t} />
       ) : status.kind === 'awaiting-bin-empty' ? (
         <BinEmptyScreen batch={status.batch} t={t} />
+      ) : status.kind === 'awaiting-bin-discard-confirm' ? (
+        <BinDiscardConfirmScreen batch={status.batch} t={t} />
       ) : status.kind === 'bin-recorded' ? (
         <BinRecordedFlash action={status.action} batch={status.batch} t={t} />
       ) : status.kind === 'error' && session && session.station_slug === HARVEST_STATION_SLUG ? (
@@ -2604,23 +2669,58 @@ function BinEmptyScreen({ batch, t }: { batch: FloorBinBatch; t: ReturnType<type
   );
 }
 
+/** Discard was scanned once for this bin (§ bin discard) — a pure UI
+ *  transition, no server call yet, same reasoning as Rework's location step.
+ *  Persists as a warning until Discard is scanned again to commit, or
+ *  anything else is scanned to abandon it. No reason step, unlike a part's
+ *  discard: the operator only needs to confirm, not classify why. */
+function BinDiscardConfirmScreen({ batch, t }: { batch: FloorBinBatch; t: ReturnType<typeof useTranslation>['t'] }) {
+  return (
+    <>
+      <ScanLine className="w-16 h-16 mb-6 text-red-500" aria-hidden="true" />
+      <PartCodeThumbnail
+        partCode={batch.part_code}
+        className="mx-auto mb-5 h-40 w-40 rounded-xl object-cover bg-bambu-dark-secondary"
+      />
+      <p className="text-4xl font-bold text-white">{batch.part_code} bin {batch.bin_number}</p>
+      <p className="mt-2 text-lg text-bambu-gray">{batch.printer_name ?? 'Printer'} · {batch.quantity}</p>
+      <p className="mt-8 text-2xl text-red-500">
+        {t('floor.binDiscardWarning', 'This clears the whole bin and unlinks it from this printer.')}
+      </p>
+      <p className="mt-2 text-lg text-bambu-gray">
+        {t('floor.binDiscardConfirm', 'Scan Discard again to confirm')}
+      </p>
+    </>
+  );
+}
+
 function BinRecordedFlash({
   action,
   batch,
   t,
 }: {
-  action: 'harvested' | 'qc' | 'wip' | 'empty';
+  action: 'harvested' | 'qc' | 'wip' | 'empty' | 'discarded';
   batch: FloorBinBatch | null;
   t: ReturnType<typeof useTranslation>['t'];
 }) {
-  const color = action === 'harvested' ? 'text-bambu-green' : action === 'qc' ? 'text-green-500' : action === 'wip' ? 'text-sky-400' : 'text-amber-400';
+  const color = action === 'harvested'
+    ? 'text-bambu-green'
+    : action === 'qc'
+      ? 'text-green-500'
+      : action === 'wip'
+        ? 'text-sky-400'
+        : action === 'discarded'
+          ? 'text-red-500'
+          : 'text-amber-400';
   const message = action === 'harvested'
     ? t('floor.binHarvested', 'Quantity recorded')
     : action === 'qc'
       ? t('floor.binVisualQcPassed', 'Visual QC passed')
       : action === 'wip'
         ? t('floor.binWipRecorded', 'Bin added to WIP')
-        : t('floor.binEmptyRecorded', 'Bin marked empty and ready to reuse');
+        : action === 'discarded'
+          ? t('floor.binDiscarded', 'Bin discarded and unlinked')
+          : t('floor.binEmptyRecorded', 'Bin marked empty and ready to reuse');
   return (
     <>
       <Check className={`w-16 h-16 mb-6 ${color}`} aria-hidden="true" />
