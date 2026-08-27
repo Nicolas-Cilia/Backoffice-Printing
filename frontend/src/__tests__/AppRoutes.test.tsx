@@ -85,4 +85,22 @@ describe('AppRoutes inventory / filament split', () => {
     expect(screen.getByText('FLOOR_INVENTORY_PAGE')).toBeInTheDocument();
     expect(screen.getByTestId('location')).toHaveTextContent('/inventory?tab=bins');
   });
+
+  it('redirects legacy filament /inventory?spool= deep links to /filament', () => {
+    renderAt('/inventory?spool=42');
+    expect(screen.getByText('FILAMENT_INVENTORY_PAGE')).toBeInTheDocument();
+    expect(screen.getByTestId('location')).toHaveTextContent('/filament?spool=42');
+  });
+
+  it('redirects legacy /inventory?tab=spools to /filament', () => {
+    renderAt('/inventory?tab=spools');
+    expect(screen.getByText('FILAMENT_INVENTORY_PAGE')).toBeInTheDocument();
+    expect(screen.getByTestId('location')).toHaveTextContent('/filament?tab=spools');
+  });
+
+  it('redirects legacy /inventory?tab=tracking to /filament', () => {
+    renderAt('/inventory?tab=tracking');
+    expect(screen.getByText('FILAMENT_INVENTORY_PAGE')).toBeInTheDocument();
+    expect(screen.getByTestId('location')).toHaveTextContent('/filament?tab=tracking');
+  });
 });

@@ -164,6 +164,21 @@ function FloorInventoryRedirect() {
   return <Navigate to={`/inventory${location.search}`} replace />;
 }
 
+// /inventory used to be filament inventory. Bookmarks like ?spool= or
+// ?tab=spools|tracking must keep landing on filament; bare /inventory and
+// floor-only queries (?tab=bins) stay on FloorInventoryPage.
+function InventoryOrLegacyFilamentRedirect() {
+  const location = useLocation();
+  const params = new URLSearchParams(location.search);
+  const tab = params.get('tab');
+  const isLegacyFilament =
+    params.has('spool') || tab === 'spools' || tab === 'tracking';
+  if (isLegacyFilament) {
+    return <Navigate to={`/filament${location.search}`} replace />;
+  }
+  return <FloorInventoryPage />;
+}
+
 export function AppRoutes() {
   return (
     <Routes>
@@ -206,8 +221,9 @@ export function AppRoutes() {
         <Route path="profiles" element={<ProfilesPage />} />
         <Route path="maintenance" element={<MaintenancePage />} />
         {/* Floor parts inventory lives at /inventory; filament inventory at
-            /filament. The legacy /floor/inventory URL redirects to /inventory. */}
-        <Route path="inventory" element={<FloorInventoryPage />} />
+            /filament. The legacy /floor/inventory URL redirects to /inventory.
+            Filament-shaped /inventory?… deep links redirect to /filament. */}
+        <Route path="inventory" element={<InventoryOrLegacyFilamentRedirect />} />
         <Route path="filament" element={<InventoryPage />} />
         <Route path="files" element={<FileManagerPage />} />
         <Route path="files/trash" element={<LibraryTrashPage />} />
