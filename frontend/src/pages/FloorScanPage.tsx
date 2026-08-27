@@ -755,6 +755,18 @@ export function FloorScanPage() {
             t('floor.locationFinishingRequired', 'Finish Support, Overhang and Hot Air removal first'),
             payload,
           );
+        } else if (resp.result === 'qc_required') {
+          failScan(
+            t('floor.locationQcRequired', 'Initial QC Pass or Rework is required first'),
+            payload,
+          );
+        } else if (resp.result === 'already_wip') {
+          failScan(t('floor.locationAlreadyWip', 'This part is already in Production WIP'), payload);
+        } else if (resp.result === 'part_code_required') {
+          failScan(
+            t('floor.locationPartCodeRequired', 'Assign a TOP or BOT part code in Inventory first'),
+            payload,
+          );
         } else if (resp.result === 'unknown_part') {
           failScan(t('floor.locationUnknownPart', 'Not enrolled — scan it at Harvest first'), payload);
         } else {
@@ -786,7 +798,12 @@ export function FloorScanPage() {
         } else if (resp.result === 'empty_recorded') {
           setStatus({ kind: 'bin-recorded', action: 'empty', batch: resp.batch });
         } else if (resp.result === 'qc_required') {
-          failScan(t('floor.binQcRequired', 'Visual QC is required before WIP'), payload);
+          failScan(
+            locationSlug === 'ready-for-production-inventory'
+              ? t('floor.binQcRequiredBeforeReady', 'Visual QC is required before Ready for Production')
+              : t('floor.binQcRequired', 'Visual QC is required before WIP'),
+            payload,
+          );
         } else if (resp.result === 'already_wip') {
           failScan(t('floor.binAlreadyWip', 'This bin batch is already in WIP'), payload);
         } else if (resp.result === 'already_ready_for_production') {
