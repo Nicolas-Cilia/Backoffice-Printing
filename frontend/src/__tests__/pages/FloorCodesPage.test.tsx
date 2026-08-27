@@ -393,4 +393,37 @@ describe('FloorCodesPage', () => {
       expect(screen.getByRole('button', { name: 'Retry' })).toBeInTheDocument();
     });
   });
+
+  describe('bins tab', () => {
+    const BINS = [
+      { payload: 'BBN-KNB-1', bin_number: 1, part_code: 'KNB', part_name: 'Knob bin' },
+      { payload: 'BBN-BUT-1', bin_number: 1, part_code: 'BUT', part_name: 'Button bin' },
+    ];
+
+    it('shows separate KNB and BUT bins and prints the selected bin payloads', async () => {
+      const captured: { body: Record<string, unknown> | null } = { body: null };
+      server.use(
+        http.get('/api/v1/floor/stations', () => HttpResponse.json(STATIONS)),
+        http.get('/api/v1/floor/bins', () => HttpResponse.json(BINS)),
+        http.post('/api/v1/floor/labels/bins', async ({ request }) => {
+          captured.body = (await request.json()) as Record<string, unknown>;
+          return new HttpResponse(new Blob([new Uint8Array([0x25, 0x50, 0x44, 0x46])]), {
+            headers: { 'Content-Type': 'application/pdf' },
+          });
+        }),
+      );
+      const user = userEvent.setup();
+      render(<FloorCodesPage />);
+      await screen.findByText('WIP');
+
+      await user.click(screen.getByRole('button', { name: 'Bins' }));
+      expect(await screen.findByText('Knob bin 1')).toBeInTheDocument();
+      expect(screen.getByText('Button bin 1')).toBeInTheDocument();
+      expect(screen.getByRole('button', { name: /Print selected \(2\)/ })).toBeEnabled();
+
+      await user.click(screen.getByRole('checkbox', { name: 'Button bin 1' }));
+      await user.click(screen.getByRole('button', { name: /Print selected \(1\)/ }));
+      await waitFor(() => expect(captured.body).toMatchObject({ payloads: ['BBN-KNB-1'] }));
+    });
+  });
 });

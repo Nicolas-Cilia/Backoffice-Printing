@@ -876,6 +876,17 @@ describe('FloorScanPage (Phase 1b sessions)', () => {
       return captured;
     }
 
+    function mockHarvestBinScan(response: unknown, status = 200) {
+      const captured: { body: Record<string, unknown> | null } = { body: null };
+      server.use(
+        http.post('/api/v1/floor/harvest/bin', async ({ request }) => {
+          captured.body = (await request.json()) as Record<string, unknown>;
+          return HttpResponse.json(response, { status });
+        }),
+      );
+      return captured;
+    }
+
     function mockPartScan(response: unknown, status = 200) {
       const captured: { body: Record<string, unknown> | null } = { body: null };
       server.use(
@@ -915,6 +926,114 @@ describe('FloorScanPage (Phase 1b sessions)', () => {
         expect(screen.getByText('bracket_v4')).toBeInTheDocument();
         expect(screen.getByText('0')).toBeInTheDocument();
         expect(screen.getByText('Open for 0s')).toBeInTheDocument();
+      });
+
+      it.each(['KNB', 'BUT'] as const)('shows the production 3MF image for a %s plate before bin harvest', async (partCode) => {
+        mockHarvestSession();
+        mockHarvestPrinterScan({
+          result: 'bound',
+          session: HARVEST_SESSION,
+          printer: PLATE_PRINTER,
+          archive: { ...PLATE_ARCHIVE, part_code: partCode },
+          part_count: 0,
+          blocking: null,
+        });
+        render(<FloorScanPage />);
+        await screen.findByText('Harvest');
+
+        await scan('BBP-12');
+
+        const image = await screen.findByRole('img', { name: partCode });
+        expect(image).toHaveAttribute('src', expect.stringContaining(`/floor/parts/thumbnail/${partCode}`));
+        expect(screen.getByText(`Scan the matching ${partCode} bin`)).toBeInTheDocument();
+      });
+
+      it.each(['KNB', 'BUT'] as const)('shows the production 3MF image while entering %s bin quantity', async (partCode) => {
+        mockHarvestSession();
+        mockHarvestPrinterScan({
+          result: 'bound',
+          session: HARVEST_SESSION,
+          printer: PLATE_PRINTER,
+          archive: { ...PLATE_ARCHIVE, part_code: partCode },
+          part_count: 0,
+          blocking: null,
+        });
+        mockHarvestBinScan({
+          result: 'ready_for_quantity',
+          bin: { payload: `BBN-${partCode}-1`, bin_number: 1, part_code: partCode, part_name: `${partCode} bin` },
+          printer: PLATE_PRINTER,
+          session: HARVEST_SESSION,
+          archive: { ...PLATE_ARCHIVE, part_code: partCode },
+          batch: null,
+          blocking: null,
+        });
+        render(<FloorScanPage />);
+        await screen.findByText('Harvest');
+
+        await scan('BBP-12');
+        await screen.findByText('P1S-3');
+        await scan(`BBN-${partCode}-1`);
+
+        expect(await screen.findByText('How many parts were harvested?')).toBeInTheDocument();
+        const image = await screen.findByRole('img', { name: partCode });
+        expect(image).toHaveAttribute('src', expect.stringContaining(`/floor/parts/thumbnail/${partCode}`));
+      });
+
+      it('asks for the quantity that passed visual QC when the bin is scanned again', async () => {
+        mockNoSession();
+        const qcRequest: { body: Record<string, unknown> | null } = { body: null };
+        const batch = {
+          id: 91,
+          payload: 'BBN-BUT-1',
+          bin_number: 1,
+          printer_id: 12,
+          printer_name: 'P1S-3',
+          archive_id: 88,
+          print_name: 'button_plate',
+          part_code: 'BUT',
+          quantity: 25,
+          qc_passed_quantity: null,
+          remaining_quantity: 25,
+          status: 'harvested',
+          harvested_at: '2026-08-26T14:35:00',
+        };
+        server.use(
+          http.post('/api/v1/floor/bins/resolve', () => HttpResponse.json({
+            result: 'ready_for_qc',
+            bin: { payload: 'BBN-BUT-1', bin_number: 1, part_code: 'BUT', part_name: 'Button bin' },
+            batch,
+            printer: null,
+            session: null,
+            blocking: null,
+            archive: null,
+          })),
+          http.post('/api/v1/floor/locations/fit-check/bin', async ({ request }) => {
+            qcRequest.body = (await request.json()) as Record<string, unknown>;
+            return HttpResponse.json({
+              result: 'qc_recorded',
+              bin: { payload: 'BBN-BUT-1', bin_number: 1, part_code: 'BUT', part_name: 'Button bin' },
+              batch: { ...batch, qc_passed_quantity: 20, remaining_quantity: 20, status: 'visual_qc_passed' },
+              printer: null,
+              session: null,
+              blocking: null,
+              archive: null,
+            });
+          }),
+        );
+        const user = userEvent.setup();
+        render(<FloorScanPage />);
+        await screen.findByText('Scan a code');
+
+        await scan('BBN-BUT-1');
+        expect(await screen.findByText('Scan this bin again for visual QC')).toBeInTheDocument();
+
+        await scan('BBN-BUT-1');
+        expect(await screen.findByText('How many parts passed visual QC?')).toBeInTheDocument();
+        await user.type(screen.getByLabelText('Parts passed QC'), '20');
+        await user.click(screen.getByRole('button', { name: 'Record QC result' }));
+
+        expect(await screen.findByText('20 / 25 passed QC')).toBeInTheDocument();
+        expect(qcRequest.body).toEqual({ payload: 'BBN-BUT-1', passed_quantity: 20 });
       });
 
       it('states plainly when the printer has no finished job, without an error flash or tone', async () => {

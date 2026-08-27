@@ -54,6 +54,9 @@ import {
   type MaintenanceStatus,
   type PartScanResponse,
   type PartScanResult,
+  type BinScanResponse,
+  type FloorBin,
+  type FloorBinBatch,
   type PrinterMaintenanceOverview,
   type ReworkReasonCode,
   type FloorStopReasonCode,
@@ -112,6 +115,10 @@ type Status =
   | { kind: 'awaiting-rework-reason'; payload: string; part: PartImageIdentity | null }
   | { kind: 'awaiting-discard-reason'; payload: string; part: PartImageIdentity | null }
   | { kind: 'awaiting-custom-reason'; locationSlug: 'rework' | 'discard'; payload: string; reasonPayload: string; part: PartImageIdentity | null }
+  | { kind: 'awaiting-bin-quantity'; payload: string; bin: FloorBin | null; archive: FloorPlateArchive | null }
+  | { kind: 'awaiting-bin-location'; payload: string; batch: FloorBinBatch }
+  | { kind: 'awaiting-bin-qc-quantity'; payload: string; batch: FloorBinBatch }
+  | { kind: 'awaiting-bin-empty'; payload: string; batch: FloorBinBatch }
   /** Fit Check or Rework just committed — brief confirmation before the
    *  screen returns to idle, same timing as `plate-closed`. */
   | {
@@ -121,7 +128,8 @@ type Status =
       printer: FloorPlatePrinter | null;
       archive: FloorPlateArchive | null;
       reasonCode?: string;
-    };
+    }
+  | { kind: 'bin-recorded'; action: 'harvested' | 'qc' | 'wip' | 'empty'; batch: FloorBinBatch | null };
 
 type PartImageIdentity = Pick<FloorInventoryPart, 'part_code' | 'section_part_id' | 'part_name' | 'part_source' | 'labeled_at' | 'archived_at' | 'latest_event_action' | 'latest_event_reason'> & {
   printer_name: string | null;
@@ -159,6 +167,7 @@ type HarvestPlate = {
   printer: FloorPlatePrinter;
   archive: FloorPlateArchive | null;
   partCount: number;
+  binQuantity: number;
 } | null;
 
 /** The result of the most recent `BBD-` scan, shown as a brief, deliberately
@@ -260,7 +269,7 @@ export function FloorScanPage() {
     };
   }, [deviceId]);
 
-  // `locked`, `awaiting-location` and `awaiting-rework-reason` are excluded
+  // `locked`, location prompts, and the empty-bin confirmation are excluded
   // on purpose: each is a prompt waiting for a specific next scan, not a
   // flash. `plate-closed`/`location-recorded` join `error`/`closed` here for
   // the same reason those flash: each is a brief confirmation, not a
@@ -270,7 +279,8 @@ export function FloorScanPage() {
       status.kind !== 'error' &&
       status.kind !== 'closed' &&
       status.kind !== 'plate-closed' &&
-      status.kind !== 'location-recorded'
+      status.kind !== 'location-recorded' &&
+      status.kind !== 'bin-recorded'
     )
       return;
     const timer = window.setTimeout(() => setStatus({ kind: 'idle' }), FLASH_MS);
@@ -441,7 +451,7 @@ export function FloorScanPage() {
         // restarts at 0 server-side (a fresh plate), so this simply mirrors
         // whatever the response says rather than resetting locally.
         if (resp.printer) {
-          setHarvestPlate({ printer: resp.printer, archive: resp.archive, partCount: resp.part_count });
+          setHarvestPlate({ printer: resp.printer, archive: resp.archive, partCount: resp.part_count, binQuantity: 0 });
         }
         setStatus({ kind: 'idle' });
       } catch {
@@ -499,7 +509,12 @@ export function FloorScanPage() {
       if (resp.printer) {
         // labeled / no_job both write against the *current* plate, so
         // printer/archive here are that plate's own.
-        setHarvestPlate({ printer: resp.printer, archive: resp.archive, partCount: resp.part_count });
+        setHarvestPlate((current) => ({
+          printer: resp.printer!,
+          archive: resp.archive,
+          partCount: resp.part_count,
+          binQuantity: current?.binQuantity ?? 0,
+        }));
       }
       setPartFeedback({ result: resp.result, part: resp.part, printer: resp.printer, archive: resp.archive });
     },
@@ -522,6 +537,160 @@ export function FloorScanPage() {
       }
     },
     [applyPartScanResponse, deviceId, failScan, t],
+  );
+
+  const applyHarvestBinResponse = useCallback(
+    (resp: BinScanResponse) => {
+      if (resp.session) setSession(resp.session);
+      if (resp.result === 'locked' && resp.blocking) {
+        playScanErrorTone();
+        setStatus({
+          kind: 'locked',
+          stationName: t('floor.stationHarvest', 'Harvest'),
+          payload: HARVEST_STATION_PAYLOAD,
+          blocking: resp.blocking,
+        });
+        return;
+      }
+      if (resp.bin && resp.session && resp.printer) {
+        setHarvestPlate((current) => ({
+          printer: resp.printer!,
+          archive: resp.archive,
+          partCount: current?.partCount ?? 0,
+          binQuantity: current?.binQuantity ?? 0,
+        }));
+      }
+      if (resp.result === 'ready_for_quantity') {
+        setStatus({ kind: 'awaiting-bin-quantity', payload: resp.bin?.payload ?? '', bin: resp.bin, archive: resp.archive });
+        return;
+      }
+      if (resp.result === 'recorded') {
+        if (resp.batch) {
+          setHarvestPlate((current) => current ? { ...current, binQuantity: current.binQuantity + resp.batch!.quantity } : current);
+        }
+        setStatus({ kind: 'bin-recorded', action: 'harvested', batch: resp.batch });
+        return;
+      }
+      const message = resp.result === 'bin_in_use'
+        ? t('floor.binInUse', 'This bin is still assigned to {{code}} / {{printer}}. Mark it empty before reusing it.', {
+            code: resp.batch?.part_code ?? 'this part',
+            printer: resp.batch?.printer_name ?? 'its printer',
+          })
+        : resp.result === 'wrong_part'
+          ? t('floor.binWrongPart', 'Use the bin matching this print: {{code}}', { code: resp.archive?.part_code ?? '' })
+          : resp.result === 'no_session'
+            ? t('floor.binHarvestSessionRequired', 'Open Harvest before scanning a bin')
+            : resp.result === 'no_printer'
+              ? t('floor.scanBinNoPrinter', 'Scan the printer before scanning a bin')
+              : t('floor.scanInvalidCode', 'Invalid bin code');
+      failScan(message, resp.bin?.payload);
+    },
+    [failScan, t],
+  );
+
+  const submitHarvestBinScan = useCallback(
+    async (payload: string, quantity?: number, printerId?: number | null) => {
+      setBusy(true);
+      busyRef.current = true;
+      try {
+        applyHarvestBinResponse(await api.scanHarvestBin({ device_id: deviceId, payload, printer_id: printerId, ...(quantity === undefined ? {} : { quantity }) }));
+      } catch {
+        failScan(t('floor.scanFailed', 'Scan failed'), payload);
+      } finally {
+        setBusy(false);
+        busyRef.current = false;
+      }
+    },
+    [applyHarvestBinResponse, deviceId, failScan, t],
+  );
+
+  const submitBinFlow = useCallback(
+    async (payload: string, action: 'qc' | 'wip', passedQuantity?: number) => {
+      setBusy(true);
+      busyRef.current = true;
+      try {
+        const response = action === 'qc'
+          ? await api.scanFitCheckBin({ payload, ...(passedQuantity === undefined ? {} : { passed_quantity: passedQuantity }) })
+          : await api.scanWipBin({ payload });
+        if (response.result === 'ready_for_qc_quantity' && response.batch) {
+          setStatus({ kind: 'awaiting-bin-qc-quantity', payload, batch: response.batch });
+        } else if (response.result === 'qc_recorded') {
+          setStatus({ kind: 'bin-recorded', action: 'qc', batch: response.batch });
+        } else if (response.result === 'wip_recorded') {
+          setStatus({ kind: 'bin-recorded', action: 'wip', batch: response.batch });
+        } else if (response.result === 'qc_required') {
+          failScan(t('floor.binQcRequired', 'Visual QC is required before WIP'), payload);
+        } else if (response.result === 'qc_quantity_invalid') {
+          failScan(t('floor.binQcQuantityTooHigh', 'The QC-passed quantity cannot exceed the harvested quantity'), payload);
+        } else if (response.result === 'no_batch') {
+          failScan(t('floor.binNoBatch', 'No harvested quantity found for this bin'), payload);
+        } else if (response.result === 'already_wip') {
+          if (response.batch) {
+            setStatus({ kind: 'awaiting-bin-empty', payload, batch: response.batch });
+          } else {
+            failScan(t('floor.binAlreadyWip', 'This bin batch is already in WIP'), payload);
+          }
+        } else {
+          failScan(t('floor.scanInvalidCode', 'Invalid bin code'), payload);
+        }
+      } catch {
+        failScan(t('floor.scanFailed', 'Scan failed'), payload);
+      } finally {
+        setBusy(false);
+        busyRef.current = false;
+      }
+    },
+    [failScan, t],
+  );
+
+  const submitBinEmpty = useCallback(
+    async (payload: string) => {
+      setBusy(true);
+      busyRef.current = true;
+      try {
+        const response = await api.scanEmptyBin({ payload });
+        if (response.result === 'empty_recorded') {
+          setStatus({ kind: 'bin-recorded', action: 'empty', batch: response.batch });
+        } else if (response.result === 'already_empty') {
+          failScan(t('floor.binAlreadyEmpty', 'This bin is already empty'), payload);
+        } else if (response.result === 'empty_requires_wip') {
+          failScan(t('floor.binEmptyRequiresWip', 'A bin can only be marked empty after it has entered WIP'), payload);
+        } else if (response.result === 'no_batch') {
+          failScan(t('floor.binNoBatch', 'No active quantity found for this bin'), payload);
+        } else {
+          failScan(t('floor.scanInvalidCode', 'Invalid bin code'), payload);
+        }
+      } catch {
+        failScan(t('floor.scanFailed', 'Scan failed'), payload);
+      } finally {
+        setBusy(false);
+        busyRef.current = false;
+      }
+    },
+    [failScan, t],
+  );
+
+  const submitBinResolve = useCallback(
+    async (payload: string) => {
+      setBusy(true);
+      busyRef.current = true;
+      try {
+        const response = await api.resolveFloorBin({ payload });
+        if (response.result === 'ready_for_qc' && response.batch) {
+          setStatus({ kind: 'awaiting-bin-location', payload, batch: response.batch });
+        } else if (response.result === 'no_batch') {
+          failScan(t('floor.binNoBatch', 'No harvested quantity found for this bin'), payload);
+        } else {
+          failScan(t('floor.scanInvalidCode', 'Invalid bin code'), payload);
+        }
+      } catch {
+        failScan(t('floor.scanFailed', 'Scan failed'), payload);
+      } finally {
+        setBusy(false);
+        busyRef.current = false;
+      }
+    },
+    [failScan, t],
   );
 
   // Fit Check and Rework are locations, not stations (§5.4a/§5.4b) — no
@@ -660,6 +829,15 @@ export function FloorScanPage() {
       const viewingPrinterId = statusRef.current.kind === 'printer' ? statusRef.current.info.id : null;
       const route = routeScan(scanned, sessionRef.current?.station_slug ?? null, viewingPrinterId);
       if (route.action === 'ignore') return;
+      if (statusRef.current.kind === 'awaiting-bin-empty' &&
+        (route.action === 'harvest-bin' || route.action === 'wip-bin' || route.action === 'bin-scanned')) {
+        if (route.payload === statusRef.current.payload) {
+          void submitBinEmpty(route.payload);
+        } else {
+          failScan(t('floor.binEmptyDifferent', 'Scan the same bin to confirm it is empty'), route.payload);
+        }
+        return;
+      }
       if (route.action === 'station') {
         void submitStationScan(route.payload);
         return;
@@ -678,6 +856,29 @@ export function FloorScanPage() {
       }
       if (route.action === 'harvest-printer') {
         void submitHarvestPrinterScan(route.payload);
+        return;
+      }
+      if (route.action === 'harvest-bin') {
+        void submitHarvestBinScan(route.payload, undefined, route.printerId);
+        return;
+      }
+      if (route.action === 'wip-bin') {
+        void submitBinFlow(route.payload, 'wip');
+        return;
+      }
+      if (route.action === 'bin-scanned') {
+        if (
+          statusRef.current.kind === 'awaiting-bin-location' &&
+          route.payload === statusRef.current.payload
+        ) {
+          setStatus({
+            kind: 'awaiting-bin-qc-quantity',
+            payload: statusRef.current.payload,
+            batch: statusRef.current.batch,
+          });
+          return;
+        }
+        void submitBinResolve(route.payload);
         return;
       }
       if (route.action === 'harvest-part') {
@@ -748,6 +949,14 @@ export function FloorScanPage() {
         return;
       }
       if (route.action === 'location') {
+        if (statusRef.current.kind === 'awaiting-bin-location') {
+          if (route.slug === 'fit-check') {
+            void submitBinFlow(statusRef.current.payload, 'qc');
+          } else {
+            failScan(t('floor.binQcLocationRequired', 'Scan Fit Check for this bin'), route.payload);
+          }
+          return;
+        }
         if (statusRef.current.kind === 'awaiting-location') {
           const pendingPayload = statusRef.current.payload;
           const pendingPart = statusRef.current.part;
@@ -855,6 +1064,10 @@ export function FloorScanPage() {
       submitStationScan,
       submitPrinterScan,
       submitHarvestPrinterScan,
+      submitHarvestBinScan,
+      submitBinFlow,
+      submitBinResolve,
+      submitBinEmpty,
       submitPartScan,
       submitFitCheckPartScan,
       submitReworkPartScan,
@@ -1037,7 +1250,29 @@ export function FloorScanPage() {
           >
             {t('floor.harvestViewPartHistory', 'View part history')}
           </button>
-        </div>
+          </div>
+      ) : status.kind === 'awaiting-bin-quantity' ? (
+        <BinQuantityScreen
+          bin={status.bin}
+          printer={harvestPlate?.printer ?? null}
+          archive={status.archive}
+          busy={busy}
+          t={t}
+          onSubmit={(quantity) => void submitHarvestBinScan(status.payload, quantity)}
+        />
+      ) : status.kind === 'awaiting-bin-qc-quantity' ? (
+        <BinQcQuantityScreen
+          batch={status.batch}
+          busy={busy}
+          t={t}
+          onSubmit={(quantity) => void submitBinFlow(status.payload, 'qc', quantity)}
+        />
+      ) : status.kind === 'awaiting-bin-location' ? (
+        <BinLocationScreen batch={status.batch} t={t} />
+      ) : status.kind === 'awaiting-bin-empty' ? (
+        <BinEmptyScreen batch={status.batch} t={t} />
+      ) : status.kind === 'bin-recorded' ? (
+        <BinRecordedFlash action={status.action} batch={status.batch} t={t} />
       ) : status.kind === 'error' && session && session.station_slug === HARVEST_STATION_SLUG ? (
         // The generic block below hides its error text once a session is
         // open (it shows the station name instead, which for every other
@@ -1463,7 +1698,9 @@ function PrinterInfoPanel({
             {t('floor.printerReadyToHarvest', 'Bed ready to clear')}
           </p>
           <p className="text-sm text-bambu-gray-light mt-0.5">
-            {t('floor.printerReadyToHarvestHint', 'Scan part stickers to label this job.')}
+            {last?.part_code === 'KNB' || last?.part_code === 'BUT'
+              ? t('floor.printerReadyToHarvestBinHint', 'Scan the matching {{code}} bin, then enter the harvested quantity.', { code: last.part_code })
+              : t('floor.printerReadyToHarvestHint', 'Scan part stickers to label this job.')}
           </p>
         </div>
       )}
@@ -2102,8 +2339,16 @@ function HarvestScreen({
 
           {/* The running count is the number an operator glances at
               repeatedly while clearing a bed — biggest text on the screen. */}
-          <p className="mt-10 text-7xl font-bold text-bambu-green tabular-nums">{plate.partCount}</p>
-          <p className="text-bambu-gray mt-1">{t('floor.harvestPartCount', 'parts labeled')}</p>
+          <p className="mt-10 text-7xl font-bold text-bambu-green tabular-nums">
+            {plate.archive?.part_code === 'KNB' || plate.archive?.part_code === 'BUT'
+              ? plate.binQuantity
+              : plate.partCount}
+          </p>
+          <p className="text-bambu-gray mt-1">
+            {plate.archive?.part_code === 'KNB' || plate.archive?.part_code === 'BUT'
+              ? t('floor.harvestBinQuantity', 'parts harvested')
+              : t('floor.harvestPartCount', 'parts labeled')}
+          </p>
 
           <p className="mt-8 text-2xl font-medium">
             {plate.archive ? (
@@ -2118,6 +2363,15 @@ function HarvestScreen({
               </span>
             )}
           </p>
+          <PartCodeThumbnail
+            partCode={plate.archive?.part_code}
+            className="mx-auto mt-6 h-40 w-40 rounded-xl object-cover bg-bambu-dark-secondary"
+          />
+          {(plate.archive?.part_code === 'KNB' || plate.archive?.part_code === 'BUT') && (
+            <p className="mt-4 text-2xl text-bambu-gray-light">
+              {t('floor.harvestScanBin', 'Scan the matching {{code}} bin', { code: plate.archive.part_code })}
+            </p>
+          )}
         </>
       ) : (
         <>
@@ -2153,6 +2407,202 @@ function HarvestScreen({
         {t('floor.scanClose', 'Close station')}
       </button>
     </div>
+  );
+}
+
+function BinQuantityScreen({
+  bin,
+  printer,
+  archive,
+  busy,
+  t,
+  onSubmit,
+}: {
+  bin: FloorBin | null;
+  printer: FloorPlatePrinter | null;
+  archive: FloorPlateArchive | null;
+  busy: boolean;
+  t: ReturnType<typeof useTranslation>['t'];
+  onSubmit: (quantity: number) => void;
+}) {
+  const [quantity, setQuantity] = useState('');
+  const parsedQuantity = Number(quantity);
+  const valid = Number.isInteger(parsedQuantity) && parsedQuantity > 0;
+
+  return (
+    <form
+      className="w-full max-w-xl"
+      onSubmit={(event) => {
+        event.preventDefault();
+        if (valid) onSubmit(parsedQuantity);
+      }}
+    >
+      <ScanLine className="w-16 h-16 mb-6 mx-auto text-bambu-green" aria-hidden="true" />
+      <PartCodeThumbnail
+        partCode={archive?.part_code ?? bin?.part_code}
+        className="mx-auto mb-5 h-40 w-40 rounded-xl object-cover bg-bambu-dark-secondary"
+      />
+      <p className="text-4xl font-bold text-white">{bin?.part_name ?? 'Part bin'}</p>
+      <p className="mt-2 text-lg text-bambu-gray">{printer?.name ?? 'Printer'}</p>
+      {archive && (
+        <p className="mt-4 text-lg text-bambu-gray-light">
+          {archive.print_name ?? t('floor.printerUnnamedJob', 'Unnamed job')}
+        </p>
+      )}
+      <label className="mt-8 block text-left text-sm font-medium text-bambu-gray" htmlFor="bin-quantity">
+        {t('floor.binQuantityLabel', 'How many parts were harvested?')}
+      </label>
+      <input
+        id="bin-quantity"
+        autoFocus
+        type="number"
+        min={1}
+        max={100000}
+        step={1}
+        value={quantity}
+        disabled={busy}
+        onChange={(event) => setQuantity(event.target.value)}
+        className="mt-2 w-full rounded-lg border border-bambu-dark-tertiary bg-bambu-dark-secondary px-4 py-3 text-center text-3xl font-bold text-white focus:border-bambu-green focus:outline-none"
+      />
+      <button
+        type="submit"
+        disabled={!valid || busy}
+        className="mt-6 rounded-lg bg-bambu-green px-6 py-3 font-semibold text-white transition-colors hover:bg-bambu-green-light disabled:opacity-50"
+      >
+        {t('floor.binSaveQuantity', 'Save quantity')}
+      </button>
+    </form>
+  );
+}
+
+function BinQcQuantityScreen({
+  batch,
+  busy,
+  t,
+  onSubmit,
+}: {
+  batch: FloorBinBatch;
+  busy: boolean;
+  t: ReturnType<typeof useTranslation>['t'];
+  onSubmit: (quantity: number) => void;
+}) {
+  const [quantity, setQuantity] = useState('');
+  const parsedQuantity = Number(quantity);
+  const valid = quantity.trim().length > 0 && Number.isInteger(parsedQuantity) && parsedQuantity >= 0 && parsedQuantity <= batch.quantity;
+
+  return (
+    <form
+      className="w-full max-w-xl"
+      onSubmit={(event) => {
+        event.preventDefault();
+        if (valid) onSubmit(parsedQuantity);
+      }}
+    >
+      <ScanLine className="w-16 h-16 mb-6 mx-auto text-green-500" aria-hidden="true" />
+      <PartCodeThumbnail
+        partCode={batch.part_code}
+        className="mx-auto mb-5 h-40 w-40 rounded-xl object-cover bg-bambu-dark-secondary"
+      />
+      <p className="text-4xl font-bold text-white">{batch.part_code} bin</p>
+      <p className="mt-2 text-lg text-bambu-gray">{batch.printer_name ?? 'Printer'}</p>
+      <p className="mt-4 text-xl text-white">
+        {t('floor.binQcPassedPrompt', 'How many parts passed visual QC?')}
+      </p>
+      <p className="mt-2 text-lg text-bambu-gray-light">
+        {t('floor.binQcHarvestedCount', '{{count}} parts were harvested', { count: batch.quantity })}
+      </p>
+      <label className="mt-8 block text-left text-sm font-medium text-bambu-gray" htmlFor="bin-qc-quantity">
+        {t('floor.binQcQuantityLabel', 'Parts passed QC')}
+      </label>
+      <input
+        id="bin-qc-quantity"
+        autoFocus
+        type="number"
+        min={0}
+        max={batch.quantity}
+        step={1}
+        value={quantity}
+        disabled={busy}
+        onChange={(event) => setQuantity(event.target.value)}
+        className="mt-2 w-full rounded-lg border border-bambu-dark-tertiary bg-bambu-dark-secondary px-4 py-3 text-center text-3xl font-bold text-white focus:border-bambu-green focus:outline-none"
+      />
+      <button
+        type="submit"
+        disabled={!valid || busy}
+        className="mt-6 rounded-lg bg-bambu-green px-6 py-3 font-semibold text-white transition-colors hover:bg-bambu-green-light disabled:opacity-50"
+      >
+        {t('floor.binSaveQcQuantity', 'Record QC result')}
+      </button>
+    </form>
+  );
+}
+
+function BinLocationScreen({ batch, t }: { batch: FloorBinBatch; t: ReturnType<typeof useTranslation>['t'] }) {
+  return (
+    <>
+      <ScanLine className="w-16 h-16 mb-6 text-bambu-green" aria-hidden="true" />
+      <PartCodeThumbnail
+        partCode={batch.part_code}
+        className="mx-auto mb-5 h-40 w-40 rounded-xl object-cover bg-bambu-dark-secondary"
+      />
+      <p className="text-4xl font-bold text-white">{batch.part_code} bin</p>
+      <p className="mt-2 text-6xl font-bold text-bambu-green tabular-nums">{batch.quantity}</p>
+      <p className="mt-1 text-lg text-bambu-gray">{batch.printer_name ?? 'Printer'}</p>
+      <p className="mt-8 text-2xl text-white">{t('floor.binScanAgainForQc', 'Scan this bin again for visual QC')}</p>
+      <p className="mt-2 text-lg text-bambu-gray">{t('floor.binScanFitCheckAlternative', 'Or scan the Fit Check label')}</p>
+    </>
+  );
+}
+
+function BinEmptyScreen({ batch, t }: { batch: FloorBinBatch; t: ReturnType<typeof useTranslation>['t'] }) {
+  return (
+    <>
+      <ScanLine className="w-16 h-16 mb-6 text-amber-400" aria-hidden="true" />
+      <PartCodeThumbnail
+        partCode={batch.part_code}
+        className="mx-auto mb-5 h-40 w-40 rounded-xl object-cover bg-bambu-dark-secondary"
+      />
+      <p className="text-4xl font-bold text-white">{batch.part_code} bin {batch.bin_number}</p>
+      <p className="mt-2 text-lg text-bambu-gray">{batch.printer_name ?? 'Printer'} · {batch.quantity}</p>
+      <p className="mt-8 text-2xl text-white">{t('floor.binScanEmptyConfirm', 'When this bin is empty, scan it again to confirm')}</p>
+    </>
+  );
+}
+
+function BinRecordedFlash({
+  action,
+  batch,
+  t,
+}: {
+  action: 'harvested' | 'qc' | 'wip' | 'empty';
+  batch: FloorBinBatch | null;
+  t: ReturnType<typeof useTranslation>['t'];
+}) {
+  const color = action === 'harvested' ? 'text-bambu-green' : action === 'qc' ? 'text-green-500' : action === 'wip' ? 'text-sky-400' : 'text-amber-400';
+  const message = action === 'harvested'
+    ? t('floor.binHarvested', 'Quantity recorded')
+    : action === 'qc'
+      ? t('floor.binVisualQcPassed', 'Visual QC passed')
+      : action === 'wip'
+        ? t('floor.binWipRecorded', 'Bin added to WIP')
+        : t('floor.binEmptyRecorded', 'Bin marked empty and ready to reuse');
+  return (
+    <>
+      <Check className={`w-16 h-16 mb-6 ${color}`} aria-hidden="true" />
+      <PartCodeThumbnail
+        partCode={batch?.part_code}
+        className="mx-auto mb-5 h-32 w-32 rounded-xl object-cover bg-bambu-dark-secondary"
+      />
+      <p className="text-4xl font-bold text-white">{batch?.part_code} bin</p>
+      <p className={`mt-3 text-2xl font-semibold ${color}`}>{message}</p>
+      {batch && (
+        <p className="mt-2 text-lg text-bambu-gray">
+          {action === 'qc' && typeof batch.qc_passed_quantity === 'number'
+            ? `${batch.qc_passed_quantity} / ${batch.quantity} passed QC`
+            : `${batch.quantity} · ${batch.printer_name ?? 'Printer'}`}
+        </p>
+      )}
+    </>
   );
 }
 
