@@ -57,6 +57,7 @@ import {
   type BinScanResponse,
   type FloorBin,
   type FloorBinBatch,
+  type HarvestSummaryLine,
   type PrinterMaintenanceOverview,
   type ReworkReasonCode,
   type FloorStopReasonCode,
@@ -103,7 +104,7 @@ type Status =
    *  §5.4). Brief confirmation of what was on it before the screen returns
    *  to the harvest idle state — plate close is not session close. */
   | { kind: 'plate-closed'; printer: FloorPlatePrinter; archive: FloorPlateArchive | null; partCount: number }
-  | { kind: 'harvest-summary'; lines: import('../api/client').HarvestSummaryLine[] }
+  | { kind: 'harvest-summary'; lines: HarvestSummaryLine[] }
   /** A part was just scanned with nothing else going on — the first half of
    *  "scan a part, scan a location" (§5.4a/§5.4b). Persists (not a flash)
    *  since it is itself a prompt waiting for the next scan; abandoned by
@@ -1220,11 +1221,7 @@ export function FloorScanPage() {
           <h1 className="text-3xl font-bold text-white">
             {t('floor.harvestCompleteTitle', 'Harvest complete')}
           </h1>
-          <p className="text-bambu-gray mt-1">
-            {t('floor.harvestCompleteCount', '{{count}} parts linked', {
-              count: status.lines.reduce((total, line) => total + line.part_count, 0),
-            })}
-          </p>
+          <p className="text-bambu-gray mt-1">{harvestSummaryHeadline(status.lines, t)}</p>
           <div className="mt-6 space-y-2">
             {status.lines.map((line) => (
               <div
@@ -1236,7 +1233,11 @@ export function FloorScanPage() {
                   {' · '}
                   {line.print_name ?? t('floor.harvestNoJob', 'No job')}
                 </span>
-                <strong>{line.part_count}</strong>
+                <strong>
+                  {line.part_count > 0
+                    ? t('floor.harvestSummaryLineParts', '{{count}} parts', { count: line.part_count })
+                    : t('floor.harvestSummaryLineBins', '{{count}} bins', { count: line.bin_quantity })}
+                </strong>
               </div>
             ))}
           </div>
@@ -1870,6 +1871,28 @@ function PrinterInfoPanel({
       )}
     </div>
   );
+}
+
+/** KNB/BUT bins are tracked separately from individually-stickered parts, so
+ *  a Harvest session that only collected bins used to summarize as "0 parts
+ *  linked" even though real quantity was harvested. Reports whichever kind
+ *  (or both) actually happened. */
+function harvestSummaryHeadline(
+  lines: HarvestSummaryLine[],
+  t: ReturnType<typeof useTranslation>['t'],
+): string {
+  const parts = lines.reduce((total, line) => total + line.part_count, 0);
+  const bins = lines.reduce((total, line) => total + line.bin_quantity, 0);
+  if (parts > 0 && bins > 0) {
+    return t('floor.harvestCompleteCountMixed', '{{parts}} parts linked · {{bins}} bins collected', {
+      parts,
+      bins,
+    });
+  }
+  if (bins > 0) {
+    return t('floor.harvestCompleteCountBins', '{{count}} bins collected', { count: bins });
+  }
+  return t('floor.harvestCompleteCount', '{{count}} parts linked', { count: parts });
 }
 
 function stopReasonLabel(

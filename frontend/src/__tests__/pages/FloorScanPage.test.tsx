@@ -1454,6 +1454,52 @@ describe('FloorScanPage (Phase 1b sessions)', () => {
         expect(floorSound.playScanErrorTone).toHaveBeenCalled();
       });
     });
+
+    describe('closing harvest reports a summary', () => {
+      it('reports bins collected instead of zero parts for a bin-only harvest', async () => {
+        // KNB/BUT bins are tracked separately from stickered parts — a
+        // session that only harvested bins used to summarize as "0 parts
+        // linked" even though real quantity was collected.
+        mockHarvestSession();
+        server.use(
+          http.get('/api/v1/floor/harvest/sessions/5/summary', () =>
+            HttpResponse.json([
+              { printer_id: 12, printer_name: 'P1S-3', print_name: 'bracket_v4', part_count: 0, bin_quantity: 12 },
+            ]),
+          ),
+        );
+        mockScan({ result: 'closed', station_slug: 'harvest', station_name: 'Harvest', session: null, blocking: null });
+        render(<FloorScanPage />);
+        await screen.findByText('Harvest');
+
+        await scan('BBS-harvest');
+
+        expect(await screen.findByText('Harvest complete')).toBeInTheDocument();
+        expect(screen.getByText('12 bins collected')).toBeInTheDocument();
+        expect(screen.getByText('12 bins')).toBeInTheDocument();
+        expect(screen.queryByText(/parts linked/)).not.toBeInTheDocument();
+      });
+
+      it('still reports parts linked for a parts-only harvest', async () => {
+        mockHarvestSession();
+        server.use(
+          http.get('/api/v1/floor/harvest/sessions/5/summary', () =>
+            HttpResponse.json([
+              { printer_id: 12, printer_name: 'P1S-3', print_name: 'bracket_v4', part_count: 4, bin_quantity: 0 },
+            ]),
+          ),
+        );
+        mockScan({ result: 'closed', station_slug: 'harvest', station_name: 'Harvest', session: null, blocking: null });
+        render(<FloorScanPage />);
+        await screen.findByText('Harvest');
+
+        await scan('BBS-harvest');
+
+        expect(await screen.findByText('Harvest complete')).toBeInTheDocument();
+        expect(screen.getByText('4 parts linked')).toBeInTheDocument();
+        expect(screen.queryByText(/bins collected/)).not.toBeInTheDocument();
+      });
+    });
   });
 
   describe('fit check and rework (§5.4a/§5.4b, phase 9a/9b) — locations, not stations', () => {
