@@ -75,7 +75,7 @@ function normalizeErrorSlug(value: string): string {
 
 /** Which label family is being printed. Errors land in phase 9c.
  *  `locations` is a display-only split of the same station catalog as
- *  `stations` (§5.4a/§5.4b's `category` field) — Fit Check and Rework are
+ *  `stations` (§5.4a/§5.4b's `category` field) — Initial QC Pass and Rework are
  *  QC checkpoints a part passes through, not workflow-mode benches, so they
  *  get their own tab even though they're printed and resolved exactly like
  *  any other `BBS-` code. */
@@ -317,7 +317,7 @@ export function FloorCodesPage() {
                 : tab === 'locations'
                   ? t(
                       'floor.codesLocationsHint',
-                      'Fit Check and Rework. Scanning one opens that checkpoint on the scan page, same as a station QR.',
+                      'Initial QC Pass and Rework. Scanning one opens that checkpoint on the scan page, same as a station QR.',
                     )
                   : tab === 'errors'
                     ? t('floor.codesErrorsHint', 'Scan an error label after Rework or Discard. Add or remove reasons as needed.')

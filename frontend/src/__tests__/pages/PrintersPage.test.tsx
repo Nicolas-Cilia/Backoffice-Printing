@@ -1809,5 +1809,145 @@ describe('start print combined modal', () => {
     expect(within(modal).getByTestId('start-print-library')).toBeInTheDocument();
     expect(within(modal).getByTestId('start-print-dropzone')).toBeInTheDocument();
   });
-});
 
+  it('closes the combined modal after a print is queued', async () => {
+    useLargePrinterCards();
+    const user = userEvent.setup();
+    server.use(
+      http.post('/api/v1/queue/', () =>
+        HttpResponse.json({ id: 123, status: 'pending' }),
+      ),
+    );
+    render(<PrintersPage />);
+
+    const card = await waitFor(() => {
+      const el = document.getElementById('printer-card-1');
+      expect(el).toBeTruthy();
+      return el!;
+    });
+    await user.click(await within(card).findByRole('button', { name: 'Print' }));
+    const modal = await screen.findByTestId('start-print-modal');
+    await user.click(within(modal).getByText('Benchy'));
+    await user.click(within(modal).getByRole('button', { name: /^print$/i }));
+
+    await waitFor(() => {
+      expect(screen.queryByTestId('start-print-modal')).not.toBeInTheDocument();
+    });
+  });
+
+  it('opens the combined file-management workspace for a dropped print file', async () => {
+    useLargePrinterCards();
+    server.use(
+      http.post('/api/v1/library/files', () =>
+        HttpResponse.json({
+          id: 99,
+          filename: 'dropped.gcode.3mf',
+          file_type: 'gcode.3mf',
+          file_size: 2048,
+          thumbnail_path: null,
+          duplicate_of: null,
+          metadata: { sliced_for_model: 'X1C' },
+        }),
+      ),
+      http.get('/api/v1/library/files/:id', ({ params }) =>
+        HttpResponse.json({
+          id: Number(params.id),
+          filename: 'dropped.gcode.3mf',
+          print_name: null,
+          file_type: 'gcode.3mf',
+          file_size: 2048,
+          thumbnail_path: null,
+          sliced_for_model: 'X1C',
+          metadata: { sliced_for_model: 'X1C' },
+        }),
+      ),
+      http.get('/api/v1/library/files/:id/plates', () =>
+        HttpResponse.json({ is_multi_plate: false, plates: [] }),
+      ),
+      http.get('/api/v1/library/files/:id/filament-requirements', () =>
+        HttpResponse.json({ filaments: [] }),
+      ),
+    );
+    render(<PrintersPage />);
+
+    const card = await waitFor(() => {
+      const el = document.getElementById('printer-card-1');
+      expect(el).toBeTruthy();
+      return el!;
+    });
+    await waitFor(() => {
+      expect(card).toHaveAttribute('data-printer-status', 'idle');
+    });
+    const file = new File(['gcode'], 'dropped.gcode.3mf', { type: 'application/octet-stream' });
+    fireEvent.drop(card, { dataTransfer: { files: [file] } });
+
+    const modal = await screen.findByTestId('start-print-modal');
+    expect(within(modal).getByTestId('start-print-library')).toBeInTheDocument();
+    expect(within(modal).getByTestId('start-print-options')).toBeInTheDocument();
+    expect(within(modal).getByTestId('print-modal-embedded')).toBeInTheDocument();
+    expect(within(modal).getByText('dropped.gcode.3mf')).toBeInTheDocument();
+  });
+
+  it('does not bubble a drop on the modal\'s own dropzone to the card underneath', async () => {
+    // Regression test: the card behind this modal has its own drop-to-print
+    // zone (see the test above). The modal's embedded FileUploadModal dropzone
+    // doesn't stop propagation, and the modal is a plain nested child of the
+    // card (no portal) — so an unguarded drop bubbled straight through, firing
+    // the card's handler too. That uploaded the file a second time and opened
+    // a second, out-of-sync StartPrintModal stacked on top of this one.
+    useLargePrinterCards();
+    const user = userEvent.setup();
+    let uploadCalls = 0;
+    server.use(
+      http.post('/api/v1/library/files', () => {
+        uploadCalls += 1;
+        return HttpResponse.json({
+          id: 99,
+          filename: 'dropped.gcode.3mf',
+          file_type: 'gcode.3mf',
+          file_size: 2048,
+          thumbnail_path: null,
+          duplicate_of: null,
+          metadata: { sliced_for_model: 'X1C' },
+        });
+      }),
+      http.get('/api/v1/library/files/:id', ({ params }) =>
+        HttpResponse.json({
+          id: Number(params.id),
+          filename: 'dropped.gcode.3mf',
+          print_name: null,
+          file_type: 'gcode.3mf',
+          file_size: 2048,
+          thumbnail_path: null,
+          sliced_for_model: 'X1C',
+          metadata: { sliced_for_model: 'X1C' },
+        }),
+      ),
+      http.get('/api/v1/library/files/:id/plates', () =>
+        HttpResponse.json({ is_multi_plate: false, plates: [] }),
+      ),
+      http.get('/api/v1/library/files/:id/filament-requirements', () =>
+        HttpResponse.json({ filaments: [] }),
+      ),
+    );
+    render(<PrintersPage />);
+
+    const card = await waitFor(() => {
+      const el = document.getElementById('printer-card-1');
+      expect(el).toBeTruthy();
+      return el!;
+    });
+    await user.click(await within(card).findByRole('button', { name: 'Print' }));
+
+    const modal = await screen.findByTestId('start-print-modal');
+    const dropzone = within(modal).getByTestId('start-print-dropzone');
+    const file = new File(['gcode'], 'dropped.gcode.3mf', { type: 'application/octet-stream' });
+    fireEvent.drop(dropzone, { dataTransfer: { files: [file] } });
+
+    await waitFor(() => {
+      expect(within(modal).getByTestId('start-print-options')).toBeInTheDocument();
+    });
+    expect(uploadCalls).toBe(1);
+    expect(screen.getAllByTestId('start-print-modal')).toHaveLength(1);
+  });
+});

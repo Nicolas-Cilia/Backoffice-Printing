@@ -309,7 +309,7 @@ The USB pistol types a string and Enter. Backend (or frontend router) classifies
 
 | Prefix | Example | Role |
 | --- | --- | --- |
-| `BBS-` | `BBS-wip`, `BBS-storage-receive`, `BBS-storage-move`, `BBS-harvest`, `BBS-cleanup` | Station: open/close session, set mode. `BBS-fit-check`/`BBS-rework` are printed the same way but are **locations**, not sessions — see below |
+| `BBS-` | `BBS-wip`, `BBS-storage-receive`, `BBS-storage-move`, `BBS-harvest`, `BBS-cleanup` | Station: open/close session, set mode. `BBS-initial-qc-pass`/`BBS-rework` are printed the same way but are **locations**, not sessions — see below |
 | `BBP-` | `BBP-12` | Printer identity (harvest only) |
 | `BBD-` | `BBD-000042` | Unique physical part (harvest link, cleanup lookup; also the first scan of the Fit Check / Rework location flow, §5.4a/§5.4b) |
 | `BBN-` | `BBN-KNB-1` / `BBN-BUT-1` | Shared reusable knob/button bin (temporary printer assignment, harvest quantity, visual QC, WIP, empty) |
@@ -318,7 +318,7 @@ The USB pistol types a string and Enter. Backend (or frontend router) classifies
 | `BBR-` | `BBR-doesnt_fit`, `BBR-other` | Rework reason (why the part needs rework) — the part after `BBR-` is the reason code verbatim, not a slug translated elsewhere |
 | Factory barcode | digits/alphanumeric from vendor | Filament SKU → kg delta for a tracking product |
 
-**`BBS-fit-check` and `BBS-rework` are not stations.** They print and
+**`BBS-initial-qc-pass` and `BBS-rework` are not stations.** They print and
 resolve as `BBS-…` payloads (same Codes-page mechanism, §3.3), but scanning
 one never opens/closes/switches a session — dispatch for them is not on
 (open station × prefix) the way every other station is. See §5.4a/§5.4b for
@@ -562,7 +562,7 @@ available for a later harvest.
 **Fit Check is a location, not a station.** This was wrong in an earlier
 pass of this doc, which described it as an open/close session like Harvest
 or Cleanup — corrected after review. There is **no session, no floor-wide
-lock, no open/close** for Fit Check at all. Its `BBS-fit-check` QR is
+lock, no open/close** for Fit Check at all. Its `BBS-initial-qc-pass` QR is
 printed and resolved exactly like a station payload (Codes page, §3.3), but
 scanning it never claims anything server-side.
 
@@ -579,17 +579,17 @@ printer → Cleanup directly. This is a hard gate, not a convention: Cleanup
    client-side "pending part" prompt, not a server call. An unknown sticker
    or a registered sticker without a job link is refused with an error and
    must be resolved through Harvest / Part history first.
-2. Scan `BBS-fit-check` → **commits**: records a `fit_checked` event against
+2. Scan `BBS-initial-qc-pass` → **commits**: records a `fit_checked` event against
    that part and returns to idle. One scan-pair, no confirmation step — the
    common case is "checked, fine," and it must be the shortest path, same
    reasoning as Cleanup's good-part path (§5.5).
-3. **Re-scanning** an already fit-checked part (part, then `BBS-fit-check`
+3. **Re-scanning** an already fit-checked part (part, then `BBS-initial-qc-pass`
    again) is not an error: it appends another `fit_checked` event (the
    history is append-only, same as every other part event) rather than
    refusing or amending. There is no pass/fail outcome recorded here to
    amend — see below.
 
-**Scanning `BBS-fit-check` with no part pending** is refused — "scan a part
+**Scanning `BBS-initial-qc-pass` with no part pending** is refused — "scan a part
 first" — rather than silently doing nothing or reading as an unknown code.
 
 **No pass/fail outcome in v1.** Fit Check records only that the checkpoint
@@ -1079,8 +1079,8 @@ operator QRs. Data should be queryable later from the same tables.
 | Part re-scanned at cleanup after a disposition was recorded | **Amend** — show the current disposition and its age, let the operator change it. Appends rather than overwrites, so `good → defective` stays visible as a post-processing loss (§5.5) |
 | Part scanned but the printer has no finished job to bind to | **Record it anyway** — `printer_id` + `labeled_at`, `archive_id` null (§7.2). Screen says "linked to printer N, no job found". Surfaces in a needs-attention list to be matched later. The sticker is already on the part; refusing would create a labeled part the system never heard of |
 | Part scanned at **Cleanup** with no `fit_checked` event on record | **Refused** — error flash and tone, screen says "needs Fit Check first", nothing recorded (§5.4a). The one hard sequencing gate in the chain |
-| Part scanned (idle, nothing else going on), then re-scanned into `BBS-fit-check` a second time later | **Logged again**, not an error — appends another `fit_checked` event. There is no verdict to amend (§5.4a) |
-| `BBS-fit-check` or `BBS-rework` scanned with no part currently pending | **Refused** — "scan a part first". Neither is a session, so there is nothing to open instead (§5.4a/§5.4b) |
+| Part scanned (idle, nothing else going on), then re-scanned into `BBS-initial-qc-pass` a second time later | **Logged again**, not an error — appends another `fit_checked` event. There is no verdict to amend (§5.4a) |
+| `BBS-initial-qc-pass` or `BBS-rework` scanned with no part currently pending | **Refused** — "scan a part first". Neither is a session, so there is nothing to open instead (§5.4a/§5.4b) |
 | Part pending a location, then something other than a location is scanned (a station QR, a printer, another part) | **Abandoned, silently** — that scan proceeds exactly as it normally would; the pending part is just dropped, no special "cancelled" message (unlike Move's queue, §5.3, which is server-side and does announce its own abandonment) |
 | Part sent to **Rework** (location scanned), then something other than a reason code is scanned | Same as above — the pending "awaiting reason" state is abandoned, nothing was written (Rework's location scan never itself calls the backend, §5.4b) |
 | Reason code (`BBR-…`) scanned with no part pending a Rework reason | **Refused** — "scan a part into Rework first" |
@@ -1163,7 +1163,7 @@ The table stays in original numeric order — look a phase up by its number.
 | **6** | Point print debit at WIP | Finish print on assigned product → WIP kg down (`consume` row, existing tracking hooks). |
 | **7** | Printer labels tab in Codes (`BBP-{id}`) + the **printer info page** (§5.6): identity, state, last finished print, total print hours, maintenance due, log-maintenance action | Print `BBP-…` from Codes, scan it from idle → info page names the right printer, its latest finished job, and its hours. A printer with maintenance overdue says so; logging it from the page clears it. A printer with no finished job says there is nothing to harvest rather than going blank. Scanning it takes **no** harvest lock. |
 | **8** | Harvest part linking, via **both** entries (§5.4): Harvest station → printer, and printer-from-idle → parts. Lock and elapsed-time already shipped in 1b | Printer → `BBD-` parts → printer close. DB: parts → correct **archive**, not just printer. Same-printer rescan closes only (never reopens against a stale plate—see §5.4). **Both entries:** label parts via the Harvest station, and again via a bare printer scan — identical rows result. **No-job case:** scan a part against a printer with no finished job → part still recorded with `printer_id` + `labeled_at`, `archive_id` null, screen says "no job found", and it appears in the needs-attention list (§7.2). **Lock:** taken on first part scan from the info page, not on merely viewing it. |
-| **9a** | Fit Check location (§5.4a) — **no session**: scan-part-then-location on the scan page (`awaiting-location` status), `POST /floor/locations/fit-check/part` commits a `fit_checked` event, re-scan appends rather than errors. `BBS-fit-check` refused by the station-scan route (`category == "location"`). | Scan a harvested part at idle → "scan a location" prompt. Scan `BBS-fit-check` → recorded, screen shows part/printer, back to idle. Re-scan same part → logged again, no error. Part never harvested → error. `BBS-fit-check` with nothing pending → "scan a part first". |
+| **9a** | Fit Check location (§5.4a) — **no session**: scan-part-then-location on the scan page (`awaiting-location` status), `POST /floor/locations/fit-check/part` commits a `fit_checked` event, re-scan appends rather than errors. `BBS-initial-qc-pass` refused by the station-scan route (`category == "location"`). | Scan a harvested part at idle → "scan a location" prompt. Scan `BBS-initial-qc-pass` → recorded, screen shows part/printer, back to idle. Re-scan same part → logged again, no error. Part never harvested → error. `BBS-initial-qc-pass` with nothing pending → "scan a part first". |
 | **9b** | Rework location (§5.4b) — same no-session shape as 9a, but three scans: part → `BBS-rework` (pure UI transition, `awaiting-rework-reason` status, no server call) → `BBR-…` reason (or `BBR-other` + keyboard), which is what actually calls `POST /floor/locations/rework/part`. Reasons come from the editable Error labels catalog. | Scan a harvested part → "scan a location". Scan `BBS-rework` → "scan a reason", nothing posted yet. Scan a reason → saved, back to idle. Scan a different part before the reason → first pending part dropped, second one pending. `BBR-other` → keyboard note saved. |
 | **9c** | Cleanup outcomes — **every part scanned, good ones included** (§5.5, §11.2), **gated on Fit Check** (§5.4a) | Part scan alone → recorded **good**, one scan, no confirmation step. Part → defect / rework / multi / other → recorded defective with disposition. Trash vs rework. Harvest codes ignored. **Yield check:** label a job's parts, mark some good and some defective, and confirm `good / produced` comes out right for that job — and that a part never scanned at cleanup reads as *uninspected*, not as good. **Amendment:** scan a part good, then re-scan it and mark it defective — the current disposition changes, the earlier one survives, and the pair is distinguishable from a straight-to-defective part (§5.5). **Gate check:** scan a part straight from Harvest, no Fit Check — refused, with the "needs Fit Check first" message. Fit-check it, then Cleanup accepts it. **Rework path:** fit-check a part, send it to Rework with a reason, confirm Cleanup accepts it straight through with no second Fit Check required. |
 
@@ -1508,7 +1508,7 @@ manual clicking every time, so every phase starts from the same known state:
 | 6 | Integration: consume path also writes a ledger row | Virtual printer finishes an assigned-product print → WIP kg down |
 | 7 | Integration: printer QR → latest finished job | Print `BBP-…` for a virtual printer, scan → correct job |
 | 8 | Integration: part linking, defect save, same-printer-close, abandoned-session display | Full loop on a virtual printer's finished job: printer → parts → close. Then a real defect scan. Leave a session open, reload, confirm elapsed time shows and increments. |
-| 9a | Integration: `scan_fit_check_part` writes `fit_checked` regardless of any open session elsewhere; `/floor/session/scan` refuses `BBS-fit-check` (404, `category == "location"`); re-scan appends rather than errors; never-enrolled sticker rejected. Component (frontend): idle part scan → `awaiting-location`; location commits and flashes; no-part-pending location scan refused; abandoning a pending part on an unrelated scan | Scan a harvested part at idle → "scan a location". Scan `BBS-fit-check` → recorded, screen confirms, back to idle. Re-scan → logged again, no error. `BBS-fit-check` scanned bare → "scan a part first". |
+| 9a | Integration: `scan_fit_check_part` writes `fit_checked` regardless of any open session elsewhere; `/floor/session/scan` refuses `BBS-initial-qc-pass` (404, `category == "location"`); re-scan appends rather than errors; never-enrolled sticker rejected. Component (frontend): idle part scan → `awaiting-location`; location commits and flashes; no-part-pending location scan refused; abandoning a pending part on an unrelated scan | Scan a harvested part at idle → "scan a location". Scan `BBS-initial-qc-pass` → recorded, screen confirms, back to idle. Re-scan → logged again, no error. `BBS-initial-qc-pass` scanned bare → "scan a part first". |
 | 9b | Integration: `scan_rework_part` writes one `rework` event with the reason, atomically — no partial write from the location-only step, since that step never calls the backend. Component: part → `BBS-rework` → `awaiting-rework-reason` (no request sent yet) → reason → commits; abandoning a pending part or a pending reason by scanning something else | Scan a harvested part → "scan a location". Scan `BBS-rework` → "scan a reason", confirm nothing was posted yet. Scan a reason → saved, back to idle. Scan a different part before the reason → first pending part dropped. `BBR-other` → keyboard note saved. |
 | 9c | Integration: cleanup outcome write, defect save, disposition amendment, **and the Fit Check gate** (refused without it, accepted with it, accepted after Rework with no second Fit Check) | Full 9a→9c loop: fit-check a part, then Cleanup accepts it. Separately, skip Fit Check and confirm Cleanup refuses. Sand a part (with a reason), confirm Cleanup accepts it straight through. |
 
@@ -1581,7 +1581,7 @@ What changed, concretely:
    code needed, unlike Move's server-side queue (§5.3) which needed its own
    cancellation message.
 6. Doc corrected throughout: §2.4's lock table no longer lists Fit Check/
-   Rework (there is no lock question — no session), §4 notes `BBS-fit-check`/
+   Rework (there is no lock question — no session), §4 notes `BBS-initial-qc-pass`/
    `BBS-rework` are not station dispatch, §5.4a/§5.4b rewritten around the
    scan-part-then-location flow, §9's mis-scan rows updated, §10/§15.1/§15.5
    updated to describe the corrected shape rather than the retracted one.

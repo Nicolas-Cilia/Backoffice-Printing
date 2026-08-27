@@ -38,7 +38,7 @@ import { useToast } from "../contexts/ToastContext";
 import { formatFloorDate } from "../utils/floorScan";
 import { FloorBinManagementPage } from "./FloorBinManagementPage";
 
-type PartFilter = "all" | "attention" | "linked" | "archived" | "failures";
+type PartFilter = "all" | "attention" | "linked" | "fulfilled" | "archived" | "failures";
 const EMPTY_PARTS: FloorInventoryPart[] = [];
 const NON_STATUS_EVENT_ACTIONS = new Set([
   "scanned",
@@ -56,7 +56,8 @@ const FAILURE_REASON_OPTIONS: Array<{ value: FloorStopReasonCode; label: string 
   { value: "other", label: "Other" },
 ];
 const STATUS_SEARCH_SHORTCUTS = [
-  { label: "Fit checks", query: "fit check" },
+  { label: "Initial QC Pass", query: "qc" },
+  { label: "Fulfilled", query: "fulfilled" },
   { label: "Reworks", query: "rework" },
   { label: "WIP", query: "wip" },
   { label: "Shipped", query: "shipped" },
@@ -140,6 +141,17 @@ function isLinked(
   );
 }
 
+function isFulfilledPart(
+  part: FloorInventoryPart,
+  latestEventAction?: string | null,
+) {
+  return !part.archived_at && latestEventAction === "shipped";
+}
+
+function isFulfilledBin(bin: FloorBinManagement) {
+  return bin.batch?.status === "empty" || bin.batch?.status === "empty_override";
+}
+
 export function FloorInventoryPage() {
   const { t } = useTranslation();
   const { showToast } = useToast();
@@ -168,6 +180,7 @@ export function FloorInventoryPage() {
   };
   const filters: Array<{ id: PartFilter; label: string }> = [
     { id: "linked", label: t("floor.inventoryFilterLinked", "Registered Parts") },
+    { id: "fulfilled", label: t("floor.inventoryFilterFulfilled", "Fulfilled") },
     { id: "failures", label: t("floor.printFailureLogTitle", "Print failure log") },
     { id: "attention", label: t("floor.inventoryFilterAttention", "Needs matching") },
     { id: "all", label: t("floor.inventoryFilterAll", "All parts") },
@@ -178,9 +191,9 @@ export function FloorInventoryPage() {
     enabled: pageTab === "parts",
     refetchOnMount: "always",
   });
-  const binManagementQuery = useQuery({
-    queryKey: ["floor-bin-management"],
-    queryFn: () => api.getFloorBinManagement(),
+  const binHistoryQuery = useQuery({
+    queryKey: ["floor-bin-history"],
+    queryFn: () => api.getFloorBinHistory(),
     enabled: pageTab === "parts",
     refetchOnMount: "always",
   });
@@ -218,8 +231,8 @@ export function FloorInventoryPage() {
     },
   });
   const records = partsQuery.data ?? EMPTY_PARTS;
-  const binRecords: FloorBinManagement[] | undefined = binManagementQuery.data;
-  const activeBins = useMemo(
+  const binRecords: FloorBinManagement[] | undefined = binHistoryQuery.data;
+  const historyBins = useMemo(
     () => (binRecords ?? []).filter((bin) => bin.batch !== null),
     [binRecords],
   );
@@ -248,7 +261,7 @@ export function FloorInventoryPage() {
     [activeRecords, historyQueries],
   );
   const selectedPart = records.find((part) => part.id === selectedId) ?? null;
-  const selectedBin = activeBins.find((bin) => bin.batch?.id === selectedBinId) ?? null;
+  const selectedBin = historyBins.find((bin) => bin.batch?.id === selectedBinId) ?? null;
   const selectedBinEventsQuery = useQuery({
     queryKey: ["floor-bin-batch-events", selectedBinId],
     queryFn: () => api.getFloorBinBatchEvents(selectedBinId!),
@@ -520,14 +533,16 @@ export function FloorInventoryPage() {
     () => ({
       active:
         records.filter((part) =>
-          isLinked(part, latestEventActions.get(part.id)),
-        ).length + activeBins.filter((bin) => bin.batch?.archive_id !== null).length,
+          isLinked(part, latestEventActions.get(part.id)) &&
+          !isFulfilledPart(part, latestEventActions.get(part.id)),
+        ).length + historyBins.filter((bin) => bin.batch?.archive_id !== null && !isFulfilledBin(bin)).length,
       attention: records.filter((part) =>
-        isAttention(part, latestEventActions.get(part.id)),
-      ).length + activeBins.filter((bin) => bin.batch?.archive_id === null).length,
+        isAttention(part, latestEventActions.get(part.id)) &&
+        !isFulfilledPart(part, latestEventActions.get(part.id)),
+      ).length + historyBins.filter((bin) => bin.batch?.archive_id === null && !isFulfilledBin(bin)).length,
       archived: records.filter((part) => part.archived_at).length,
     }),
-    [activeBins, latestEventActions, records],
+    [historyBins, latestEventActions, records],
   );
   const discardedParts = useMemo(
     () =>
@@ -543,9 +558,13 @@ export function FloorInventoryPage() {
         filter === "all"
           ? !part.archived_at
           : filter === "attention"
-            ? isAttention(part, latestEventActions.get(part.id))
+            ? isAttention(part, latestEventActions.get(part.id)) &&
+              !isFulfilledPart(part, latestEventActions.get(part.id))
             : filter === "linked"
-              ? isLinked(part, latestEventActions.get(part.id))
+              ? isLinked(part, latestEventActions.get(part.id)) &&
+                !isFulfilledPart(part, latestEventActions.get(part.id))
+              : filter === "fulfilled"
+                ? isFulfilledPart(part, latestEventActions.get(part.id))
               : Boolean(part.archived_at);
       return (
         included &&
@@ -558,16 +577,18 @@ export function FloorInventoryPage() {
   }, [filter, latestEventActions, records, search]);
   const visibleBins = useMemo(() => {
     const term = search.trim().toLowerCase();
-    return activeBins.filter((bin) => {
+    return historyBins.filter((bin) => {
       const batch = bin.batch;
       if (!batch) return false;
       const included =
         filter === "all"
           ? true
           : filter === "attention"
-            ? batch.archive_id === null
+            ? batch.archive_id === null && !isFulfilledBin(bin)
             : filter === "linked"
-              ? batch.archive_id !== null
+              ? batch.archive_id !== null && !isFulfilledBin(bin)
+              : filter === "fulfilled"
+                ? isFulfilledBin(bin)
               : false;
       return (
         included &&
@@ -579,13 +600,16 @@ export function FloorInventoryPage() {
             batch.print_name,
             batch.printer_name,
             batch.status,
+            "fulfilled",
+            "depleted",
+            "manually cleared",
             "bin",
             "button",
             "knob",
           ].some((value) => value?.toLowerCase().includes(term)))
       );
     });
-  }, [activeBins, filter, search]);
+  }, [historyBins, filter, search]);
   const visibleFailureRecords = useMemo(() => {
     if (filter !== "all") return [];
     const term = search.trim().toLowerCase();
@@ -605,13 +629,14 @@ export function FloorInventoryPage() {
   }, [failureReasonsQuery.data, filter, search, t]);
   const visibleRecordCount =
     visibleParts.length + visibleBins.length + visibleFailureRecords.length;
+  const displayedRecordCount = visibleRecordCount;
   const failureLogCount =
     (failureReasonsQuery.data?.length ?? 0) + discardedParts.length;
   const hiddenByFilter =
     !partsQuery.isLoading &&
     !partsQuery.isError &&
     !search.trim() &&
-    records.length + activeBins.length + (failureReasonsQuery.data?.length ?? 0) > 0 &&
+    records.length + historyBins.length + (failureReasonsQuery.data?.length ?? 0) > 0 &&
     visibleRecordCount === 0;
   const saveError =
     archiveMutation.isError ||
@@ -778,12 +803,12 @@ export function FloorInventoryPage() {
                   : t("floor.inventoryRecordCountMany", "{{count}} records", {
                       count: failureLogCount,
                     })
-                : visibleRecordCount === 1
+                : displayedRecordCount === 1
                 ? t("floor.inventoryRecordCountOne", "{{count}} record", {
-                    count: visibleRecordCount,
+                    count: displayedRecordCount,
                   })
                 : t("floor.inventoryRecordCountMany", "{{count}} records", {
-                      count: visibleRecordCount,
+                      count: displayedRecordCount,
                   })}
               </p>
             </div>
@@ -825,15 +850,17 @@ export function FloorInventoryPage() {
                 {t("common.retry", "Retry")}
               </Button>
             </div>
-          ) : visibleRecordCount === 0 ? (
+              ) : visibleRecordCount === 0 ? (
             <div className="px-4 py-16 text-center text-bambu-gray">
-              {hiddenByFilter ? (
+              {filter === "fulfilled" ? (
+                t("floor.inventoryEmptyFulfilled", "No fulfilled parts or depleted bins yet.")
+              ) : hiddenByFilter ? (
                 <div className="space-y-3">
                   <p>
                     {t(
                       "floor.inventoryHiddenByFilter",
                       "No records in this view, but part history has {{count}} saved.",
-                      { count: records.length + activeBins.length },
+                        { count: records.length + historyBins.length },
                     )}
                   </p>
                   <div className="flex flex-wrap justify-center gap-2">
@@ -880,192 +907,33 @@ export function FloorInventoryPage() {
                 t("floor.inventoryEmpty", "No part records yet.")
               )}
             </div>
-          ) : (
-            <div className="overflow-x-auto">
-              <table className="w-full min-w-[680px] text-left text-sm">
-                <thead className="border-b border-bambu-dark-tertiary text-xs uppercase tracking-wide text-bambu-gray">
-                  <tr>
-                    <th className="px-4 py-3 font-medium">
-                      {t("floor.inventoryColStickerOrBin", "Sticker / bin")}
-                    </th>
-                    <th className="px-4 py-3 font-medium">
-                      {t("floor.inventoryColStatus", "Status")}
-                    </th>
-                    <th className="px-4 py-3 font-medium">
-                      {t("floor.inventoryColJob", "Job / part")}
-                    </th>
-                    <th className="px-4 py-3 font-medium">
-                      {t("floor.inventoryColPrinter", "Printer")}
-                    </th>
-                    <th className="px-4 py-3 font-medium">
-                      {t("floor.inventoryColLabeled", "Labeled")}
-                    </th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {visibleFailureRecords.map((record) => (
-                    <tr
-                      key={`failure-${record.id}`}
-                      tabIndex={0}
-                      onClick={() => {
-                        setSelectedId(null);
-                        setSelectedBinId(null);
-                        setSelectedFailure(record);
-                      }}
-                      onKeyDown={(event) => {
-                        if (event.key === "Enter" || event.key === " ") {
-                          setSelectedId(null);
-                          setSelectedBinId(null);
-                          setSelectedFailure(record);
-                        }
-                      }}
-                      className={`cursor-pointer border-b border-bambu-dark-tertiary last:border-0 transition-colors hover:bg-bambu-dark-tertiary/60 focus:bg-bambu-dark-tertiary/60 focus:outline-none ${selectedFailure?.id === record.id ? "bg-red-100/50 dark:bg-red-500/10" : ""}`}
-                    >
-                      <td className="px-4 py-3 font-mono font-medium text-bambu-gray">
-                        —
-                      </td>
-                      <td className="px-4 py-3">
-                        <span className={`inline-flex rounded-full px-2 py-1 text-xs font-medium ${DISCARDED_STATUS_CLASS}`}>
-                          {t("floor.inventoryStatusFailed", "Failed")}
-                        </span>
-                      </td>
-                      <td className="px-4 py-3 text-white">
-                        {record.part_code && (
-                          <span className="mr-2 font-mono text-bambu-green-light">
-                            {record.part_code}
-                          </span>
-                        )}
-                        {record.print_name ?? t("floor.inventoryNoJob", "No completed job")}
-                        <span className="ml-2 text-red-800 dark:text-red-300">
-                          {printFailureReasonLabel(record.reason_code, record.reason_text, t)}
-                        </span>
-                      </td>
-                      <td className="px-4 py-3 text-bambu-gray-light">
-                        {record.printer_name ?? t("floor.inventoryDeletedPrinter", "Deleted printer")}
-                      </td>
-                      <td className="whitespace-nowrap px-4 py-3 text-bambu-gray">
-                        {formatFloorDate(record.stopped_at, {
-                          dateStyle: "medium",
-                          timeStyle: "short",
-                        })}
-                      </td>
-                    </tr>
-                  ))}
-                  {visibleParts.map((part) => {
-                    const latestEventAction =
-                      latestEventActions.get(part.id) ??
-                      part.latest_event_action ??
-                      null;
-                    return (
-                    <tr
-                      key={part.id}
-                      tabIndex={0}
-                      onClick={() => {
-                        setSelectedFailure(null);
-                        setSelectedBinId(null);
-                        setSelectedId(part.id);
-                      }}
-                      onKeyDown={(event) => {
-                        if (event.key === "Enter" || event.key === " ") {
-                          setSelectedFailure(null);
-                          setSelectedBinId(null);
-                          setSelectedId(part.id);
-                        }
-                      }}
-                      className={`cursor-pointer border-b border-bambu-dark-tertiary last:border-0 transition-colors hover:bg-bambu-dark-tertiary/60 focus:bg-bambu-dark-tertiary/60 focus:outline-none ${selectedId === part.id ? "bg-bambu-dark-tertiary/60" : ""}`}
-                    >
-                      <td className="px-4 py-3 font-mono font-medium text-white">
-                        {part.sticker_code}
-                      </td>
-                      <td className="px-4 py-3">
-                        <span
-                          className={`inline-flex rounded-full px-2 py-1 text-xs font-medium ${statusClass(part, latestEventAction)}`}
-                        >
-                          {statusLabel(part, t, latestEventAction)}
-                        </span>
-                      </td>
-                      <td className="px-4 py-3 text-white">
-                        {part.part_code && <span className="mr-2 font-mono text-bambu-green-light">{part.part_code}</span>}
-                        {part.print_name ?? (
-                          <span className="text-bambu-gray">
-                            {t("floor.inventoryNoJob", "No completed job")}
-                          </span>
-                        )}
-                      </td>
-                      <td className="px-4 py-3 text-bambu-gray-light">
-                        {part.printer_name ??
-                          t("floor.inventoryDeletedPrinter", "Deleted printer")}
-                      </td>
-                      <td className="whitespace-nowrap px-4 py-3 text-bambu-gray">
-                        {formatFloorDate(part.labeled_at, {
-                          dateStyle: "medium",
-                          timeStyle: "short",
-                        })}
-                      </td>
-                    </tr>
-                    );
-                  })}
-                  {visibleBins.map((bin) => {
-                    const batch = bin.batch;
-                    if (!batch) return null;
-                    return (
-                      <tr
-                        key={`bin-${batch.id}`}
-                        tabIndex={0}
-                        onClick={() => {
-                          setSelectedFailure(null);
-                          setSelectedId(null);
-                          setSelectedBinId(batch.id);
-                        }}
-                        onKeyDown={(event) => {
-                          if (event.key === "Enter" || event.key === " ") {
-                            setSelectedFailure(null);
-                            setSelectedId(null);
-                            setSelectedBinId(batch.id);
-                          }
-                        }}
-                        className={`cursor-pointer border-b border-bambu-dark-tertiary last:border-0 transition-colors hover:bg-bambu-dark-tertiary/60 focus:bg-bambu-dark-tertiary/60 focus:outline-none ${selectedBinId === batch.id ? "bg-bambu-dark-tertiary/60" : ""}`}
-                      >
-                        <td className="px-4 py-3 font-mono font-medium text-white">
-                          {bin.payload}
-                        </td>
-                        <td className="px-4 py-3">
-                          <span
-                            className={`inline-flex rounded-full px-2 py-1 text-xs font-medium ${binStatusClass(batch.status)}`}
-                          >
-                            {binStatusLabel(batch.status, t)}
-                          </span>
-                        </td>
-                        <td className="px-4 py-3 text-white">
-                          <span className="mr-2 font-mono text-bambu-green-light">
-                            {bin.part_code}
-                          </span>
-                          {batch.print_name ?? (
-                            <span className="text-bambu-gray">
-                              {t("floor.inventoryNoJob", "No completed job")}
-                            </span>
-                          )}
-                          <span className="ml-2 text-bambu-gray">
-                            ({batch.remaining_quantity}/{batch.quantity})
-                          </span>
-                        </td>
-                        <td className="px-4 py-3 text-bambu-gray-light">
-                          {batch.printer_name ??
-                            t("floor.inventoryDeletedPrinter", "Deleted printer")}
-                        </td>
-                        <td className="whitespace-nowrap px-4 py-3 text-bambu-gray">
-                          {formatFloorDate(batch.harvested_at, {
-                            dateStyle: "medium",
-                            timeStyle: "short",
-                          })}
-                        </td>
-                      </tr>
-                    );
-                  })}
-                </tbody>
-              </table>
-            </div>
-          )}
+              ) : (
+                <InventoryHistoryTable
+                  parts={visibleParts}
+                  bins={visibleBins}
+                  failures={visibleFailureRecords}
+                  latestEventActions={latestEventActions}
+                  selectedId={selectedId}
+                  selectedBinId={selectedBinId}
+                  selectedFailure={selectedFailure}
+                  onSelectPart={(part) => {
+                    setSelectedFailure(null);
+                    setSelectedBinId(null);
+                    setSelectedId(part.id);
+                  }}
+                  onSelectBin={(bin) => {
+                    setSelectedFailure(null);
+                    setSelectedId(null);
+                    setSelectedBinId(bin.batch?.id ?? null);
+                  }}
+                  onSelectFailure={(record) => {
+                    setSelectedId(null);
+                    setSelectedBinId(null);
+                    setSelectedFailure(record);
+                  }}
+                  t={t}
+                />
+              )}
         </section>
         {selectedFailure ? (
           <PrintFailureDetail
@@ -1141,6 +1009,161 @@ export function FloorInventoryPage() {
         />
         )}
       </div>
+    </div>
+  );
+}
+
+function InventoryHistoryTable({
+  parts,
+  bins,
+  failures,
+  latestEventActions,
+  selectedId,
+  selectedBinId,
+  selectedFailure,
+  onSelectPart,
+  onSelectBin,
+  onSelectFailure,
+  t,
+}: {
+  parts: FloorInventoryPart[];
+  bins: FloorBinManagement[];
+  failures: FloorPrintFailureReason[];
+  latestEventActions: Map<number, string>;
+  selectedId: number | null;
+  selectedBinId: number | null;
+  selectedFailure: FloorPrintFailureReason | null;
+  onSelectPart: (part: FloorInventoryPart) => void;
+  onSelectBin: (bin: FloorBinManagement) => void;
+  onSelectFailure: (record: FloorPrintFailureReason) => void;
+  t: ReturnType<typeof useTranslation>["t"];
+}) {
+  return (
+    <div className="overflow-x-auto">
+      <table className="w-full min-w-[680px] text-left text-sm">
+        <thead className="border-b border-bambu-dark-tertiary text-xs uppercase tracking-wide text-bambu-gray">
+          <tr>
+            <th className="px-4 py-3 font-medium">
+              {t("floor.inventoryColStickerOrBin", "Sticker / bin")}
+            </th>
+            <th className="px-4 py-3 font-medium">
+              {t("floor.inventoryColStatus", "Status")}
+            </th>
+            <th className="px-4 py-3 font-medium">
+              {t("floor.inventoryColJob", "Job / part")}
+            </th>
+            <th className="px-4 py-3 font-medium">
+              {t("floor.inventoryColPrinter", "Printer")}
+            </th>
+            <th className="px-4 py-3 font-medium">
+              {t("floor.inventoryColLabeled", "Labeled")}
+            </th>
+          </tr>
+        </thead>
+        <tbody>
+          {failures.map((record) => (
+            <tr
+              key={`failure-${record.id}`}
+              tabIndex={0}
+              onClick={() => onSelectFailure(record)}
+              onKeyDown={(event) => {
+                if (event.key === "Enter" || event.key === " ") onSelectFailure(record);
+              }}
+              className={`cursor-pointer border-b border-bambu-dark-tertiary last:border-0 transition-colors hover:bg-bambu-dark-tertiary/60 focus:bg-bambu-dark-tertiary/60 focus:outline-none ${selectedFailure?.id === record.id ? "bg-red-100/50 dark:bg-red-500/10" : ""}`}
+            >
+              <td className="px-4 py-3 font-mono font-medium text-bambu-gray">—</td>
+              <td className="px-4 py-3">
+                <span className={`inline-flex rounded-full px-2 py-1 text-xs font-medium ${DISCARDED_STATUS_CLASS}`}>
+                  {t("floor.inventoryStatusFailed", "Failed")}
+                </span>
+              </td>
+              <td className="px-4 py-3 text-white">
+                {record.part_code && (
+                  <span className="mr-2 font-mono text-bambu-green-light">{record.part_code}</span>
+                )}
+                {record.print_name ?? t("floor.inventoryNoJob", "No completed job")}
+                <span className="ml-2 text-red-800 dark:text-red-300">
+                  {printFailureReasonLabel(record.reason_code, record.reason_text, t)}
+                </span>
+              </td>
+              <td className="px-4 py-3 text-bambu-gray-light">
+                {record.printer_name ?? t("floor.inventoryDeletedPrinter", "Deleted printer")}
+              </td>
+              <td className="whitespace-nowrap px-4 py-3 text-bambu-gray">
+                {formatFloorDate(record.stopped_at, { dateStyle: "medium", timeStyle: "short" })}
+              </td>
+            </tr>
+          ))}
+          {parts.map((part) => {
+            const latestEventAction = latestEventActions.get(part.id) ?? part.latest_event_action ?? null;
+            return (
+              <tr
+                key={part.id}
+                tabIndex={0}
+                onClick={() => onSelectPart(part)}
+                onKeyDown={(event) => {
+                  if (event.key === "Enter" || event.key === " ") onSelectPart(part);
+                }}
+                className={`cursor-pointer border-b border-bambu-dark-tertiary last:border-0 transition-colors hover:bg-bambu-dark-tertiary/60 focus:bg-bambu-dark-tertiary/60 focus:outline-none ${selectedId === part.id ? "bg-bambu-dark-tertiary/60" : ""}`}
+              >
+                <td className="px-4 py-3 font-mono font-medium text-white">{part.sticker_code}</td>
+                <td className="px-4 py-3">
+                  <span className={`inline-flex rounded-full px-2 py-1 text-xs font-medium ${statusClass(part, latestEventAction)}`}>
+                    {statusLabel(part, t, latestEventAction)}
+                  </span>
+                </td>
+                <td className="px-4 py-3 text-white">
+                  {part.part_code && <span className="mr-2 font-mono text-bambu-green-light">{part.part_code}</span>}
+                  {part.print_name ?? (
+                    <span className="text-bambu-gray">{t("floor.inventoryNoJob", "No completed job")}</span>
+                  )}
+                </td>
+                <td className="px-4 py-3 text-bambu-gray-light">
+                  {part.printer_name ?? t("floor.inventoryDeletedPrinter", "Deleted printer")}
+                </td>
+                <td className="whitespace-nowrap px-4 py-3 text-bambu-gray">
+                  {formatFloorDate(part.labeled_at, { dateStyle: "medium", timeStyle: "short" })}
+                </td>
+              </tr>
+            );
+          })}
+          {bins.map((bin) => {
+            const batch = bin.batch;
+            if (!batch) return null;
+            return (
+              <tr
+                key={`bin-${batch.id}`}
+                tabIndex={0}
+                onClick={() => onSelectBin(bin)}
+                onKeyDown={(event) => {
+                  if (event.key === "Enter" || event.key === " ") onSelectBin(bin);
+                }}
+                className={`cursor-pointer border-b border-bambu-dark-tertiary last:border-0 transition-colors hover:bg-bambu-dark-tertiary/60 focus:bg-bambu-dark-tertiary/60 focus:outline-none ${selectedBinId === batch.id ? "bg-bambu-dark-tertiary/60" : ""}`}
+              >
+                <td className="px-4 py-3 font-mono font-medium text-white">{bin.payload}</td>
+                <td className="px-4 py-3">
+                  <span className={`inline-flex rounded-full px-2 py-1 text-xs font-medium ${binStatusClass(batch.status)}`}>
+                    {binStatusLabel(batch.status, t)}
+                  </span>
+                </td>
+                <td className="px-4 py-3 text-white">
+                  <span className="mr-2 font-mono text-bambu-green-light">{bin.part_code}</span>
+                  {batch.print_name ?? (
+                    <span className="text-bambu-gray">{t("floor.inventoryNoJob", "No completed job")}</span>
+                  )}
+                  <span className="ml-2 text-bambu-gray">({batch.remaining_quantity}/{batch.quantity})</span>
+                </td>
+                <td className="px-4 py-3 text-bambu-gray-light">
+                  {batch.printer_name ?? t("floor.inventoryDeletedPrinter", "Deleted printer")}
+                </td>
+                <td className="whitespace-nowrap px-4 py-3 text-bambu-gray">
+                  {formatFloorDate(batch.harvested_at, { dateStyle: "medium", timeStyle: "short" })}
+                </td>
+              </tr>
+            );
+          })}
+        </tbody>
+      </table>
     </div>
   );
 }
@@ -1482,13 +1505,15 @@ function partSearchValues(part: FloorInventoryPart, latestEventAction: string | 
   const action = latestEventAction ?? part.latest_event_action ?? null;
   const actionTerms =
     action === "fit_check" || action === "fit_checked"
-      ? ["fit", "fit check", "fit checks", "fit check pass"]
+      ? part.part_code === "BUT" || part.part_code === "KNB"
+        ? ["visual", "visual qc", "visual qc pass", "initial qc pass", "qc"]
+        : ["fit", "fit check", "fit checks", "fit check pass", "initial qc pass", "qc"]
       : action === "rework" || action === "sanding"
         ? ["rework", "reworks", "sanding"]
         : action === "wip" || action === "in_wip"
           ? ["wip", "in wip", "in_wip"]
           : action === "shipped"
-            ? ["shipped", "shipping"]
+            ? ["shipped", "shipping", "fulfilled"]
             : action === "discarded"
               ? ["discarded", "discard"]
               : action === "cleanup" || action === "cleaned_up"
@@ -1517,7 +1542,9 @@ function statusLabel(
 ) {
   if (part.archived_at) return t("floor.inventoryStatusArchived", "Archived");
   if (latestEventAction === "fit_check" || latestEventAction === "fit_checked") {
-    return t("floor.inventoryStatusFitCheckPass", "Fit Check Pass");
+    return part.part_code === "BUT" || part.part_code === "KNB"
+      ? t("floor.inventoryStatusVisualQcPass", "Visual QC pass")
+      : t("floor.inventoryStatusFitCheckPass", "Fit Check Pass");
   }
   if (latestEventAction === "rework" || latestEventAction === "sanding") {
     return t("floor.inventoryStatusRework", "Rework");
@@ -1611,6 +1638,12 @@ function binStatusLabel(
       return t("floor.inventoryBinVisualQcPassed", "Visual QC pass");
     case "wip":
       return t("floor.inventoryBinWip", "In WIP");
+    case "empty_override":
+      return t("floor.inventoryBinDepletedManual", "Depleted (manually cleared)");
+    case "empty":
+      return t("floor.inventoryBinDepleted", "Depleted");
+    case "unlinked":
+      return t("floor.inventoryBinUnlinked", "Released (unlinked)");
     default:
       return t("floor.inventoryBinAwaitingQc", "Awaiting visual QC");
   }
@@ -1618,6 +1651,7 @@ function binStatusLabel(
 
 function eventLabel(
   event: FloorInventoryPartEvent,
+  partCode: string | null | undefined,
   t: ReturnType<typeof useTranslation>["t"],
 ) {
   const archiveId = event.details?.archive_id;
@@ -1645,7 +1679,9 @@ function eventLabel(
       return t("floor.inventoryEventRelinkedByScan", "Linked by scanner");
     case "fit_check":
     case "fit_checked":
-      return t("floor.inventoryEventFitChecked", "Fit checked · Initial QC passed");
+      return partCode === "BUT" || partCode === "KNB"
+        ? t("floor.inventoryEventVisualQcPassed", "Visual QC pass")
+        : t("floor.inventoryEventFitChecked", "Fit Check Pass");
     case "rework":
     case "sanding": {
       const reasonCode = event.details?.reason_code;
@@ -2164,7 +2200,9 @@ function binEventLabel(
     case "empty":
       return t("floor.inventoryBinEventEmpty", "Bin marked empty");
     case "empty_override":
-      return t("floor.inventoryBinEventEmptyOverride", "Bin emptied by inventory override");
+      return t("floor.inventoryBinEventEmptyOverride", "Bin manually cleared and marked depleted");
+    case "relinked":
+      return t("floor.inventoryBinEventRelinked", "Bin linked to completed job");
     case "quantity_override":
       return typeof remainingQuantity === "number"
         ? t("floor.inventoryBinEventQuantityOverride", "Quantity overridden to {{quantity}} remaining", { quantity: remainingQuantity })
@@ -2181,6 +2219,7 @@ function binEventDotClass(action: string) {
   if (action === "visual_qc_passed") return "bg-green-500";
   if (action === "wip") return "bg-amber-500";
   if (action === "empty" || action === "empty_override") return "bg-sky-500";
+  if (action === "relinked") return "bg-bambu-green";
   if (action === "unlinked") return "bg-red-500";
   return "bg-bambu-gray";
 }
@@ -2560,7 +2599,7 @@ function PartDetail({
                             : "bg-bambu-gray"
                         }`}
                       />
-                      <p className="text-white">{eventLabel(event, t)}</p>
+                      <p className="text-white">{eventLabel(event, part?.part_code, t)}</p>
                       <p className="text-xs text-bambu-gray">
                         {formatFloorDate(event.occurred_at, {
                           dateStyle: "medium",

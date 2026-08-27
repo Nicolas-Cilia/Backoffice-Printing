@@ -1457,7 +1457,7 @@ describe('FloorScanPage (Phase 1b sessions)', () => {
   });
 
   describe('fit check and rework (§5.4a/§5.4b, phase 9a/9b) — locations, not stations', () => {
-    const RECORDED_PART = { id: 42, sticker_code: 'BBD-000042', printer_id: 12, archive_id: 88, labeled_at: '2026-08-24T10:00:00' };
+    const RECORDED_PART = { id: 42, sticker_code: 'BBD-000042', printer_id: 12, archive_id: 88, part_code: 'TOP', labeled_at: '2026-08-24T10:00:00' };
     const RECORDED_PRINTER = { id: 12, name: 'P1S-3' };
     const RECORDED_ARCHIVE = { id: 88, print_name: 'bracket_v4', completed_at: '2026-08-24T14:32:00', quantity: 4 };
 
@@ -1522,7 +1522,7 @@ describe('FloorScanPage (Phase 1b sessions)', () => {
       expect(screen.queryByText('WIP')).not.toBeInTheDocument();
     });
 
-    it('commits Fit Check on the location scan that follows, with no device_id involved', async () => {
+    it('commits Initial QC Pass on the location scan that follows, with no device_id involved', async () => {
       mockNoSession();
       const captured = mockFitCheckScan({
         result: 'recorded',
@@ -1535,9 +1535,9 @@ describe('FloorScanPage (Phase 1b sessions)', () => {
 
       await scan('BBD-000042');
       await screen.findByText('Scan a location');
-      await scan('BBS-fit-check');
+      await scan('BBS-initial-qc-pass');
 
-      expect(await screen.findByText('Fit Checked')).toBeInTheDocument();
+      expect(await screen.findByText('Fit Check Pass')).toBeInTheDocument();
       expect(screen.getByText('BBD-000042')).toBeInTheDocument();
       expect(captured.body).toEqual({ payload: 'BBD-000042' });
     });
@@ -1550,8 +1550,8 @@ describe('FloorScanPage (Phase 1b sessions)', () => {
       await screen.findByText('Scan a code');
       await scan('BBD-000042');
       await screen.findByText('Scan a location');
-      await scan('BBS-fit-check');
-      await screen.findByText('Fit Checked');
+      await scan('BBS-initial-qc-pass');
+      await screen.findByText('Fit Check Pass');
 
       await act(async () => {
         vi.advanceTimersByTime(3100);
@@ -1566,7 +1566,7 @@ describe('FloorScanPage (Phase 1b sessions)', () => {
       render(<FloorScanPage />);
       await screen.findByText('Scan a code');
 
-      await scan('BBS-fit-check');
+      await scan('BBS-initial-qc-pass');
 
       expect(await screen.findByText('Scan a part first')).toBeInTheDocument();
       expect(floorSound.playScanErrorTone).toHaveBeenCalled();

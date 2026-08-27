@@ -711,7 +711,7 @@ export function FloorScanPage() {
       if (resp.result === 'already_at_location') {
         failScan(
           locationSlug === 'fit-check'
-            ? t('floor.fitCheckAlreadyRecorded', 'Part is already in Fit Check')
+            ? t('floor.initialQcAlreadyRecorded', 'Part is already in Initial QC Pass')
             : t('floor.reworkAlreadyRecorded', 'Part is already in Rework'),
         );
         return;
@@ -962,7 +962,7 @@ export function FloorScanPage() {
           const pendingPart = statusRef.current.part;
           if (route.slug === 'fit-check') {
             if (isAlreadyAtLocation(pendingPart, 'fit-check')) {
-              failScan(t('floor.fitCheckAlreadyRecorded', 'Part is already in Fit Check'), route.payload);
+              failScan(t('floor.initialQcAlreadyRecorded', 'Part is already in Initial QC Pass'), route.payload);
               return;
             }
             void submitFitCheckPartScan(pendingPayload);
@@ -1489,6 +1489,16 @@ function PartCodeThumbnail({ partCode, sectionPartId, className }: { partCode: s
   );
 }
 
+function qcPassStatusLabel(
+  partCode: string | null | undefined,
+  t: ReturnType<typeof useTranslation>['t'],
+) {
+  if (partCode === 'BUT' || partCode === 'KNB') {
+    return t('floor.inventoryStatusVisualQcPass', 'Visual QC pass');
+  }
+  return t('floor.inventoryStatusFitCheckPass', 'Fit Check Pass');
+}
+
 function scanStatusLabel(
   part: PartImageIdentity,
   t: ReturnType<typeof useTranslation>['t'],
@@ -1497,7 +1507,7 @@ function scanStatusLabel(
   switch (part.latest_event_action) {
     case 'fit_check':
     case 'fit_checked':
-      return t('floor.inventoryStatusFitCheckPass', 'Fit Check Pass');
+      return qcPassStatusLabel(part.part_code, t);
     case 'rework':
     case 'sanding':
       return t('floor.inventoryStatusRework', 'Rework');
@@ -2776,7 +2786,7 @@ function LocationRecordedFlash({
       </p>
       <p className={`mt-3 text-lg ${locationSlug === 'discard' ? 'text-red-500' : locationSlug === 'rework' ? 'text-orange-500' : 'text-green-500'}`}>
         {locationSlug === 'fit-check'
-          ? t('floor.fitCheckRecorded', 'Fit Checked')
+          ? qcPassStatusLabel(part?.part_code, t)
           : locationSlug === 'discard'
             ? t('floor.discardRecorded', 'Discarded')
             : reasonCode

@@ -373,12 +373,12 @@ class TestFitCheckPartScan:
         assert actions == ["enrolled", "fit_checked"]
 
     async def test_session_scan_refuses_to_open_it_as_a_station(self, async_client):
-        """§5.4a: `BBS-fit-check` is a printable, resolvable payload (the
+        """§5.4a: `BBS-initial-qc-pass` is a printable, resolvable payload (the
         Codes page's Locations tab needs that), but it must never open a
         session the way a real station QR does."""
         resp = await async_client.post(
             "/api/v1/floor/session/scan",
-            json={"payload": "BBS-fit-check", "device_id": DEVICE_A},
+            json={"payload": "BBS-initial-qc-pass", "device_id": DEVICE_A},
         )
 
         assert resp.status_code == 404
@@ -1080,7 +1080,9 @@ class TestReusableBinFlow:
         assert reused.json()["result"] == "recorded"
         assert reused.json()["batch"]["quantity"] == 11
 
-    async def test_inventory_can_override_quantity_and_unlink_active_fill(self, async_client, printer_factory):
+    async def test_inventory_can_override_quantity_and_unlink_active_fill(
+        self, async_client, printer_factory, archive_factory
+    ):
         printer = await printer_factory(name="Bench A")
         await _open_harvest(async_client, DEVICE_A)
         await _scan_printer(async_client, printer.id, DEVICE_A)
@@ -1103,6 +1105,12 @@ class TestReusableBinFlow:
         available = await async_client.get("/api/v1/floor/inventory/bins")
         assert next(item for item in available.json() if item["payload"] == "BBN-BUT-1")["batch"] is None
 
+        history = await async_client.get("/api/v1/floor/inventory/bins?include_history=true")
+        assert history.status_code == 200
+        cleared = next(item for item in history.json() if item["payload"] == "BBN-BUT-1")
+        assert cleared["status"] == "empty_override"
+        assert cleared["batch"]["remaining_quantity"] == 0
+
         await async_client.post(
             "/api/v1/floor/harvest/bin",
             json={"device_id": DEVICE_A, "payload": "BBN-BUT-1", "quantity": 9},
@@ -1113,4 +1121,36 @@ class TestReusableBinFlow:
         )
         assert unlinked.json()["result"] == "unlinked"
         available_again = await async_client.get("/api/v1/floor/inventory/bins")
-        assert next(item for item in available_again.json() if item["payload"] == "BBN-BUT-1")["batch"] is None
+        unlinked_item = next(item for item in available_again.json() if item["payload"] == "BBN-BUT-1")
+        assert unlinked_item["status"] == "unlinked"
+        assert unlinked_item["batch"]["remaining_quantity"] == 9
+
+        replacement_job = await archive_factory(
+            printer_id=printer.id,
+            print_name="BUT H2D Test Print",
+            quantity=18,
+        )
+        incompatible_job = await archive_factory(
+            printer_id=printer.id,
+            print_name="TOP H2D Test Print",
+            quantity=18,
+        )
+        candidates = await async_client.get(
+            f"/api/v1/floor/inventory/bins/batches/{unlinked_item['batch']['id']}/job-candidates",
+            params={"printer_id": printer.id},
+        )
+        assert candidates.status_code == 200
+        assert all(candidate["id"] != incompatible_job.id for candidate in candidates.json())
+        assert candidates.json()[0]["id"] == replacement_job.id
+
+        relinked = await async_client.post(
+            f"/api/v1/floor/inventory/bins/batches/{unlinked_item['batch']['id']}/relink",
+            json={"archive_id": replacement_job.id},
+        )
+        assert relinked.status_code == 200
+        assert relinked.json()["batch"]["archive_id"] == replacement_job.id
+        assert relinked.json()["batch"]["status"] == "harvested"
+
+        active_again = await async_client.get("/api/v1/floor/inventory/bins")
+        active_item = next(item for item in active_again.json() if item["payload"] == "BBN-BUT-1")
+        assert active_item["batch"]["archive_id"] == replacement_job.id

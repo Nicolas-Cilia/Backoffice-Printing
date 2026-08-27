@@ -24,8 +24,8 @@ const STATIONS = [
   },
   {
     slug: 'fit-check',
-    payload: 'BBS-fit-check',
-    name: 'Fit Check',
+    payload: 'BBS-initial-qc-pass',
+    name: 'Initial QC Pass',
     description: 'Mandatory first QC checkpoint.',
     category: 'location',
   },
@@ -246,7 +246,7 @@ describe('FloorCodesPage', () => {
   });
 
   describe('locations tab', () => {
-    it('lists Fit Check and Rework, not the workflow stations', async () => {
+    it('lists Initial QC Pass and Rework, not the workflow stations', async () => {
       mockStationsAndCapturePrint();
       const user = userEvent.setup();
       render(<FloorCodesPage />);
@@ -254,9 +254,9 @@ describe('FloorCodesPage', () => {
 
       await user.click(screen.getByRole('button', { name: 'Locations' }));
 
-      expect(await screen.findByText('Fit Check')).toBeInTheDocument();
+      expect(await screen.findByText('Initial QC Pass')).toBeInTheDocument();
       expect(screen.getByText('Rework')).toBeInTheDocument();
-      expect(screen.getByText('BBS-fit-check')).toBeInTheDocument();
+      expect(screen.getByText('BBS-initial-qc-pass')).toBeInTheDocument();
       expect(screen.queryByText('WIP')).not.toBeInTheDocument();
       expect(screen.queryByText('Harvest')).not.toBeInTheDocument();
     });
@@ -268,12 +268,12 @@ describe('FloorCodesPage', () => {
       await screen.findByText('WIP');
 
       await user.click(screen.getByRole('button', { name: 'Locations' }));
-      await screen.findByText('Fit Check');
+      await screen.findByText('Initial QC Pass');
       await user.click(screen.getByRole('checkbox', { name: 'Rework' }));
       await user.click(screen.getByRole('button', { name: /Print selected \(1\)/ }));
 
       await waitFor(() => expect(captured.body).not.toBeNull());
-      expect(captured.body).toMatchObject({ payloads: ['BBS-fit-check'] });
+      expect(captured.body).toMatchObject({ payloads: ['BBS-initial-qc-pass'] });
     });
 
     it('re-selects for the tab now shown rather than carrying a stale selection', async () => {
@@ -284,7 +284,7 @@ describe('FloorCodesPage', () => {
       expect(screen.getByRole('button', { name: /Print selected \(3\)/ })).toBeEnabled();
 
       await user.click(screen.getByRole('button', { name: 'Locations' }));
-      await screen.findByText('Fit Check');
+      await screen.findByText('Initial QC Pass');
 
       expect(screen.getByRole('button', { name: /Print selected \(2\)/ })).toBeEnabled();
     });

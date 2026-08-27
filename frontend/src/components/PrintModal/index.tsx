@@ -1087,6 +1087,13 @@ export function PrintModal({
 
     // Show result toast
     if (results.failed === 0) {
+      // The queue request has succeeded. Close the print UI immediately; the
+      // printer-status refresh used to tailor the toast can be slow while a
+      // printer is busy and must not keep the print dialog on screen.
+      queryClient.invalidateQueries({ queryKey: ['queue'] });
+      onSuccess?.();
+      onClose();
+
       if (isEditing) {
         if (mode === 'edit-queue-item') {
           showToast('Queue item updated');
@@ -1108,9 +1115,6 @@ export function PrintModal({
             : t('queue.itemsQueued', { count: results.success }),
         );
       }
-      queryClient.invalidateQueries({ queryKey: ['queue'] });
-      onSuccess?.();
-      onClose();
     } else if (results.success === 0) {
       showToast(`Failed: ${results.errors[0]}`, 'error');
     } else {
