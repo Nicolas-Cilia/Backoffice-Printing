@@ -101,6 +101,9 @@ class LastPrint:
     # the part in question and would discard the field, don't pay for the
     # query (see that function's docstring).
     has_labeled_parts: bool = False
+    # Canonical Production code when this finished job maps unambiguously to
+    # one configured part. Used by Harvest to choose sticker vs KNB/BUT bin.
+    part_code: str | None = None
 
 
 @dataclass(frozen=True)
@@ -386,7 +389,11 @@ async def get_last_finished_print(db: AsyncSession, printer_id: int) -> LastPrin
     # status, for the same reason.
     from backend.app.services.floor_parts import has_labeled_parts_for_archive
 
-    return _archive_summary(archive, has_labeled_parts=await has_labeled_parts_for_archive(db, archive.id))
+    return _archive_summary(
+        archive,
+        has_labeled_parts=await has_labeled_parts_for_archive(db, archive.id),
+        part_code=await _floor_part_code_for_archive(db, archive.id),
+    )
 
 
 async def get_archive_summary(db: AsyncSession, archive_id: int) -> LastPrint | None:
@@ -412,16 +419,22 @@ async def get_archive_summary(db: AsyncSession, archive_id: int) -> LastPrint | 
     archive = result.scalar_one_or_none()
     if archive is None:
         return None
-    return _archive_summary(archive)
+    return _archive_summary(archive, part_code=await _floor_part_code_for_archive(db, archive.id))
 
 
-def _archive_summary(archive: PrintArchive, *, has_labeled_parts: bool = False) -> LastPrint:
+def _archive_summary(
+    archive: PrintArchive,
+    *,
+    has_labeled_parts: bool = False,
+    part_code: str | None = None,
+) -> LastPrint:
     return LastPrint(
         archive_id=archive.id,
         print_name=archive.print_name or archive.filename,
         completed_at=archive.completed_at,
         quantity=archive.quantity or 1,
         has_labeled_parts=has_labeled_parts,
+        part_code=part_code,
     )
 
 

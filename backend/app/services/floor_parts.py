@@ -34,9 +34,10 @@ from dataclasses import dataclass
 from datetime import datetime
 from enum import StrEnum
 
-from sqlalchemy import delete, func, or_, select
+from sqlalchemy import delete, exists, func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from backend.app.models.floor_bin import FloorBinBatch
 from backend.app.models.floor_part import FloorDismissedBuildPlate, FloorErrorLabel, FloorLabeledPart, FloorPartEvent
 from backend.app.models.floor_session import FloorStationSession
 from backend.app.models.printer import Printer
@@ -64,6 +65,34 @@ logger = logging.getLogger(__name__)
 # renderer.
 PART_PREFIX = "BBD-"
 _CODE_DIGIT_LEN = 6
+
+# These events describe the part record itself rather than its current
+# workflow status.  Every other event action is a status, including a status
+# entered manually from Part history.
+PART_STATUS_METADATA_ACTIONS = (
+    "scanned",
+    "archived",
+    "restored",
+    "part_code_assigned",
+    "part_code_changed",
+    "part_code_removed",
+)
+
+
+class PartStatus(StrEnum):
+    """The complete set of workflow statuses allowed by manual override."""
+
+    LINKED = "linked"
+    NEEDS_MATCHING = "needs_matching"
+    WIP = "wip"
+    FIT_CHECKED = "fit_checked"
+    REWORK = "rework"
+    CLEANUP = "cleanup"
+    SHIPPED = "shipped"
+    DISCARDED = "discarded"
+
+
+PART_STATUS_VALUES = frozenset(status.value for status in PartStatus)
 
 # The Harvest station's slug in the catalog (`floor_codes.FLOOR_STATIONS`).
 # Not re-derived from a payload anywhere in this module — harvest is reached
@@ -390,6 +419,7 @@ class PartScanResult(StrEnum):
     LOCKED = "locked"
     NO_PRINTER = "no_printer"
     INVALID_CODE = "invalid_code"
+    BIN_REQUIRED = "bin_required"
 
 
 @dataclass(frozen=True)
@@ -429,6 +459,14 @@ async def scan_part(
         return PartScanOutcome(result=PartScanResult.INVALID_CODE)
 
     session = await get_open_session_for_device(db, device_id)
+
+    # KNB/BUT prints are captured by quantity in a reusable bin. Refuse a
+    # sticker scan for those plates so the two harvest paths cannot silently
+    # create the wrong kind of record.
+    if session is not None and session.station_slug == HARVEST_STATION_SLUG and session.bound_archive_id is not None:
+        bound_code, _ = await _section_part_for_archive(db, session.bound_archive_id)
+        if bound_code in {"KNB", "BUT"}:
+            return PartScanOutcome(result=PartScanResult.BIN_REQUIRED, session=session)
 
     existing = await _get_part_by_code(db, code)
     if existing is not None:
@@ -479,6 +517,8 @@ async def scan_part(
             raise RuntimeError(f"Harvest station missing from the catalog (slug={HARVEST_STATION_SLUG!r})")
 
         last_print = await get_last_finished_print(db, printer_id_hint)
+        if last_print is not None and last_print.part_code in {"KNB", "BUT"}:
+            return PartScanOutcome(result=PartScanResult.BIN_REQUIRED)
         claim = await claim_exclusive_station(
             db,
             station,
@@ -585,19 +625,11 @@ async def _resolve_part_for_location(
 
 
 async def _part_is_at_location(db: AsyncSession, part_id: int, action: str) -> bool:
-    metadata_actions = (
-        "scanned",
-        "archived",
-        "restored",
-        "part_code_assigned",
-        "part_code_changed",
-        "part_code_removed",
-    )
     latest_action = await db.scalar(
         select(FloorPartEvent.action)
         .where(
             FloorPartEvent.part_id == part_id,
-            FloorPartEvent.action.notin_(metadata_actions),
+            FloorPartEvent.action.notin_(PART_STATUS_METADATA_ACTIONS),
         )
         .order_by(FloorPartEvent.occurred_at.desc(), FloorPartEvent.id.desc())
         .limit(1)
@@ -847,7 +879,7 @@ async def list_needs_attention(db: AsyncSession, *, limit: int = 50) -> tuple[li
 
 
 async def list_unlabeled_build_plates(db: AsyncSession, *, limit: int = 50):
-    """Completed jobs with no enrolled parts yet, newest first."""
+    """Completed jobs with no enrolled parts or linked bin batches yet, newest first."""
     from backend.app.models.archive import PrintArchive
 
     cutoff = (
@@ -865,6 +897,7 @@ async def list_unlabeled_build_plates(db: AsyncSession, *, limit: int = 50):
             PrintArchive.status == "completed",
             PrintArchive.completed_at >= started_at,
             FloorLabeledPart.id.is_(None),
+            ~exists().where(FloorBinBatch.archive_id == PrintArchive.id),
             FloorDismissedBuildPlate.id.is_(None),
         )
         .order_by(PrintArchive.completed_at.desc().nullslast(), PrintArchive.id.desc())
@@ -962,16 +995,7 @@ async def list_inventory_parts(db: AsyncSession, *, include_archived: bool = Fal
         select(FloorPartEvent.action)
         .where(
             FloorPartEvent.part_id == FloorLabeledPart.id,
-            FloorPartEvent.action.notin_(
-                (
-                    "scanned",
-                    "archived",
-                    "restored",
-                    "part_code_assigned",
-                    "part_code_changed",
-                    "part_code_removed",
-                )
-            ),
+            FloorPartEvent.action.notin_(PART_STATUS_METADATA_ACTIONS),
         )
         .order_by(FloorPartEvent.occurred_at.desc(), FloorPartEvent.id.desc())
         .limit(1)
@@ -981,16 +1005,7 @@ async def list_inventory_parts(db: AsyncSession, *, include_archived: bool = Fal
         select(FloorPartEvent.details)
         .where(
             FloorPartEvent.part_id == FloorLabeledPart.id,
-            FloorPartEvent.action.notin_(
-                (
-                    "scanned",
-                    "archived",
-                    "restored",
-                    "part_code_assigned",
-                    "part_code_changed",
-                    "part_code_removed",
-                )
-            ),
+            FloorPartEvent.action.notin_(PART_STATUS_METADATA_ACTIONS),
         )
         .order_by(FloorPartEvent.occurred_at.desc(), FloorPartEvent.id.desc())
         .limit(1)
@@ -1044,6 +1059,63 @@ async def get_inventory_part_by_sticker(db: AsyncSession, sticker_code: str) -> 
         return None
     parts = await list_inventory_parts(db, include_archived=True)
     return next((part for part in parts if part.sticker_code == normalized), None)
+
+
+class SetPartStatusResult(StrEnum):
+    """What a manual part-status update request did."""
+
+    UPDATED = "updated"
+    NOT_FOUND = "not_found"
+    ARCHIVED = "archived"
+    INVALID_STATUS = "invalid_status"
+
+
+@dataclass(frozen=True)
+class SetPartStatusOutcome:
+    result: SetPartStatusResult
+    part: FloorLabeledPart | None = None
+
+
+async def set_part_status(db: AsyncSession, part_id: int, status: str) -> SetPartStatusOutcome:
+    """Manually set the current workflow status for a labeled part.
+
+    Statuses are represented as normal part events, so the override is
+    visible in the existing history and remains auditable.  The value must be
+    one of the closed ``PartStatus`` set; unknown or operator-defined text is
+    rejected so downstream workflow code can rely on real statuses.
+    """
+    part = await db.get(FloorLabeledPart, part_id)
+    if part is None:
+        return SetPartStatusOutcome(result=SetPartStatusResult.NOT_FOUND)
+    if part.archived_at is not None:
+        return SetPartStatusOutcome(result=SetPartStatusResult.ARCHIVED)
+
+    normalized = status.strip().lower()
+    if normalized not in PART_STATUS_VALUES:
+        return SetPartStatusOutcome(result=SetPartStatusResult.INVALID_STATUS)
+
+    current_status = await db.scalar(
+        select(FloorPartEvent.action)
+        .where(
+            FloorPartEvent.part_id == part.id,
+            FloorPartEvent.action.notin_(PART_STATUS_METADATA_ACTIONS),
+        )
+        .order_by(FloorPartEvent.occurred_at.desc(), FloorPartEvent.id.desc())
+        .limit(1)
+    )
+    db.add(
+        FloorPartEvent(
+            part_id=part.id,
+            action=normalized,
+            details={
+                "status_override": True,
+                "status": normalized,
+                "previous_status": current_status,
+            },
+        )
+    )
+    await db.flush()
+    return SetPartStatusOutcome(result=SetPartStatusResult.UPDATED, part=part)
 
 
 async def archive_part(db: AsyncSession, part_id: int, *, archived: bool) -> FloorLabeledPart | None:
@@ -1519,6 +1591,11 @@ __all__ = [
     "list_needs_attention",
     "list_inventory_parts",
     "get_inventory_part_by_sticker",
+    "PartStatus",
+    "PART_STATUS_VALUES",
+    "SetPartStatusResult",
+    "SetPartStatusOutcome",
+    "set_part_status",
     "list_part_events",
     "backfill_missing_enrolled_events",
     "list_part_job_candidates",

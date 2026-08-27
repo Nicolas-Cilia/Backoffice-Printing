@@ -262,6 +262,7 @@ async def init_db():
         filament,
         filament_sku_settings,
         filament_tracking,
+        floor_bin,
         floor_part,
         floor_session,
         github_backup,
