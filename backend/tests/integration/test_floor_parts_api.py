@@ -1154,3 +1154,34 @@ class TestReusableBinFlow:
         active_again = await async_client.get("/api/v1/floor/inventory/bins")
         active_item = next(item for item in active_again.json() if item["payload"] == "BBN-BUT-1")
         assert active_item["batch"]["archive_id"] == replacement_job.id
+
+    async def test_harvest_summary_reports_bins_instead_of_zero_parts(
+        self, async_client, printer_factory, archive_factory
+    ):
+        """A Harvest session that only harvested KNB/BUT bins used to
+        summarize as zero parts (docs bug report): the summary only ever
+        counted ``FloorLabeledPart`` rows, never ``FloorBinBatch`` ones."""
+        printer = await printer_factory(name="Bench A")
+        await archive_factory(printer_id=printer.id, print_name="Button plate")
+        await _open_harvest(async_client, DEVICE_A)
+        await _scan_printer(async_client, printer.id, DEVICE_A)
+        await async_client.post(
+            "/api/v1/floor/harvest/bin",
+            json={"device_id": DEVICE_A, "payload": "BBN-BUT-1", "quantity": 12},
+        )
+        session = await async_client.get("/api/v1/floor/session", params={"device_id": DEVICE_A})
+        session_id = session.json()["id"]
+
+        summary = await async_client.get(f"/api/v1/floor/harvest/sessions/{session_id}/summary")
+
+        assert summary.status_code == 200
+        assert summary.json() == [
+            {
+                "printer_id": printer.id,
+                "printer_name": "Bench A",
+                "print_name": "Button plate",
+                "part_count": 0,
+                "bin_quantity": 12,
+            }
+        ]
+

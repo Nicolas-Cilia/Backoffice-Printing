@@ -1485,6 +1485,7 @@ class HarvestSummaryLineResponse(BaseModel):
     printer_name: str | None
     print_name: str | None
     part_count: int
+    bin_quantity: int
 
 
 @router.get("/harvest/sessions/{session_id}/summary", response_model=list[HarvestSummaryLineResponse])

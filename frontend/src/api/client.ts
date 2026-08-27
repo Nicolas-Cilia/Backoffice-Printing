@@ -1621,7 +1621,7 @@ export interface FloorNeedsAttentionResponse {
   total: number;
 }
 export interface FloorUnlabeledBuildPlate { id: number; print_name: string | null; printer_name: string | null; completed_at: string | null; }
-export interface HarvestSummaryLine { printer_id: number | null; printer_name: string | null; print_name: string | null; part_count: number; }
+export interface HarvestSummaryLine { printer_id: number | null; printer_name: string | null; print_name: string | null; part_count: number; bin_quantity: number; }
 
 export interface FloorInventoryPart {
   id: number;

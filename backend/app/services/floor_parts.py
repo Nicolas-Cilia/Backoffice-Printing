@@ -915,20 +915,56 @@ async def list_unlabeled_build_plates(db: AsyncSession, *, limit: int = 50):
 
 
 async def get_harvest_summary(db: AsyncSession, session_id: int) -> list[dict]:
+    """One line per printer/job harvested in this session.
+
+    Individually-stickered TOP/BOT parts and shared KNB/BUT bins are tracked
+    in separate tables (``FloorLabeledPart`` vs ``FloorBinBatch``), so a
+    session that only harvested bins would otherwise summarize as zero parts
+    even though real quantity was collected. Both are queried and merged by
+    printer/job here so the summary — and its "N parts linked" header —
+    reflects whichever kind of harvest actually happened.
+    """
     from backend.app.models.archive import PrintArchive
 
-    rows = await db.execute(
+    part_rows = await db.execute(
         select(Printer.id, Printer.name, PrintArchive.print_name, func.count(FloorLabeledPart.id))
         .outerjoin(Printer, Printer.id == FloorLabeledPart.printer_id)
         .outerjoin(PrintArchive, PrintArchive.id == FloorLabeledPart.archive_id)
         .where(FloorLabeledPart.session_id == session_id)
         .group_by(Printer.id, Printer.name, PrintArchive.print_name)
-        .order_by(Printer.name)
     )
-    return [
-        {"printer_id": printer_id, "printer_name": printer_name, "print_name": print_name, "part_count": count}
-        for printer_id, printer_name, print_name, count in rows.all()
-    ]
+    bin_rows = await db.execute(
+        select(Printer.id, Printer.name, PrintArchive.print_name, func.sum(FloorBinBatch.quantity))
+        .outerjoin(Printer, Printer.id == FloorBinBatch.printer_id)
+        .outerjoin(PrintArchive, PrintArchive.id == FloorBinBatch.archive_id)
+        .where(FloorBinBatch.session_id == session_id)
+        .group_by(Printer.id, Printer.name, PrintArchive.print_name)
+    )
+
+    lines: dict[tuple[int | None, str | None], dict] = {}
+    for printer_id, printer_name, print_name, count in part_rows.all():
+        lines[(printer_id, print_name)] = {
+            "printer_id": printer_id,
+            "printer_name": printer_name,
+            "print_name": print_name,
+            "part_count": count,
+            "bin_quantity": 0,
+        }
+    for printer_id, printer_name, print_name, quantity in bin_rows.all():
+        key = (printer_id, print_name)
+        line = lines.get(key)
+        if line is None:
+            line = {
+                "printer_id": printer_id,
+                "printer_name": printer_name,
+                "print_name": print_name,
+                "part_count": 0,
+                "bin_quantity": 0,
+            }
+            lines[key] = line
+        line["bin_quantity"] = int(quantity or 0)
+
+    return sorted(lines.values(), key=lambda line: line["printer_name"] or "")
 
 
 async def dismiss_build_plate(db: AsyncSession, archive_id: int) -> bool:
