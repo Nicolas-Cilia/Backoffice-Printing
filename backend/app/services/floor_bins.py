@@ -72,6 +72,7 @@ class BinScanResult(StrEnum):
     EMPTY_REQUIRES_WIP = "empty_requires_wip"
     QUANTITY_OVERRIDDEN = "quantity_overridden"
     UNLINKED = "unlinked"
+    DISCARDED = "discarded"
 
 
 @dataclass(frozen=True)
@@ -550,6 +551,43 @@ async def unlink_bin(db: AsyncSession, payload: str) -> BinScanOutcome:
     return BinScanOutcome(result=BinScanResult.UNLINKED, bin=info, batch=await _batch_info(db, batch, info))
 
 
+async def discard_bin(db: AsyncSession, payload: str) -> BinScanOutcome:
+    """Discard a bin's entire active fill from the floor kiosk in one action.
+
+    Combines what the office side does as two separate steps — `unlink_bin`
+    (sever the printer/job association, keeping history) then `scan_bin_empty`
+    (clear the quantity) — because a discard means the contents are simply
+    gone, not something to relink to a different job later. Appending
+    "unlinked" before "empty" keeps both audit trails intact while "empty"
+    ends up as the latest event, so the bin reads as immediately free
+    everywhere status is derived (`_latest_bin_event`, `_remaining_quantity`,
+    and `scan_harvest_bin`'s own free check) without touching those
+    functions or `BIN_FREE_STATUSES`.
+    """
+    info = await _resolve_bin(db, payload)
+    if info is None:
+        return BinScanOutcome(result=BinScanResult.INVALID_CODE)
+    batch, status = await _latest_batch_with_status(db, info)
+    if batch is None or status in BIN_FREE_STATUSES:
+        return BinScanOutcome(result=BinScanResult.NO_BATCH, bin=info)
+    db.add(
+        FloorBinBatchEvent(
+            batch_id=batch.id,
+            action="unlinked",
+            details={
+                "source": "floor_discard",
+                "printer_id": batch.printer_id,
+                "archive_id": batch.archive_id,
+                "previous_status": status,
+                "remaining_quantity": await _remaining_quantity(db, batch),
+            },
+        )
+    )
+    db.add(FloorBinBatchEvent(batch_id=batch.id, action="empty", details={"source": "floor_discard"}))
+    await db.flush()
+    return BinScanOutcome(result=BinScanResult.DISCARDED, bin=info, batch=await _batch_info(db, batch, info))
+
+
 async def list_bin_job_candidates(
     db: AsyncSession,
     batch_id: int,
@@ -667,4 +705,5 @@ __all__ = [
     "relink_bin",
     "override_bin_quantity",
     "unlink_bin",
+    "discard_bin",
 ]
