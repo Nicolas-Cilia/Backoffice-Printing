@@ -486,6 +486,10 @@ export function FloorScanPage() {
         failScan(t('floor.scanInvalidCode', 'Invalid part code'));
         return;
       }
+      if (resp.result === 'bin_required') {
+        failScan(t('floor.scanBinRequired', 'Use the matching KNB or BUT bin for this print'));
+        return;
+      }
       if (resp.result === 'duplicate') {
         failScan(t('floor.scanPartDuplicate', 'Part already scanned'));
         return;
