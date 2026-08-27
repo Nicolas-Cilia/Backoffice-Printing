@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
-import { screen } from '@testing-library/react';
+import { screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { http, HttpResponse } from 'msw';
 import { render } from '../utils';
@@ -66,6 +66,60 @@ describe('FloorLandingPage', () => {
     await user.click(screen.getByRole('button', { name: 'Open Part history' }));
 
     expect(mockNavigate).toHaveBeenCalledWith('/floor/inventory');
+  });
+});
+
+describe('FloorLandingPage QC stat', () => {
+  function mockPartsAndBins({
+    parts = [],
+    events = {},
+    bins = [],
+  }: { parts?: unknown[]; events?: Record<number, unknown[]>; bins?: unknown[] } = {}) {
+    server.use(
+      http.get('/api/v1/floor/inventory/parts', () => HttpResponse.json(parts)),
+      http.get('/api/v1/floor/inventory/parts/:id/events', ({ params }) =>
+        HttpResponse.json(events[Number(params.id)] ?? []),
+      ),
+      http.get('/api/v1/floor/inventory/bins', () => HttpResponse.json(bins)),
+    );
+  }
+
+  it('counts a bin awaiting visual QC toward "Awaiting Initial QC Pass"', async () => {
+    mockPartsAndBins({
+      bins: [
+        {
+          payload: 'BUT-01',
+          bin_number: 1,
+          part_code: 'BUT',
+          part_name: 'Button',
+          status: 'harvested',
+          batch: null,
+        },
+      ],
+    });
+    render(<FloorLandingPage />);
+
+    const label = await screen.findByText('Awaiting Initial QC Pass');
+    await waitFor(() => expect(label.parentElement).toHaveTextContent('1'));
+  });
+
+  it('does not count a bin that already passed visual QC', async () => {
+    mockPartsAndBins({
+      bins: [
+        {
+          payload: 'BUT-01',
+          bin_number: 1,
+          part_code: 'BUT',
+          part_name: 'Button',
+          status: 'visual_qc_passed',
+          batch: null,
+        },
+      ],
+    });
+    render(<FloorLandingPage />);
+
+    const label = await screen.findByText('Awaiting Initial QC Pass');
+    await waitFor(() => expect(label.parentElement).toHaveTextContent('0'));
   });
 });
 

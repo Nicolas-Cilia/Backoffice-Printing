@@ -13,7 +13,7 @@ import { useNavigate } from 'react-router-dom';
 import { useMutation, useQueries, useQuery, useQueryClient } from '@tanstack/react-query';
 import { ScanLine, QrCode, Loader2, AlertTriangle, ClipboardList } from 'lucide-react';
 import { Button } from '../components/Button';
-import { api, type FloorInventoryPart, type FloorSession } from '../api/client';
+import { api, type FloorBinManagement, type FloorInventoryPart, type FloorSession } from '../api/client';
 import { getDeviceId } from '../utils/floorDevice';
 import { formatElapsed } from '../utils/floorScan';
 
@@ -108,6 +108,11 @@ function FloorStats({ t }: { t: ReturnType<typeof useTranslation>['t'] }) {
     queryFn: () => api.getFloorSessions(),
     staleTime: 15_000,
   });
+  const binsQuery = useQuery({
+    queryKey: ['floor-bin-management'],
+    queryFn: () => api.getFloorBinManagement(),
+    staleTime: 30_000,
+  });
   const parts = partsQuery.data ?? [];
   const activeParts = parts.filter((part: FloorInventoryPart) => !part.archived_at && !part.released_at);
   const fitCheckQueries = useQueries({
@@ -125,15 +130,19 @@ function FloorStats({ t }: { t: ReturnType<typeof useTranslation>['t'] }) {
   const needsAttention = parts.filter(
     (part: FloorInventoryPart) => !part.archived_at && part.archive_id === null,
   ).length;
-  const awaitingFitCheck = activeParts.filter((_, index) =>
+  const awaitingPartQc = activeParts.filter((_, index) =>
     !(fitCheckQueries[index]?.data ?? []).some(
       (event) => event.action === 'fit_check' || event.action === 'fit_checked',
     ),
   ).length;
+  const bins = binsQuery.data ?? [];
+  const awaitingBinQc = bins.filter((bin: FloorBinManagement) => bin.status === 'harvested').length;
+  const awaitingFitCheck = awaitingPartQc + awaitingBinQc;
   const openStations = sessionsQuery.data?.open.length ?? 0;
   const statsLoading =
     partsQuery.isLoading ||
     sessionsQuery.isLoading ||
+    binsQuery.isLoading ||
     fitCheckQueries.some((query) => query.isLoading);
 
   return (
@@ -156,7 +165,7 @@ function FloorStats({ t }: { t: ReturnType<typeof useTranslation>['t'] }) {
       </div>
       <div className="border border-bambu-dark-tertiary bg-bambu-dark-secondary rounded-lg px-4 py-3">
         <div className="text-xs text-bambu-gray">
-          {t('floor.statsAwaitingFitCheck', 'Parts awaiting Initial QC Pass')}
+          {t('floor.statsAwaitingFitCheck', 'Awaiting Initial QC Pass')}
         </div>
         <div className="text-2xl font-bold text-white mt-1">
           {statsLoading ? '—' : awaitingFitCheck}
