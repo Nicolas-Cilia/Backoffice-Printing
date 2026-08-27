@@ -39,7 +39,7 @@ class TestStationCatalog:
             "BBS-storage-receive",
             "BBS-storage-move",
             "BBS-harvest",
-            "BBS-fit-check",
+            "BBS-initial-qc-pass",
             "BBS-rework",
         }
 
@@ -61,7 +61,7 @@ class TestStationCatalog:
         assert by_slug["rework"].exclusive is False
 
     def test_category_splits_locations_from_stations(self):
-        """§3.3: Fit Check and Rework print under the Codes page's
+        """§3.3: Initial QC Pass and Rework print under the Codes page's
         Locations tab, everything else under Station labels."""
         by_slug = {s.slug: s for s in FLOOR_STATIONS}
         assert {s.slug for s in FLOOR_STATIONS if s.category == "location"} == {"fit-check", "rework"}
@@ -74,6 +74,11 @@ class TestStationLookup:
         station = station_for_payload("BBS-wip")
         assert station is not None
         assert station.name == "WIP"
+
+    def test_resolves_the_legacy_fit_check_payload(self):
+        station = station_for_payload("BBS-fit-check")
+        assert station is not None
+        assert station.name == "Initial QC Pass"
 
     def test_tolerates_surrounding_whitespace(self):
         """A pistol can emit a trailing character depending on its suffix

@@ -165,7 +165,15 @@ describe('routeScan', () => {
       expect(routeScan('BBD-000042', 'wip').action).toBe('not-implemented');
     });
 
-    it('classifies BBS-fit-check as a location, pulled out of the generic station action', () => {
+    it('classifies BBS-initial-qc-pass as a location, pulled out of the generic station action', () => {
+      expect(routeScan('BBS-initial-qc-pass', null)).toEqual({
+        action: 'location',
+        slug: 'fit-check',
+        payload: 'BBS-initial-qc-pass',
+      });
+    });
+
+    it('keeps the legacy BBS-fit-check label working', () => {
       expect(routeScan('BBS-fit-check', null)).toEqual({
         action: 'location',
         slug: 'fit-check',
@@ -189,10 +197,10 @@ describe('routeScan', () => {
       // Whether this is *usable* right now (is a part pending?) is the
       // page's call, not the router's — the classification itself never
       // depends on stationSlug.
-      expect(routeScan('BBS-fit-check', 'wip')).toEqual({
+      expect(routeScan('BBS-initial-qc-pass', 'wip')).toEqual({
         action: 'location',
         slug: 'fit-check',
-        payload: 'BBS-fit-check',
+        payload: 'BBS-initial-qc-pass',
       });
     });
 

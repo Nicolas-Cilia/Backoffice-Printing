@@ -156,7 +156,7 @@ function FloorStats({ t }: { t: ReturnType<typeof useTranslation>['t'] }) {
       </div>
       <div className="border border-bambu-dark-tertiary bg-bambu-dark-secondary rounded-lg px-4 py-3">
         <div className="text-xs text-bambu-gray">
-          {t('floor.statsAwaitingFitCheck', 'Parts awaiting Fit Check')}
+          {t('floor.statsAwaitingFitCheck', 'Parts awaiting Initial QC Pass')}
         </div>
         <div className="text-2xl font-bold text-white mt-1">
           {statsLoading ? '—' : awaitingFitCheck}

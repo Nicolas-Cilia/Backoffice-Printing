@@ -47,13 +47,15 @@ export const PREFIX_REASON = 'BBR-';
  *  constant means a slug typo can't silently desync the two. */
 export const HARVEST_STATION_SLUG = 'harvest';
 
-/** Fit Check and Rework's slugs and payloads (§5.4a/§5.4b). Not stations —
+/** Initial QC Pass and Rework's slugs and payloads (§5.4a/§5.4b). Not stations —
  *  these exist so `routeScan` can recognise their exact `BBS-…` payload and
  *  pull it out of the generic 'station' classification, same reasoning as
  *  `HARVEST_STATION_SLUG` above. */
 export const FIT_CHECK_LOCATION_SLUG = 'fit-check';
 export const REWORK_LOCATION_SLUG = 'rework';
-export const FIT_CHECK_PAYLOAD = `${PREFIX_STATION}${FIT_CHECK_LOCATION_SLUG}`;
+export const FIT_CHECK_PAYLOAD = `${PREFIX_STATION}initial-qc-pass`;
+/** Existing labels remain scannable after the Initial QC Pass rename. */
+export const LEGACY_FIT_CHECK_PAYLOAD = `${PREFIX_STATION}${FIT_CHECK_LOCATION_SLUG}`;
 export const REWORK_PAYLOAD = `${PREFIX_STATION}${REWORK_LOCATION_SLUG}`;
 /** Legacy label compatibility. New labels use `BBS-rework`. */
 export const LEGACY_SANDING_PAYLOAD = `${PREFIX_STATION}sanding`;
@@ -120,7 +122,8 @@ export type ScanAction =
    *  start of the scan-part-then-location flow (§5.4a/§5.4b). The page
    *  remembers this as the pending part; nothing is written yet. */
   | { action: 'part-scanned'; payload: string }
-  /** A `BBS-fit-check` or `BBS-rework` scan — pulled out of the generic
+  /** An `BBS-initial-qc-pass` (or legacy `BBS-fit-check`) or `BBS-rework`
+   *  scan — pulled out of the generic
    *  'station' classification because neither is a session (§5.4a/§5.4b).
    *  Meaningless without a part already pending; the *page* decides that,
    *  since this router has no notion of pending state. */
@@ -158,12 +161,13 @@ export function routeScan(
   if (scan.kind === 'empty') return { action: 'ignore' };
 
   if (scan.kind === 'station') {
-    // Fit Check and Rework print `BBS-…` QRs but are not sessions
+    // Initial QC Pass and Rework print `BBS-…` QRs but are not sessions
     // (§5.4a/§5.4b) — pull their two exact payloads out before the generic
     // station-scan path, unconditionally: whether this is meaningful right
     // now (is a part actually pending?) is the page's call, not the
     // router's, so this classification never depends on `stationSlug`.
-    if (scan.value === FIT_CHECK_PAYLOAD) return { action: 'location', slug: 'fit-check', payload: scan.value };
+    if (scan.value === FIT_CHECK_PAYLOAD || scan.value === LEGACY_FIT_CHECK_PAYLOAD)
+      return { action: 'location', slug: 'fit-check', payload: scan.value };
     if (scan.value === REWORK_PAYLOAD || scan.value === LEGACY_SANDING_PAYLOAD)
       return { action: 'location', slug: 'rework', payload: scan.value };
     return { action: 'station', payload: scan.value };

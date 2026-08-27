@@ -62,6 +62,9 @@ class FloorStation:
     slug: str
     name: str
     description: str
+    # Optional QR suffix when the internal location slug must stay stable for
+    # existing API routes and stored state but the printed code is renamed.
+    payload_slug: str | None = None
     # Whether this station takes a floor-wide lock (§2.4): at most one open
     # session across every device. Note this is *not* the same as
     # "one session per device" — that rule is universal and holds regardless.
@@ -71,7 +74,7 @@ class FloorStation:
     # session-machinery-wise (open/close/switch, `exclusive`, scan dispatch
     # keyed by slug) regardless of category. "station" covers the workflow
     # stations (WIP/+Storage/Move/Harvest); "location"
-    # covers QC checkpoints a part passes through (Fit Check/Rework) — an
+    # covers QC checkpoints a part passes through (Initial QC Pass/Rework) — an
     # operator's mental model the label sheet should match, even though
     # nothing in the backend actually treats the two groups differently.
     category: Literal["station", "location"] = "station"
@@ -79,7 +82,7 @@ class FloorStation:
     @property
     def payload(self) -> str:
         """The exact string this station's QR encodes."""
-        return f"{STATION_PREFIX}{self.slug}"
+        return f"{STATION_PREFIX}{self.payload_slug or self.slug}"
 
 
 # The stations from §5. Slugs match the payload examples in §4 verbatim.
@@ -106,8 +109,9 @@ FLOOR_STATIONS: tuple[FloorStation, ...] = (
     ),
     FloorStation(
         slug="fit-check",
-        name="Fit Check",
-        description="Mandatory first QC checkpoint. Scan each part to record it as checked.",
+        name="Initial QC Pass",
+        description="Mandatory first QC checkpoint. Scan each part to record the initial QC pass.",
+        payload_slug="initial-qc-pass",
         # No floor-wide lock: parallel fit-check benches are normal work.
         exclusive=False,
         category="location",
@@ -124,8 +128,10 @@ FLOOR_STATIONS: tuple[FloorStation, ...] = (
 
 _STATIONS_BY_PAYLOAD: dict[str, FloorStation] = {s.payload: s for s in FLOOR_STATIONS}
 _STATIONS_BY_SLUG: dict[str, FloorStation] = {s.slug: s for s in FLOOR_STATIONS}
-# Older printed labels remain valid after the name change. They resolve to
-# the canonical Rework location but are no longer offered for new printing.
+# Older printed labels remain valid after the payload rename. They resolve to
+# the canonical Initial QC Pass location but are no longer offered for new
+# printing.
+_STATIONS_BY_PAYLOAD[f"{STATION_PREFIX}fit-check"] = _STATIONS_BY_SLUG["fit-check"]
 _STATIONS_BY_PAYLOAD[f"{STATION_PREFIX}sanding"] = _STATIONS_BY_SLUG["rework"]
 
 

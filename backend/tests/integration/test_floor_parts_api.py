@@ -373,12 +373,12 @@ class TestFitCheckPartScan:
         assert actions == ["enrolled", "fit_checked"]
 
     async def test_session_scan_refuses_to_open_it_as_a_station(self, async_client):
-        """§5.4a: `BBS-fit-check` is a printable, resolvable payload (the
+        """§5.4a: `BBS-initial-qc-pass` is a printable, resolvable payload (the
         Codes page's Locations tab needs that), but it must never open a
         session the way a real station QR does."""
         resp = await async_client.post(
             "/api/v1/floor/session/scan",
-            json={"payload": "BBS-fit-check", "device_id": DEVICE_A},
+            json={"payload": "BBS-initial-qc-pass", "device_id": DEVICE_A},
         )
 
         assert resp.status_code == 404
