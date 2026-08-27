@@ -44,10 +44,13 @@ from backend.app.models.user import User
 from backend.app.services.floor_bins import (
     BinScanOutcome,
     BinScanResult,
+    list_bin_job_candidates,
+    list_floor_bin_history,
     list_bin_batch_events,
     list_floor_bin_management,
     list_floor_bins,
     override_bin_quantity,
+    relink_bin,
     resolve_bin_for_flow,
     scan_bin_empty,
     scan_bin_fit_check,
@@ -958,6 +961,12 @@ class BinBatchEventResponse(BaseModel):
     occurred_at: datetime
 
 
+class BinJobCandidateResponse(BaseModel):
+    id: int
+    print_name: str
+    completed_at: datetime | None
+
+
 class FloorBinManagementResponse(BaseModel):
     payload: str
     bin_number: int
@@ -974,6 +983,10 @@ class BinQuantityOverrideRequest(BaseModel):
 
 class BinUnlinkRequest(BaseModel):
     payload: str = Field(..., min_length=1, max_length=256)
+
+
+class BinRelinkRequest(BaseModel):
+    archive_id: int
 
 
 class BinScanRequest(BaseModel):
@@ -1076,11 +1089,17 @@ def _to_bin_management_response(item) -> FloorBinManagementResponse:
 
 @router.get("/inventory/bins", response_model=list[FloorBinManagementResponse])
 async def list_inventory_bins(
+    include_history: bool = False,
     db: AsyncSession = Depends(get_db),
     _: User | None = RequirePermissionIfAuthEnabled(Permission.FLOOR_SCAN),
 ) -> list[FloorBinManagementResponse]:
-    """Show the current assignment and quantity for every shared bin."""
-    return [_to_bin_management_response(item) for item in await list_floor_bin_management(db)]
+    """Show current assignments, or every historical fill when requested."""
+    items = await (
+        list_floor_bin_history(db)
+        if include_history
+        else list_floor_bin_management(db)
+    )
+    return [_to_bin_management_response(item) for item in items]
 
 
 @router.get("/inventory/bins/batches/{batch_id}/events", response_model=list[BinBatchEventResponse])
@@ -1093,6 +1112,33 @@ async def get_inventory_bin_batch_events(
     if events is None:
         raise HTTPException(404, "Bin batch not found")
     return [BinBatchEventResponse(**event.__dict__) for event in events]
+
+
+@router.get("/inventory/bins/batches/{batch_id}/job-candidates", response_model=list[BinJobCandidateResponse])
+async def get_inventory_bin_job_candidates(
+    batch_id: int,
+    printer_id: int,
+    db: AsyncSession = Depends(get_db),
+    _: User | None = RequirePermissionIfAuthEnabled(Permission.FLOOR_SCAN),
+) -> list[BinJobCandidateResponse]:
+    candidates = await list_bin_job_candidates(db, batch_id, printer_id)
+    if candidates is None:
+        raise HTTPException(404, "Bin batch not found")
+    return [BinJobCandidateResponse(**candidate.__dict__) for candidate in candidates]
+
+
+@router.post("/inventory/bins/batches/{batch_id}/relink", response_model=BinScanResponse)
+async def relink_inventory_bin(
+    batch_id: int,
+    body: BinRelinkRequest,
+    db: AsyncSession = Depends(get_db),
+    _: User | None = RequirePermissionIfAuthEnabled(Permission.FLOOR_SCAN),
+) -> BinScanResponse:
+    outcome = await relink_bin(db, batch_id, body.archive_id)
+    if outcome is None:
+        raise HTTPException(404, "Unlinked bin batch or completed job not found")
+    await db.commit()
+    return _to_bin_scan_response(outcome)
 
 
 @router.post("/inventory/bins/quantity-override", response_model=BinScanResponse)

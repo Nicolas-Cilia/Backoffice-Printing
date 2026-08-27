@@ -106,6 +106,13 @@ class BinBatchEventInfo:
 
 
 @dataclass(frozen=True)
+class BinJobCandidate:
+    id: int
+    print_name: str
+    completed_at: datetime | None
+
+
+@dataclass(frozen=True)
 class BinScanOutcome:
     result: BinScanResult
     bin: BinInfo | None = None
@@ -157,12 +164,20 @@ async def _resolve_bin(db: AsyncSession, payload: str) -> BinInfo | None:
 async def _latest_bin_event(db: AsyncSession, batch_id: int) -> str | None:
     actions = (
         await db.execute(
-            select(FloorBinBatchEvent.action)
+            select(FloorBinBatchEvent.action, FloorBinBatchEvent.details)
             .where(FloorBinBatchEvent.batch_id == batch_id)
             .order_by(FloorBinBatchEvent.occurred_at.desc(), FloorBinBatchEvent.id.desc())
         )
-    ).scalars()
-    return next((action for action in actions if action not in BIN_NON_STATUS_EVENTS), None)
+    ).all()
+    for action, details in actions:
+        if action in BIN_NON_STATUS_EVENTS:
+            continue
+        if action == "relinked" and isinstance(details, dict):
+            restored_status = details.get("restored_status")
+            if isinstance(restored_status, str) and restored_status:
+                return restored_status
+        return action
+    return None
 
 
 async def _remaining_quantity(db: AsyncSession, batch: FloorBinBatch) -> int:
@@ -174,8 +189,10 @@ async def _remaining_quantity(db: AsyncSession, batch: FloorBinBatch) -> int:
         )
     ).all()
     for action, details in events:
-        if action in BIN_FREE_STATUSES:
+        if action in ("empty", "empty_override"):
             return 0
+        if action in ("unlinked", "relinked"):
+            continue
         if action == "quantity_override" and isinstance(details, dict):
             value = details.get("remaining_quantity")
             if isinstance(value, int):
@@ -260,7 +277,7 @@ async def scan_harvest_bin(
     # printer-info page. Trying to use a filled bin must not accidentally bind
     # the new printer or take the floor-wide Harvest lock.
     current_batch, current_status = await _latest_batch_with_status(db, info)
-    if current_batch is not None and current_status not in BIN_FREE_STATUSES:
+    if current_batch is not None and current_status not in ("empty", "empty_override"):
         return BinScanOutcome(
             result=BinScanResult.BIN_IN_USE,
             bin=info,
@@ -448,14 +465,30 @@ async def list_floor_bin_management(db: AsyncSession) -> list[BinManagementInfo]
     for info in await list_floor_bins(db):
         batch, status = await _latest_batch_with_status(db, info)
         active = batch is not None and status not in BIN_FREE_STATUSES
+        needs_relink = batch is not None and status == "unlinked"
         managed.append(
             BinManagementInfo(
                 bin=info,
-                batch=await _batch_info(db, batch, info) if active and batch else None,
-                status=status if active and status else "available",
+                batch=await _batch_info(db, batch, info) if (active or needs_relink) and batch else None,
+                status=status if (active or needs_relink) and status else "available",
             )
         )
     return managed
+
+
+async def list_floor_bin_history(db: AsyncSession) -> list[BinManagementInfo]:
+    """Return every shared-bin fill, including fills released for reuse."""
+    result = await db.execute(
+        select(FloorBinBatch).order_by(FloorBinBatch.harvested_at.desc(), FloorBinBatch.id.desc())
+    )
+    history: list[BinManagementInfo] = []
+    for batch in result.scalars():
+        info = await _resolve_bin(db, batch.bin_payload)
+        if info is None:
+            continue
+        batch_info = await _batch_info(db, batch, info)
+        history.append(BinManagementInfo(bin=info, batch=batch_info, status=batch_info.status))
+    return history
 
 
 async def list_bin_batch_events(db: AsyncSession, batch_id: int) -> list[BinBatchEventInfo] | None:
@@ -508,11 +541,101 @@ async def unlink_bin(db: AsyncSession, payload: str) -> BinScanOutcome:
                 "source": "inventory_override",
                 "printer_id": batch.printer_id,
                 "archive_id": batch.archive_id,
+                "previous_status": status,
+                "remaining_quantity": await _remaining_quantity(db, batch),
             },
         )
     )
     await db.flush()
     return BinScanOutcome(result=BinScanResult.UNLINKED, bin=info, batch=await _batch_info(db, batch, info))
+
+
+async def list_bin_job_candidates(
+    db: AsyncSession,
+    batch_id: int,
+    printer_id: int,
+    *,
+    limit: int = 12,
+) -> list[BinJobCandidate] | None:
+    """Return completed jobs from the selected printer for a bin relink."""
+    from backend.app.models.archive import PrintArchive
+
+    batch = await db.get(FloorBinBatch, batch_id)
+    if batch is None:
+        return None
+    rows = await db.execute(
+        select(PrintArchive)
+        .where(PrintArchive.printer_id == printer_id, PrintArchive.status == "completed")
+        .order_by(PrintArchive.completed_at.desc().nullslast(), PrintArchive.id.desc())
+    )
+    candidates: list[BinJobCandidate] = []
+    for archive in rows.scalars():
+        summary = await get_archive_summary(db, archive.id)
+        part_code = summary.part_code if summary else None
+        if part_code is None:
+            source_names = (archive.print_name or "", archive.filename or "")
+            if not any(re.search(rf"(?<![A-Z0-9]){re.escape(batch.part_code)}(?![A-Z0-9])", name.upper()) for name in source_names):
+                continue
+        elif part_code != batch.part_code:
+            continue
+        candidates.append(BinJobCandidate(archive.id, archive.print_name or archive.filename, archive.completed_at))
+        if len(candidates) >= limit:
+            break
+    return candidates
+
+
+async def relink_bin(db: AsyncSession, batch_id: int, archive_id: int) -> BinScanOutcome | None:
+    """Restore an unlinked fill's printer/job association."""
+    from backend.app.models.archive import PrintArchive
+
+    batch = await db.get(FloorBinBatch, batch_id)
+    archive = await db.get(PrintArchive, archive_id)
+    if batch is None:
+        return None
+    status = await _latest_bin_event(db, batch.id)
+    if status != "unlinked" or archive is None or archive.status != "completed":
+        return None
+    info = await _resolve_bin(db, batch.bin_payload)
+    if info is None:
+        return None
+    archive_summary = await get_archive_summary(db, archive.id)
+    if archive_summary is not None and archive_summary.part_code not in (None, info.part_code):
+        return None
+
+    previous_status = "harvested"
+    events = (
+        await db.execute(
+            select(FloorBinBatchEvent.action, FloorBinBatchEvent.details)
+            .where(FloorBinBatchEvent.batch_id == batch.id)
+            .order_by(FloorBinBatchEvent.occurred_at.desc(), FloorBinBatchEvent.id.desc())
+        )
+    ).all()
+    for action, details in events:
+        if action == "unlinked":
+            candidate = details.get("previous_status") if isinstance(details, dict) else None
+            if isinstance(candidate, str) and candidate:
+                previous_status = candidate
+            break
+    old_archive_id = batch.archive_id
+    old_printer_id = batch.printer_id
+    batch.archive_id = archive.id
+    batch.printer_id = archive.printer_id
+    db.add(
+        FloorBinBatchEvent(
+            batch_id=batch.id,
+            action="relinked",
+            details={
+                "source": "inventory_override",
+                "previous_archive_id": old_archive_id,
+                "previous_printer_id": old_printer_id,
+                "archive_id": archive.id,
+                "printer_id": archive.printer_id,
+                "restored_status": previous_status,
+            },
+        )
+    )
+    await db.flush()
+    return BinScanOutcome(result=BinScanResult.RECORDED, bin=info, batch=await _batch_info(db, batch, info))
 
 
 __all__ = [
@@ -524,6 +647,7 @@ __all__ = [
     "BinInfo",
     "BinBatchInfo",
     "BinBatchEventInfo",
+    "BinJobCandidate",
     "BinManagementInfo",
     "bin_payload",
     "parse_bin_payload",
@@ -534,7 +658,10 @@ __all__ = [
     "scan_bin_wip",
     "scan_bin_empty",
     "list_floor_bin_management",
+    "list_floor_bin_history",
     "list_bin_batch_events",
+    "list_bin_job_candidates",
+    "relink_bin",
     "override_bin_quantity",
     "unlink_bin",
 ]

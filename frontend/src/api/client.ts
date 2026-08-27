@@ -1554,6 +1554,12 @@ export interface FloorBinBatchEvent {
   occurred_at: string;
 }
 
+export interface FloorBinJobCandidate {
+  id: number;
+  print_name: string;
+  completed_at: string | null;
+}
+
 export interface FloorBinManagement {
   payload: string;
   bin_number: number;
@@ -6028,8 +6034,16 @@ export const api = {
       body: JSON.stringify(data),
     }),
   getFloorBinManagement: () => request<FloorBinManagement[]>('/floor/inventory/bins'),
+  getFloorBinHistory: () => request<FloorBinManagement[]>('/floor/inventory/bins?include_history=true'),
   getFloorBinBatchEvents: (batchId: number) =>
     request<FloorBinBatchEvent[]>(`/floor/inventory/bins/batches/${batchId}/events`),
+  getFloorBinJobCandidates: (batchId: number, printerId: number) =>
+    request<FloorBinJobCandidate[]>(`/floor/inventory/bins/batches/${batchId}/job-candidates?printer_id=${printerId}`),
+  relinkFloorBin: (batchId: number, archiveId: number) =>
+    request<BinScanResponse>(`/floor/inventory/bins/batches/${batchId}/relink`, {
+      method: 'POST',
+      body: JSON.stringify({ archive_id: archiveId }),
+    }),
   overrideFloorBinQuantity: (data: { payload: string; remaining_quantity: number }) =>
     request<BinScanResponse>('/floor/inventory/bins/quantity-override', {
       method: 'POST',
