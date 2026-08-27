@@ -1421,6 +1421,9 @@ class TestBinLocationApi:
         )
         assert resp.status_code == 404
 
+
+@pytest.mark.asyncio
+@pytest.mark.integration
 class TestDismissedBuildPlates:
     async def test_lists_a_dismissed_plate_with_its_job_and_printer(
         self, async_client, db_session, printer_factory, archive_factory
