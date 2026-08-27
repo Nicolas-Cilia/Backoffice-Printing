@@ -761,6 +761,55 @@ describe('FloorScanPage (Phase 1b sessions)', () => {
       expect(screen.queryByText('Bed ready to clear')).not.toBeInTheDocument();
     });
 
+    it('shows only the failed reprint when it happened after the still-unharvested job', async () => {
+      // A finished job sat unharvested, then a reprint attempt on top of it
+      // failed — the reprint is the more recent event, so it alone should
+      // show rather than stacking "Bed ready to clear" on top of it.
+      mockNoSession();
+      mockInfo({
+        recent_stopped_print: {
+          print_log_id: 103,
+          archive_id: 90,
+          print_name: 'Bracket v3 (reprint)',
+          part_code: 'BUT',
+          status: 'cancelled',
+          stopped_at: '2026-08-25T09:00:00',
+          reason_code: null,
+          reason_text: null,
+        },
+      });
+      render(<FloorScanPage />);
+      await screen.findByText('Scan a code');
+
+      await scan('BBP-12');
+
+      expect(await screen.findByText('Recent print stopped')).toBeInTheDocument();
+      expect(screen.queryByText('Bed ready to clear')).not.toBeInTheDocument();
+    });
+
+    it('still prompts to clear the bed when the stop reason predates the finished job', async () => {
+      mockNoSession();
+      mockInfo({
+        recent_stopped_print: {
+          print_log_id: 104,
+          archive_id: 87,
+          print_name: 'Older attempt',
+          part_code: 'BUT',
+          status: 'failed',
+          stopped_at: '2026-08-20T09:00:00',
+          reason_code: null,
+          reason_text: null,
+        },
+      });
+      render(<FloorScanPage />);
+      await screen.findByText('Scan a code');
+
+      await scan('BBP-12');
+
+      expect(await screen.findByText('Bed ready to clear')).toBeInTheDocument();
+      expect(screen.queryByText('Recent print failed')).not.toBeInTheDocument();
+    });
+
     it('opens maintenance details from the scanned printer page', async () => {
       mockNoSession();
       mockInfo();

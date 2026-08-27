@@ -1639,6 +1639,18 @@ function PrinterInfoPanel({
   const readyToHarvest =
     info.awaiting_plate_clear && last !== null && !last.has_labeled_parts && !isPrinting;
 
+  // These two can both be true for different events on the same bed: a
+  // finished job still sitting there, and a later reprint attempt on top of
+  // it that failed before ever clearing it. Showing both reads as two
+  // conflicting instructions, so only the more recent event wins — an
+  // unknown completion time loses the comparison rather than suppressing
+  // the stop reason silently.
+  const lastCompletedAt = last?.completed_at ? new Date(last.completed_at).getTime() : -Infinity;
+  const stopIsMoreRecent =
+    recentStop != null && new Date(recentStop.stopped_at).getTime() > lastCompletedAt;
+  const showReadyToHarvest = readyToHarvest && !stopIsMoreRecent;
+  const showRecentStop = recentStop != null && (!readyToHarvest || stopIsMoreRecent);
+
   return (
     <div className="w-full max-w-2xl text-left">
       <div className="flex items-start justify-between gap-4 mb-6">
@@ -1693,7 +1705,7 @@ function PrinterInfoPanel({
         </div>
       )}
 
-      {readyToHarvest && (
+      {showReadyToHarvest && (
         <div className="mb-4 rounded-lg border border-bambu-green/40 bg-bambu-green/10 px-4 py-3">
           <p className="text-bambu-green font-semibold">
             {t('floor.printerReadyToHarvest', 'Bed ready to clear')}
@@ -1706,7 +1718,7 @@ function PrinterInfoPanel({
         </div>
       )}
 
-      {recentStop && (
+      {showRecentStop && (
         <section className="mb-4 rounded-lg border border-bambu-dark-tertiary bg-bambu-dark-secondary px-4 py-3">
           <div className="flex items-center justify-between gap-4">
             <div className="min-w-0">
