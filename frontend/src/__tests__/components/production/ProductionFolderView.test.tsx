@@ -1,4 +1,4 @@
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, vi } from 'vitest';
 import { screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { render } from '../../utils';
@@ -296,6 +296,36 @@ describe('ProductionFolderView', () => {
     expect(toyCheckbox).toBeChecked();
   });
 
+  it('downloads the active file from a production slot', async () => {
+    const user = userEvent.setup();
+    let downloadedId: string | null = null;
+    window.URL.createObjectURL = vi.fn(() => 'blob:mock');
+    window.URL.revokeObjectURL = vi.fn();
+    server.use(
+      http.get('/api/v1/production/folders/9', () => HttpResponse.json(folderWithSpecs)),
+      http.get('/api/v1/library/files/:id/download', ({ params }) => {
+        downloadedId = String(params.id);
+        return new HttpResponse(new Blob([new Uint8Array([1, 2, 3])]), {
+          headers: {
+            'Content-Type': 'application/octet-stream',
+            'Content-Disposition': 'attachment; filename="TOP - 1.13.2 - X1C.gcode.3mf"',
+          },
+        });
+      }),
+    );
+
+    render(<ProductionFolderView folderId={9} printerModel="X1C" canUpload />);
+
+    await waitFor(() => {
+      expect(screen.getByText('TOP - 1.13.2 - X1C.gcode.3mf')).toBeInTheDocument();
+    });
+
+    await user.click(screen.getByRole('button', { name: 'Download' }));
+    await waitFor(() => {
+      expect(downloadedId).toBe('42');
+    });
+  });
+
   it('does not show tag controls on an empty slot', async () => {
     server.use(
       http.get('/api/v1/production/folders/9', () =>
@@ -337,6 +367,7 @@ describe('ProductionFolderView', () => {
     });
     expect(screen.queryByRole('button', { name: 'Tags' })).not.toBeInTheDocument();
     expect(screen.queryByLabelText('Add tags to this file')).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Download' })).not.toBeInTheDocument();
   });
 
   it('wraps part lists in a scroll container with a bottom overflow fade', async () => {
