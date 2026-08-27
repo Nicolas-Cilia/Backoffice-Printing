@@ -228,6 +228,7 @@ the office.
 | Error QRs (`BBF-…`) | App → Codes | Cleanup bench |
 | Command QRs (`BBX-…`) | App → Codes | Cleanup bench (multi, rework) |
 | Rework reason QRs (`BBR-…`) | App → Codes | Rework bench |
+| Reusable part-bin QRs (`BBN-…`) | App → Codes → Bins | Three shared KNB bins and three shared BUT bins |
 | Part Data Matrix (`BBD-…`) | **Bought roll** | Each finished part |
 | Filament SKU | **Already on spool/box** | Never printed by us |
 
@@ -247,7 +248,8 @@ Under Floor (routes):
 | `/floor` | **Landing page** — picker: Scan / Codes / Inventory. The sidebar item's destination; not a kiosk bookmark (see §2.1) | Normal app chrome + sidebar |
 | `/floor/scan` | **Main floor page** — all pistol input | Sparse: big status, hidden always-focused scan field, sidebar collapsed or minimal |
 | `/floor/codes` | Print QRs, register filament SKUs on products | Normal app chrome + sidebar |
-| `/floor/inventory` | **Stock by location** (storage vs WIP), movement history, and manual corrections (§6.3) | Normal app chrome + sidebar |
+| `/floor/inventory` | **Part history** for stickered parts and manual corrections (§6.3) | Normal app chrome + sidebar |
+| `/floor/inventory?tab=bins` | Shared KNB/BUT bin assignments, quantity overrides, and unlink/reset controls | Normal app chrome + sidebar |
 
 Harvest, fit check, rework and cleanup are **not** separate bookmark URLs
 for operators. The **station QR** selects harvest vs fit check vs rework vs
@@ -265,7 +267,7 @@ controls added to those pages.
 
 ### 3.3 Codes page (office)
 
-Four tabs: Station labels, Locations, Printer labels, Error labels.
+Five tabs: Station labels, Locations, Printer labels, Bins, Error labels.
 
 **Station labels** — WIP, + Storage, Move, Harvest, Cleanup (each `BBS-…`).
 Fit Check and Rework are **not** in this tab — see Locations below.
@@ -278,6 +280,13 @@ only difference is what scanning one *does* — no session opens.
 **Printer labels** — one row per 3D printer already in the app (`BBP-{printer_id}`).
 Print → preview (QR + name + payload) → size → browser print dialog.
 
+**Bins** — six permanent shared bin labels: `BBN-KNB-1` through
+`BBN-KNB-3` for knobs and `BBN-BUT-1` through `BBN-BUT-3` for buttons. The QR
+identifies the physical bin; its current fill is temporarily assigned to the
+printer and finished job at Harvest. The bin QR is scanned instead of a part
+sticker for KNB/BUT prints; the operator enters the quantity, then scans Fit
+Check for the visual QC gate before scanning WIP.
+
 **Error labels** — seeded horizontal / vertical / other; add new types (display
 name + `BBF-` slug with autofill, editable); built-in commands multi + rework
 (print only, no “add command” in v1).
@@ -287,10 +296,6 @@ They use the same user-managed error-label registry as Discard, so operators
 can add, remove, and print the reasons that apply to Rework and Discard.
 The `BBR-…` labels are retained for compatibility with the original fixed
 reason flow, but new installations use the editable Error labels catalog.
-Codes page has no section for them), left for a follow-up rather than
-building a fourth catalog + tab in the same pass that fixed the station/
-location interaction bug.
-
 Print size: 40 / 60 / 80 mm or custom W×H. Last size remembered. Not a label
 printer driver in v1—browser print to office paper, cut and tape.
 
@@ -307,6 +312,7 @@ The USB pistol types a string and Enter. Backend (or frontend router) classifies
 | `BBS-` | `BBS-wip`, `BBS-storage-receive`, `BBS-storage-move`, `BBS-harvest`, `BBS-cleanup` | Station: open/close session, set mode. `BBS-fit-check`/`BBS-rework` are printed the same way but are **locations**, not sessions — see below |
 | `BBP-` | `BBP-12` | Printer identity (harvest only) |
 | `BBD-` | `BBD-000042` | Unique physical part (harvest link, cleanup lookup; also the first scan of the Fit Check / Rework location flow, §5.4a/§5.4b) |
+| `BBN-` | `BBN-KNB-1` / `BBN-BUT-1` | Shared reusable knob/button bin (temporary printer assignment, harvest quantity, visual QC, WIP, empty) |
 | `BBF-` | `BBF-horizontal`, `BBF-warping` | Defect type (cleanup) |
 | `BBX-` | `BBX-multi`, `BBX-rework` | Cleanup commands (v1: only these two) |
 | `BBR-` | `BBR-doesnt_fit`, `BBR-other` | Rework reason (why the part needs rework) — the part after `BBR-` is the reason code verbatim, not a slug translated elsewhere |
@@ -524,6 +530,32 @@ Risk without that indicator: part scans without a printer scan first attach
 to whatever session happens to be open, however old—training: always printer
 first. Full detection/warnings (e.g. flagging it elsewhere in the app, not
 just on the scan screen itself) stay out of v1 (§11).
+
+#### Reusable KNB/BUT bins
+
+KNB (knob) and BUT (button) prints do not use one purchased `BBD-` sticker per
+physical part. The Codes page prints three shared reusable bin QRs for each
+part type. The payload identifies the bin and type, for example `BBN-KNB-1`.
+
+**Harvest:** scan the printer QR (or open Harvest first), then scan the
+matching available bin QR. The screen asks for the harvested quantity and
+records one bin batch against that printer's latest finished job. A KNB bin
+cannot be used for a BUT job, and a bin with an existing active fill is refused
+until it is marked empty.
+
+**QC and WIP:** scan the bin from idle to load the latest batch, then scan the
+Fit Check location. For bins this checkpoint is a visual inspection only; it
+records `visual_qc_passed`. Scanning the WIP station admits the batch only
+after that event exists. Once the contents are used, the operator scans the
+same bin again to confirm it is empty; only then can it be assigned to another
+printer/job. A direct bin-to-WIP scan is refused until visual QC has been
+recorded.
+
+**Inventory management:** `/floor/inventory?tab=bins` lists all six physical bins and
+their current printer/job assignment. An operator can override the remaining
+quantity (including clearing it to zero) or unlink the active assignment. Both
+actions retain the append-only batch history while making the physical bin
+available for a later harvest.
 
 ### 5.4a Fit Check
 
