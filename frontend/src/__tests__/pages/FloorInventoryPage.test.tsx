@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it } from "vitest";
 import { screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { http, HttpResponse } from "msw";
@@ -69,6 +69,189 @@ function mockPartHistory() {
 }
 
 describe("FloorInventoryPage", () => {
+  afterEach(() => {
+    window.history.replaceState({}, "", "/");
+  });
+
+  it("keeps bin management under Part history instead of Filament Tracking", async () => {
+    mockPartHistory();
+    server.use(
+      http.get("/api/v1/floor/inventory/bins", () =>
+        HttpResponse.json([
+          {
+            payload: "BBN-KNB-1",
+            bin_number: 1,
+            part_code: "KNB",
+            part_name: "Knob bin",
+            status: "available",
+            batch: null,
+          },
+        ]),
+      ),
+    );
+    const user = userEvent.setup();
+    render(<FloorInventoryPage />);
+
+    await user.click(screen.getByRole("button", { name: "Bins" }));
+
+    expect(await screen.findByRole("heading", { name: "Part bins" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Part history" })).toBeInTheDocument();
+    expect(screen.getByText("BBN-KNB-1")).toBeInTheDocument();
+  });
+
+  it("shows active knob and button bin fills in the part history table", async () => {
+    const user = userEvent.setup();
+    mockPartHistory();
+    server.use(
+      http.get("/api/v1/floor/inventory/bins", () =>
+        HttpResponse.json([
+          {
+            payload: "BBN-KNB-1",
+            bin_number: 1,
+            part_code: "KNB",
+            part_name: "Knob bin",
+            status: "visual_qc_passed",
+            batch: {
+              id: 101,
+              payload: "BBN-KNB-1",
+              bin_number: 1,
+              printer_id: 4,
+              printer_name: "X1 Carbon 04",
+              archive_id: 31,
+              print_name: "Knob plate",
+              part_code: "KNB",
+              quantity: 20,
+              qc_passed_quantity: 18,
+              remaining_quantity: 18,
+              status: "visual_qc_passed",
+              harvested_at: "2026-08-26T14:35:00",
+            },
+          },
+          {
+            payload: "BBN-BUT-2",
+            bin_number: 2,
+            part_code: "BUT",
+            part_name: "Button bin",
+            status: "wip",
+            batch: {
+              id: 102,
+              payload: "BBN-BUT-2",
+              bin_number: 2,
+              printer_id: 5,
+              printer_name: "P1S 02",
+              archive_id: 32,
+              print_name: "Button plate",
+              part_code: "BUT",
+              quantity: 12,
+              remaining_quantity: 8,
+              status: "wip",
+              harvested_at: "2026-08-26T14:36:00",
+            },
+          },
+        ]),
+      ),
+      http.get("/api/v1/floor/inventory/bins/batches/:batchId/events", () =>
+        HttpResponse.json([
+          {
+            id: 201,
+            action: "harvested",
+            details: { quantity: 20 },
+            occurred_at: "2026-08-26T14:35:00",
+          },
+          {
+            id: 202,
+            action: "visual_qc_passed",
+            details: {
+              inspection: "visual",
+              harvested_quantity: 20,
+              passed_quantity: 18,
+              rejected_quantity: 2,
+            },
+            occurred_at: "2026-08-26T14:40:00",
+          },
+        ]),
+      ),
+    );
+    render(<FloorInventoryPage />);
+
+    expect(await screen.findByText("BBN-KNB-1")).toBeInTheDocument();
+    expect(screen.getByText("BBN-BUT-2")).toBeInTheDocument();
+    expect(screen.getByText("Visual QC pass")).toBeInTheDocument();
+    expect(screen.getByText("In WIP")).toBeInTheDocument();
+    expect(screen.getByText("(8/12)")).toBeInTheDocument();
+
+    await user.click(screen.getByText("BBN-KNB-1"));
+
+    expect(await screen.findByRole("heading", { name: "BBN-KNB-1" })).toBeInTheDocument();
+    expect(screen.getByText("Bin record")).toBeInTheDocument();
+    expect(screen.getByText("Harvested 20 parts into bin")).toBeInTheDocument();
+    const qcEvent = screen.getByText("18 of 20 passed visual QC");
+    expect(qcEvent).toBeInTheDocument();
+    expect(qcEvent.previousElementSibling).toHaveClass("bg-green-500");
+    const rejectedEvent = screen.getByText("2 parts failed visual QC");
+    expect(rejectedEvent.previousElementSibling).toHaveClass("bg-red-500");
+  });
+
+  it("keeps the bin history linear when every part passes visual QC", async () => {
+    const user = userEvent.setup();
+    mockPartHistory();
+    server.use(
+      http.get("/api/v1/floor/inventory/bins", () =>
+        HttpResponse.json([
+          {
+            payload: "BBN-KNB-1",
+            bin_number: 1,
+            part_code: "KNB",
+            part_name: "Knob bin",
+            status: "visual_qc_passed",
+            batch: {
+              id: 103,
+              payload: "BBN-KNB-1",
+              bin_number: 1,
+              printer_id: 4,
+              printer_name: "X1 Carbon 04",
+              archive_id: 31,
+              print_name: "Knob plate",
+              part_code: "KNB",
+              quantity: 20,
+              qc_passed_quantity: 20,
+              remaining_quantity: 20,
+              status: "visual_qc_passed",
+              harvested_at: "2026-08-26T14:35:00",
+            },
+          },
+        ]),
+      ),
+      http.get("/api/v1/floor/inventory/bins/batches/:batchId/events", () =>
+        HttpResponse.json([
+          {
+            id: 203,
+            action: "harvested",
+            details: { quantity: 20 },
+            occurred_at: "2026-08-26T14:35:00",
+          },
+          {
+            id: 204,
+            action: "visual_qc_passed",
+            details: {
+              inspection: "visual",
+              harvested_quantity: 20,
+              passed_quantity: 20,
+              rejected_quantity: 0,
+            },
+            occurred_at: "2026-08-26T14:40:00",
+          },
+        ]),
+      ),
+    );
+    render(<FloorInventoryPage />);
+
+    await user.click(await screen.findByText("BBN-KNB-1"));
+
+    expect(await screen.findByText("20 of 20 passed visual QC")).toBeInTheDocument();
+    expect(screen.queryByText("0 parts failed visual QC")).not.toBeInTheDocument();
+  });
+
   it("shows logged print failure reasons above the part history table", async () => {
     mockPartHistory();
     server.use(
@@ -691,5 +874,54 @@ describe("FloorInventoryPage", () => {
     const timelineItems = await screen.findAllByRole("listitem");
     expect(timelineItems[1].querySelector("span")).toHaveClass("bg-green-500");
     expect(timelineItems[2].querySelector("span")).toHaveClass("bg-orange-500");
+  });
+
+  it("lets an operator override a part with a supported status", async () => {
+    const user = userEvent.setup();
+    let statusOverridden = false;
+    let parts = PARTS.map((part) => ({ ...part }));
+    server.use(
+      http.get("/api/v1/floor/inventory/parts", () => HttpResponse.json(parts)),
+      http.get("/api/v1/floor/inventory/parts/1/events", () =>
+        HttpResponse.json([
+          {
+            id: 10,
+            action: "enrolled",
+            details: { archive_id: 31 },
+            occurred_at: "2026-08-25T14:32:00",
+          },
+          ...(statusOverridden
+            ? [{
+                id: 11,
+                action: "shipped",
+                details: {
+                  status_override: true,
+                  status: "shipped",
+                  previous_status: null,
+                },
+                occurred_at: "2026-08-25T16:00:00",
+              }]
+            : []),
+        ]),
+      ),
+      http.post("/api/v1/floor/inventory/parts/1/status", async ({ request }) => {
+        const body = (await request.json()) as { status: string };
+        statusOverridden = true;
+        parts = parts.map((part) =>
+          part.id === 1 ? { ...part, latest_event_action: body.status } : part,
+        );
+        return HttpResponse.json({ ...parts[0], latest_event_action: body.status });
+      }),
+    );
+    render(<FloorInventoryPage />);
+
+    await user.click(await screen.findByText("BBD-000101"));
+    await user.click(await screen.findByRole("button", { name: "Change status" }));
+    const status = screen.getByRole("combobox", { name: "Manual status" });
+    await user.selectOptions(status, "shipped");
+    await user.click(screen.getByRole("button", { name: "Save" }));
+
+    expect(await screen.findByText("Status overridden to Shipped")).toBeInTheDocument();
+    expect(screen.getAllByText("Shipped")).toHaveLength(2);
   });
 });

@@ -1330,6 +1330,15 @@ export interface FloorPrinter {
   is_active: boolean;
 }
 
+/** One of the six permanent shared bins. Its current printer/job assignment
+ *  is returned separately in a bin batch after Harvest. */
+export interface FloorBin {
+  payload: string;
+  bin_number: number;
+  part_code: 'KNB' | 'BUT';
+  part_name: string;
+}
+
 /** The printer's most recent finished job — the harvest candidate (§5.6). */
 export interface FloorLastPrint {
   archive_id: number;
@@ -1339,6 +1348,7 @@ export interface FloorLastPrint {
   /** Phase 8 fills this in; until then always false, which reads correctly
    *  as "nothing labeled yet". */
   has_labeled_parts: boolean;
+  part_code: string | null;
 }
 
 /** What the machine is doing right now, from MQTT. Absent when the printer
@@ -1428,6 +1438,7 @@ export interface FloorPlateArchive {
   print_name: string | null;
   completed_at: string | null;
   quantity: number;
+  part_code: string | null;
 }
 
 /** A written (or looked-up) labeled part row (§7.2). `archive_id` is null on
@@ -1481,7 +1492,8 @@ export type PartScanResult =
   | 'duplicate'
   | 'locked'
   | 'no_printer'
-  | 'invalid_code';
+  | 'invalid_code'
+  | 'bin_required';
 
 export interface PartScanResponse {
   result: PartScanResult;
@@ -1494,6 +1506,71 @@ export interface PartScanResponse {
   session: FloorSession | null;
   /** Only when `result === 'locked'`: who holds harvest, and for how long. */
   blocking: FloorSession | null;
+}
+
+export type BinScanResult =
+  | 'ready_for_quantity'
+  | 'recorded'
+  | 'bin_in_use'
+  | 'wrong_part'
+  | 'locked'
+  | 'no_session'
+  | 'no_printer'
+  | 'invalid_code'
+  | 'no_batch'
+  | 'ready_for_qc'
+  | 'ready_for_qc_quantity'
+  | 'qc_recorded'
+  | 'qc_quantity_invalid'
+  | 'qc_required'
+  | 'already_wip'
+  | 'wip_recorded'
+  | 'empty_recorded'
+  | 'already_empty'
+  | 'empty_requires_wip'
+  | 'quantity_overridden'
+  | 'unlinked';
+
+export interface FloorBinBatch {
+  id: number;
+  payload: string;
+  bin_number: number;
+  printer_id: number | null;
+  printer_name: string | null;
+  archive_id: number | null;
+  print_name: string | null;
+  part_code: 'KNB' | 'BUT';
+  quantity: number;
+  qc_passed_quantity: number | null;
+  remaining_quantity: number;
+  status: string;
+  harvested_at: string;
+}
+
+export interface FloorBinBatchEvent {
+  id: number;
+  action: string;
+  details: Record<string, unknown> | null;
+  occurred_at: string;
+}
+
+export interface FloorBinManagement {
+  payload: string;
+  bin_number: number;
+  part_code: 'KNB' | 'BUT';
+  part_name: string;
+  status: string;
+  batch: FloorBinBatch | null;
+}
+
+export interface BinScanResponse {
+  result: BinScanResult;
+  bin: FloorBin | null;
+  batch: FloorBinBatch | null;
+  printer: FloorPlatePrinter | null;
+  session: FloorSession | null;
+  blocking: FloorSession | null;
+  archive: FloorPlateArchive | null;
 }
 
 // ── Fit Check and Rework (docs/floor-plan.md §5.4a/§5.4b) — phase 9a/9b ──
@@ -5832,6 +5909,25 @@ export const api = {
   },
   /** Printers offered in the Codes page's Printer-labels tab (§5.6). */
   getFloorPrinters: () => request<FloorPrinter[]>('/floor/printers'),
+  getFloorBins: () => request<FloorBin[]>('/floor/bins'),
+  printFloorBinLabels: async (data: {
+    payloads: string[];
+    width_mm: number;
+    height_mm: number;
+  }): Promise<Blob> => {
+    const headers: Record<string, string> = { 'Content-Type': 'application/json' };
+    if (authToken) headers['Authorization'] = `Bearer ${authToken}`;
+    const response = await fetch(`${API_BASE}/floor/labels/bins`, {
+      method: 'POST',
+      headers,
+      body: JSON.stringify(data),
+    });
+    if (!response.ok) {
+      const error = await response.json().catch(() => ({}));
+      throw new Error(error.detail || `HTTP ${response.status}`);
+    }
+    return response.blob();
+  },
   printFloorPrinterLabels: async (data: {
     payloads: string[];
     width_mm: number;
@@ -5890,6 +5986,16 @@ export const api = {
       method: 'POST',
       body: JSON.stringify(data),
     }),
+  scanHarvestBin: (data: { device_id: string; payload: string; quantity?: number; printer_id?: number | null }) =>
+    request<BinScanResponse>('/floor/harvest/bin', {
+      method: 'POST',
+      body: JSON.stringify(data),
+    }),
+  resolveFloorBin: (data: { payload: string }) =>
+    request<BinScanResponse>('/floor/bins/resolve', {
+      method: 'POST',
+      body: JSON.stringify(data),
+    }),
   /** The 3MF cover image Files already has on file for a Production part
    *  code (§7), if any — 404s when the code is unknown or has none, so
    *  callers should hide the `<img>` on load error rather than treat this
@@ -5903,6 +6009,34 @@ export const api = {
    *  error (§5.4a). */
   scanFitCheckPart: (data: { payload: string }) =>
     request<LocationScanResponse>('/floor/locations/fit-check/part', {
+      method: 'POST',
+      body: JSON.stringify(data),
+    }),
+  scanFitCheckBin: (data: { payload: string; passed_quantity?: number }) =>
+    request<BinScanResponse>('/floor/locations/fit-check/bin', {
+      method: 'POST',
+      body: JSON.stringify(data),
+    }),
+  scanWipBin: (data: { payload: string }) =>
+    request<BinScanResponse>('/floor/wip/bin', {
+      method: 'POST',
+      body: JSON.stringify(data),
+    }),
+  scanEmptyBin: (data: { payload: string }) =>
+    request<BinScanResponse>('/floor/bins/empty', {
+      method: 'POST',
+      body: JSON.stringify(data),
+    }),
+  getFloorBinManagement: () => request<FloorBinManagement[]>('/floor/inventory/bins'),
+  getFloorBinBatchEvents: (batchId: number) =>
+    request<FloorBinBatchEvent[]>(`/floor/inventory/bins/batches/${batchId}/events`),
+  overrideFloorBinQuantity: (data: { payload: string; remaining_quantity: number }) =>
+    request<BinScanResponse>('/floor/inventory/bins/quantity-override', {
+      method: 'POST',
+      body: JSON.stringify(data),
+    }),
+  unlinkFloorBin: (data: { payload: string }) =>
+    request<BinScanResponse>('/floor/inventory/bins/unlink', {
       method: 'POST',
       body: JSON.stringify(data),
     }),
@@ -5937,6 +6071,11 @@ export const api = {
     request<FloorPartJobCandidate[]>(`/floor/inventory/parts/${partId}/job-candidates`),
   archiveFloorInventoryPart: (partId: number, archived = true) =>
     request<FloorInventoryPart>(`/floor/inventory/parts/${partId}/archive?archived=${archived}`, { method: 'POST' }),
+  setFloorInventoryPartStatus: (partId: number, status: string) =>
+    request<FloorInventoryPart>(`/floor/inventory/parts/${partId}/status`, {
+      method: 'POST',
+      body: JSON.stringify({ status }),
+    }),
   deleteFloorInventoryPart: (partId: number) =>
     request<{ deleted: boolean }>(`/floor/inventory/parts/${partId}`, { method: 'DELETE' }),
   relinkFloorInventoryPart: (partId: number, archiveId: number) =>
