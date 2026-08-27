@@ -1322,3 +1322,30 @@ class TestDismissedBuildPlates:
 
         assert resp.status_code == 200
         assert resp.json() == []
+
+    async def test_dismissed_plate_drops_from_list_after_it_is_linked(
+        self, async_client, db_session, printer_factory, archive_factory
+    ):
+        """Harvest while dismissed must not leave a Restore that can't return
+        the plate to needing-linking — omit linked archives from the list."""
+        from backend.app.models.floor_part import FloorLabeledPart
+
+        archive = await _seed_completed_archive(async_client, db_session, printer_factory, archive_factory)
+        await async_client.post(f"/api/v1/floor/parts/unlabeled-build-plates/{archive.id}/dismiss")
+        before = await async_client.get("/api/v1/floor/parts/dismissed-build-plates")
+        assert any(plate["id"] == archive.id for plate in before.json())
+
+        db_session.add(
+            FloorLabeledPart(
+                sticker_code="BBD-009901",
+                printer_id=archive.printer_id,
+                archive_id=archive.id,
+            )
+        )
+        await db_session.commit()
+
+        after = await async_client.get("/api/v1/floor/parts/dismissed-build-plates")
+        assert not any(plate["id"] == archive.id for plate in after.json())
+
+        unlabeled = await async_client.get("/api/v1/floor/parts/unlabeled-build-plates")
+        assert not any(plate["id"] == archive.id for plate in unlabeled.json())

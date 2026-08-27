@@ -990,6 +990,11 @@ async def list_dismissed_build_plates(db: AsyncSession, *, limit: int = 50):
     list a reader restores from. Joined to the archive for the same job/
     printer identity the unlabeled list shows, plus ``dismissed_at`` so the
     ordering is by the hide action, not the original completion time.
+
+    Only plates that would still reappear on the unlabeled backlog after a
+    restore are listed — if a dismissed archive later gained labeled parts or
+    a bin batch (harvest while hidden), it is omitted so Restore never looks
+    like it succeeded while the plate stays off "needing linking".
     """
     from backend.app.models.archive import PrintArchive
 
@@ -997,6 +1002,11 @@ async def list_dismissed_build_plates(db: AsyncSession, *, limit: int = 50):
         select(PrintArchive, Printer.name, FloorDismissedBuildPlate.dismissed_at)
         .join(FloorDismissedBuildPlate, FloorDismissedBuildPlate.archive_id == PrintArchive.id)
         .outerjoin(Printer, Printer.id == PrintArchive.printer_id)
+        .outerjoin(FloorLabeledPart, FloorLabeledPart.archive_id == PrintArchive.id)
+        .where(
+            FloorLabeledPart.id.is_(None),
+            ~exists().where(FloorBinBatch.archive_id == PrintArchive.id),
+        )
         .order_by(FloorDismissedBuildPlate.dismissed_at.desc(), FloorDismissedBuildPlate.id.desc())
         .limit(limit)
     )
@@ -1015,8 +1025,13 @@ async def list_dismissed_build_plates(db: AsyncSession, *, limit: int = 50):
 
 async def restore_build_plate(db: AsyncSession, archive_id: int) -> bool:
     """Undo a dismissal: delete the ``FloorDismissedBuildPlate`` row so the
-    plate returns to the unlabeled backlog. Returns ``False`` when the plate
-    was not dismissed to begin with, so the route can answer 404."""
+    plate returns to the unlabeled backlog when it is still unlabeled.
+
+    Returns ``False`` when the plate was not dismissed (route → 404). If the
+    archive was dismissed but later linked via harvest, the dismiss row is
+    still removed (orphan cleanup) and this returns ``True``; the plate will
+    not reappear on the unlabeled list because it no longer qualifies.
+    """
     existing = await db.execute(
         select(FloorDismissedBuildPlate).where(FloorDismissedBuildPlate.archive_id == archive_id)
     )
