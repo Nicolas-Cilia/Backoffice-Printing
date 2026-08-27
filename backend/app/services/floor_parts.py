@@ -982,6 +982,52 @@ async def dismiss_build_plate(db: AsyncSession, archive_id: int) -> bool:
     return True
 
 
+async def list_dismissed_build_plates(db: AsyncSession, *, limit: int = 50):
+    """Build plates an operator marked non-production, most recently hidden first.
+
+    The office-side counterpart to ``dismiss_build_plate``: the "Not for
+    production" action on the unlabeled list is reversible, and this is the
+    list a reader restores from. Joined to the archive for the same job/
+    printer identity the unlabeled list shows, plus ``dismissed_at`` so the
+    ordering is by the hide action, not the original completion time.
+    """
+    from backend.app.models.archive import PrintArchive
+
+    statement = (
+        select(PrintArchive, Printer.name, FloorDismissedBuildPlate.dismissed_at)
+        .join(FloorDismissedBuildPlate, FloorDismissedBuildPlate.archive_id == PrintArchive.id)
+        .outerjoin(Printer, Printer.id == PrintArchive.printer_id)
+        .order_by(FloorDismissedBuildPlate.dismissed_at.desc(), FloorDismissedBuildPlate.id.desc())
+        .limit(limit)
+    )
+    rows = (await db.execute(statement)).all()
+    return [
+        {
+            "id": archive.id,
+            "print_name": archive.print_name or archive.filename,
+            "printer_name": printer_name,
+            "completed_at": archive.completed_at,
+            "dismissed_at": dismissed_at,
+        }
+        for archive, printer_name, dismissed_at in rows
+    ]
+
+
+async def restore_build_plate(db: AsyncSession, archive_id: int) -> bool:
+    """Undo a dismissal: delete the ``FloorDismissedBuildPlate`` row so the
+    plate returns to the unlabeled backlog. Returns ``False`` when the plate
+    was not dismissed to begin with, so the route can answer 404."""
+    existing = await db.execute(
+        select(FloorDismissedBuildPlate).where(FloorDismissedBuildPlate.archive_id == archive_id)
+    )
+    row = existing.scalar_one_or_none()
+    if row is None:
+        return False
+    await db.delete(row)
+    await db.flush()
+    return True
+
+
 async def has_labeled_parts_for_archive(db: AsyncSession, archive_id: int) -> bool:
     """Whether any part sticker has been linked to this archive yet.
 
