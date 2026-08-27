@@ -574,7 +574,10 @@ async def list_bin_job_candidates(
         part_code = summary.part_code if summary else None
         if part_code is None:
             source_names = (archive.print_name or "", archive.filename or "")
-            if not any(re.search(rf"(?<![A-Z0-9]){re.escape(batch.part_code)}(?![A-Z0-9])", name.upper()) for name in source_names):
+            if not any(
+                re.search(rf"(?<![A-Z0-9]){re.escape(batch.part_code)}(?![A-Z0-9])", name.upper())
+                for name in source_names
+            ):
                 continue
         elif part_code != batch.part_code:
             continue

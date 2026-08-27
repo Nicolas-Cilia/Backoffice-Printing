@@ -44,9 +44,9 @@ from backend.app.models.user import User
 from backend.app.services.floor_bins import (
     BinScanOutcome,
     BinScanResult,
+    list_bin_batch_events,
     list_bin_job_candidates,
     list_floor_bin_history,
-    list_bin_batch_events,
     list_floor_bin_management,
     list_floor_bins,
     override_bin_quantity,
@@ -1094,11 +1094,7 @@ async def list_inventory_bins(
     _: User | None = RequirePermissionIfAuthEnabled(Permission.FLOOR_SCAN),
 ) -> list[FloorBinManagementResponse]:
     """Show current assignments, or every historical fill when requested."""
-    items = await (
-        list_floor_bin_history(db)
-        if include_history
-        else list_floor_bin_management(db)
-    )
+    items = await (list_floor_bin_history(db) if include_history else list_floor_bin_management(db))
     return [_to_bin_management_response(item) for item in items]
 
 
