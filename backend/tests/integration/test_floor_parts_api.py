@@ -1237,11 +1237,12 @@ class TestReusableBinFlow:
 
 
 async def _enroll_linked_part_with_code(
-    async_client, printer_factory, archive_factory, part_code, sticker="BBD-000001"
+    async_client, printer_factory, archive_factory, part_code, sticker="BBD-000001", *, fit_check: bool = True
 ):
     """Enroll a job-linked part via Harvest, then stamp a part code on it so
     the item→location rules have a TOP-vs-BOT distinction to act on. Closes
-    the harvest session afterward — locations are not sessions."""
+    the harvest session afterward — locations are not sessions. By default
+    also records Initial QC Pass (required before finishing / ready / WIP)."""
     await _create_tracking_section_with_part(async_client, code=part_code)
     printer = await printer_factory()
     await archive_factory(printer_id=printer.id)
@@ -1251,6 +1252,8 @@ async def _enroll_linked_part_with_code(
     part_id = scanned.json()["part"]["id"]
     await async_client.post(f"/api/v1/floor/inventory/parts/{part_id}/part-code", json={"code": part_code})
     await _open_harvest(async_client, DEVICE_A)  # re-scanning Harvest's own QR closes the session
+    if fit_check:
+        await _scan_fit_check_part(async_client, sticker)
     return sticker
 
 
@@ -1258,6 +1261,19 @@ async def _enroll_linked_part_with_code(
 @pytest.mark.integration
 class TestPartLocationApi:
     """`POST /floor/locations/part` — the item→location pipeline for parts."""
+
+    async def test_bot_part_wip_without_qc_is_refused(self, async_client, printer_factory, archive_factory):
+        sticker = await _enroll_linked_part_with_code(
+            async_client, printer_factory, archive_factory, "BOT", fit_check=False
+        )
+
+        resp = await async_client.post(
+            "/api/v1/floor/locations/part",
+            json={"payload": sticker, "location_slug": "production-wip"},
+        )
+
+        assert resp.status_code == 200
+        assert resp.json()["result"] == "qc_required"
 
     async def test_bot_part_moves_to_wip(self, async_client, printer_factory, archive_factory):
         sticker = await _enroll_linked_part_with_code(async_client, printer_factory, archive_factory, "BOT")

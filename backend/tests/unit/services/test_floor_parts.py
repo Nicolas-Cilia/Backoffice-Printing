@@ -981,14 +981,35 @@ async def _enroll_linked_part(db_session, printer_factory, archive_factory, part
     return outcome.part
 
 
+async def _enroll_qc_linked_part(
+    db_session, printer_factory, archive_factory, part_code: str, code: str = "BBD-000001"
+):
+    """Enroll + Initial QC Pass — the prerequisite for finishing / ready / WIP."""
+    part = await _enroll_linked_part(db_session, printer_factory, archive_factory, part_code, code=code)
+    await scan_fit_check_part(db_session, part.sticker_code)
+    await db_session.commit()
+    return part
+
+
 class TestPartLocationPipeline:
     """§ item→location: scan a part, then a location QR. TOP parts must clear
     Support → Overhang → Hot Air before Ready-for-Production or WIP; BOT (and
-    any non-TOP) parts skip finishing and are refused at those benches."""
+    any non-TOP) parts skip finishing and are refused at those benches.
+    Initial QC Pass or Rework is required before any of those destinations."""
+
+    @pytest.mark.asyncio
+    async def test_bot_wip_without_qc_is_refused(self, db_session, printer_factory, archive_factory):
+        part = await _enroll_linked_part(db_session, printer_factory, archive_factory, "BOT")
+
+        outcome = await scan_part_at_location(db_session, part.sticker_code, PRODUCTION_WIP_LOCATION_SLUG)
+        await db_session.commit()
+
+        assert outcome.result is LocationScanResult.QC_REQUIRED
+        assert [e.action for e in await list_part_events(db_session, part.id)] == ["enrolled"]
 
     @pytest.mark.asyncio
     async def test_bot_wip_without_ready_prod_is_allowed(self, db_session, printer_factory, archive_factory):
-        part = await _enroll_linked_part(db_session, printer_factory, archive_factory, "BOT")
+        part = await _enroll_qc_linked_part(db_session, printer_factory, archive_factory, "BOT")
 
         outcome = await scan_part_at_location(db_session, part.sticker_code, PRODUCTION_WIP_LOCATION_SLUG)
         await db_session.commit()
@@ -999,7 +1020,7 @@ class TestPartLocationPipeline:
 
     @pytest.mark.asyncio
     async def test_bot_ready_prod_then_wip_is_allowed(self, db_session, printer_factory, archive_factory):
-        part = await _enroll_linked_part(db_session, printer_factory, archive_factory, "BOT")
+        part = await _enroll_qc_linked_part(db_session, printer_factory, archive_factory, "BOT")
 
         ready = await scan_part_at_location(db_session, part.sticker_code, READY_FOR_PRODUCTION_LOCATION_SLUG)
         await db_session.commit()
@@ -1013,27 +1034,27 @@ class TestPartLocationPipeline:
 
     @pytest.mark.asyncio
     async def test_bot_is_refused_at_a_finishing_location(self, db_session, printer_factory, archive_factory):
-        part = await _enroll_linked_part(db_session, printer_factory, archive_factory, "BOT")
+        part = await _enroll_qc_linked_part(db_session, printer_factory, archive_factory, "BOT")
 
         outcome = await scan_part_at_location(db_session, part.sticker_code, SUPPORT_REMOVAL_LOCATION_SLUG)
         await db_session.commit()
 
         assert outcome.result is LocationScanResult.WRONG_PART_TYPE
-        assert [e.action for e in await list_part_events(db_session, part.id)] == ["enrolled"]
+        assert [e.action for e in await list_part_events(db_session, part.id)] == ["enrolled", "fit_checked"]
 
     @pytest.mark.asyncio
     async def test_top_wip_before_finishing_is_refused(self, db_session, printer_factory, archive_factory):
-        part = await _enroll_linked_part(db_session, printer_factory, archive_factory, "TOP")
+        part = await _enroll_qc_linked_part(db_session, printer_factory, archive_factory, "TOP")
 
         outcome = await scan_part_at_location(db_session, part.sticker_code, PRODUCTION_WIP_LOCATION_SLUG)
         await db_session.commit()
 
         assert outcome.result is LocationScanResult.FINISHING_REQUIRED
-        assert [e.action for e in await list_part_events(db_session, part.id)] == ["enrolled"]
+        assert [e.action for e in await list_part_events(db_session, part.id)] == ["enrolled", "fit_checked"]
 
     @pytest.mark.asyncio
     async def test_top_ready_prod_before_finishing_is_refused(self, db_session, printer_factory, archive_factory):
-        part = await _enroll_linked_part(db_session, printer_factory, archive_factory, "TOP")
+        part = await _enroll_qc_linked_part(db_session, printer_factory, archive_factory, "TOP")
 
         outcome = await scan_part_at_location(db_session, part.sticker_code, READY_FOR_PRODUCTION_LOCATION_SLUG)
         await db_session.commit()
@@ -1042,7 +1063,7 @@ class TestPartLocationPipeline:
 
     @pytest.mark.asyncio
     async def test_top_finishing_in_order_then_wip(self, db_session, printer_factory, archive_factory):
-        part = await _enroll_linked_part(db_session, printer_factory, archive_factory, "TOP")
+        part = await _enroll_qc_linked_part(db_session, printer_factory, archive_factory, "TOP")
 
         for slug in (
             SUPPORT_REMOVAL_LOCATION_SLUG,
@@ -1058,21 +1079,28 @@ class TestPartLocationPipeline:
 
         assert wip.result is LocationScanResult.RECORDED
         events = [e.action for e in await list_part_events(db_session, part.id)]
-        assert events == ["enrolled", "support_removed", "overhang_removed", "hot_air_removed", "wip"]
+        assert events == [
+            "enrolled",
+            "fit_checked",
+            "support_removed",
+            "overhang_removed",
+            "hot_air_removed",
+            "wip",
+        ]
 
     @pytest.mark.asyncio
     async def test_top_finishing_out_of_order_is_refused(self, db_session, printer_factory, archive_factory):
-        part = await _enroll_linked_part(db_session, printer_factory, archive_factory, "TOP")
+        part = await _enroll_qc_linked_part(db_session, printer_factory, archive_factory, "TOP")
 
         outcome = await scan_part_at_location(db_session, part.sticker_code, OVERHANG_REMOVAL_LOCATION_SLUG)
         await db_session.commit()
 
         assert outcome.result is LocationScanResult.FINISHING_REQUIRED
-        assert [e.action for e in await list_part_events(db_session, part.id)] == ["enrolled"]
+        assert [e.action for e in await list_part_events(db_session, part.id)] == ["enrolled", "fit_checked"]
 
     @pytest.mark.asyncio
     async def test_top_finishing_step_is_not_repeated(self, db_session, printer_factory, archive_factory):
-        part = await _enroll_linked_part(db_session, printer_factory, archive_factory, "TOP")
+        part = await _enroll_qc_linked_part(db_session, printer_factory, archive_factory, "TOP")
         await scan_part_at_location(db_session, part.sticker_code, SUPPORT_REMOVAL_LOCATION_SLUG)
         await db_session.commit()
 
@@ -1083,7 +1111,7 @@ class TestPartLocationPipeline:
 
     @pytest.mark.asyncio
     async def test_wip_twice_in_a_row_is_rejected(self, db_session, printer_factory, archive_factory):
-        part = await _enroll_linked_part(db_session, printer_factory, archive_factory, "BOT")
+        part = await _enroll_qc_linked_part(db_session, printer_factory, archive_factory, "BOT")
         await scan_part_at_location(db_session, part.sticker_code, PRODUCTION_WIP_LOCATION_SLUG)
         await db_session.commit()
 
@@ -1091,6 +1119,30 @@ class TestPartLocationPipeline:
         await db_session.commit()
 
         assert again.result is LocationScanResult.ALREADY_AT_LOCATION
+
+    @pytest.mark.asyncio
+    async def test_ready_prod_after_wip_is_rejected(self, db_session, printer_factory, archive_factory):
+        part = await _enroll_qc_linked_part(db_session, printer_factory, archive_factory, "BOT")
+        await scan_part_at_location(db_session, part.sticker_code, PRODUCTION_WIP_LOCATION_SLUG)
+        await db_session.commit()
+
+        ready = await scan_part_at_location(db_session, part.sticker_code, READY_FOR_PRODUCTION_LOCATION_SLUG)
+        await db_session.commit()
+
+        assert ready.result is LocationScanResult.ALREADY_WIP
+
+    @pytest.mark.asyncio
+    async def test_missing_part_code_is_refused(self, db_session, printer_factory, archive_factory):
+        part = await _enroll_linked_part(db_session, printer_factory, archive_factory, "BOT")
+        part.part_code = None
+        await db_session.commit()
+        await scan_fit_check_part(db_session, part.sticker_code)
+        await db_session.commit()
+
+        outcome = await scan_part_at_location(db_session, part.sticker_code, PRODUCTION_WIP_LOCATION_SLUG)
+        await db_session.commit()
+
+        assert outcome.result is LocationScanResult.PART_CODE_REQUIRED
 
     @pytest.mark.asyncio
     async def test_unknown_sticker_is_rejected(self, db_session):

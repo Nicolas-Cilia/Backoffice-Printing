@@ -1591,17 +1591,19 @@ export interface BinScanResponse {
 
 /** What a scan-part-then-location commit did. No verdict is recorded for
  *  Fit Check — `recorded` covers both a first check and a re-check
- *  (§5.4a); there is nothing to amend. `wrong_part_type` and
- *  `finishing_required` are item→location refusals (a finishing bench
- *  scanned for a non-TOP part, or Ready-for-Production / WIP before a TOP
- *  part has cleared all three finishing steps). */
+ *  (§5.4a); there is nothing to amend. `wrong_part_type`,
+ *  `finishing_required`, `qc_required`, `already_wip`, and
+ *  `part_code_required` are item→location refusals. */
 export type LocationScanResult =
   | 'recorded'
   | 'already_at_location'
   | 'unknown_part'
   | 'invalid_code'
   | 'wrong_part_type'
-  | 'finishing_required';
+  | 'finishing_required'
+  | 'qc_required'
+  | 'already_wip'
+  | 'part_code_required';
 
 /** The item→location destinations a part can be committed to via
  *  `scanPartLocation` (Fit Check and Rework keep their own endpoints).

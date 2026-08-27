@@ -604,6 +604,14 @@ class LocationScanResult(StrEnum):
     # TOP part sent to Ready-for-Production / Production WIP before all three
     # finishing steps are done.
     FINISHING_REQUIRED = "finishing_required"
+    # Initial QC Pass or Rework has not been recorded yet — required before
+    # finishing, Ready-for-Production, or Production WIP.
+    QC_REQUIRED = "qc_required"
+    # The part has already entered Production WIP; Ready-for-Production and
+    # finishing benches are closed, and a second WIP commit is refused.
+    ALREADY_WIP = "already_wip"
+    # The sticker has no TOP/BOT part code yet — assign one in inventory first.
+    PART_CODE_REQUIRED = "part_code_required"
 
 
 # ── Item→location pipeline (§ item-then-location) ─────────────────────────
@@ -619,9 +627,11 @@ OVERHANG_REMOVAL_LOCATION_SLUG = "overhang-removal"
 HOT_AIR_REMOVAL_LOCATION_SLUG = "hot-air-removal"
 
 # The one part code whose finishing steps are mandatory before it can reach
-# Ready-for-Production / Production WIP. Every other code (BOT and friends)
-# skips finishing entirely and is refused at the finishing locations.
+# Ready-for-Production / Production WIP. BOT skips finishing and is refused at
+# those benches. Stickers without a TOP/BOT code are refused until assigned.
 TOP_PART_CODE = "TOP"
+BOT_PART_CODE = "BOT"
+STICKER_PIPELINE_PART_CODES = frozenset({TOP_PART_CODE, BOT_PART_CODE})
 
 # location slug → the append-only event action it writes.
 READY_FOR_PRODUCTION_ACTION = "ready_for_production"
@@ -692,6 +702,11 @@ async def _part_has_event(db: AsyncSession, part_id: int, action: str) -> bool:
         select(FloorPartEvent.id).where(FloorPartEvent.part_id == part_id, FloorPartEvent.action == action).limit(1)
     )
     return found is not None
+
+
+async def _part_has_qc_or_rework(db: AsyncSession, part_id: int) -> bool:
+    """Initial QC Pass or Rework — either unlocks the rest of the pipeline."""
+    return await _part_has_event(db, part_id, "fit_checked") or await _part_has_event(db, part_id, "rework")
 
 
 async def _to_location_outcome(
@@ -780,14 +795,14 @@ async def scan_part_at_location(db: AsyncSession, payload: str, location_slug: s
     Handles the five workflow locations beyond Fit Check / Rework:
 
     - **Support / Overhang / Hot Air removal** — TOP parts only, in that
-      order. A non-TOP part is refused (``WRONG_PART_TYPE``); a step scanned
-      before its predecessor is refused (``FINISHING_REQUIRED``).
-    - **Ready for Production Inventory** — optional staging. For a TOP part it
-      requires all three finishing steps first; for anything else it is
-      unconditional. Never a prerequisite for WIP.
-    - **Production WIP** — for a TOP part it requires all three finishing
-      steps; for anything else (BOT etc.) it is allowed straight away, with
-      or without a Ready-for-Production visit in between.
+      order, and only after Initial QC Pass or Rework. A non-TOP part is
+      refused (``WRONG_PART_TYPE``); a step scanned before its predecessor
+      is refused (``FINISHING_REQUIRED``).
+    - **Ready for Production Inventory** — optional staging after QC/Rework
+      (and after finishing for TOP). Never a prerequisite for WIP.
+    - **Production WIP** — after QC/Rework (and finishing for TOP), with or
+      without a Ready-for-Production visit. Once recorded, further Ready /
+      finishing / WIP scans are refused (``ALREADY_WIP``).
 
     Fit Check and Rework are deliberately *not* routed here — they keep their
     own entry points (``scan_fit_check_part`` / ``scan_rework_part``) because
@@ -797,7 +812,20 @@ async def scan_part_at_location(db: AsyncSession, payload: str, location_slug: s
     if part is None:
         return await _to_location_outcome(db, result, part)
 
-    is_top = (part.part_code or "").strip().upper() == TOP_PART_CODE
+    part_code = (part.part_code or "").strip().upper()
+    if part_code not in STICKER_PIPELINE_PART_CODES:
+        return await _to_location_outcome(db, LocationScanResult.PART_CODE_REQUIRED, part)
+    is_top = part_code == TOP_PART_CODE
+
+    # Once a part is in Production WIP it stays there for this pipeline —
+    # Ready-for-Production and finishing benches must not reopen it.
+    if await _part_has_event(db, part.id, PRODUCTION_WIP_ACTION):
+        if location_slug == PRODUCTION_WIP_LOCATION_SLUG:
+            return await _to_location_outcome(db, LocationScanResult.ALREADY_AT_LOCATION, part)
+        return await _to_location_outcome(db, LocationScanResult.ALREADY_WIP, part)
+
+    if not await _part_has_qc_or_rework(db, part.id):
+        return await _to_location_outcome(db, LocationScanResult.QC_REQUIRED, part)
 
     if location_slug in _FINISHING_STEPS:
         action = _FINISHING_STEPS[location_slug]
