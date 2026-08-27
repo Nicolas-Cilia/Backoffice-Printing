@@ -41,6 +41,12 @@ class TestStationCatalog:
             "BBS-harvest",
             "BBS-initial-qc-pass",
             "BBS-rework",
+            "BBS-ready-for-production-inventory",
+            "BBS-production-wip",
+            "BBS-bin-empty",
+            "BBS-support-removal",
+            "BBS-overhang-removal",
+            "BBS-hot-air-removal",
         }
 
     def test_every_station_carries_the_station_prefix(self):
@@ -50,8 +56,8 @@ class TestStationCatalog:
         assert len({s.slug for s in FLOOR_STATIONS}) == len(FLOOR_STATIONS)
         assert len({s.name for s in FLOOR_STATIONS}) == len(FLOOR_STATIONS)
 
-    def test_the_six_current_floor_codes_are_present(self):
-        assert len(FLOOR_STATIONS) == 6
+    def test_all_current_floor_codes_are_present(self):
+        assert len(FLOOR_STATIONS) == 12
 
     def test_fit_check_and_rework_carry_no_floor_wide_lock(self):
         """Parallel fit-check and rework benches on separate machines are
@@ -61,12 +67,36 @@ class TestStationCatalog:
         assert by_slug["rework"].exclusive is False
 
     def test_category_splits_locations_from_stations(self):
-        """§3.3: Initial QC Pass and Rework print under the Codes page's
-        Locations tab, everything else under Station labels."""
+        """§3.3: item→location destinations print under the Codes page's
+        Locations tab, session stations under Station labels."""
         by_slug = {s.slug: s for s in FLOOR_STATIONS}
-        assert {s.slug for s in FLOOR_STATIONS if s.category == "location"} == {"fit-check", "rework"}
+        assert {s.slug for s in FLOOR_STATIONS if s.category == "location"} == {
+            "fit-check",
+            "rework",
+            "ready-for-production-inventory",
+            "production-wip",
+            "bin-empty",
+            "support-removal",
+            "overhang-removal",
+            "hot-air-removal",
+        }
         for slug in ("wip", "storage-receive", "storage-move", "harvest"):
             assert by_slug[slug].category == "station"
+
+    def test_item_location_destinations_carry_no_floor_wide_lock(self):
+        """None of the item→location destinations is a session — parallel
+        benches are normal work, so none takes the floor-wide lock."""
+        by_slug = {s.slug: s for s in FLOOR_STATIONS}
+        for slug in (
+            "ready-for-production-inventory",
+            "production-wip",
+            "bin-empty",
+            "support-removal",
+            "overhang-removal",
+            "hot-air-removal",
+        ):
+            assert by_slug[slug].exclusive is False
+            assert by_slug[slug].category == "location"
 
 
 class TestStationLookup:

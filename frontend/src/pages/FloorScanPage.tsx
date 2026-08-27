@@ -50,6 +50,8 @@ import {
   type FloorPrinterInfo,
   type FloorSession,
   type LocationScanResponse,
+  type PartLocationSlug,
+  type BinLocationSlug,
   type MaintenanceHistory,
   type MaintenanceStatus,
   type PartScanResponse,
@@ -129,13 +131,17 @@ type Status =
    *  screen returns to idle, same timing as `plate-closed`. */
   | {
       kind: 'location-recorded';
-      locationSlug: 'fit-check' | 'rework' | 'discard';
+      locationSlug: 'fit-check' | 'rework' | 'discard' | PartLocationSlug;
       part: FloorLabeledPart | null;
       printer: FloorPlatePrinter | null;
       archive: FloorPlateArchive | null;
       reasonCode?: string;
     }
-  | { kind: 'bin-recorded'; action: 'harvested' | 'qc' | 'wip' | 'empty' | 'discarded'; batch: FloorBinBatch | null };
+  | {
+      kind: 'bin-recorded';
+      action: 'harvested' | 'qc' | 'wip' | 'ready-for-production' | 'empty' | 'discarded';
+      batch: FloorBinBatch | null;
+    };
 
 type PartImageIdentity = Pick<FloorInventoryPart, 'part_code' | 'section_part_id' | 'part_name' | 'part_source' | 'labeled_at' | 'archived_at' | 'latest_event_action' | 'latest_event_reason'> & {
   printer_name: string | null;
@@ -722,6 +728,88 @@ export function FloorScanPage() {
     [failScan, t],
   );
 
+  // Item→location destinations for parts (Ready-for-Production, Production
+  // WIP, and the three TOP finishing benches). No session, no device_id: the
+  // sticker plus the location slug is all the backend needs, and TOP/BOT
+  // eligibility and finishing order are enforced server-side.
+  const submitPartLocation = useCallback(
+    async (payload: string, locationSlug: PartLocationSlug) => {
+      setBusy(true);
+      busyRef.current = true;
+      try {
+        const resp = await api.scanPartLocation({ payload, location_slug: locationSlug });
+        if (resp.result === 'recorded') {
+          setStatus({
+            kind: 'location-recorded',
+            locationSlug,
+            part: resp.part,
+            printer: resp.printer,
+            archive: resp.archive,
+          });
+        } else if (resp.result === 'already_at_location') {
+          failScan(t('floor.locationAlreadyRecorded', 'Part is already at this location'), payload);
+        } else if (resp.result === 'wrong_part_type') {
+          failScan(t('floor.locationWrongPartType', 'Finishing steps apply to TOP parts only'), payload);
+        } else if (resp.result === 'finishing_required') {
+          failScan(
+            t('floor.locationFinishingRequired', 'Finish Support, Overhang and Hot Air removal first'),
+            payload,
+          );
+        } else if (resp.result === 'unknown_part') {
+          failScan(t('floor.locationUnknownPart', 'Not enrolled — scan it at Harvest first'), payload);
+        } else {
+          failScan(t('floor.scanInvalidCode', 'Invalid part code'), payload);
+        }
+      } catch {
+        failScan(t('floor.scanFailed', 'Scan failed'), payload);
+      } finally {
+        setBusy(false);
+        busyRef.current = false;
+      }
+    },
+    [failScan, t],
+  );
+
+  // Item→location destinations for bins (Ready-for-Production, Production
+  // WIP, Empty Bin). Production WIP requires a passed visual QC; Empty Bin
+  // requires the bin to have entered WIP — both enforced server-side.
+  const submitBinLocation = useCallback(
+    async (payload: string, locationSlug: BinLocationSlug) => {
+      setBusy(true);
+      busyRef.current = true;
+      try {
+        const resp = await api.scanBinLocation({ payload, location_slug: locationSlug });
+        if (resp.result === 'wip_recorded') {
+          setStatus({ kind: 'bin-recorded', action: 'wip', batch: resp.batch });
+        } else if (resp.result === 'ready_for_production_recorded') {
+          setStatus({ kind: 'bin-recorded', action: 'ready-for-production', batch: resp.batch });
+        } else if (resp.result === 'empty_recorded') {
+          setStatus({ kind: 'bin-recorded', action: 'empty', batch: resp.batch });
+        } else if (resp.result === 'qc_required') {
+          failScan(t('floor.binQcRequired', 'Visual QC is required before WIP'), payload);
+        } else if (resp.result === 'already_wip') {
+          failScan(t('floor.binAlreadyWip', 'This bin batch is already in WIP'), payload);
+        } else if (resp.result === 'already_ready_for_production') {
+          failScan(t('floor.binAlreadyReadyForProduction', 'This bin is already staged for production'), payload);
+        } else if (resp.result === 'already_empty') {
+          failScan(t('floor.binAlreadyEmpty', 'This bin is already empty'), payload);
+        } else if (resp.result === 'empty_requires_wip') {
+          failScan(t('floor.binEmptyRequiresWip', 'A bin can only be marked empty after it has entered WIP'), payload);
+        } else if (resp.result === 'no_batch') {
+          failScan(t('floor.binNoBatch', 'No active quantity found for this bin'), payload);
+        } else {
+          failScan(t('floor.scanInvalidCode', 'Invalid bin code'), payload);
+        }
+      } catch {
+        failScan(t('floor.scanFailed', 'Scan failed'), payload);
+      } finally {
+        setBusy(false);
+        busyRef.current = false;
+      }
+    },
+    [failScan, t],
+  );
+
   // Fit Check and Rework are locations, not stations (§5.4a/§5.4b) — no
   // session touched by either commit below, and no device_id sent: the
   // sticker code (and for Rework, the reason) is everything the backend
@@ -859,7 +947,7 @@ export function FloorScanPage() {
       const route = routeScan(scanned, sessionRef.current?.station_slug ?? null, viewingPrinterId);
       if (route.action === 'ignore') return;
       if (statusRef.current.kind === 'awaiting-bin-empty' &&
-        (route.action === 'harvest-bin' || route.action === 'wip-bin' || route.action === 'bin-scanned')) {
+        (route.action === 'harvest-bin' || route.action === 'bin-scanned')) {
         if (route.payload === statusRef.current.payload) {
           void submitBinEmpty(route.payload);
         } else {
@@ -889,10 +977,6 @@ export function FloorScanPage() {
       }
       if (route.action === 'harvest-bin') {
         void submitHarvestBinScan(route.payload, undefined, route.printerId);
-        return;
-      }
-      if (route.action === 'wip-bin') {
-        void submitBinFlow(route.payload, 'wip');
         return;
       }
       if (route.action === 'bin-scanned') {
@@ -1002,11 +1086,26 @@ export function FloorScanPage() {
       }
       if (route.action === 'location') {
         if (statusRef.current.kind === 'awaiting-bin-location') {
+          const binPayload = statusRef.current.payload;
           if (route.slug === 'fit-check') {
-            void submitBinFlow(statusRef.current.payload, 'qc');
-          } else {
+            void submitBinFlow(binPayload, 'qc');
+          } else if (
+            route.slug === 'ready-for-production-inventory' ||
+            route.slug === 'production-wip' ||
+            route.slug === 'bin-empty'
+          ) {
+            void submitBinLocation(binPayload, route.slug);
+          } else if (route.slug === 'rework') {
+            // Rework is part-only; name it specifically rather than as a
+            // generic redirect so the operator knows what went wrong.
             failScan(
               t('floor.reworkBinNotAllowed', "Bins aren't supported for Rework — scan a part instead"),
+              route.payload,
+            );
+          } else {
+            // The TOP finishing benches are part-only locations too.
+            failScan(
+              t('floor.locationBinNotSupported', "This location isn't available for bins"),
               route.payload,
             );
           }
@@ -1021,7 +1120,7 @@ export function FloorScanPage() {
               return;
             }
             void submitFitCheckPartScan(pendingPayload);
-          } else {
+          } else if (route.slug === 'rework') {
             if (isAlreadyAtLocation(pendingPart, 'rework')) {
               failScan(t('floor.reworkAlreadyRecorded', 'Part is already in Rework'), route.payload);
               return;
@@ -1029,6 +1128,15 @@ export function FloorScanPage() {
             // Rework's location scan is a pure state transition — no
             // server call until the reason is known (§5.4b).
             setStatus({ kind: 'awaiting-rework-reason', payload: pendingPayload, part: pendingPart });
+          } else if (route.slug === 'bin-empty') {
+            // Empty Bin is a bin-only destination; a part sitting here is a
+            // scanning mistake, so say so rather than call the parts endpoint.
+            failScan(t('floor.locationPartNotSupported', "This location isn't available for parts"), route.payload);
+          } else {
+            // Ready-for-Production, Production WIP, and the three TOP
+            // finishing benches. Eligibility (TOP vs BOT, finishing order)
+            // is enforced server-side.
+            void submitPartLocation(pendingPayload, route.slug);
           }
           return;
         }
@@ -1137,6 +1245,8 @@ export function FloorScanPage() {
       submitBinResolve,
       submitBinDiscard,
       submitBinEmpty,
+      submitBinLocation,
+      submitPartLocation,
       submitPartScan,
       submitFitCheckPartScan,
       submitReworkPartScan,
@@ -2740,7 +2850,7 @@ function BinRecordedFlash({
   batch,
   t,
 }: {
-  action: 'harvested' | 'qc' | 'wip' | 'empty' | 'discarded';
+  action: 'harvested' | 'qc' | 'wip' | 'ready-for-production' | 'empty' | 'discarded';
   batch: FloorBinBatch | null;
   t: ReturnType<typeof useTranslation>['t'];
 }) {
@@ -2750,18 +2860,22 @@ function BinRecordedFlash({
       ? 'text-green-500'
       : action === 'wip'
         ? 'text-sky-400'
-        : action === 'discarded'
-          ? 'text-red-500'
-          : 'text-amber-400';
+        : action === 'ready-for-production'
+          ? 'text-emerald-400'
+          : action === 'discarded'
+            ? 'text-red-500'
+            : 'text-amber-400';
   const message = action === 'harvested'
     ? t('floor.binHarvested', 'Quantity recorded')
     : action === 'qc'
       ? t('floor.binVisualQcPassed', 'Visual QC passed')
       : action === 'wip'
         ? t('floor.binWipRecorded', 'Bin added to WIP')
-        : action === 'discarded'
-          ? t('floor.binDiscarded', 'Bin discarded and unlinked')
-          : t('floor.binEmptyRecorded', 'Bin marked empty and ready to reuse');
+        : action === 'ready-for-production'
+          ? t('floor.binReadyForProductionRecorded', 'Bin staged for production')
+          : action === 'discarded'
+            ? t('floor.binDiscarded', 'Bin discarded and unlinked')
+            : t('floor.binEmptyRecorded', 'Bin marked empty and ready to reuse');
   return (
     <>
       <Check className={`w-16 h-16 mb-6 ${color}`} aria-hidden="true" />
@@ -2940,19 +3054,38 @@ function LocationRecordedFlash({
   reasonCode,
   t,
 }: {
-  locationSlug: 'fit-check' | 'rework' | 'discard';
+  locationSlug: 'fit-check' | 'rework' | 'discard' | PartLocationSlug;
   part: FloorLabeledPart | null;
   printer: FloorPlatePrinter | null;
   archive: FloorPlateArchive | null;
   reasonCode?: string;
   t: ReturnType<typeof useTranslation>['t'];
 }) {
+  const color = locationSlug === 'discard'
+    ? 'text-red-500'
+    : locationSlug === 'rework'
+      ? 'text-orange-500'
+      : 'text-green-500';
+  const message = locationSlug === 'fit-check'
+    ? qcPassStatusLabel(part?.part_code, t)
+    : locationSlug === 'discard'
+      ? t('floor.discardRecorded', 'Discarded')
+      : locationSlug === 'rework'
+        ? reasonCode
+          ? t('floor.reworkRecorded', 'Sent to Rework · {{reason}}', { reason: reasonCode })
+          : t('floor.reworkRecordedWithoutReason', 'Sent to Rework')
+        : locationSlug === 'ready-for-production-inventory'
+          ? t('floor.readyForProductionRecorded', 'Staged for production')
+          : locationSlug === 'production-wip'
+            ? t('floor.productionWipRecorded', 'Added to production WIP')
+            : locationSlug === 'support-removal'
+              ? t('floor.supportRemovalRecorded', 'Support removal done')
+              : locationSlug === 'overhang-removal'
+                ? t('floor.overhangRemovalRecorded', 'Overhang removal done')
+                : t('floor.hotAirRemovalRecorded', 'Hot air removal done');
   return (
     <>
-      <ScanLine
-        className={`w-16 h-16 mb-6 ${locationSlug === 'discard' ? 'text-red-500' : locationSlug === 'rework' ? 'text-orange-500' : 'text-green-500'}`}
-        aria-hidden="true"
-      />
+      <ScanLine className={`w-16 h-16 mb-6 ${color}`} aria-hidden="true" />
       <PartCodeThumbnail partCode={part?.part_code} sectionPartId={part?.section_part_id} className="mb-4 h-20 w-20 rounded-lg object-cover bg-bambu-dark-secondary" />
       <p className="text-4xl font-bold text-white font-mono">{part?.sticker_code ?? ''}</p>
       <p className="mt-2 text-lg text-bambu-gray">
@@ -2960,15 +3093,7 @@ function LocationRecordedFlash({
           .filter(Boolean)
           .join(' · ')}
       </p>
-      <p className={`mt-3 text-lg ${locationSlug === 'discard' ? 'text-red-500' : locationSlug === 'rework' ? 'text-orange-500' : 'text-green-500'}`}>
-        {locationSlug === 'fit-check'
-          ? qcPassStatusLabel(part?.part_code, t)
-          : locationSlug === 'discard'
-            ? t('floor.discardRecorded', 'Discarded')
-            : reasonCode
-              ? t('floor.reworkRecorded', 'Sent to Rework · {{reason}}', { reason: reasonCode })
-              : t('floor.reworkRecordedWithoutReason', 'Sent to Rework')}
-      </p>
+      <p className={`mt-3 text-lg ${color}`}>{message}</p>
     </>
   );
 }

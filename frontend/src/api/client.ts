@@ -1525,6 +1525,8 @@ export type BinScanResult =
   | 'qc_required'
   | 'already_wip'
   | 'wip_recorded'
+  | 'ready_for_production_recorded'
+  | 'already_ready_for_production'
   | 'empty_recorded'
   | 'already_empty'
   | 'empty_requires_wip'
@@ -1589,8 +1591,32 @@ export interface BinScanResponse {
 
 /** What a scan-part-then-location commit did. No verdict is recorded for
  *  Fit Check — `recorded` covers both a first check and a re-check
- *  (§5.4a); there is nothing to amend. */
-export type LocationScanResult = 'recorded' | 'already_at_location' | 'unknown_part' | 'invalid_code';
+ *  (§5.4a); there is nothing to amend. `wrong_part_type` and
+ *  `finishing_required` are item→location refusals (a finishing bench
+ *  scanned for a non-TOP part, or Ready-for-Production / WIP before a TOP
+ *  part has cleared all three finishing steps). */
+export type LocationScanResult =
+  | 'recorded'
+  | 'already_at_location'
+  | 'unknown_part'
+  | 'invalid_code'
+  | 'wrong_part_type'
+  | 'finishing_required';
+
+/** The item→location destinations a part can be committed to via
+ *  `scanPartLocation` (Fit Check and Rework keep their own endpoints).
+ *  Mirrors `backend.app.services.floor_parts.PART_LOCATION_SLUGS`. */
+export type PartLocationSlug =
+  | 'ready-for-production-inventory'
+  | 'production-wip'
+  | 'support-removal'
+  | 'overhang-removal'
+  | 'hot-air-removal';
+
+/** The item→location destinations a bin can be committed to via
+ *  `scanBinLocation`. Initial QC keeps its own quantity-carrying endpoint.
+ *  Mirrors `backend.app.services.floor_bins.BIN_LOCATION_SLUGS`. */
+export type BinLocationSlug = 'ready-for-production-inventory' | 'production-wip' | 'bin-empty';
 
 export interface LocationScanResponse {
   result: LocationScanResult;
@@ -6031,6 +6057,23 @@ export const api = {
     }),
   scanEmptyBin: (data: { payload: string }) =>
     request<BinScanResponse>('/floor/bins/empty', {
+      method: 'POST',
+      body: JSON.stringify(data),
+    }),
+  /** Item→location pipeline: commit a scanned part into one of the workflow
+   *  locations (Support/Overhang/Hot Air removal, Ready-for-Production, or
+   *  Production WIP). The TOP-vs-BOT finishing rules are applied server-side;
+   *  Fit Check and Rework keep their own endpoints. */
+  scanPartLocation: (data: { payload: string; location_slug: PartLocationSlug }) =>
+    request<LocationScanResponse>('/floor/locations/part', {
+      method: 'POST',
+      body: JSON.stringify(data),
+    }),
+  /** Item→location pipeline: commit a scanned bin into Ready-for-Production
+   *  Inventory, Production WIP, or Empty Bin. Replaces the old
+   *  open-WIP-session bin path. */
+  scanBinLocation: (data: { payload: string; location_slug: BinLocationSlug }) =>
+    request<BinScanResponse>('/floor/locations/bin', {
       method: 'POST',
       body: JSON.stringify(data),
     }),

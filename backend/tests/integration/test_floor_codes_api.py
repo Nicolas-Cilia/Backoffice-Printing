@@ -18,7 +18,7 @@ class TestListStations:
         assert resp.status_code == 200
 
         stations = resp.json()
-        assert len(stations) == 6
+        assert len(stations) == 12
 
         payloads = [s["payload"] for s in stations]
         assert payloads == [
@@ -28,6 +28,12 @@ class TestListStations:
             "BBS-harvest",
             "BBS-initial-qc-pass",
             "BBS-rework",
+            "BBS-ready-for-production-inventory",
+            "BBS-production-wip",
+            "BBS-bin-empty",
+            "BBS-support-removal",
+            "BBS-overhang-removal",
+            "BBS-hot-air-removal",
         ]
         # Order is the documented workflow order (§5), not alphabetical — the
         # Codes page prints them in this sequence.
@@ -39,6 +45,16 @@ class TestListStations:
         assert by_slug["fit-check"]["category"] == "location"
         assert by_slug["rework"]["category"] == "location"
         assert by_slug["wip"]["category"] == "station"
+        # The new item→location destinations all print under the Locations tab.
+        for slug in (
+            "ready-for-production-inventory",
+            "production-wip",
+            "bin-empty",
+            "support-removal",
+            "overhang-removal",
+            "hot-air-removal",
+        ):
+            assert by_slug[slug]["category"] == "location"
 
 
 class TestRenderStationLabels:

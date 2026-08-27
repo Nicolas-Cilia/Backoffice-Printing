@@ -15,6 +15,11 @@ from backend.app.models.floor_part import FloorLabeledPart
 from backend.app.models.library import LibraryFolderSection, LibrarySectionPart
 from backend.app.services.floor_codes import station_for_slug
 from backend.app.services.floor_parts import (
+    HOT_AIR_REMOVAL_LOCATION_SLUG,
+    OVERHANG_REMOVAL_LOCATION_SLUG,
+    PRODUCTION_WIP_LOCATION_SLUG,
+    READY_FOR_PRODUCTION_LOCATION_SLUG,
+    SUPPORT_REMOVAL_LOCATION_SLUG,
     HarvestPrinterResult,
     LocationScanResult,
     PartScanResult,
@@ -37,6 +42,7 @@ from backend.app.services.floor_parts import (
     scan_fit_check_part,
     scan_harvest_printer,
     scan_part,
+    scan_part_at_location,
     scan_rework_part,
     search_completed_jobs,
     set_part_code,
@@ -952,6 +958,150 @@ class TestReplaceStickerCode:
         result = await replace_sticker_code(db_session, outcome.part.id, "BBD-000001", "damaged")
 
         assert result.result is ReplaceStickerResult.INVALID_CODE
+
+
+async def _enroll_linked_part(db_session, printer_factory, archive_factory, part_code: str, code: str = "BBD-000001"):
+    """Enroll one part linked to a completed job, then stamp its part code.
+
+    Sets ``part_code`` directly rather than going through the build-plate
+    name heuristic — these tests are about the location pipeline's TOP-vs-BOT
+    branching, not code resolution (which has its own tests above). Leaves no
+    session open: the item→location pipeline never opens one."""
+    printer = await printer_factory()
+    await archive_factory(printer_id=printer.id)
+    await apply_station_scan(db_session, HARVEST, DEVICE_A)
+    await db_session.commit()
+    await scan_harvest_printer(db_session, DEVICE_A, f"BBP-{printer.id}")
+    await db_session.commit()
+    outcome = await scan_part(db_session, DEVICE_A, code)
+    outcome.part.part_code = part_code
+    await db_session.commit()
+    await apply_station_scan(db_session, HARVEST, DEVICE_A)  # close the harvest session
+    await db_session.commit()
+    return outcome.part
+
+
+class TestPartLocationPipeline:
+    """§ item→location: scan a part, then a location QR. TOP parts must clear
+    Support → Overhang → Hot Air before Ready-for-Production or WIP; BOT (and
+    any non-TOP) parts skip finishing and are refused at those benches."""
+
+    @pytest.mark.asyncio
+    async def test_bot_wip_without_ready_prod_is_allowed(self, db_session, printer_factory, archive_factory):
+        part = await _enroll_linked_part(db_session, printer_factory, archive_factory, "BOT")
+
+        outcome = await scan_part_at_location(db_session, part.sticker_code, PRODUCTION_WIP_LOCATION_SLUG)
+        await db_session.commit()
+
+        assert outcome.result is LocationScanResult.RECORDED
+        events = await list_part_events(db_session, part.id)
+        assert events[-1].action == "wip"
+
+    @pytest.mark.asyncio
+    async def test_bot_ready_prod_then_wip_is_allowed(self, db_session, printer_factory, archive_factory):
+        part = await _enroll_linked_part(db_session, printer_factory, archive_factory, "BOT")
+
+        ready = await scan_part_at_location(db_session, part.sticker_code, READY_FOR_PRODUCTION_LOCATION_SLUG)
+        await db_session.commit()
+        wip = await scan_part_at_location(db_session, part.sticker_code, PRODUCTION_WIP_LOCATION_SLUG)
+        await db_session.commit()
+
+        assert ready.result is LocationScanResult.RECORDED
+        assert wip.result is LocationScanResult.RECORDED
+        events = [e.action for e in await list_part_events(db_session, part.id)]
+        assert events[-2:] == ["ready_for_production", "wip"]
+
+    @pytest.mark.asyncio
+    async def test_bot_is_refused_at_a_finishing_location(self, db_session, printer_factory, archive_factory):
+        part = await _enroll_linked_part(db_session, printer_factory, archive_factory, "BOT")
+
+        outcome = await scan_part_at_location(db_session, part.sticker_code, SUPPORT_REMOVAL_LOCATION_SLUG)
+        await db_session.commit()
+
+        assert outcome.result is LocationScanResult.WRONG_PART_TYPE
+        assert [e.action for e in await list_part_events(db_session, part.id)] == ["enrolled"]
+
+    @pytest.mark.asyncio
+    async def test_top_wip_before_finishing_is_refused(self, db_session, printer_factory, archive_factory):
+        part = await _enroll_linked_part(db_session, printer_factory, archive_factory, "TOP")
+
+        outcome = await scan_part_at_location(db_session, part.sticker_code, PRODUCTION_WIP_LOCATION_SLUG)
+        await db_session.commit()
+
+        assert outcome.result is LocationScanResult.FINISHING_REQUIRED
+        assert [e.action for e in await list_part_events(db_session, part.id)] == ["enrolled"]
+
+    @pytest.mark.asyncio
+    async def test_top_ready_prod_before_finishing_is_refused(self, db_session, printer_factory, archive_factory):
+        part = await _enroll_linked_part(db_session, printer_factory, archive_factory, "TOP")
+
+        outcome = await scan_part_at_location(db_session, part.sticker_code, READY_FOR_PRODUCTION_LOCATION_SLUG)
+        await db_session.commit()
+
+        assert outcome.result is LocationScanResult.FINISHING_REQUIRED
+
+    @pytest.mark.asyncio
+    async def test_top_finishing_in_order_then_wip(self, db_session, printer_factory, archive_factory):
+        part = await _enroll_linked_part(db_session, printer_factory, archive_factory, "TOP")
+
+        for slug in (
+            SUPPORT_REMOVAL_LOCATION_SLUG,
+            OVERHANG_REMOVAL_LOCATION_SLUG,
+            HOT_AIR_REMOVAL_LOCATION_SLUG,
+        ):
+            outcome = await scan_part_at_location(db_session, part.sticker_code, slug)
+            await db_session.commit()
+            assert outcome.result is LocationScanResult.RECORDED
+
+        wip = await scan_part_at_location(db_session, part.sticker_code, PRODUCTION_WIP_LOCATION_SLUG)
+        await db_session.commit()
+
+        assert wip.result is LocationScanResult.RECORDED
+        events = [e.action for e in await list_part_events(db_session, part.id)]
+        assert events == ["enrolled", "support_removed", "overhang_removed", "hot_air_removed", "wip"]
+
+    @pytest.mark.asyncio
+    async def test_top_finishing_out_of_order_is_refused(self, db_session, printer_factory, archive_factory):
+        part = await _enroll_linked_part(db_session, printer_factory, archive_factory, "TOP")
+
+        outcome = await scan_part_at_location(db_session, part.sticker_code, OVERHANG_REMOVAL_LOCATION_SLUG)
+        await db_session.commit()
+
+        assert outcome.result is LocationScanResult.FINISHING_REQUIRED
+        assert [e.action for e in await list_part_events(db_session, part.id)] == ["enrolled"]
+
+    @pytest.mark.asyncio
+    async def test_top_finishing_step_is_not_repeated(self, db_session, printer_factory, archive_factory):
+        part = await _enroll_linked_part(db_session, printer_factory, archive_factory, "TOP")
+        await scan_part_at_location(db_session, part.sticker_code, SUPPORT_REMOVAL_LOCATION_SLUG)
+        await db_session.commit()
+
+        again = await scan_part_at_location(db_session, part.sticker_code, SUPPORT_REMOVAL_LOCATION_SLUG)
+        await db_session.commit()
+
+        assert again.result is LocationScanResult.ALREADY_AT_LOCATION
+
+    @pytest.mark.asyncio
+    async def test_wip_twice_in_a_row_is_rejected(self, db_session, printer_factory, archive_factory):
+        part = await _enroll_linked_part(db_session, printer_factory, archive_factory, "BOT")
+        await scan_part_at_location(db_session, part.sticker_code, PRODUCTION_WIP_LOCATION_SLUG)
+        await db_session.commit()
+
+        again = await scan_part_at_location(db_session, part.sticker_code, PRODUCTION_WIP_LOCATION_SLUG)
+        await db_session.commit()
+
+        assert again.result is LocationScanResult.ALREADY_AT_LOCATION
+
+    @pytest.mark.asyncio
+    async def test_unknown_sticker_is_rejected(self, db_session):
+        outcome = await scan_part_at_location(db_session, "BBD-000001", PRODUCTION_WIP_LOCATION_SLUG)
+        assert outcome.result is LocationScanResult.UNKNOWN_PART
+
+    @pytest.mark.asyncio
+    async def test_invalid_code_writes_nothing(self, db_session):
+        outcome = await scan_part_at_location(db_session, "not-a-code", PRODUCTION_WIP_LOCATION_SLUG)
+        assert outcome.result is LocationScanResult.INVALID_CODE
+        assert outcome.part is None
 
 
 async def _make_section(db_session, name: str = "Production") -> int:

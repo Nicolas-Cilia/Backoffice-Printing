@@ -58,6 +58,42 @@ export const REWORK_PAYLOAD = `${PREFIX_STATION}${REWORK_LOCATION_SLUG}`;
 /** Legacy label compatibility. New labels use `BBS-rework`. */
 export const LEGACY_SANDING_PAYLOAD = `${PREFIX_STATION}sanding`;
 
+/** Item→location pipeline destinations (`backend/app/services/floor_codes.py`).
+ *  Like Initial QC Pass / Rework these print `BBS-…` QRs but are *not*
+ *  sessions: the operator scans an item (a `BBD-` part or a `BBN-` bin) and
+ *  then one of these location codes, and the pairing commits with no
+ *  open-station-first step. Recognised out of the generic 'station'
+ *  classification for exactly that reason. */
+export const READY_FOR_PRODUCTION_LOCATION_SLUG = 'ready-for-production-inventory';
+export const PRODUCTION_WIP_LOCATION_SLUG = 'production-wip';
+export const BIN_EMPTY_LOCATION_SLUG = 'bin-empty';
+export const SUPPORT_REMOVAL_LOCATION_SLUG = 'support-removal';
+export const OVERHANG_REMOVAL_LOCATION_SLUG = 'overhang-removal';
+export const HOT_AIR_REMOVAL_LOCATION_SLUG = 'hot-air-removal';
+
+/** Every location slug a scan can resolve to (the two existing benches plus
+ *  the six item→location destinations). The page decides which are valid for
+ *  whichever item is currently pending — this router only classifies. */
+export type LocationSlug =
+  | 'fit-check'
+  | 'rework'
+  | typeof READY_FOR_PRODUCTION_LOCATION_SLUG
+  | typeof PRODUCTION_WIP_LOCATION_SLUG
+  | typeof BIN_EMPTY_LOCATION_SLUG
+  | typeof SUPPORT_REMOVAL_LOCATION_SLUG
+  | typeof OVERHANG_REMOVAL_LOCATION_SLUG
+  | typeof HOT_AIR_REMOVAL_LOCATION_SLUG;
+
+/** Payload → location slug for the item→location destinations. */
+const ITEM_LOCATION_PAYLOADS: ReadonlyMap<string, LocationSlug> = new Map([
+  [`${PREFIX_STATION}${READY_FOR_PRODUCTION_LOCATION_SLUG}`, READY_FOR_PRODUCTION_LOCATION_SLUG],
+  [`${PREFIX_STATION}${PRODUCTION_WIP_LOCATION_SLUG}`, PRODUCTION_WIP_LOCATION_SLUG],
+  [`${PREFIX_STATION}${BIN_EMPTY_LOCATION_SLUG}`, BIN_EMPTY_LOCATION_SLUG],
+  [`${PREFIX_STATION}${SUPPORT_REMOVAL_LOCATION_SLUG}`, SUPPORT_REMOVAL_LOCATION_SLUG],
+  [`${PREFIX_STATION}${OVERHANG_REMOVAL_LOCATION_SLUG}`, OVERHANG_REMOVAL_LOCATION_SLUG],
+  [`${PREFIX_STATION}${HOT_AIR_REMOVAL_LOCATION_SLUG}`, HOT_AIR_REMOVAL_LOCATION_SLUG],
+]);
+
 export function formatFloorDate(value: string, options?: Intl.DateTimeFormatOptions): string {
   const zoned = /(?:Z|[+-]\d{2}:\d{2})$/i.test(value) ? value : `${value}Z`;
   return new Date(zoned).toLocaleString(undefined, options);
@@ -120,20 +156,19 @@ export type ScanAction =
   /** A reusable KNB/BUT bin. During Harvest it starts/captures a batch; from
    *  a printer info page it is the direct Harvest entry point. */
   | { action: 'harvest-bin'; payload: string; printerId?: number }
-  /** A bin scanned at idle, waiting for the operator to scan Fit Check. */
+  /** A bin scanned at idle, waiting for the operator to scan a location. */
   | { action: 'bin-scanned'; payload: string }
-  /** A bin scanned with the WIP station open. */
-  | { action: 'wip-bin'; payload: string }
   /** A `BBD-` code with no station open and no printer being viewed — the
    *  start of the scan-part-then-location flow (§5.4a/§5.4b). The page
    *  remembers this as the pending part; nothing is written yet. */
   | { action: 'part-scanned'; payload: string }
-  /** An `BBS-initial-qc-pass` (or legacy `BBS-fit-check`) or `BBS-rework`
-   *  scan — pulled out of the generic
-   *  'station' classification because neither is a session (§5.4a/§5.4b).
-   *  Meaningless without a part already pending; the *page* decides that,
-   *  since this router has no notion of pending state. */
-  | { action: 'location'; slug: 'fit-check' | 'rework'; payload: string }
+  /** A location-QR scan — Initial QC Pass, Rework, or one of the six
+   *  item→location destinations. Pulled out of the generic 'station'
+   *  classification because none is a session (§5.4a/§5.4b, § item→location).
+   *  Meaningless without an item already pending; the *page* decides that
+   *  and which slugs are valid for the pending item, since this router has
+   *  no notion of pending state. */
+  | { action: 'location'; slug: LocationSlug; payload: string }
   /** A `BBR-…` reason code — only meaningful mid-Rework-flow (a part is
    *  pending and its location was Rework); same "page decides" reasoning
    *  as 'location' above. */
@@ -176,6 +211,8 @@ export function routeScan(
       return { action: 'location', slug: 'fit-check', payload: scan.value };
     if (scan.value === REWORK_PAYLOAD || scan.value === LEGACY_SANDING_PAYLOAD)
       return { action: 'location', slug: 'rework', payload: scan.value };
+    const itemLocationSlug = ITEM_LOCATION_PAYLOADS.get(scan.value);
+    if (itemLocationSlug) return { action: 'location', slug: itemLocationSlug, payload: scan.value };
     return { action: 'station', payload: scan.value };
   }
 
@@ -217,10 +254,12 @@ export function routeScan(
 
   if (scan.kind === 'bin') {
     if (stationSlug === HARVEST_STATION_SLUG) return { action: 'harvest-bin', payload: scan.value };
-    if (stationSlug === 'wip') return { action: 'wip-bin', payload: scan.value };
     if (stationSlug === null && viewingPrinterId != null) {
       return { action: 'harvest-bin', payload: scan.value, printerId: viewingPrinterId };
     }
+    // Idle: the start of scan-bin-then-location (Initial QC, Ready-for-
+    // Production, Production WIP, Empty Bin). Bins no longer route through an
+    // open WIP session — that path was removed in favour of item→location.
     if (stationSlug === null) return { action: 'bin-scanned', payload: scan.value };
     return { action: 'not-implemented', kind: scan.kind, value: scan.value };
   }
