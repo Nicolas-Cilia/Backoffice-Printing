@@ -1,5 +1,6 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { useTranslation } from "react-i18next";
+import { useSearchParams } from "react-router-dom";
 import { useMutation, useQueries, useQuery, useQueryClient } from "@tanstack/react-query";
 import {
   Archive,
@@ -11,6 +12,7 @@ import {
   Hash,
   Link2,
   Loader2,
+  Pencil,
   Search,
   Tag,
   Trash2,
@@ -21,6 +23,9 @@ import { Button } from "../components/Button";
 import { ConfirmModal } from "../components/ConfirmModal";
 import {
   api,
+  type FloorBinBatch,
+  type FloorBinManagement,
+  type FloorBinBatchEvent,
   type FloorInventoryPart,
   type FloorInventoryPartEvent,
   type FloorPrintFailureReason,
@@ -31,6 +36,7 @@ import {
 } from "../api/client";
 import { useToast } from "../contexts/ToastContext";
 import { formatFloorDate } from "../utils/floorScan";
+import { FloorBinManagementPage } from "./FloorBinManagementPage";
 
 type PartFilter = "all" | "attention" | "linked" | "archived" | "failures";
 const EMPTY_PARTS: FloorInventoryPart[] = [];
@@ -57,8 +63,55 @@ const STATUS_SEARCH_SHORTCUTS = [
   { label: "Failed", query: "failed" },
   { label: "Discarded", query: "discarded" },
 ];
+const MANUAL_STATUS_OPTIONS = [
+  { value: "linked", label: "Linked" },
+  { value: "needs_matching", label: "Needs matching" },
+  { value: "wip", label: "In WIP" },
+  { value: "fit_checked", label: "Fit Check Pass" },
+  { value: "rework", label: "Rework" },
+  { value: "cleanup", label: "Cleanup Pass" },
+  { value: "shipped", label: "Shipped" },
+  { value: "discarded", label: "Discarded" },
+];
+const NON_WORKFLOW_STATUS_ACTIONS = new Set([
+  "enrolled",
+  "relinked",
+  "relinked_by_scan",
+  "unlinked",
+  "sticker_replaced",
+]);
 const DISCARDED_STATUS_CLASS =
   "border border-red-600 bg-red-100 text-red-800 shadow-sm shadow-red-500/20 dark:border-red-400/50 dark:bg-red-500/20 dark:text-red-300";
+
+type FloorInventoryTab = "parts" | "bins";
+
+function FloorInventoryTabs({
+  tab,
+  onChange,
+}: {
+  tab: FloorInventoryTab;
+  onChange: (tab: FloorInventoryTab) => void;
+}) {
+  const { t } = useTranslation();
+  return (
+    <div className="inline-flex rounded-lg bg-bambu-dark-secondary p-1">
+      <button
+        type="button"
+        onClick={() => onChange("parts")}
+        className={`rounded-md px-3 py-1.5 text-sm transition-colors ${tab === "parts" ? "bg-bambu-green text-white" : "text-bambu-gray hover:text-white"}`}
+      >
+        {t("floor.partHistoryTab", "Part history")}
+      </button>
+      <button
+        type="button"
+        onClick={() => onChange("bins")}
+        className={`rounded-md px-3 py-1.5 text-sm transition-colors ${tab === "bins" ? "bg-bambu-green text-white" : "text-bambu-gray hover:text-white"}`}
+      >
+        {t("floor.binsTab", "Bins")}
+      </button>
+    </div>
+  );
+}
 
 function isDiscarded(
   part: FloorInventoryPart,
@@ -91,10 +144,21 @@ export function FloorInventoryPage() {
   const { t } = useTranslation();
   const { showToast } = useToast();
   const queryClient = useQueryClient();
+  const [searchParams, setSearchParams] = useSearchParams();
+  const pageTab: FloorInventoryTab = searchParams.get("tab") === "bins" ? "bins" : "parts";
+  const setPageTab = (tab: FloorInventoryTab) => {
+    setSearchParams((previous) => {
+      const next = new URLSearchParams(previous);
+      if (tab === "parts") next.delete("tab");
+      else next.set("tab", "bins");
+      return next;
+    }, { replace: true });
+  };
   const [filter, setFilter] = useState<PartFilter>("linked");
   const [search, setSearch] = useState("");
   const [searchFocused, setSearchFocused] = useState(false);
   const [selectedId, setSelectedId] = useState<number | null>(null);
+  const [selectedBinId, setSelectedBinId] = useState<number | null>(null);
   const [selectedFailure, setSelectedFailure] = useState<FloorPrintFailureReason | null>(null);
   const handleSearchChange = (value: string) => {
     setSearch(value);
@@ -111,11 +175,19 @@ export function FloorInventoryPage() {
   const partsQuery = useQuery({
     queryKey: ["floor-inventory-parts"],
     queryFn: () => api.getFloorInventoryParts(true),
+    enabled: pageTab === "parts",
+    refetchOnMount: "always",
+  });
+  const binManagementQuery = useQuery({
+    queryKey: ["floor-bin-management"],
+    queryFn: () => api.getFloorBinManagement(),
+    enabled: pageTab === "parts",
     refetchOnMount: "always",
   });
   const failureReasonsQuery = useQuery({
     queryKey: ["floor-print-failure-reasons"],
     queryFn: () => api.getFloorPrintFailureReasons(12),
+    enabled: pageTab === "parts",
     staleTime: 30_000,
   });
   const updateFailureMutation = useMutation({
@@ -129,6 +201,8 @@ export function FloorInventoryPage() {
       reason_text: string | null;
     }) => api.updateFloorPrintFailureReason(id, { reason_code, reason_text }),
     onSuccess: async (updated) => {
+      setSelectedId(null);
+      setSelectedBinId(null);
       setSelectedFailure(updated);
       await queryClient.invalidateQueries({ queryKey: ["floor-print-failure-reasons"] });
       showToast(t("floor.printFailureLogUpdated", "Failure reason updated"), "success");
@@ -138,11 +212,17 @@ export function FloorInventoryPage() {
     mutationFn: (id: number) => api.discardFloorPrintFailureReason(id),
     onSuccess: async () => {
       setSelectedFailure(null);
+      setSelectedBinId(null);
       await queryClient.invalidateQueries({ queryKey: ["floor-print-failure-reasons"] });
       showToast(t("floor.printFailureLogDiscarded", "Failure reason discarded"), "success");
     },
   });
   const records = partsQuery.data ?? EMPTY_PARTS;
+  const binRecords: FloorBinManagement[] | undefined = binManagementQuery.data;
+  const activeBins = useMemo(
+    () => (binRecords ?? []).filter((bin) => bin.batch !== null),
+    [binRecords],
+  );
   const activeRecords = records.filter((part) => !part.archived_at);
   const historyQueries = useQueries({
     queries: activeRecords.map((part) => ({
@@ -168,6 +248,12 @@ export function FloorInventoryPage() {
     [activeRecords, historyQueries],
   );
   const selectedPart = records.find((part) => part.id === selectedId) ?? null;
+  const selectedBin = activeBins.find((bin) => bin.batch?.id === selectedBinId) ?? null;
+  const selectedBinEventsQuery = useQuery({
+    queryKey: ["floor-bin-batch-events", selectedBinId],
+    queryFn: () => api.getFloorBinBatchEvents(selectedBinId!),
+    enabled: selectedBinId !== null,
+  });
   const eventsQuery = useQuery({
     queryKey: ["floor-inventory-part-events", selectedId],
     queryFn: () => api.getFloorInventoryPartEvents(selectedId!),
@@ -236,6 +322,7 @@ export function FloorInventoryPage() {
         queryKey: ["floor-inventory-part-candidates", id],
       });
       setSelectedId(null);
+      setSelectedBinId(null);
       showToast(
         t("floor.inventoryDeleteSuccess", "Part record permanently deleted"),
         "success",
@@ -264,6 +351,7 @@ export function FloorInventoryPage() {
         },
       );
       setFilter("linked");
+      setSelectedBinId(null);
       setSelectedId(updatedPart.id);
       showToast(
         t(
@@ -310,6 +398,7 @@ export function FloorInventoryPage() {
         },
       );
       setSelectedId(updatedPart.id);
+      setSelectedBinId(null);
       showToast(
         t(
           "floor.inventoryUnlinkSuccess",
@@ -358,6 +447,7 @@ export function FloorInventoryPage() {
         },
       );
       setSelectedId(updatedPart.id);
+      setSelectedBinId(null);
       showToast(
         t(
           "floor.inventoryReplaceStickerSuccess",
@@ -413,17 +503,31 @@ export function FloorInventoryPage() {
       queryClient.invalidateQueries({ queryKey: ["floor-inventory-part-events", updatedPart.id] });
     },
   });
+  const setStatusMutation = useMutation({
+    mutationFn: ({ id, status }: { id: number; status: string }) =>
+      api.setFloorInventoryPartStatus(id, status),
+    onSuccess: async (updatedPart) => {
+      queryClient.setQueryData<FloorInventoryPart[]>(
+        ["floor-inventory-parts"],
+        (current) => current?.map((part) => part.id === updatedPart.id ? updatedPart : part) ?? [updatedPart],
+      );
+      showToast(t("floor.inventorySetStatusSuccess", "Part status updated"), "success");
+      await refresh();
+      queryClient.invalidateQueries({ queryKey: ["floor-inventory-part-events", updatedPart.id] });
+    },
+  });
   const counts = useMemo(
     () => ({
-      active: records.filter((part) =>
-        isLinked(part, latestEventActions.get(part.id)),
-      ).length,
+      active:
+        records.filter((part) =>
+          isLinked(part, latestEventActions.get(part.id)),
+        ).length + activeBins.filter((bin) => bin.batch?.archive_id !== null).length,
       attention: records.filter((part) =>
         isAttention(part, latestEventActions.get(part.id)),
-      ).length,
+      ).length + activeBins.filter((bin) => bin.batch?.archive_id === null).length,
       archived: records.filter((part) => part.archived_at).length,
     }),
-    [latestEventActions, records],
+    [activeBins, latestEventActions, records],
   );
   const discardedParts = useMemo(
     () =>
@@ -452,6 +556,36 @@ export function FloorInventoryPage() {
       );
     });
   }, [filter, latestEventActions, records, search]);
+  const visibleBins = useMemo(() => {
+    const term = search.trim().toLowerCase();
+    return activeBins.filter((bin) => {
+      const batch = bin.batch;
+      if (!batch) return false;
+      const included =
+        filter === "all"
+          ? true
+          : filter === "attention"
+            ? batch.archive_id === null
+            : filter === "linked"
+              ? batch.archive_id !== null
+              : false;
+      return (
+        included &&
+        (!term ||
+          [
+            bin.payload,
+            bin.part_code,
+            bin.part_name,
+            batch.print_name,
+            batch.printer_name,
+            batch.status,
+            "bin",
+            "button",
+            "knob",
+          ].some((value) => value?.toLowerCase().includes(term)))
+      );
+    });
+  }, [activeBins, filter, search]);
   const visibleFailureRecords = useMemo(() => {
     if (filter !== "all") return [];
     const term = search.trim().toLowerCase();
@@ -469,14 +603,15 @@ export function FloorInventoryPage() {
         .some((value) => value?.toLowerCase().includes(term)),
     );
   }, [failureReasonsQuery.data, filter, search, t]);
-  const visibleRecordCount = visibleParts.length + visibleFailureRecords.length;
+  const visibleRecordCount =
+    visibleParts.length + visibleBins.length + visibleFailureRecords.length;
   const failureLogCount =
     (failureReasonsQuery.data?.length ?? 0) + discardedParts.length;
   const hiddenByFilter =
     !partsQuery.isLoading &&
     !partsQuery.isError &&
     !search.trim() &&
-    records.length + (failureReasonsQuery.data?.length ?? 0) > 0 &&
+    records.length + activeBins.length + (failureReasonsQuery.data?.length ?? 0) > 0 &&
     visibleRecordCount === 0;
   const saveError =
     archiveMutation.isError ||
@@ -484,12 +619,23 @@ export function FloorInventoryPage() {
     unlinkMutation.isError ||
     replaceStickerMutation.isError ||
     setPartCodeMutation.isError ||
+    setStatusMutation.isError ||
     deleteMutation.isError
       ? t("floor.inventorySaveError", "Could not save that change.")
       : null;
 
+  if (pageTab === "bins") {
+    return (
+      <div className="space-y-6 p-4 md:p-8">
+        <FloorInventoryTabs tab={pageTab} onChange={setPageTab} />
+        <FloorBinManagementPage />
+      </div>
+    );
+  }
+
   return (
     <div className="p-4 md:p-8 space-y-6">
+      <FloorInventoryTabs tab={pageTab} onChange={setPageTab} />
       <div className="flex flex-col gap-4 lg:flex-row lg:items-end lg:justify-between">
         <div>
           <p className="text-xs uppercase tracking-wide text-bambu-gray">
@@ -652,10 +798,12 @@ export function FloorInventoryPage() {
               selectedFailure={selectedFailure}
               onSelectFailure={(record) => {
                 setSelectedId(null);
+                setSelectedBinId(null);
                 setSelectedFailure(record);
               }}
               onSelectPart={(part) => {
                 setSelectedFailure(null);
+                setSelectedBinId(null);
                 setSelectedId(part.id);
               }}
             />
@@ -685,7 +833,7 @@ export function FloorInventoryPage() {
                     {t(
                       "floor.inventoryHiddenByFilter",
                       "No records in this view, but part history has {{count}} saved.",
-                      { count: records.length },
+                      { count: records.length + activeBins.length },
                     )}
                   </p>
                   <div className="flex flex-wrap justify-center gap-2">
@@ -738,7 +886,7 @@ export function FloorInventoryPage() {
                 <thead className="border-b border-bambu-dark-tertiary text-xs uppercase tracking-wide text-bambu-gray">
                   <tr>
                     <th className="px-4 py-3 font-medium">
-                      {t("floor.inventoryColSticker", "Sticker")}
+                      {t("floor.inventoryColStickerOrBin", "Sticker / bin")}
                     </th>
                     <th className="px-4 py-3 font-medium">
                       {t("floor.inventoryColStatus", "Status")}
@@ -761,11 +909,13 @@ export function FloorInventoryPage() {
                       tabIndex={0}
                       onClick={() => {
                         setSelectedId(null);
+                        setSelectedBinId(null);
                         setSelectedFailure(record);
                       }}
                       onKeyDown={(event) => {
                         if (event.key === "Enter" || event.key === " ") {
                           setSelectedId(null);
+                          setSelectedBinId(null);
                           setSelectedFailure(record);
                         }
                       }}
@@ -812,11 +962,15 @@ export function FloorInventoryPage() {
                       tabIndex={0}
                       onClick={() => {
                         setSelectedFailure(null);
+                        setSelectedBinId(null);
                         setSelectedId(part.id);
                       }}
                       onKeyDown={(event) => {
-                        if (event.key === "Enter" || event.key === " ")
+                        if (event.key === "Enter" || event.key === " ") {
+                          setSelectedFailure(null);
+                          setSelectedBinId(null);
                           setSelectedId(part.id);
+                        }
                       }}
                       className={`cursor-pointer border-b border-bambu-dark-tertiary last:border-0 transition-colors hover:bg-bambu-dark-tertiary/60 focus:bg-bambu-dark-tertiary/60 focus:outline-none ${selectedId === part.id ? "bg-bambu-dark-tertiary/60" : ""}`}
                     >
@@ -851,6 +1005,63 @@ export function FloorInventoryPage() {
                     </tr>
                     );
                   })}
+                  {visibleBins.map((bin) => {
+                    const batch = bin.batch;
+                    if (!batch) return null;
+                    return (
+                      <tr
+                        key={`bin-${batch.id}`}
+                        tabIndex={0}
+                        onClick={() => {
+                          setSelectedFailure(null);
+                          setSelectedId(null);
+                          setSelectedBinId(batch.id);
+                        }}
+                        onKeyDown={(event) => {
+                          if (event.key === "Enter" || event.key === " ") {
+                            setSelectedFailure(null);
+                            setSelectedId(null);
+                            setSelectedBinId(batch.id);
+                          }
+                        }}
+                        className={`cursor-pointer border-b border-bambu-dark-tertiary last:border-0 transition-colors hover:bg-bambu-dark-tertiary/60 focus:bg-bambu-dark-tertiary/60 focus:outline-none ${selectedBinId === batch.id ? "bg-bambu-dark-tertiary/60" : ""}`}
+                      >
+                        <td className="px-4 py-3 font-mono font-medium text-white">
+                          {bin.payload}
+                        </td>
+                        <td className="px-4 py-3">
+                          <span
+                            className={`inline-flex rounded-full px-2 py-1 text-xs font-medium ${binStatusClass(batch.status)}`}
+                          >
+                            {binStatusLabel(batch.status, t)}
+                          </span>
+                        </td>
+                        <td className="px-4 py-3 text-white">
+                          <span className="mr-2 font-mono text-bambu-green-light">
+                            {bin.part_code}
+                          </span>
+                          {batch.print_name ?? (
+                            <span className="text-bambu-gray">
+                              {t("floor.inventoryNoJob", "No completed job")}
+                            </span>
+                          )}
+                          <span className="ml-2 text-bambu-gray">
+                            ({batch.remaining_quantity}/{batch.quantity})
+                          </span>
+                        </td>
+                        <td className="px-4 py-3 text-bambu-gray-light">
+                          {batch.printer_name ??
+                            t("floor.inventoryDeletedPrinter", "Deleted printer")}
+                        </td>
+                        <td className="whitespace-nowrap px-4 py-3 text-bambu-gray">
+                          {formatFloorDate(batch.harvested_at, {
+                            dateStyle: "medium",
+                            timeStyle: "short",
+                          })}
+                        </td>
+                      </tr>
+                    );
+                  })}
                 </tbody>
               </table>
             </div>
@@ -871,6 +1082,14 @@ export function FloorInventoryPage() {
             }
             onDiscard={() => discardFailureMutation.mutate(selectedFailure.id)}
           />
+        ) : selectedBin ? (
+          <BinDetail
+            bin={selectedBin}
+            events={selectedBinEventsQuery.data ?? []}
+            eventsLoading={selectedBinEventsQuery.isLoading}
+            eventsLoadFailed={selectedBinEventsQuery.isError}
+            onClose={() => setSelectedBinId(null)}
+          />
         ) : (
         <PartDetail
           part={selectedPart}
@@ -887,6 +1106,7 @@ export function FloorInventoryPage() {
           codeOptionsLoading={partCodeOptionsQuery.isLoading}
           setCodePending={setPartCodeMutation.isPending}
           clearCodePending={clearPartCodeMutation.isPending}
+          statusPending={setStatusMutation.isPending}
           saveError={saveError}
           onClose={() => setSelectedId(null)}
           onRelink={(archiveId) =>
@@ -914,6 +1134,9 @@ export function FloorInventoryPage() {
             selectedPart && setPartCodeMutation.mutate({ id: selectedPart.id, code })
           }
           onClearPartCode={() => selectedPart && clearPartCodeMutation.mutate(selectedPart.id)}
+          onSetStatus={(status) =>
+            selectedPart && setStatusMutation.mutate({ id: selectedPart.id, status })
+          }
           onDelete={() => selectedPart && deleteMutation.mutate(selectedPart.id)}
         />
         )}
@@ -1270,6 +1493,8 @@ function partSearchValues(part: FloorInventoryPart, latestEventAction: string | 
               ? ["discarded", "discard"]
               : action === "cleanup" || action === "cleaned_up"
                 ? ["cleanup", "cleanup pass"]
+                : action
+                  ? [action, formatCustomStatus(action)]
                 : part.archive_id === null
                   ? ["needs matching", "matching", "attention", "unmatched"]
                   : [];
@@ -1290,46 +1515,105 @@ function statusLabel(
   t: ReturnType<typeof useTranslation>["t"],
   latestEventAction = part.latest_event_action ?? null,
 ) {
-  return part.archived_at
-    ? t("floor.inventoryStatusArchived", "Archived")
-    : latestEventAction === "fit_check" || latestEventAction === "fit_checked"
-      ? t("floor.inventoryStatusFitCheckPass", "Fit Check Pass")
-    : latestEventAction === "rework" || latestEventAction === "sanding"
-      ? t("floor.inventoryStatusRework", "Rework")
-    : latestEventAction === "discarded"
-      ? t("floor.inventoryStatusDiscarded", "Discarded")
-    : latestEventAction === "cleanup" || latestEventAction === "cleaned_up"
-      ? t("floor.inventoryStatusCleanupPass", "Cleanup Pass")
-    : latestEventAction === "wip" || latestEventAction === "in_wip"
-      ? t("floor.inventoryStatusWip", "In WIP")
-    : latestEventAction === "shipped"
-      ? t("floor.inventoryStatusShipped", "Shipped")
+  if (part.archived_at) return t("floor.inventoryStatusArchived", "Archived");
+  if (latestEventAction === "fit_check" || latestEventAction === "fit_checked") {
+    return t("floor.inventoryStatusFitCheckPass", "Fit Check Pass");
+  }
+  if (latestEventAction === "rework" || latestEventAction === "sanding") {
+    return t("floor.inventoryStatusRework", "Rework");
+  }
+  if (latestEventAction === "discarded") return t("floor.inventoryStatusDiscarded", "Discarded");
+  if (latestEventAction === "cleanup" || latestEventAction === "cleaned_up") {
+    return t("floor.inventoryStatusCleanupPass", "Cleanup Pass");
+  }
+  if (latestEventAction === "wip" || latestEventAction === "in_wip") {
+    return t("floor.inventoryStatusWip", "In WIP");
+  }
+  if (latestEventAction === "shipped") return t("floor.inventoryStatusShipped", "Shipped");
+  if (latestEventAction === "linked") return t("floor.inventoryStatusLinked", "Linked");
+  if (latestEventAction === "needs_matching") {
+    return t("floor.inventoryFilterAttention", "Needs matching");
+  }
+  if (latestEventAction && !NON_WORKFLOW_STATUS_ACTIONS.has(latestEventAction)) {
+    return formatCustomStatus(latestEventAction);
+  }
+  return part.archive_id === null
+    ? t("floor.inventoryFilterAttention", "Needs matching")
+    : t("floor.inventoryStatusLinked", "Linked");
+}
+
+function formatCustomStatus(status: string) {
+  return status
+    .replaceAll("_", " ")
+    .replace(/\b\w/g, (character) => character.toUpperCase());
+}
+
+function manualStatusValue(part: FloorInventoryPart, latestEventAction: string | null) {
+  const aliases: Record<string, string> = {
+    fit_check: "fit_checked",
+    sanding: "rework",
+    cleaned_up: "cleanup",
+    in_wip: "wip",
+  };
+  const candidate = latestEventAction ? aliases[latestEventAction] ?? latestEventAction : null;
+  return candidate && MANUAL_STATUS_OPTIONS.some((option) => option.value === candidate)
+    ? candidate
     : part.archive_id === null
-      ? t("floor.inventoryFilterAttention", "Needs matching")
-      : t("floor.inventoryStatusLinked", "Linked");
+      ? "needs_matching"
+      : "linked";
 }
 
 function statusClass(
   part: FloorInventoryPart,
   latestEventAction = part.latest_event_action ?? null,
 ) {
-  return part.archived_at
-    ? "bg-bambu-dark-tertiary text-bambu-gray-light"
-    : latestEventAction === "fit_check" || latestEventAction === "fit_checked"
-      ? "border border-green-600 bg-green-100 text-green-800 shadow-sm shadow-green-500/20 dark:border-green-400/50 dark:bg-green-500/20 dark:text-green-300"
-    : latestEventAction === "rework" || latestEventAction === "sanding"
-      ? "border border-orange-600 bg-orange-100 text-orange-800 shadow-sm shadow-orange-500/20 dark:border-orange-400/50 dark:bg-orange-500/20 dark:text-orange-300"
-    : latestEventAction === "discarded"
-      ? DISCARDED_STATUS_CLASS
-    : latestEventAction === "cleanup" || latestEventAction === "cleaned_up"
-      ? "border border-emerald-600 bg-emerald-100 text-emerald-800 shadow-sm shadow-emerald-500/20 dark:border-emerald-400/50 dark:bg-emerald-500/20 dark:text-emerald-300"
-    : latestEventAction === "wip" || latestEventAction === "in_wip"
-      ? "border border-amber-600 bg-amber-100 text-amber-800 shadow-sm shadow-amber-500/20 dark:border-amber-400/50 dark:bg-amber-500/20 dark:text-amber-300"
-    : latestEventAction === "shipped"
-      ? "border border-sky-600 bg-sky-100 text-sky-800 shadow-sm shadow-sky-500/20 dark:border-sky-400/50 dark:bg-sky-500/20 dark:text-sky-300"
-    : part.archive_id === null
-      ? "border border-amber-600 bg-amber-100 text-amber-800 dark:border-amber-500/25 dark:bg-amber-500/15 dark:text-amber-300"
-      : "border border-cyan-600 bg-cyan-100 text-cyan-800 dark:border-bambu-green/25 dark:bg-bambu-green/15 dark:text-bambu-green-light";
+  if (part.archived_at) return "bg-bambu-dark-tertiary text-bambu-gray-light";
+  if (latestEventAction === "fit_check" || latestEventAction === "fit_checked") {
+    return "border border-green-600 bg-green-100 text-green-800 shadow-sm shadow-green-500/20 dark:border-green-400/50 dark:bg-green-500/20 dark:text-green-300";
+  }
+  if (latestEventAction === "rework" || latestEventAction === "sanding") {
+    return "border border-orange-600 bg-orange-100 text-orange-800 shadow-sm shadow-orange-500/20 dark:border-orange-400/50 dark:bg-orange-500/20 dark:text-orange-300";
+  }
+  if (latestEventAction === "discarded") return DISCARDED_STATUS_CLASS;
+  if (latestEventAction === "cleanup" || latestEventAction === "cleaned_up") {
+    return "border border-emerald-600 bg-emerald-100 text-emerald-800 shadow-sm shadow-emerald-500/20 dark:border-emerald-400/50 dark:bg-emerald-500/20 dark:text-emerald-300";
+  }
+  if (latestEventAction === "wip" || latestEventAction === "in_wip") {
+    return "border border-amber-600 bg-amber-100 text-amber-800 shadow-sm shadow-amber-500/20 dark:border-amber-400/50 dark:bg-amber-500/20 dark:text-amber-300";
+  }
+  if (latestEventAction === "shipped") {
+    return "border border-sky-600 bg-sky-100 text-sky-800 shadow-sm shadow-sky-500/20 dark:border-sky-400/50 dark:bg-sky-500/20 dark:text-sky-300";
+  }
+  if (latestEventAction === "needs_matching") {
+    return "border border-amber-600 bg-amber-100 text-amber-800 dark:border-amber-500/25 dark:bg-amber-500/15 dark:text-amber-300";
+  }
+  return part.archive_id === null && !latestEventAction
+    ? "border border-amber-600 bg-amber-100 text-amber-800 dark:border-amber-500/25 dark:bg-amber-500/15 dark:text-amber-300"
+    : "border border-cyan-600 bg-cyan-100 text-cyan-800 dark:border-bambu-green/25 dark:bg-bambu-green/15 dark:text-bambu-green-light";
+}
+
+function binStatusClass(status: string) {
+  if (status === "wip") {
+    return "border border-amber-600 bg-amber-100 text-amber-800 shadow-sm shadow-amber-500/20 dark:border-amber-400/50 dark:bg-amber-500/20 dark:text-amber-300";
+  }
+  if (status === "visual_qc_passed") {
+    return "border border-green-600 bg-green-100 text-green-800 shadow-sm shadow-green-500/20 dark:border-green-400/50 dark:bg-green-500/20 dark:text-green-300";
+  }
+  return "border border-cyan-600 bg-cyan-100 text-cyan-800 dark:border-bambu-green/25 dark:bg-bambu-green/15 dark:text-bambu-green-light";
+}
+
+function binStatusLabel(
+  status: string,
+  t: ReturnType<typeof useTranslation>["t"],
+) {
+  switch (status) {
+    case "visual_qc_passed":
+      return t("floor.inventoryBinVisualQcPassed", "Visual QC pass");
+    case "wip":
+      return t("floor.inventoryBinWip", "In WIP");
+    default:
+      return t("floor.inventoryBinAwaitingQc", "Awaiting visual QC");
+  }
 }
 
 function eventLabel(
@@ -1337,6 +1621,11 @@ function eventLabel(
   t: ReturnType<typeof useTranslation>["t"],
 ) {
   const archiveId = event.details?.archive_id;
+  if (event.details?.status_override === true) {
+    return t("floor.inventoryEventStatusOverride", "Status overridden to {{status}}", {
+      status: formatCustomStatus(event.action),
+    });
+  }
   switch (event.action) {
     case "enrolled":
       return archiveId
@@ -1509,6 +1798,393 @@ function SummaryCard({
   );
 }
 
+function BinDetail({
+  bin,
+  events,
+  eventsLoading,
+  eventsLoadFailed,
+  onClose,
+}: {
+  bin: FloorBinManagement;
+  events: FloorBinBatchEvent[];
+  eventsLoading: boolean;
+  eventsLoadFailed: boolean;
+  onClose: () => void;
+}) {
+  const { t } = useTranslation();
+  const batch = bin.batch;
+  const historyScrollRef = useRef<HTMLDivElement>(null);
+  const [historyAtBottom, setHistoryAtBottom] = useState(true);
+
+  useEffect(() => {
+    setHistoryAtBottom(true);
+  }, [batch?.id]);
+
+  if (!batch) {
+    return (
+      <aside className="rounded-lg border border-dashed border-bambu-dark-tertiary p-6 text-center text-sm text-bambu-gray xl:sticky xl:top-6">
+        {t("floor.inventoryBinDetailUnavailable", "This bin fill is no longer active.")}
+      </aside>
+    );
+  }
+
+  const timeline = events.length
+    ? events
+    : eventsLoading
+      ? []
+      : [
+          {
+            id: -batch.id,
+            action: "harvested",
+            details: { quantity: batch.quantity },
+            occurred_at: batch.harvested_at,
+          },
+        ];
+
+  return (
+    <aside
+      className="rounded-lg border border-bambu-dark-tertiary bg-bambu-dark-secondary xl:sticky xl:top-6 xl:flex xl:max-h-[calc(100vh-3rem)] xl:flex-col xl:overflow-hidden"
+      aria-label={t("floor.inventoryBinDetailLabel", "Bin detail")}
+    >
+      <div className="flex shrink-0 items-start justify-between gap-3 border-b border-bambu-dark-tertiary p-4">
+        <div>
+          <p className="text-xs uppercase tracking-wide text-bambu-gray">
+            {t("floor.inventoryBinDetailEyebrow", "Bin record")}
+          </p>
+          <h2 className="mt-1 font-mono text-lg font-semibold text-white">
+            {bin.payload}
+          </h2>
+        </div>
+        <button
+          type="button"
+          className="rounded p-1 text-bambu-gray hover:bg-bambu-dark-tertiary hover:text-white"
+          onClick={onClose}
+          aria-label={t("floor.inventoryDetailClose", "Close part detail")}
+        >
+          <X className="h-5 w-5" />
+        </button>
+      </div>
+      <div className="flex min-h-0 flex-none flex-col gap-5 overflow-hidden p-4">
+        <div>
+          <span
+            className={`inline-flex rounded-full px-2 py-1 text-xs font-medium ${binStatusClass(batch.status)}`}
+          >
+            {binStatusLabel(batch.status, t)}
+          </span>
+        </div>
+        <dl className="grid grid-cols-2 gap-x-4 gap-y-3 text-sm">
+          <div>
+            <dt className="text-bambu-gray">{t("floor.inventoryBinPart", "Part")}</dt>
+            <dd className="mt-0.5 font-mono text-white">{bin.part_code}</dd>
+          </div>
+          <div>
+            <dt className="text-bambu-gray">{t("floor.inventoryBinNumber", "Bin")}</dt>
+            <dd className="mt-0.5 text-white">{bin.part_name} {bin.bin_number}</dd>
+          </div>
+          <div>
+            <dt className="text-bambu-gray">{t("floor.inventoryColPrinter", "Printer")}</dt>
+            <dd className="mt-0.5 text-white">
+              {batch.printer_name ?? t("floor.inventoryDeletedPrinter", "Deleted printer")}
+            </dd>
+          </div>
+          <div>
+            <dt className="text-bambu-gray">{t("floor.inventoryCompletedJob", "Completed job")}</dt>
+            <dd className="mt-0.5 text-white">
+              {batch.print_name ?? t("floor.inventoryNoJobLinked", "No job linked")}
+            </dd>
+          </div>
+          <div>
+            <dt className="text-bambu-gray">{t("floor.inventoryBinQuantity", "Quantity")}</dt>
+            <dd className="mt-0.5 text-white">
+              {batch.remaining_quantity} / {batch.quantity} {t("floor.inventoryBinRemaining", "remaining")}
+            </dd>
+          </div>
+          <div>
+            <dt className="text-bambu-gray">{t("floor.inventoryBinHarvested", "Harvested")}</dt>
+            <dd className="mt-0.5 text-white">
+              {formatFloorDate(batch.harvested_at, { dateStyle: "medium", timeStyle: "short" })}
+            </dd>
+          </div>
+        </dl>
+        <section className="flex min-h-0 flex-none flex-col">
+          <div className="flex items-center gap-2">
+            <Clock3 className="h-4 w-4 text-bambu-gray" />
+            <h3 className="font-medium text-white">
+              {t("floor.inventoryHistoryHeading", "History")}
+            </h3>
+          </div>
+          <div className="relative mt-3">
+            <div
+              ref={historyScrollRef}
+              className="max-h-56 overflow-y-auto pr-1"
+              onScroll={(event) => {
+                const element = event.currentTarget;
+                setHistoryAtBottom(
+                  element.scrollTop + element.clientHeight >= element.scrollHeight - 4,
+                );
+              }}
+            >
+              {eventsLoading ? (
+                <div className="flex items-center gap-2 py-2 text-sm text-bambu-gray">
+                  <Loader2 className="h-4 w-4 animate-spin" />
+                  {t("floor.inventoryLoadingHistory", "Loading history…")}
+                </div>
+              ) : (
+                <div className="relative">
+                  <span
+                    aria-hidden="true"
+                    className="absolute bottom-2 left-[3px] top-2 w-0.5 bg-bambu-gray/70"
+                  />
+                  <BinHistoryTimeline events={timeline} batch={batch} t={t} />
+                </div>
+              )}
+            </div>
+            {timeline.length > 4 && !historyAtBottom && (
+              <div className="pointer-events-none absolute inset-x-0 bottom-0 flex h-10 items-end justify-center bg-gradient-to-t from-bambu-dark-secondary via-bambu-dark-secondary/80 to-transparent pb-1">
+                <span className="flex h-5 w-5 items-center justify-center rounded-full border border-gray-300 bg-white text-gray-700 shadow-md shadow-gray-400/40 dark:border-gray-500/70 dark:bg-bambu-dark-secondary dark:text-bambu-gray-light dark:shadow-black/70 dark:ring-1 dark:ring-white/5">
+                  <ChevronDown className="h-3.5 w-3.5" aria-hidden="true" />
+                </span>
+              </div>
+            )}
+          </div>
+          {eventsLoadFailed && (
+            <p className="mt-2 text-xs text-bambu-gray">
+              {t(
+                "floor.inventoryBinEventsUnavailable",
+                "Bin history could not be loaded.",
+              )}
+            </p>
+          )}
+        </section>
+      </div>
+    </aside>
+  );
+}
+
+function BinHistoryTimeline({
+  events,
+  batch,
+  t,
+}: {
+  events: FloorBinBatchEvent[];
+  batch: FloorBinBatch;
+  t: ReturnType<typeof useTranslation>["t"];
+}) {
+  const items: ReactNode[] = [];
+
+  for (let index = 0; index < events.length; index += 1) {
+    const event = events[index];
+    const nextEvent = events[index + 1];
+    const qcQuantities =
+      event.action === "harvested" && nextEvent?.action === "visual_qc_passed"
+        ? binQcQuantities(nextEvent, batch)
+        : null;
+
+    if (qcQuantities && qcQuantities.rejected > 0) {
+      items.push(
+        <BinQcBranch
+          key={`${event.id}-${nextEvent.id}`}
+          harvestedEvent={event}
+          qcEvent={nextEvent}
+          quantities={qcQuantities}
+          batch={batch}
+          t={t}
+        />,
+      );
+      index += 1;
+      continue;
+    }
+
+    items.push(<BinHistoryEvent key={event.id} event={event} batch={batch} t={t} />);
+  }
+
+  return <ol className="space-y-3">{items}</ol>;
+}
+
+function BinHistoryEvent({
+  event,
+  batch,
+  t,
+}: {
+  event: FloorBinBatchEvent;
+  batch: FloorBinBatch;
+  t: ReturnType<typeof useTranslation>["t"];
+}) {
+  return (
+    <li className="relative pl-7 text-sm">
+      <span
+        className={`absolute left-1 top-1.5 z-10 h-2 w-2 -translate-x-1/2 rounded-full ${binEventDotClass(event.action)}`}
+      />
+      <p className="text-white">{binEventLabel(event, t, batch)}</p>
+      <p className="text-xs text-bambu-gray">
+        {formatFloorDate(event.occurred_at, {
+          dateStyle: "medium",
+          timeStyle: "short",
+        })}
+      </p>
+    </li>
+  );
+}
+
+function BinQcBranch({
+  harvestedEvent,
+  qcEvent,
+  quantities,
+  batch,
+  t,
+}: {
+  harvestedEvent: FloorBinBatchEvent;
+  qcEvent: FloorBinBatchEvent;
+  quantities: { harvested: number; passed: number; rejected: number };
+  batch: FloorBinBatch;
+  t: ReturnType<typeof useTranslation>["t"];
+}) {
+  return (
+    <li className="relative text-sm">
+      <div className="relative pl-7">
+        <span className="absolute left-1 top-1.5 z-10 h-2 w-2 -translate-x-1/2 rounded-full bg-bambu-green" />
+        <p className="text-white">{binEventLabel(harvestedEvent, t, batch)}</p>
+        <p className="text-xs text-bambu-gray">
+          {formatFloorDate(harvestedEvent.occurred_at, {
+            dateStyle: "medium",
+            timeStyle: "short",
+          })}
+        </p>
+      </div>
+      <div className="relative mt-3 grid grid-cols-2 gap-x-3 gap-y-3">
+        <span
+          aria-hidden="true"
+          className="pointer-events-none absolute -top-3 left-[3px] h-[1.4375rem] w-[calc(50%-6.5625rem)] rounded-bl-[1.25rem] border-b-2 border-l-2 border-bambu-gray/70"
+        />
+        <div className="relative col-start-2 row-start-1 -ml-[7rem] pl-7">
+          <span className="absolute left-1 top-1.5 z-10 h-2 w-2 -translate-x-1/2 rounded-full bg-red-500" />
+          <p className="text-white">
+            {t(
+              "floor.inventoryBinEventVisualQcRejected",
+              "{{rejected}} parts failed visual QC",
+              { rejected: quantities.rejected },
+            )}
+          </p>
+          <p className="text-xs text-bambu-gray">
+            {formatFloorDate(qcEvent.occurred_at, {
+              dateStyle: "medium",
+              timeStyle: "short",
+            })}
+          </p>
+        </div>
+        <div className="relative col-span-2 row-start-2 pl-7">
+          <span className="absolute left-1 top-1.5 z-10 h-2 w-2 -translate-x-1/2 rounded-full bg-green-500" />
+          <p className="text-white">
+            {t(
+              "floor.inventoryBinEventVisualQcQuantity",
+              "{{passed}} of {{harvested}} passed visual QC",
+              quantities,
+            )}
+          </p>
+          <p className="text-xs text-bambu-gray">
+            {formatFloorDate(qcEvent.occurred_at, {
+              dateStyle: "medium",
+              timeStyle: "short",
+            })}
+          </p>
+        </div>
+      </div>
+    </li>
+  );
+}
+
+function binQcQuantities(
+  event: FloorBinBatchEvent,
+  batch: FloorBinBatch,
+) {
+  if (event.action !== "visual_qc_passed") return null;
+
+  const harvestedQuantity = event.details?.harvested_quantity;
+  const passedQuantity = event.details?.passed_quantity;
+  const rejectedQuantity = event.details?.rejected_quantity;
+  const harvested =
+    typeof harvestedQuantity === "number" ? harvestedQuantity : batch.quantity;
+  const passed =
+    typeof passedQuantity === "number"
+      ? passedQuantity
+      : typeof batch.qc_passed_quantity === "number"
+        ? batch.qc_passed_quantity
+        : batch.status === "visual_qc_passed"
+          ? batch.remaining_quantity
+          : null;
+
+  if (typeof passed !== "number") return null;
+
+  return {
+    harvested,
+    passed,
+    rejected:
+      typeof rejectedQuantity === "number"
+        ? rejectedQuantity
+        : Math.max(0, harvested - passed),
+  };
+}
+
+function binEventLabel(
+  event: FloorBinBatchEvent,
+  t: ReturnType<typeof useTranslation>["t"],
+  batch: FloorBinBatch,
+) {
+  const quantity = event.details?.quantity;
+  const harvestedQuantity = event.details?.harvested_quantity;
+  const passedQuantity = event.details?.passed_quantity;
+  const remainingQuantity = event.details?.remaining_quantity;
+  switch (event.action) {
+    case "harvested":
+      return typeof quantity === "number"
+        ? t("floor.inventoryBinEventHarvestedQuantity", "Harvested {{quantity}} parts into bin", { quantity })
+        : t("floor.inventoryBinEventHarvested", "Harvested parts into bin");
+    case "visual_qc_passed":
+      {
+        const passed =
+          typeof passedQuantity === "number"
+            ? passedQuantity
+            : typeof batch.qc_passed_quantity === "number"
+              ? batch.qc_passed_quantity
+              : batch.status === "visual_qc_passed"
+                ? batch.remaining_quantity
+                : null;
+        const harvested =
+          typeof harvestedQuantity === "number" ? harvestedQuantity : batch.quantity;
+        return typeof passed === "number"
+          ? t(
+              "floor.inventoryBinEventVisualQcQuantity",
+              "{{passed}} of {{harvested}} passed visual QC",
+              { passed, harvested },
+            )
+          : t("floor.inventoryBinEventVisualQc", "Visual QC passed");
+      }
+    case "wip":
+      return t("floor.inventoryBinEventWip", "Moved to WIP");
+    case "empty":
+      return t("floor.inventoryBinEventEmpty", "Bin marked empty");
+    case "empty_override":
+      return t("floor.inventoryBinEventEmptyOverride", "Bin emptied by inventory override");
+    case "quantity_override":
+      return typeof remainingQuantity === "number"
+        ? t("floor.inventoryBinEventQuantityOverride", "Quantity overridden to {{quantity}} remaining", { quantity: remainingQuantity })
+        : t("floor.inventoryBinEventQuantityOverrideUnknown", "Quantity overridden");
+    case "unlinked":
+      return t("floor.inventoryBinEventUnlinked", "Bin fill unlinked");
+    default:
+      return formatCustomStatus(event.action);
+  }
+}
+
+function binEventDotClass(action: string) {
+  if (action === "harvested") return "bg-bambu-green";
+  if (action === "visual_qc_passed") return "bg-green-500";
+  if (action === "wip") return "bg-amber-500";
+  if (action === "empty" || action === "empty_override") return "bg-sky-500";
+  if (action === "unlinked") return "bg-red-500";
+  return "bg-bambu-gray";
+}
+
 function PartDetail({
   part,
   events,
@@ -1524,6 +2200,7 @@ function PartDetail({
   codeOptionsLoading,
   setCodePending,
   clearCodePending,
+  statusPending,
   saveError,
   onClose,
   onRelink,
@@ -1532,6 +2209,7 @@ function PartDetail({
   onReplaceSticker,
   onSetPartCode,
   onClearPartCode,
+  onSetStatus,
   onDelete,
 }: {
   part: FloorInventoryPart | null;
@@ -1548,6 +2226,7 @@ function PartDetail({
   codeOptionsLoading: boolean;
   setCodePending: boolean;
   clearCodePending: boolean;
+  statusPending: boolean;
   saveError: string | null;
   onClose: () => void;
   onRelink: (archiveId: number) => void;
@@ -1560,6 +2239,7 @@ function PartDetail({
   ) => void;
   onSetPartCode: (code: string) => void;
   onClearPartCode: () => void;
+  onSetStatus: (status: string) => void;
   onDelete: () => void;
 }) {
   const { t } = useTranslation();
@@ -1575,6 +2255,8 @@ function PartDetail({
   const [clearCodeOpen, setClearCodeOpen] = useState(false);
   const [partCodeSelection, setPartCodeSelection] = useState("");
   const [partCodeEditing, setPartCodeEditing] = useState(false);
+  const [statusEditing, setStatusEditing] = useState(false);
+  const [statusSelection, setStatusSelection] = useState("");
   const historyScrollRef = useRef<HTMLDivElement>(null);
   const [historyAtBottom, setHistoryAtBottom] = useState(true);
   useEffect(() => {
@@ -1589,6 +2271,8 @@ function PartDetail({
     setClearCodeOpen(false);
     setPartCodeSelection("");
     setPartCodeEditing(false);
+    setStatusEditing(false);
+    setStatusSelection("");
     setHistoryAtBottom(true);
   }, [part?.id]);
   useEffect(() => {
@@ -1612,6 +2296,10 @@ function PartDetail({
   const latestEventAction = [...timeline]
     .reverse()
     .find((event) => !NON_STATUS_EVENT_ACTIONS.has(event.action))?.action ?? null;
+  const currentStatus = manualStatusValue(
+    part,
+    latestEventAction ?? part.latest_event_action ?? null,
+  );
   return (
     <aside
       className="rounded-lg border border-bambu-dark-tertiary bg-bambu-dark-secondary xl:sticky xl:top-6 xl:flex xl:max-h-[calc(100vh-3rem)] xl:flex-col xl:overflow-hidden"
@@ -1642,6 +2330,19 @@ function PartDetail({
           >
             {statusLabel(part, t, latestEventAction)}
           </span>
+          {!part.archived_at && !statusEditing && (
+            <Button
+              size="sm"
+              variant="secondary"
+              onClick={() => {
+                setStatusSelection(currentStatus);
+                setStatusEditing(true);
+              }}
+            >
+              <Pencil className="h-3.5 w-3.5" />
+              {t("floor.inventoryChangeStatus", "Change status")}
+            </Button>
+          )}
           {needsMatching && (
             <span className="text-xs text-amber-300">
               {t(
@@ -1651,6 +2352,55 @@ function PartDetail({
             </span>
           )}
         </div>
+        {statusEditing && (
+          <div className="rounded-lg border border-bambu-dark-tertiary bg-bambu-dark p-3">
+            <label
+              htmlFor="floor-part-status"
+              className="text-xs font-medium text-bambu-gray-light"
+            >
+              {t("floor.inventoryStatusOverrideLabel", "Manual status")}
+            </label>
+            <select
+              id="floor-part-status"
+              value={statusSelection}
+              onChange={(event) => setStatusSelection(event.target.value)}
+              autoFocus
+              className="mt-1.5 w-full rounded-lg border border-bambu-dark-tertiary bg-bambu-dark-secondary px-3 py-2 text-sm text-white placeholder:text-bambu-gray focus:border-bambu-green focus:outline-none"
+            >
+              {MANUAL_STATUS_OPTIONS.map((option) => (
+                <option key={option.value} value={option.value}>
+                  {option.label}
+                </option>
+              ))}
+            </select>
+            <p className="mt-1.5 text-xs text-bambu-gray">
+              {t(
+                "floor.inventoryStatusOverrideHint",
+                "Choose one of the supported statuses. Changes are saved in history.",
+              )}
+            </p>
+            <div className="mt-3 flex justify-end gap-2">
+              <Button
+                size="sm"
+                variant="secondary"
+                onClick={() => setStatusEditing(false)}
+              >
+                {t("common.cancel", "Cancel")}
+              </Button>
+              <Button
+                size="sm"
+                disabled={!statusSelection.trim() || statusPending}
+                onClick={() => {
+                  onSetStatus(statusSelection.trim());
+                  setStatusEditing(false);
+                }}
+              >
+                {statusPending ? <Loader2 className="h-4 w-4 animate-spin" /> : null}
+                {t("common.save", "Save")}
+              </Button>
+            </div>
+          </div>
+        )}
         <dl className="grid grid-cols-2 gap-x-4 gap-y-3 text-sm">
           <div>
             <dt className="text-bambu-gray">
@@ -1789,13 +2539,13 @@ function PartDetail({
               <div className="relative">
                 <span
                   aria-hidden="true"
-                  className="absolute bottom-2 left-1 top-2 w-px bg-bambu-dark-tertiary"
+                  className="absolute bottom-2 left-[3px] top-2 w-0.5 bg-bambu-dark-tertiary"
                 />
                 <ol className="space-y-3">
                   {timeline.map((event) => (
                     <li key={event.id} className="relative pl-7 text-sm">
                       <span
-                        className={`absolute left-1 top-1.5 h-2 w-2 -translate-x-1/2 rounded-full ${
+                        className={`absolute left-1 top-1.5 z-10 h-2 w-2 -translate-x-1/2 rounded-full ${
                           event.action === "enrolled" ||
                           event.action === "relinked" ||
                           event.action === "relinked_by_scan"
