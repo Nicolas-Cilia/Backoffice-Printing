@@ -41,6 +41,20 @@ from backend.app.models.floor_part import FloorErrorLabel
 from backend.app.models.floor_session import FloorStationSession
 from backend.app.models.printer import Printer
 from backend.app.models.user import User
+from backend.app.services.floor_bins import (
+    BinScanOutcome,
+    BinScanResult,
+    list_bin_batch_events,
+    list_floor_bin_management,
+    list_floor_bins,
+    override_bin_quantity,
+    resolve_bin_for_flow,
+    scan_bin_empty,
+    scan_bin_fit_check,
+    scan_bin_wip,
+    scan_harvest_bin,
+    unlink_bin,
+)
 from backend.app.services.floor_codes import (
     FLOOR_STATIONS,
     MAX_LABEL_MM,
@@ -59,6 +73,7 @@ from backend.app.services.floor_parts import (
     ReplaceStickerReasonCode,
     ReplaceStickerResult,
     SetPartCodeResult,
+    SetPartStatusResult,
     UnlinkReasonCode,
     archive_part,
     clear_part_code,
@@ -83,6 +98,7 @@ from backend.app.services.floor_parts import (
     scan_rework_part,
     search_completed_jobs,
     set_part_code,
+    set_part_status,
     unlink_part,
 )
 from backend.app.services.floor_printers import (
@@ -495,6 +511,19 @@ class PrinterLabelRequest(BaseModel):
     height_mm: float = Field(..., ge=MIN_LABEL_MM, le=MAX_LABEL_MM)
 
 
+class FloorBinResponse(BaseModel):
+    """One permanent shared KNB/BUT bin label."""
+
+    payload: str
+    bin_number: int
+    part_code: str
+    part_name: str
+
+
+class BinLabelRequest(StationLabelRequest):
+    pass
+
+
 class LiveStatusResponse(BaseModel):
     """What the machine is doing right now, from MQTT."""
 
@@ -513,6 +542,7 @@ class LastPrintResponse(BaseModel):
     completed_at: datetime | None
     quantity: int
     has_labeled_parts: bool
+    part_code: str | None = None
 
 
 class RecentStoppedPrintResponse(BaseModel):
@@ -622,6 +652,56 @@ async def render_printer_labels(
     )
 
 
+@router.get("/bins", response_model=list[FloorBinResponse])
+async def list_floor_bins_route(
+    db: AsyncSession = Depends(get_db),
+    _: User | None = RequirePermissionIfAuthEnabled(Permission.FLOOR_SCAN),
+) -> list[FloorBinResponse]:
+    """List the six permanent shared bin labels."""
+    return [
+        FloorBinResponse(
+            payload=bin_item.payload,
+            bin_number=bin_item.bin_number,
+            part_code=bin_item.part_code,
+            part_name=bin_item.part_name,
+        )
+        for bin_item in await list_floor_bins(db)
+    ]
+
+
+@router.post("/labels/bins")
+async def render_bin_labels(
+    body: BinLabelRequest,
+    db: AsyncSession = Depends(get_db),
+    _: User | None = RequirePermissionIfAuthEnabled(Permission.FLOOR_SCAN),
+) -> StreamingResponse:
+    """Render reusable KNB/BUT bin labels as a one-label-per-page PDF."""
+    available = {item.payload: item for item in await list_floor_bins(db)}
+    unknown = [payload for payload in body.payloads if payload.strip() not in available]
+    if unknown:
+        raise HTTPException(400, f"Unknown bin code(s): {', '.join(unknown)}")
+    labels = [
+        CodeLabel(
+            payload=available[payload.strip()].payload,
+            title=f"{available[payload.strip()].part_name} {available[payload.strip()].bin_number}",
+        )
+        for payload in body.payloads
+    ]
+    try:
+        pdf = render_code_labels(labels, width_mm=body.width_mm, height_mm=body.height_mm)
+    except ValueError as exc:
+        raise HTTPException(400, str(exc)) from exc
+    return StreamingResponse(
+        io.BytesIO(pdf),
+        media_type="application/pdf",
+        headers={
+            "Content-Disposition": build_content_disposition("bambuddy-bin-labels.pdf", disposition="inline"),
+            "Content-Length": str(len(pdf)),
+            "Cache-Control": "no-store",
+        },
+    )
+
+
 @router.get("/printers/{payload}/info", response_model=PrinterInfoResponse)
 async def get_floor_printer_info(
     payload: str,
@@ -663,6 +743,7 @@ async def get_floor_printer_info(
                 completed_at=info.last_print.completed_at,
                 quantity=info.last_print.quantity,
                 has_labeled_parts=info.last_print.has_labeled_parts,
+                part_code=info.last_print.part_code,
             )
             if info.last_print
             else None
@@ -797,6 +878,7 @@ class PlateArchiveResponse(BaseModel):
     print_name: str | None
     completed_at: datetime | None
     quantity: int
+    part_code: str | None = None
 
 
 class LabeledPartResponse(BaseModel):
@@ -853,6 +935,73 @@ class PartScanResponse(BaseModel):
     blocking: SessionResponse | None = None
 
 
+class BinBatchResponse(BaseModel):
+    id: int
+    payload: str
+    bin_number: int
+    printer_id: int | None
+    printer_name: str | None
+    archive_id: int | None
+    print_name: str | None
+    part_code: str
+    quantity: int
+    qc_passed_quantity: int | None
+    remaining_quantity: int
+    status: str
+    harvested_at: datetime
+
+
+class BinBatchEventResponse(BaseModel):
+    id: int
+    action: str
+    details: dict | None
+    occurred_at: datetime
+
+
+class FloorBinManagementResponse(BaseModel):
+    payload: str
+    bin_number: int
+    part_code: str
+    part_name: str
+    status: str
+    batch: BinBatchResponse | None
+
+
+class BinQuantityOverrideRequest(BaseModel):
+    payload: str = Field(..., min_length=1, max_length=256)
+    remaining_quantity: int = Field(..., ge=0, le=100_000)
+
+
+class BinUnlinkRequest(BaseModel):
+    payload: str = Field(..., min_length=1, max_length=256)
+
+
+class BinScanRequest(BaseModel):
+    device_id: str = Field(..., min_length=1, max_length=64)
+    payload: str = Field(..., min_length=1, max_length=256)
+    quantity: int | None = Field(default=None, ge=1, le=100_000)
+    printer_id: int | None = None
+
+
+class BinFlowRequest(BaseModel):
+    payload: str = Field(..., min_length=1, max_length=256)
+
+
+class BinQcRequest(BaseModel):
+    payload: str = Field(..., min_length=1, max_length=256)
+    passed_quantity: int | None = Field(default=None, ge=0, le=100_000)
+
+
+class BinScanResponse(BaseModel):
+    result: BinScanResult
+    bin: FloorBinResponse | None = None
+    batch: BinBatchResponse | None = None
+    printer: PlatePrinterResponse | None = None
+    session: SessionResponse | None = None
+    blocking: SessionResponse | None = None
+    archive: PlateArchiveResponse | None = None
+
+
 def _to_plate_printer(printer: Printer | None) -> PlatePrinterResponse | None:
     return PlatePrinterResponse(id=printer.id, name=printer.name) if printer else None
 
@@ -865,7 +1014,167 @@ def _to_plate_archive(archive: LastPrint | None) -> PlateArchiveResponse | None:
         print_name=archive.print_name,
         completed_at=archive.completed_at,
         quantity=archive.quantity,
+        part_code=archive.part_code,
     )
+
+
+def _to_bin_response(bin_item) -> FloorBinResponse | None:
+    if bin_item is None:
+        return None
+    return FloorBinResponse(
+        payload=bin_item.payload,
+        bin_number=bin_item.bin_number,
+        part_code=bin_item.part_code,
+        part_name=bin_item.part_name,
+    )
+
+
+def _to_bin_batch_response(batch) -> BinBatchResponse | None:
+    if batch is None:
+        return None
+    printer = batch.printer
+    archive = batch.archive
+    return BinBatchResponse(
+        id=batch.id,
+        payload=batch.payload,
+        bin_number=batch.bin_number,
+        printer_id=printer.id if printer else None,
+        printer_name=printer.name if printer else None,
+        archive_id=archive.archive_id if archive else None,
+        print_name=archive.print_name if archive else None,
+        part_code=batch.part_code,
+        quantity=batch.quantity,
+        qc_passed_quantity=batch.qc_passed_quantity,
+        remaining_quantity=batch.remaining_quantity,
+        status=batch.status,
+        harvested_at=batch.harvested_at,
+    )
+
+
+def _to_bin_scan_response(outcome: BinScanOutcome) -> BinScanResponse:
+    return BinScanResponse(
+        result=outcome.result,
+        bin=_to_bin_response(outcome.bin),
+        batch=_to_bin_batch_response(outcome.batch),
+        printer=_to_plate_printer(outcome.printer),
+        session=_to_session_response(outcome.session) if outcome.session else None,
+        blocking=_to_session_response(outcome.blocking) if outcome.blocking else None,
+        archive=_to_plate_archive(outcome.archive),
+    )
+
+
+def _to_bin_management_response(item) -> FloorBinManagementResponse:
+    return FloorBinManagementResponse(
+        payload=item.bin.payload,
+        bin_number=item.bin.bin_number,
+        part_code=item.bin.part_code,
+        part_name=item.bin.part_name,
+        status=item.status,
+        batch=_to_bin_batch_response(item.batch),
+    )
+
+
+@router.get("/inventory/bins", response_model=list[FloorBinManagementResponse])
+async def list_inventory_bins(
+    db: AsyncSession = Depends(get_db),
+    _: User | None = RequirePermissionIfAuthEnabled(Permission.FLOOR_SCAN),
+) -> list[FloorBinManagementResponse]:
+    """Show the current assignment and quantity for every shared bin."""
+    return [_to_bin_management_response(item) for item in await list_floor_bin_management(db)]
+
+
+@router.get("/inventory/bins/batches/{batch_id}/events", response_model=list[BinBatchEventResponse])
+async def get_inventory_bin_batch_events(
+    batch_id: int,
+    db: AsyncSession = Depends(get_db),
+    _: User | None = RequirePermissionIfAuthEnabled(Permission.FLOOR_SCAN),
+) -> list[BinBatchEventResponse]:
+    events = await list_bin_batch_events(db, batch_id)
+    if events is None:
+        raise HTTPException(404, "Bin batch not found")
+    return [BinBatchEventResponse(**event.__dict__) for event in events]
+
+
+@router.post("/inventory/bins/quantity-override", response_model=BinScanResponse)
+async def override_inventory_bin_quantity(
+    body: BinQuantityOverrideRequest,
+    db: AsyncSession = Depends(get_db),
+    _: User | None = RequirePermissionIfAuthEnabled(Permission.FLOOR_SCAN),
+) -> BinScanResponse:
+    """Override a bin fill's remaining count from Inventory management."""
+    outcome = await override_bin_quantity(db, body.payload, body.remaining_quantity)
+    await db.commit()
+    return _to_bin_scan_response(outcome)
+
+
+@router.post("/inventory/bins/unlink", response_model=BinScanResponse)
+async def unlink_inventory_bin(
+    body: BinUnlinkRequest,
+    db: AsyncSession = Depends(get_db),
+    _: User | None = RequirePermissionIfAuthEnabled(Permission.FLOOR_SCAN),
+) -> BinScanResponse:
+    """Release a bin assignment while retaining its audit history."""
+    outcome = await unlink_bin(db, body.payload)
+    await db.commit()
+    return _to_bin_scan_response(outcome)
+
+
+@router.post("/harvest/bin", response_model=BinScanResponse)
+async def scan_harvest_bin_route(
+    body: BinScanRequest,
+    db: AsyncSession = Depends(get_db),
+    _: User | None = RequirePermissionIfAuthEnabled(Permission.FLOOR_SCAN),
+) -> BinScanResponse:
+    """Scan a reusable KNB/BUT bin and optionally save its harvested count."""
+    outcome = await scan_harvest_bin(db, body.device_id, body.payload, body.quantity, body.printer_id)
+    await db.commit()
+    return _to_bin_scan_response(outcome)
+
+
+@router.post("/bins/resolve", response_model=BinScanResponse)
+async def resolve_floor_bin_route(
+    body: BinFlowRequest,
+    db: AsyncSession = Depends(get_db),
+    _: User | None = RequirePermissionIfAuthEnabled(Permission.FLOOR_SCAN),
+) -> BinScanResponse:
+    outcome = await resolve_bin_for_flow(db, body.payload)
+    return _to_bin_scan_response(outcome)
+
+
+@router.post("/locations/fit-check/bin", response_model=BinScanResponse)
+async def scan_fit_check_bin_route(
+    body: BinQcRequest,
+    db: AsyncSession = Depends(get_db),
+    _: User | None = RequirePermissionIfAuthEnabled(Permission.FLOOR_SCAN),
+) -> BinScanResponse:
+    """Record the visual QC checkpoint for the latest bin batch."""
+    outcome = await scan_bin_fit_check(db, body.payload, body.passed_quantity)
+    await db.commit()
+    return _to_bin_scan_response(outcome)
+
+
+@router.post("/wip/bin", response_model=BinScanResponse)
+async def scan_wip_bin_route(
+    body: BinFlowRequest,
+    db: AsyncSession = Depends(get_db),
+    _: User | None = RequirePermissionIfAuthEnabled(Permission.FLOOR_SCAN),
+) -> BinScanResponse:
+    """Admit a bin batch to WIP only after visual QC has passed."""
+    outcome = await scan_bin_wip(db, body.payload)
+    await db.commit()
+    return _to_bin_scan_response(outcome)
+
+
+@router.post("/bins/empty", response_model=BinScanResponse)
+async def scan_empty_bin_route(
+    body: BinFlowRequest,
+    db: AsyncSession = Depends(get_db),
+    _: User | None = RequirePermissionIfAuthEnabled(Permission.FLOOR_SCAN),
+) -> BinScanResponse:
+    """Close a consumed WIP fill so the shared bin can be reused."""
+    outcome = await scan_bin_empty(db, body.payload)
+    await db.commit()
+    return _to_bin_scan_response(outcome)
 
 
 @router.post("/harvest/printer", response_model=HarvestScanResponse)
@@ -1420,6 +1729,34 @@ async def replace_inventory_part_sticker(
 
 class SetPartCodeRequest(BaseModel):
     code: str = Field(..., min_length=1, max_length=32)
+
+
+class SetPartStatusRequest(BaseModel):
+    status: str = Field(..., min_length=1, max_length=32)
+
+
+@router.post("/inventory/parts/{part_id}/status", response_model=InventoryPartResponse)
+async def set_inventory_part_status(
+    part_id: int,
+    body: SetPartStatusRequest,
+    db: AsyncSession = Depends(get_db),
+    _: User | None = RequirePermissionIfAuthEnabled(Permission.FLOOR_SCAN),
+) -> InventoryPartResponse:
+    """Manually override a part's workflow status.
+
+    The service normalizes and validates the value, then records it as an
+    ordinary status event so the override remains visible in Part history.
+    """
+    outcome = await set_part_status(db, part_id, body.status)
+    if outcome.result is SetPartStatusResult.NOT_FOUND:
+        raise HTTPException(404, "Part not found")
+    if outcome.result is SetPartStatusResult.ARCHIVED:
+        raise HTTPException(400, "Part is archived")
+    if outcome.result is SetPartStatusResult.INVALID_STATUS:
+        raise HTTPException(400, "Status must be one of the supported part statuses")
+    await db.commit()
+    rows = await list_inventory_parts(db, include_archived=True)
+    return next(InventoryPartResponse(**row.__dict__) for row in rows if row.id == part_id)
 
 
 @router.post("/inventory/parts/{part_id}/part-code", response_model=InventoryPartResponse)

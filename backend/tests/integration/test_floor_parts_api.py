@@ -9,6 +9,8 @@ endpoints, plus the needs-attention list.
 
 from __future__ import annotations
 
+from datetime import datetime, timedelta
+
 import pytest
 from httpx import AsyncClient
 
@@ -481,6 +483,40 @@ class TestNeedsAttention:
         assert len(body["parts"]) == 2
         assert body["total"] == 3
 
+    async def test_excludes_build_plate_linked_by_a_reusable_bin(
+        self, async_client, db_session, printer_factory, archive_factory
+    ):
+        from backend.app.models.settings import Settings
+
+        db_session.add(
+            Settings(
+                key="floor_part_tracking_started_at",
+                value=(datetime.now() - timedelta(minutes=1)).isoformat(),
+            )
+        )
+        await db_session.commit()
+        printer = await printer_factory(name="Bench A")
+        archive = await archive_factory(
+            printer_id=printer.id,
+            completed_at=datetime.now() + timedelta(minutes=1),
+            print_name="Knob plate",
+        )
+        await _open_harvest(async_client, DEVICE_A)
+        await _scan_printer(async_client, printer.id, DEVICE_A)
+
+        before = await async_client.get("/api/v1/floor/parts/unlabeled-build-plates")
+        assert any(plate["id"] == archive.id for plate in before.json())
+
+        saved = await async_client.post(
+            "/api/v1/floor/harvest/bin",
+            json={"device_id": DEVICE_A, "payload": "BBN-KNB-1", "quantity": 12},
+        )
+        assert saved.json()["result"] == "recorded"
+        assert saved.json()["batch"]["archive_id"] == archive.id
+
+        after = await async_client.get("/api/v1/floor/parts/unlabeled-build-plates")
+        assert not any(plate["id"] == archive.id for plate in after.json())
+
 
 @pytest.mark.asyncio
 @pytest.mark.integration
@@ -925,3 +961,156 @@ class TestPartCodeCatalogAndAssignment:
         resp = await async_client.post(f"/api/v1/floor/inventory/parts/{part_id}/part-code", json={"code": "TOP"})
 
         assert resp.status_code == 400
+
+
+@pytest.mark.asyncio
+@pytest.mark.integration
+class TestManualPartStatus:
+    async def test_overrides_to_a_supported_status_and_exposes_it_in_history(self, async_client, printer_factory):
+        printer = await printer_factory()
+        await _open_harvest(async_client, DEVICE_A)
+        await _scan_printer(async_client, printer.id, DEVICE_A)
+        scanned = await _scan_part(async_client, "BBD-000001", DEVICE_A)
+        part_id = scanned.json()["part"]["id"]
+
+        resp = await async_client.post(
+            f"/api/v1/floor/inventory/parts/{part_id}/status",
+            json={"status": "shipped"},
+        )
+
+        assert resp.status_code == 200
+        assert resp.json()["latest_event_action"] == "shipped"
+        events = await async_client.get(f"/api/v1/floor/inventory/parts/{part_id}/events")
+        assert events.json()[-1]["action"] == "shipped"
+        assert events.json()[-1]["details"]["status_override"] is True
+
+    async def test_rejects_missing_part_and_metadata_status(self, async_client, printer_factory):
+        missing = await async_client.post("/api/v1/floor/inventory/parts/999999/status", json={"status": "wip"})
+        assert missing.status_code == 404
+
+        printer = await printer_factory()
+        await _open_harvest(async_client, DEVICE_A)
+        await _scan_printer(async_client, printer.id, DEVICE_A)
+        scanned = await _scan_part(async_client, "BBD-000001", DEVICE_A)
+        part_id = scanned.json()["part"]["id"]
+        invalid = await async_client.post(
+            f"/api/v1/floor/inventory/parts/{part_id}/status",
+            json={"status": "Ready for shipment"},
+        )
+        assert invalid.status_code == 400
+
+
+@pytest.mark.asyncio
+@pytest.mark.integration
+class TestReusableBinFlow:
+    async def test_lists_separate_knob_and_button_bins_for_each_printer(self, async_client, printer_factory):
+        await printer_factory(name="Bench A")
+
+        response = await async_client.get("/api/v1/floor/bins")
+
+        assert response.status_code == 200
+        assert {item["payload"] for item in response.json()} == {
+            "BBN-KNB-1",
+            "BBN-KNB-2",
+            "BBN-KNB-3",
+            "BBN-BUT-1",
+            "BBN-BUT-2",
+            "BBN-BUT-3",
+        }
+
+    async def test_quantity_is_required_then_visual_qc_gates_wip(self, async_client, printer_factory):
+        printer = await printer_factory(name="Bench A")
+        await _open_harvest(async_client, DEVICE_A)
+        await _scan_printer(async_client, printer.id, DEVICE_A)
+
+        scanned = await async_client.post(
+            "/api/v1/floor/harvest/bin",
+            json={"device_id": DEVICE_A, "payload": "BBN-KNB-1"},
+        )
+        assert scanned.json()["result"] == "ready_for_quantity"
+        assert scanned.json()["bin"]["part_code"] == "KNB"
+
+        saved = await async_client.post(
+            "/api/v1/floor/harvest/bin",
+            json={"device_id": DEVICE_A, "payload": "BBN-KNB-1", "quantity": 27},
+        )
+        assert saved.json()["result"] == "recorded"
+        assert saved.json()["batch"]["quantity"] == 27
+
+        in_use = await async_client.post(
+            "/api/v1/floor/harvest/bin",
+            json={"device_id": DEVICE_A, "payload": "BBN-KNB-1"},
+        )
+        assert in_use.json()["result"] == "bin_in_use"
+
+        before_qc = await async_client.post("/api/v1/floor/wip/bin", json={"payload": "BBN-KNB-1"})
+        assert before_qc.json()["result"] == "qc_required"
+
+        qc = await async_client.post(
+            "/api/v1/floor/locations/fit-check/bin",
+            json={"payload": "BBN-KNB-1"},
+        )
+        assert qc.json()["result"] == "ready_for_qc_quantity"
+
+        qc = await async_client.post(
+            "/api/v1/floor/locations/fit-check/bin",
+            json={"payload": "BBN-KNB-1", "passed_quantity": 20},
+        )
+        assert qc.json()["result"] == "qc_recorded"
+        assert qc.json()["batch"]["qc_passed_quantity"] == 20
+        assert qc.json()["batch"]["remaining_quantity"] == 20
+
+        events = await async_client.get(f"/api/v1/floor/inventory/bins/batches/{qc.json()['batch']['id']}/events")
+        assert events.status_code == 200
+        assert events.json()[-1]["action"] == "visual_qc_passed"
+        assert events.json()[-1]["details"]["passed_quantity"] == 20
+        assert events.json()[-1]["details"]["rejected_quantity"] == 7
+
+        wip = await async_client.post("/api/v1/floor/wip/bin", json={"payload": "BBN-KNB-1"})
+        assert wip.json()["result"] == "wip_recorded"
+        assert wip.json()["batch"]["status"] == "wip"
+
+        empty = await async_client.post("/api/v1/floor/bins/empty", json={"payload": "BBN-KNB-1"})
+        assert empty.json()["result"] == "empty_recorded"
+
+        reused = await async_client.post(
+            "/api/v1/floor/harvest/bin",
+            json={"device_id": DEVICE_A, "payload": "BBN-KNB-1", "quantity": 11},
+        )
+        assert reused.json()["result"] == "recorded"
+        assert reused.json()["batch"]["quantity"] == 11
+
+    async def test_inventory_can_override_quantity_and_unlink_active_fill(self, async_client, printer_factory):
+        printer = await printer_factory(name="Bench A")
+        await _open_harvest(async_client, DEVICE_A)
+        await _scan_printer(async_client, printer.id, DEVICE_A)
+        await async_client.post(
+            "/api/v1/floor/harvest/bin",
+            json={"device_id": DEVICE_A, "payload": "BBN-BUT-1", "quantity": 18},
+        )
+
+        listed = await async_client.get("/api/v1/floor/inventory/bins")
+        current = next(item for item in listed.json() if item["payload"] == "BBN-BUT-1")
+        assert current["batch"]["remaining_quantity"] == 18
+        assert current["batch"]["printer_name"] == "Bench A"
+
+        overridden = await async_client.post(
+            "/api/v1/floor/inventory/bins/quantity-override",
+            json={"payload": "BBN-BUT-1", "remaining_quantity": 0},
+        )
+        assert overridden.json()["result"] == "empty_recorded"
+
+        available = await async_client.get("/api/v1/floor/inventory/bins")
+        assert next(item for item in available.json() if item["payload"] == "BBN-BUT-1")["batch"] is None
+
+        await async_client.post(
+            "/api/v1/floor/harvest/bin",
+            json={"device_id": DEVICE_A, "payload": "BBN-BUT-1", "quantity": 9},
+        )
+        unlinked = await async_client.post(
+            "/api/v1/floor/inventory/bins/unlink",
+            json={"payload": "BBN-BUT-1"},
+        )
+        assert unlinked.json()["result"] == "unlinked"
+        available_again = await async_client.get("/api/v1/floor/inventory/bins")
+        assert next(item for item in available_again.json() if item["payload"] == "BBN-BUT-1")["batch"] is None

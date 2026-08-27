@@ -22,6 +22,7 @@ from backend.app.services.floor_parts import (
     ReplaceStickerResult,
     ReworkReasonCode,
     SetPartCodeResult,
+    SetPartStatusResult,
     UnlinkReasonCode,
     archive_part,
     find_part_code_thumbnail,
@@ -39,6 +40,7 @@ from backend.app.services.floor_parts import (
     scan_rework_part,
     search_completed_jobs,
     set_part_code,
+    set_part_status,
     unlink_part,
 )
 from backend.app.services.floor_sessions import (
@@ -1114,3 +1116,39 @@ class TestSetPartCode:
         result = await set_part_code(db_session, outcome.part.id, "TOP")
 
         assert result.result is SetPartCodeResult.ARCHIVED
+
+
+class TestSetPartStatus:
+    @pytest.mark.asyncio
+    async def test_sets_a_supported_status_and_records_an_audited_event(self, db_session, printer_factory):
+        printer = await printer_factory()
+        outcome = await scan_part(db_session, DEVICE_A, "BBD-000001", printer_id_hint=printer.id)
+        await db_session.commit()
+
+        result = await set_part_status(db_session, outcome.part.id, " shipped ")
+        await db_session.commit()
+
+        assert result.result is SetPartStatusResult.UPDATED
+        events = await list_part_events(db_session, outcome.part.id)
+        assert events[-1].action == "shipped"
+        assert events[-1].details == {
+            "status_override": True,
+            "status": "shipped",
+            "previous_status": "enrolled",
+        }
+        listed = await list_inventory_parts(db_session)
+        assert listed[0].latest_event_action == "shipped"
+
+    @pytest.mark.asyncio
+    async def test_rejects_metadata_actions_and_archived_parts(self, db_session, printer_factory):
+        printer = await printer_factory()
+        outcome = await scan_part(db_session, DEVICE_A, "BBD-000001", printer_id_hint=printer.id)
+        await db_session.commit()
+
+        invalid = await set_part_status(db_session, outcome.part.id, "Ready for shipment")
+        assert invalid.result is SetPartStatusResult.INVALID_STATUS
+
+        await archive_part(db_session, outcome.part.id, archived=True)
+        await db_session.commit()
+        archived = await set_part_status(db_session, outcome.part.id, "wip")
+        assert archived.result is SetPartStatusResult.ARCHIVED
