@@ -12,16 +12,13 @@
  * is shaped for the general case from the start — later phases add handlers to
  * this table rather than restructuring it.
  *
- * Phase 1b handles station codes only. Every other prefix is *recognised* but
- * unhandled, which is deliberately distinct from unrecognised: "not built yet"
- * and "that code means nothing" are different facts, and telling an operator
- * the wrong one wastes a trip to the office.
- *
  * Phase 8 adds harvest handling for `BBP-` and `BBD-`, and from **two**
  * places: an open Harvest station (§5.4, entry #1) and the printer info page
  * with nothing open (§5.6, entry #2). That second entry is why `routeScan`
  * takes an optional `viewingPrinterId` — everything else stays keyed on the
  * open station alone.
+ * Reusable `BBN-` bin codes follow the same two Harvest entry points, plus
+ * idle/WIP routing for the quantity and QC gates.
  *
  * Fit Check and Rework (§5.4a/§5.4b) are **not** stations, despite printing
  * `BBS-…` QRs like one — there is no session, no open/close, and dispatch
@@ -36,6 +33,7 @@
 export const PREFIX_STATION = 'BBS-';
 export const PREFIX_PRINTER = 'BBP-';
 export const PREFIX_PART = 'BBD-';
+export const PREFIX_BIN = 'BBN-';
 export const PREFIX_DEFECT = 'BBF-';
 export const PREFIX_COMMAND = 'BBX-';
 export const PREFIX_REASON = 'BBR-';
@@ -65,7 +63,7 @@ export function formatFloorDate(value: string, options?: Intl.DateTimeFormatOpti
 export const HARVEST_STATION_PAYLOAD = `${PREFIX_STATION}${HARVEST_STATION_SLUG}`;
 
 /** What kind of code a payload is, before any station context is applied. */
-export type ScanKind = 'station' | 'printer' | 'part' | 'defect' | 'command' | 'reason' | 'sku';
+export type ScanKind = 'station' | 'printer' | 'part' | 'bin' | 'defect' | 'command' | 'reason' | 'sku';
 
 export type ScanClassification =
   | { kind: 'empty' }
@@ -75,6 +73,7 @@ const PREFIX_KINDS: ReadonlyArray<readonly [string, ScanKind]> = [
   [PREFIX_STATION, 'station'],
   [PREFIX_PRINTER, 'printer'],
   [PREFIX_PART, 'part'],
+  [PREFIX_BIN, 'bin'],
   [PREFIX_DEFECT, 'defect'],
   [PREFIX_COMMAND, 'command'],
   [PREFIX_REASON, 'reason'],
@@ -116,6 +115,13 @@ export type ScanAction =
    *  info page it carries the viewed printer's id, which is only a *hint*
    *  used to claim the harvest lock on the first such scan (§5.6, entry #2). */
   | { action: 'harvest-part'; payload: string; printerId?: number }
+  /** A reusable KNB/BUT bin. During Harvest it starts/captures a batch; from
+   *  a printer info page it is the direct Harvest entry point. */
+  | { action: 'harvest-bin'; payload: string; printerId?: number }
+  /** A bin scanned at idle, waiting for the operator to scan Fit Check. */
+  | { action: 'bin-scanned'; payload: string }
+  /** A bin scanned with the WIP station open. */
+  | { action: 'wip-bin'; payload: string }
   /** A `BBD-` code with no station open and no printer being viewed — the
    *  start of the scan-part-then-location flow (§5.4a/§5.4b). The page
    *  remembers this as the pending part; nothing is written yet. */
@@ -202,6 +208,16 @@ export function routeScan(
     // already was (unhandled), rather than silently starting an unrelated
     // flow underneath active station work.
     if (stationSlug === null) return { action: 'part-scanned', payload: scan.value };
+    return { action: 'not-implemented', kind: scan.kind, value: scan.value };
+  }
+
+  if (scan.kind === 'bin') {
+    if (stationSlug === HARVEST_STATION_SLUG) return { action: 'harvest-bin', payload: scan.value };
+    if (stationSlug === 'wip') return { action: 'wip-bin', payload: scan.value };
+    if (stationSlug === null && viewingPrinterId != null) {
+      return { action: 'harvest-bin', payload: scan.value, printerId: viewingPrinterId };
+    }
+    if (stationSlug === null) return { action: 'bin-scanned', payload: scan.value };
     return { action: 'not-implemented', kind: scan.kind, value: scan.value };
   }
 

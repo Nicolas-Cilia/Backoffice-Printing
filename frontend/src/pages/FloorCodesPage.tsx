@@ -5,10 +5,9 @@
  * Normal app chrome (unlike the sparse `/floor/scan` shell) because this is
  * used at a desk, not with a pistol in hand.
  *
- * Phase 1a ships the Station labels tab only — that is exactly what phase
- * 1b's own test gate needs (a printable `BBS-…` to scan). Printer labels
- * (phase 7) and Error/Command labels (phase 9) are shown as disabled tabs so
- * the page's shape is honest about what exists rather than hiding it.
+ * The page groups the printable floor codes by use: stations/locations,
+ * printers, reusable KNB/BUT bins, and error labels. Bin labels are generated
+ * from the current printer catalog so each printer gets one QR per part type.
  *
  * The QR shown per station is rendered client-side purely as a *preview*; the
  * printed artefact is the server-rendered PDF, whose payload comes from the
@@ -80,7 +79,7 @@ function normalizeErrorSlug(value: string): string {
  *  QC checkpoints a part passes through, not workflow-mode benches, so they
  *  get their own tab even though they're printed and resolved exactly like
  *  any other `BBS-` code. */
-type CodesTab = 'stations' | 'locations' | 'printers' | 'errors';
+type CodesTab = 'stations' | 'locations' | 'printers' | 'bins' | 'errors';
 
 export function FloorCodesPage() {
   const { t } = useTranslation();
@@ -105,6 +104,11 @@ export function FloorCodesPage() {
     queryFn: () => api.getFloorErrorLabels(),
     enabled: tab === 'errors',
   });
+  const binsQuery = useQuery({
+    queryKey: ['floor-bins'],
+    queryFn: () => api.getFloorBins(),
+    enabled: tab === 'bins',
+  });
   const [errorName, setErrorName] = useState('');
   const [errorSlug, setErrorSlug] = useState('');
   const [errorSlugFocused, setErrorSlugFocused] = useState(false);
@@ -121,9 +125,10 @@ export function FloorCodesPage() {
   );
   const printers = useMemo(() => printersQuery.data ?? [], [printersQuery.data]);
   const errors = useMemo(() => errorsQuery.data ?? [], [errorsQuery.data]);
+  const bins = useMemo(() => binsQuery.data ?? [], [binsQuery.data]);
 
-  /** The rows the active tab prints, reduced to what the picker needs. All
-   *  three label families are a list of (payload, title, subtitle) — keeping
+  /** The rows the active tab prints, reduced to what the picker needs. Every
+   *  label family is a list of (payload, title, subtitle) — keeping
    *  one shape means the selection, size picker and print button are written
    *  once rather than duplicated per tab. */
   const items = useMemo(() => {
@@ -133,16 +138,21 @@ export function FloorCodesPage() {
       { payload: 'BBX-discard', title: 'Discard', subtitle: 'Then scan an error label.' },
       ...errors.map((error) => ({ payload: error.payload, title: error.name, subtitle: 'Rework and discard reason', id: error.id })),
     ];
+    if (tab === 'bins') return bins.map((bin) => ({
+      payload: bin.payload,
+      title: `${bin.part_name} ${bin.bin_number}`,
+      subtitle: 'Shared reusable bin',
+    }));
     return printers.map((p) => ({
       payload: p.payload,
       title: p.name,
       subtitle: [p.model, p.location].filter(Boolean).join(' · ') || '—',
     }));
-  }, [tab, stations, locations, printers, errors]);
+  }, [tab, stations, locations, printers, bins, errors]);
 
   // Locations shares the station catalog query — it's the same data, split
   // by `category` client-side, not a second fetch.
-  const activeQuery = tab === 'printers' ? printersQuery : tab === 'errors' ? errorsQuery : stationsQuery;
+  const activeQuery = tab === 'printers' ? printersQuery : tab === 'bins' ? binsQuery : tab === 'errors' ? errorsQuery : stationsQuery;
 
   const [selected, setSelected] = useState<Set<string>>(new Set());
   const [size, setSize] = useState<StoredSize>(() => loadStoredSize());
@@ -194,12 +204,16 @@ export function FloorCodesPage() {
       const blob =
         tab === 'printers'
           ? await api.printFloorPrinterLabels(body)
+          : tab === 'bins'
+            ? await api.printFloorBinLabels(body)
           : tab === 'errors'
             ? await api.printFloorErrorLabels(body)
           : await api.printFloorStationLabels(body);
       const filename =
         tab === 'printers'
           ? 'bambuddy-printer-labels.pdf'
+          : tab === 'bins'
+            ? 'bambuddy-bin-labels.pdf'
           : tab === 'locations'
             ? 'bambuddy-location-labels.pdf'
             : tab === 'errors'
@@ -262,6 +276,16 @@ export function FloorCodesPage() {
         </button>
         <button
           type="button"
+          onClick={() => setTab('bins')}
+          aria-current={tab === 'bins' ? 'page' : undefined}
+          className={`px-3 py-1.5 text-sm rounded-md transition-colors ${
+            tab === 'bins' ? 'bg-bambu-green text-white' : 'text-bambu-gray hover:text-white'
+          }`}
+        >
+          {t('floor.codesTabBins', 'Bins')}
+        </button>
+        <button
+          type="button"
           onClick={() => setTab('errors')}
           aria-current={tab === 'errors' ? 'page' : undefined}
           className={`px-3 py-1.5 text-sm rounded-md transition-colors ${tab === 'errors' ? 'bg-bambu-green text-white' : 'text-bambu-gray hover:text-white'}`}
@@ -280,6 +304,8 @@ export function FloorCodesPage() {
                   ? t('floor.codesLocationsHeading', 'Locations')
                   : tab === 'errors'
                     ? t('floor.codesErrorsHeading', 'Error labels')
+                  : tab === 'bins'
+                    ? t('floor.codesBinsHeading', 'Part bins')
                   : t('floor.codesPrintersHeading', 'Printer labels')}
             </h2>
             <p className="text-xs text-bambu-gray mt-0.5">
@@ -295,6 +321,8 @@ export function FloorCodesPage() {
                     )
                   : tab === 'errors'
                     ? t('floor.codesErrorsHint', 'Scan an error label after Rework or Discard. Add or remove reasons as needed.')
+                  : tab === 'bins'
+                    ? t('floor.codesBinsHint', 'Print three shared reusable KNB bins and three shared reusable BUT bins.')
                   : t(
                       'floor.codesPrintersHint',
                       'One label per printer, stuck on the machine. Scanning it shows what that printer is doing and what it last finished.',
@@ -329,6 +357,8 @@ export function FloorCodesPage() {
                 ? t('floor.codesLoadError', 'Could not load stations')
                 : tab === 'locations'
                   ? t('floor.codesLocationsLoadError', 'Could not load locations')
+                  : tab === 'bins'
+                    ? t('floor.codesBinsLoadError', 'Could not load bins')
                   : t('floor.codesPrintersLoadError', 'Could not load printers')}
             </p>
             <Button className="mt-4" variant="secondary" onClick={() => activeQuery.refetch()}>
@@ -341,10 +371,14 @@ export function FloorCodesPage() {
           <div className="text-center py-16 px-4">
             <QrCode className="w-10 h-10 text-bambu-gray mx-auto mb-3" />
             <p className="text-white font-medium">
-              {t('floor.codesNoPrinters', 'No printers to label yet')}
+              {tab === 'bins'
+                ? t('floor.codesNoBins', 'No bins to label yet')
+                : t('floor.codesNoPrinters', 'No printers to label yet')}
             </p>
             <p className="text-sm text-bambu-gray mt-1">
-              {t('floor.codesNoPrintersHint', 'Add a printer first, then print its label here.')}
+              {tab === 'bins'
+                ? t('floor.codesNoBinsHint', 'These six permanent bin labels are available independently of the printer catalog.')
+                : t('floor.codesNoPrintersHint', 'Add a printer first, then print its label here.')}
             </p>
           </div>
         ) : (

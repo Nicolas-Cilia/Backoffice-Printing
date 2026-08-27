@@ -6,6 +6,7 @@ describe('classifyScan', () => {
     ['BBS-wip', 'station'],
     ['BBP-12', 'printer'],
     ['BBD-000042', 'part'],
+    ['BBN-KNB-1', 'bin'],
     ['BBF-warping', 'defect'],
     ['BBX-rework', 'command'],
     ['BBR-doesnt-fit', 'reason'],
@@ -210,6 +211,28 @@ describe('routeScan', () => {
 
     it('classifies a rework-reason scan the same way regardless of station context', () => {
       expect(routeScan('BBR-other', 'wip')).toEqual({ action: 'rework-reason', payload: 'BBR-other' });
+    });
+  });
+
+  describe('reusable KNB/BUT bins', () => {
+    it('routes bins to Harvest for quantity capture', () => {
+      expect(routeScan('BBN-KNB-1', 'harvest')).toEqual({ action: 'harvest-bin', payload: 'BBN-KNB-1' });
+    });
+
+    it('routes bins from a printer info page to the direct Harvest path', () => {
+      expect(routeScan('BBN-BUT-1', null, 12)).toEqual({
+        action: 'harvest-bin',
+        payload: 'BBN-BUT-1',
+        printerId: 12,
+      });
+    });
+
+    it('routes bins in WIP to the QC-gated intake path', () => {
+      expect(routeScan('BBN-KNB-1', 'wip')).toEqual({ action: 'wip-bin', payload: 'BBN-KNB-1' });
+    });
+
+    it('starts the visual-QC flow for a bin scanned at idle', () => {
+      expect(routeScan('BBN-KNB-1', null)).toEqual({ action: 'bin-scanned', payload: 'BBN-KNB-1' });
     });
   });
 
