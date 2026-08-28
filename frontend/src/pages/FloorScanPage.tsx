@@ -34,10 +34,11 @@
  * other transition on this page.
  */
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { useFloorScanCapture } from '../hooks/useFloorScanCapture';
 import { useTranslation } from 'react-i18next';
 import { useNavigate } from 'react-router-dom';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import { Check, History, Loader2, Lock, Plus, Printer, ScanLine, Wrench, X } from 'lucide-react';
+import { ArrowLeft, Check, History, Loader2, Lock, Plus, Printer, ScanLine, Wrench, X } from 'lucide-react';
 import {
   ApiError,
   api,
@@ -66,6 +67,8 @@ import {
 } from '../api/client';
 import { StartPrintModal } from '../components/StartPrintModal';
 import { ConfirmModal } from '../components/ConfirmModal';
+import { ScanPartHistory } from '../components/floor/ScanPartHistory';
+import { TouchOnlyButton } from '../components/floor/TouchOnlyButton';
 import { useAuth } from '../contexts/AuthContext';
 import { useToast } from '../contexts/ToastContext';
 import { getDeviceId } from '../utils/floorDevice';
@@ -78,6 +81,12 @@ import {
   formatFloorDate,
   routeScan,
 } from '../utils/floorScan';
+import { isFloorScanInput, isUserTypingTarget } from '../utils/floorScanCapture';
+import {
+  FLOOR_PASS_TEXT_CLASS,
+  isFloorPassBinStatus,
+  isFloorPassPartAction,
+} from '../utils/floorPartHistory';
 
 /** How long a transient message (error, "closed", "not yet") stays up before
  *  the screen returns to its resting state. */
@@ -143,7 +152,7 @@ type Status =
       batch: FloorBinBatch | null;
     };
 
-type PartImageIdentity = Pick<FloorInventoryPart, 'part_code' | 'section_part_id' | 'part_name' | 'part_source' | 'labeled_at' | 'archived_at' | 'latest_event_action' | 'latest_event_reason'> & {
+type PartImageIdentity = Pick<FloorInventoryPart, 'id' | 'part_code' | 'section_part_id' | 'part_name' | 'part_source' | 'labeled_at' | 'archived_at' | 'archive_id' | 'latest_event_action' | 'latest_event_reason'> & {
   printer_name: string | null;
   printer_id: number | null;
 };
@@ -159,6 +168,16 @@ const FLOOR_STOP_REASON_OPTIONS: Array<{
   { value: 'filament_issue', key: 'floor.stopReasonFilament', fallback: 'Filament issue' },
   { value: 'other', key: 'floor.stopReasonOther', fallback: 'Other' },
 ];
+
+/** Screens with their own text field. Restoring the hidden scan input here
+ *  would steal keystrokes from quantity / custom-reason entry. */
+function isScanTypingStatus(kind: Status['kind']): boolean {
+  return (
+    kind === 'awaiting-bin-quantity' ||
+    kind === 'awaiting-bin-qc-quantity' ||
+    kind === 'awaiting-custom-reason'
+  );
+}
 
 function isAlreadyAtLocation(part: PartImageIdentity | null, locationSlug: 'fit-check' | 'rework' | 'discard') {
   if (!part) return false;
@@ -191,6 +210,8 @@ type PartFeedback = {
   part: FloorLabeledPart | null;
   printer: FloorPlatePrinter | null;
   archive: FloorPlateArchive | null;
+  /** Parts linked on the current harvest plate (server `part_count`). */
+  linkCount: number;
 };
 
 export function FloorScanPage() {
@@ -238,14 +259,45 @@ export function FloorScanPage() {
   const customReasonDraftRef = useRef<string | null>(null);
   const customReasonPendingRef = useRef(false);
 
-  const focusInput = useCallback(() => {
-    inputRef.current?.focus();
+  const focusRetryRef = useRef<number[]>([]);
+
+  const cancelFocusRetries = useCallback(() => {
+    for (const id of focusRetryRef.current) window.cancelAnimationFrame(id);
+    focusRetryRef.current = [];
   }, []);
 
-  // Always-focused scan field (§3.1): the pistol has no mode switch, so
-  // whatever has focus IS the scan target.
-  useEffect(() => {
+  const focusInput = useCallback(() => {
+    const run = () => inputRef.current?.focus({ preventScroll: true });
+    cancelFocusRetries();
+    run();
+    // Phone browsers (and iOS in particular) often blur the field again when
+    // the tapped button unmounts. Retry on the next frames while the tap is
+    // still likely to count as a user gesture.
+    const first = window.requestAnimationFrame(() => {
+      run();
+      const second = window.requestAnimationFrame(run);
+      focusRetryRef.current.push(second);
+    });
+    focusRetryRef.current.push(first);
+  }, [cancelFocusRetries]);
+
+  const restoreScanFocus = useCallback(() => {
+    const active = document.activeElement;
+    if (
+      active instanceof HTMLElement &&
+      isUserTypingTarget(active) &&
+      !isFloorScanInput(active)
+    ) {
+      return;
+    }
     focusInput();
+  }, [focusInput]);
+
+  // Always-focused scan field (§3.1): the pistol has no mode switch, so
+  // whatever has focus IS the scan target. Phone HID scanners type into the
+  // focused field only — window-level capture is a desktop backup.
+  useEffect(() => {
+    restoreScanFocus();
     const onWindowClick = (event: MouseEvent) => {
       const target = event.target;
       if (
@@ -254,11 +306,24 @@ export function FloorScanPage() {
       ) {
         return;
       }
-      focusInput();
+      restoreScanFocus();
     };
     window.addEventListener('click', onWindowClick);
-    return () => window.removeEventListener('click', onWindowClick);
-  }, [focusInput]);
+    return () => {
+      window.removeEventListener('click', onWindowClick);
+      cancelFocusRetries();
+    };
+  }, [restoreScanFocus, cancelFocusRetries]);
+
+  // After Done / close / a flash returning to idle, put the hidden field
+  // back so the next pistol scan does not need a tap on the page.
+  useEffect(() => {
+    if (loading || isScanTypingStatus(status.kind)) {
+      cancelFocusRetries();
+      return;
+    }
+    restoreScanFocus();
+  }, [status.kind, loading, restoreScanFocus, cancelFocusRetries]);
 
   // Resume whatever this device already holds. The session is server-side
   // precisely so an accidental reload does not lose the open station.
@@ -305,15 +370,16 @@ export function FloorScanPage() {
     return () => window.clearTimeout(timer);
   }, [status]);
 
-  // A part-scan result overlays whichever screen was on top (harvest or the
-  // printer info panel) briefly, then gets out of the way on its own — the
-  // steady display (running count, plate job) already carries the durable
-  // information, so this is a confirmation, not a thing to dismiss.
+  // A part-scan result overlays whichever screen was on top. On the harvest
+  // screen it flashes briefly — the big running count already carries the
+  // durable total. On the printer info panel (§5.6) it stays until Done or
+  // another printer replaces the view, so repeated part scans visibly
+  // accumulate rather than flashing away between stickers.
   useEffect(() => {
-    if (!partFeedback) return;
+    if (!partFeedback || status.kind === 'printer') return;
     const timer = window.setTimeout(() => setPartFeedback(null), FLASH_MS);
     return () => window.clearTimeout(timer);
-  }, [partFeedback]);
+  }, [partFeedback, status.kind]);
 
   const failScan = useCallback((message: string, detail?: string) => {
     // Sound before state: most rejections happen at the storage shelf, out of
@@ -384,6 +450,7 @@ export function FloorScanPage() {
       setBusy(true);
       busyRef.current = true;
       try {
+        setPartFeedback(null);
         setStatus({ kind: 'printer', info: await api.getFloorPrinterInfo(payload) });
       } catch (err) {
         const message = err instanceof Error ? err.message : String(err);
@@ -528,7 +595,13 @@ export function FloorScanPage() {
           binQuantity: current?.binQuantity ?? 0,
         }));
       }
-      setPartFeedback({ result: resp.result, part: resp.part, printer: resp.printer, archive: resp.archive });
+      setPartFeedback({
+        result: resp.result,
+        part: resp.part,
+        printer: resp.printer,
+        archive: resp.archive,
+        linkCount: resp.part_count,
+      });
     },
     [failScan, t],
   );
@@ -800,14 +873,14 @@ export function FloorScanPage() {
         } else if (resp.result === 'qc_required') {
           failScan(
             locationSlug === 'ready-for-production-inventory'
-              ? t('floor.binQcRequiredBeforeReady', 'Visual QC is required before Ready for Production')
+              ? t('floor.binQcRequiredBeforeReady', 'Visual QC is required before Staged for Production')
               : t('floor.binQcRequired', 'Visual QC is required before WIP'),
             payload,
           );
         } else if (resp.result === 'already_wip') {
           failScan(t('floor.binAlreadyWip', 'This bin batch is already in WIP'), payload);
         } else if (resp.result === 'already_ready_for_production') {
-          failScan(t('floor.binAlreadyReadyForProduction', 'This bin is already staged for production'), payload);
+          failScan(t('floor.binAlreadyReadyForProduction', 'This bin is already Staged for Production'), payload);
         } else if (resp.result === 'already_empty') {
           failScan(t('floor.binAlreadyEmpty', 'This bin is already empty'), payload);
         } else if (resp.result === 'empty_requires_wip') {
@@ -950,6 +1023,38 @@ export function FloorScanPage() {
     [failScan, t],
   );
 
+  /** Leave the printer info page (§5.6). If a part scan opened a harvest
+   *  session while this printer was on screen, close it silently — the
+   *  operator is done at this machine, not switching into Harvest station
+   *  mode. Normal Harvest (BBS-harvest first) is unaffected: its resting
+   *  state is `idle` with no printer panel on top. */
+  const dismissPrinterView = useCallback(async () => {
+    // Refocus in the same tap as Done: phone HID scanners only type into the
+    // focused field, and iOS will ignore a focus() after this handler awaits.
+    restoreScanFocus();
+    const closingHarvest = sessionRef.current?.station_slug === HARVEST_STATION_SLUG;
+    if (closingHarvest) {
+      setBusy(true);
+      busyRef.current = true;
+      try {
+        await api.closeFloorSession(deviceId);
+        setSession(null);
+        setHarvestPlate(null);
+        setPartFeedback(null);
+        setStatus({ kind: 'idle' });
+      } catch (err) {
+        failScan(err instanceof Error ? err.message : String(err));
+      } finally {
+        setBusy(false);
+        busyRef.current = false;
+        restoreScanFocus();
+      }
+      return;
+    }
+    setPartFeedback(null);
+    setStatus({ kind: 'idle' });
+  }, [deviceId, failScan, restoreScanFocus]);
+
   const handleScan = useCallback(
     (scanned: string) => {
       // Drop scans fired while a request is in flight rather than queueing
@@ -976,15 +1081,19 @@ export function FloorScanPage() {
         void submitStationScan(route.payload);
         return;
       }
+      if (
+        (route.action === 'printer-info' || route.action === 'harvest-printer') &&
+        statusRef.current.kind === 'printer' &&
+        statusRef.current.info.payload === route.payload
+      ) {
+        // Re-scanning the printer on screen dismisses the info page (§5.6).
+        // Once a part scan has opened Harvest, the router would otherwise
+        // send this to harvest-printer (plate close under §5.4) — from here
+        // it means "done at this machine", same as the Done button.
+        void dismissPrinterView();
+        return;
+      }
       if (route.action === 'printer-info') {
-        // A printer-info screen is a read-only inspection, not a station. A
-        // repeat scan of the same physical label is therefore the natural
-        // hands-free close gesture; a different printer still replaces it.
-        if (statusRef.current.kind === 'printer' && statusRef.current.info.payload === route.payload) {
-          setStatus({ kind: 'idle' });
-          setPartFeedback(null);
-          return;
-        }
         void submitPrinterScan(route.payload);
         return;
       }
@@ -1072,6 +1181,7 @@ export function FloorScanPage() {
               kind: 'awaiting-location',
               payload: route.payload,
               part: {
+                id: part.id,
                 part_code: part.part_code,
                 section_part_id: part.section_part_id,
                 part_name: part.part_name,
@@ -1080,6 +1190,7 @@ export function FloorScanPage() {
                 printer_id: part.printer_id,
                 labeled_at: part.labeled_at,
                 archived_at: part.archived_at,
+                archive_id: part.archive_id,
                 latest_event_action: part.latest_event_action,
                 latest_event_reason: part.latest_event_reason,
               },
@@ -1253,6 +1364,7 @@ export function FloorScanPage() {
       failScan(t('floor.scanNotYetSupported', 'Not handled yet'), route.value);
     },
     [
+      dismissPrinterView,
       failScan,
       submitStationScan,
       submitPrinterScan,
@@ -1287,8 +1399,13 @@ export function FloorScanPage() {
     handleScan(scanned);
   };
 
+  // Primary wedge capture when focus leaves the hidden scan input (buttons,
+  // modals, quantity fields). The hidden input remains as a secondary path.
+  useFloorScanCapture(handleScan, { enabled: !loading });
+
   const handleTakeover = async () => {
     if (status.kind !== 'locked') return;
+    restoreScanFocus();
     setBusy(true);
     busyRef.current = true;
     try {
@@ -1300,11 +1417,12 @@ export function FloorScanPage() {
     } finally {
       setBusy(false);
       busyRef.current = false;
-      focusInput();
+      restoreScanFocus();
     }
   };
 
   const handleClose = async () => {
+    restoreScanFocus();
     setBusy(true);
     busyRef.current = true;
     try {
@@ -1318,7 +1436,7 @@ export function FloorScanPage() {
     } finally {
       setBusy(false);
       busyRef.current = false;
-      focusInput();
+      restoreScanFocus();
     }
   };
 
@@ -1355,7 +1473,7 @@ export function FloorScanPage() {
   const isLocked = status.kind === 'locked';
 
   return (
-    <div className="fixed inset-0 z-50 flex flex-col items-center justify-center bg-bambu-dark px-6 text-center">
+    <div className="fixed inset-0 z-50 flex flex-col items-center justify-center overflow-y-auto bg-bambu-dark px-6 text-center">
       {/* z-50: above Layout's compact-mode mobile header (z-40) and desktop
           sidebar (z-30) — this page fully covers app chrome regardless of
           viewport width, matching the "sparse: sidebar collapsed or minimal"
@@ -1368,12 +1486,22 @@ export function FloorScanPage() {
           shipping a "fix" that cost the feature it was protecting. The
           keyboard popping up is a known, accepted rough edge until a
           working suppression approach is found. */}
+      <TouchOnlyButton
+        onActivate={() => navigate('/floor')}
+        aria-label={t('floor.scanBackToFloor', 'Back to Floor')}
+        className="absolute left-3 top-3 z-10 inline-flex min-h-11 items-center gap-2 touch-manipulation select-none rounded-lg px-3 py-2 text-sm text-bambu-gray hover:bg-bambu-dark-secondary hover:text-white"
+      >
+        <ArrowLeft className="h-5 w-5" aria-hidden="true" />
+        {t('nav.floor', 'Floor')}
+      </TouchOnlyButton>
+
       <input
         ref={inputRef}
         type="text"
         value={value}
         onChange={handleChange}
         onKeyDown={handleKeyDown}
+        data-floor-scan-input
         aria-label={t('floor.scanFieldLabel', 'Scan field')}
         autoComplete="off"
         autoCorrect="off"
@@ -1387,7 +1515,7 @@ export function FloorScanPage() {
           ) {
             return;
           }
-          focusInput();
+          restoreScanFocus();
         }}
         className="sr-only"
       />
@@ -1398,7 +1526,8 @@ export function FloorScanPage() {
         <PrinterInfoPanel
           info={status.info}
           feedback={partFeedback}
-          onDismiss={() => setStatus({ kind: 'idle' })}
+          onDismiss={() => void dismissPrinterView()}
+          onRestoreScanFocus={restoreScanFocus}
           t={t}
         />
       ) : isLocked && status.kind === 'locked' ? (
@@ -1566,13 +1695,15 @@ export function FloorScanPage() {
               </button>
             </>
           ) : (
-            <p className={`text-3xl font-bold ${isError ? 'text-red-500' : 'text-white'}`}>
-              {status.kind === 'error'
-                ? status.message
-                : status.kind === 'closed'
-                  ? t('floor.scanClosed', '{{station}} closed', { station: status.stationName })
-                  : t('floor.scanIdle', 'Scan a code')}
-            </p>
+            <>
+              <p className={`text-3xl font-bold ${isError ? 'text-red-500' : 'text-white'}`}>
+                {status.kind === 'error'
+                  ? status.message
+                  : status.kind === 'closed'
+                    ? t('floor.scanClosed', '{{station}} closed', { station: status.stationName })
+                    : t('floor.scanIdle', 'Scan a code')}
+              </p>
+            </>
           )}
 
           {status.kind === 'error' && status.detail && (
@@ -1644,12 +1775,21 @@ function StatusDot({ live }: { live: FloorLiveStatus | null }) {
 function partFeedbackMessage(
   feedback: PartFeedback,
   t: ReturnType<typeof useTranslation>['t'],
+  options?: { showSessionLinkCount?: boolean },
 ): { text: string; tone: 'positive' | 'neutral' } {
   if (feedback.result === 'labeled') {
+    const model = feedback.archive?.print_name ?? t('floor.printerUnnamedJob', 'Unnamed job');
+    if (options?.showSessionLinkCount && feedback.linkCount > 1) {
+      return {
+        text: t('floor.partLabeledCount', 'Linked · {{count}} parts · {{model}}', {
+          count: feedback.linkCount,
+          model,
+        }),
+        tone: 'positive',
+      };
+    }
     return {
-      text: t('floor.partLabeled', 'Linked · {{model}}', {
-        model: feedback.archive?.print_name ?? t('floor.printerUnnamedJob', 'Unnamed job'),
-      }),
+      text: t('floor.partLabeled', 'Linked · {{model}}', { model }),
       tone: 'positive',
     };
   }
@@ -1717,6 +1857,14 @@ function scanStatusLabel(
     case 'wip':
     case 'in_wip':
       return t('floor.inventoryStatusWip', 'In WIP');
+    case 'ready_for_production':
+      return t('floor.inventoryStatusStagedForProduction', 'Staged for Production');
+    case 'support_removed':
+      return t('floor.inventoryStatusSupportRemoved', 'Support Removed');
+    case 'overhang_removed':
+      return t('floor.inventoryStatusOverhangRemoved', 'Overhang Removed');
+    case 'hot_air_removed':
+      return t('floor.inventoryStatusHotAirRemoved', 'Hot Air Removed');
     case 'shipped':
       return t('floor.inventoryStatusShipped', 'Shipped');
     default:
@@ -1726,10 +1874,10 @@ function scanStatusLabel(
 
 function scanStatusClass(part: PartImageIdentity) {
   if (part.archived_at) return 'text-bambu-gray';
+  if (isFloorPassPartAction(part.latest_event_action ?? '')) {
+    return FLOOR_PASS_TEXT_CLASS;
+  }
   switch (part.latest_event_action) {
-    case 'fit_check':
-    case 'fit_checked':
-      return 'text-green-600 dark:text-green-400';
     case 'rework':
     case 'sanding':
       return 'text-orange-600 dark:text-orange-400';
@@ -1789,19 +1937,21 @@ function PrinterInfoPanel({
   info,
   feedback,
   onDismiss,
+  onRestoreScanFocus,
   t,
 }: {
   info: FloorPrinterInfo;
-  /** The last `BBD-` scan made from this page (§5.6 entry #2), if any and
-   *  still within its flash window. */
+  /** The last `BBD-` scan made from this page (§5.6 entry #2), if any.
+   *  Persists until Done or another printer replaces this view. */
   feedback: PartFeedback | null;
   onDismiss: () => void;
+  onRestoreScanFocus: () => void;
   t: ReturnType<typeof useTranslation>['t'];
 }) {
   const last = info.last_print;
   const live = info.live;
   const isPrinting = live?.connected === true && live.state === 'RUNNING';
-  const feedbackMsg = feedback ? partFeedbackMessage(feedback, t) : null;
+  const feedbackMsg = feedback ? partFeedbackMessage(feedback, t, { showSessionLinkCount: true }) : null;
   const [maintenanceOpen, setMaintenanceOpen] = useState(false);
   const [sendPrintOpen, setSendPrintOpen] = useState(false);
   const [stopReasonOpen, setStopReasonOpen] = useState(false);
@@ -2065,7 +2215,10 @@ function PrinterInfoPanel({
         <PrinterMaintenanceModal
           printerId={info.id}
           printerName={info.name}
-          onClose={() => setMaintenanceOpen(false)}
+          onClose={() => {
+            setMaintenanceOpen(false);
+            onRestoreScanFocus();
+          }}
           t={t}
         />
       )}
@@ -2074,8 +2227,14 @@ function PrinterInfoPanel({
           printerName={info.name}
           printerModel={info.model}
           printerId={info.id}
-          onClose={() => setSendPrintOpen(false)}
-          onSuccess={() => setSendPrintOpen(false)}
+          onClose={() => {
+            setSendPrintOpen(false);
+            onRestoreScanFocus();
+          }}
+          onSuccess={() => {
+            setSendPrintOpen(false);
+            onRestoreScanFocus();
+          }}
         />
       )}
     </div>
@@ -2777,12 +2936,13 @@ function BinQcQuantityScreen({
  *  individually-stickered parts. */
 function binLifecycleStatusLabel(status: string, t: ReturnType<typeof useTranslation>['t']) {
   if (status === 'visual_qc_passed') return t('floor.binStatusQcPassed', 'Visual QC pass');
+  if (status === 'ready_for_production') return t('floor.binStatusStagedForProduction', 'Staged for Production');
   if (status === 'wip') return t('floor.binStatusWip', 'In WIP');
   return t('floor.binStatusAwaitingQc', 'Awaiting visual QC');
 }
 
 function binLifecycleStatusClass(status: string) {
-  if (status === 'visual_qc_passed') return 'text-green-500';
+  if (isFloorPassBinStatus(status)) return 'text-green-500';
   if (status === 'wip') return 'text-sky-400';
   return 'text-amber-400';
 }
@@ -2889,7 +3049,7 @@ function BinRecordedFlash({
       : action === 'wip'
         ? t('floor.binWipRecorded', 'Bin added to WIP')
         : action === 'ready-for-production'
-          ? t('floor.binReadyForProductionRecorded', 'Bin staged for production')
+          ? t('floor.binReadyForProductionRecorded', 'Bin Staged for Production')
           : action === 'discarded'
             ? t('floor.binDiscarded', 'Bin discarded and unlinked')
             : t('floor.binEmptyRecorded', 'Bin marked empty and ready to reuse');
@@ -2913,6 +3073,18 @@ function BinRecordedFlash({
   );
 }
 
+function PartScanHistorySection({ part }: { part: PartImageIdentity | null }) {
+  if (!part) return null;
+  return (
+    <ScanPartHistory
+      partId={part.id}
+      partCode={part.part_code}
+      labeledAt={part.labeled_at}
+      archiveId={part.archive_id}
+    />
+  );
+}
+
 /** First half of scan-part-then-location, done (§5.4a/§5.4b): a registered,
  *  job-linked part is pending, waiting for its location. The page validates
  *  the sticker before showing this prompt; unknown and no-job stickers flash
@@ -2929,15 +3101,16 @@ function AwaitingLocationScreen({
   t: ReturnType<typeof useTranslation>['t'];
 }) {
   return (
-    <>
-      <ScanLine className="w-16 h-16 mb-6 text-bambu-green" aria-hidden="true" />
-      <PartCodeThumbnail partCode={part?.part_code} sectionPartId={part?.section_part_id} className="mb-4 h-48 w-48 rounded-xl object-cover bg-bambu-dark-secondary" />
+    <div className="flex max-h-full w-full max-w-2xl flex-col items-center overflow-y-auto py-6">
+      <ScanLine className="w-16 h-16 mb-6 text-bambu-green shrink-0" aria-hidden="true" />
+      <PartCodeThumbnail partCode={part?.part_code} sectionPartId={part?.section_part_id} className="mb-4 h-48 w-48 rounded-xl object-cover bg-bambu-dark-secondary shrink-0" />
       <PartSourceLabel part={part} t={t} />
       <p className="text-3xl font-bold text-white font-mono">{payload}</p>
       <p className="mt-3 text-2xl text-bambu-gray">
         {t('floor.locationScanLocation', 'Scan a location')}
       </p>
-    </>
+      <PartScanHistorySection part={part} />
+    </div>
   );
 }
 
@@ -2954,27 +3127,29 @@ function AwaitingReworkReasonScreen({
   t: ReturnType<typeof useTranslation>['t'];
 }) {
   return (
-    <>
-      <ScanLine className="w-16 h-16 mb-6 text-orange-500" aria-hidden="true" />
-      <PartCodeThumbnail partCode={part?.part_code} sectionPartId={part?.section_part_id} className="mb-4 h-48 w-48 rounded-xl object-cover bg-bambu-dark-secondary" />
+    <div className="flex max-h-full w-full max-w-2xl flex-col items-center overflow-y-auto py-6">
+      <ScanLine className="w-16 h-16 mb-6 text-orange-500 shrink-0" aria-hidden="true" />
+      <PartCodeThumbnail partCode={part?.part_code} sectionPartId={part?.section_part_id} className="mb-4 h-48 w-48 rounded-xl object-cover bg-bambu-dark-secondary shrink-0" />
       <PartSourceLabel part={part} t={t} />
       <p className="text-3xl font-bold text-white font-mono">{payload}</p>
       <p className="mt-1 text-lg text-orange-500">{t('floor.locationRework', 'Rework')}</p>
       <p className="mt-3 text-2xl text-orange-500">{t('floor.reworkScanReason', 'Scan an error label')}</p>
-    </>
+      <PartScanHistorySection part={part} />
+    </div>
   );
 }
 
 function AwaitingDiscardReasonScreen({ payload, part, t }: { payload: string; part: PartImageIdentity | null; t: ReturnType<typeof useTranslation>['t'] }) {
   return (
-    <>
-      <ScanLine className="w-16 h-16 mb-6 text-red-500" aria-hidden="true" />
-      <PartCodeThumbnail partCode={part?.part_code} sectionPartId={part?.section_part_id} className="mb-4 h-48 w-48 rounded-xl object-cover bg-bambu-dark-secondary" />
+    <div className="flex max-h-full w-full max-w-2xl flex-col items-center overflow-y-auto py-6">
+      <ScanLine className="w-16 h-16 mb-6 text-red-500 shrink-0" aria-hidden="true" />
+      <PartCodeThumbnail partCode={part?.part_code} sectionPartId={part?.section_part_id} className="mb-4 h-48 w-48 rounded-xl object-cover bg-bambu-dark-secondary shrink-0" />
       <PartSourceLabel part={part} t={t} />
       <p className="text-3xl font-bold text-white font-mono">{payload}</p>
       <p className="mt-1 text-lg text-bambu-gray">{t('floor.discard', 'Discard')}</p>
       <p className="mt-3 text-2xl text-bambu-gray">{t('floor.discardScanReason', 'Scan an error label')}</p>
-    </>
+      <PartScanHistorySection part={part} />
+    </div>
   );
 }
 
@@ -3017,9 +3192,9 @@ function AwaitingCustomReasonScreen({
   const accent = locationSlug === 'discard' ? 'text-red-500' : 'text-orange-500';
 
   return (
-    <>
-      <ScanLine className={`w-16 h-16 mb-6 ${accent}`} aria-hidden="true" />
-      <PartCodeThumbnail partCode={part?.part_code} sectionPartId={part?.section_part_id} className="mb-4 h-48 w-48 rounded-xl object-cover bg-bambu-dark-secondary" />
+    <div className="flex max-h-full w-full max-w-2xl flex-col items-center overflow-y-auto py-6">
+      <ScanLine className={`w-16 h-16 mb-6 ${accent} shrink-0`} aria-hidden="true" />
+      <PartCodeThumbnail partCode={part?.part_code} sectionPartId={part?.section_part_id} className="mb-4 h-48 w-48 rounded-xl object-cover bg-bambu-dark-secondary shrink-0" />
       <PartSourceLabel part={part} t={t} />
       <p className="text-3xl font-bold text-white font-mono">{payload}</p>
       <p className={`mt-1 text-lg ${accent}`}>
@@ -3057,7 +3232,8 @@ function AwaitingCustomReasonScreen({
           {t('floor.otherReasonAutoContinue', 'Continuing in {{seconds}}s', { seconds: secondsRemaining })}
         </span>
       </div>
-    </>
+      <PartScanHistorySection part={part} />
+    </div>
   );
 }
 
@@ -3092,7 +3268,7 @@ function LocationRecordedFlash({
           ? t('floor.reworkRecorded', 'Sent to Rework · {{reason}}', { reason: reasonCode })
           : t('floor.reworkRecordedWithoutReason', 'Sent to Rework')
         : locationSlug === 'ready-for-production-inventory'
-          ? t('floor.readyForProductionRecorded', 'Staged for production')
+          ? t('floor.readyForProductionRecorded', 'Staged for Production')
           : locationSlug === 'production-wip'
             ? t('floor.productionWipRecorded', 'Added to production WIP')
             : locationSlug === 'support-removal'

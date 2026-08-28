@@ -7,10 +7,16 @@ import { FloorScanPage } from '../../pages/FloorScanPage';
 import { server } from '../mocks/server';
 import * as floorSound from '../../utils/floorSound';
 
-const WIP_SESSION = {
+const mockNavigate = vi.fn();
+vi.mock('react-router-dom', async (importActual) => {
+  const actual = await importActual<typeof import('react-router-dom')>();
+  return { ...actual, useNavigate: () => mockNavigate };
+});
+
+const HARVEST_SESSION = {
   id: 1,
-  station_slug: 'wip',
-  station_name: 'WIP',
+  station_slug: 'harvest',
+  station_name: 'Harvest',
   device_id: 'this-device',
   opened_at: '2026-08-24T10:00:00',
   open_seconds: 0,
@@ -42,8 +48,17 @@ async function scan(text: string) {
   fireEvent.keyDown(input, { key: 'Enter' });
 }
 
+/** Simulates a wedge scanner when focus is not on the hidden scan input. */
+function wedgeScanAtWindow(text: string) {
+  for (const char of text) {
+    fireEvent.keyDown(window, { key: char, bubbles: true, cancelable: true });
+  }
+  fireEvent.keyDown(window, { key: 'Enter', bubbles: true, cancelable: true });
+}
+
 describe('FloorScanPage (Phase 1b sessions)', () => {
   beforeEach(() => {
+    mockNavigate.mockReset();
     vi.mocked(localStorage.getItem).mockReset();
     vi.mocked(localStorage.getItem).mockReturnValue(null);
     vi.mocked(localStorage.setItem).mockReset();
@@ -70,12 +85,12 @@ describe('FloorScanPage (Phase 1b sessions)', () => {
       // strand an open station nobody can see (§2.4).
       server.use(
         http.get('/api/v1/floor/session', () =>
-          HttpResponse.json({ ...WIP_SESSION, open_seconds: 4500 }),
+          HttpResponse.json({ ...HARVEST_SESSION, open_seconds: 4500 }),
         ),
       );
       render(<FloorScanPage />);
 
-      expect(await screen.findByText('WIP')).toBeInTheDocument();
+      expect(await screen.findByText('Harvest')).toBeInTheDocument();
       expect(screen.getByText('Open for 1h 15m')).toBeInTheDocument();
     });
 
@@ -96,20 +111,20 @@ describe('FloorScanPage (Phase 1b sessions)', () => {
       mockNoSession();
       const captured = mockScan({
         result: 'opened',
-        station_slug: 'wip',
-        station_name: 'WIP',
-        session: WIP_SESSION,
+        station_slug: 'harvest',
+        station_name: 'Harvest',
+        session: HARVEST_SESSION,
         blocking: null,
       });
       render(<FloorScanPage />);
       await screen.findByText('Scan a code');
 
-      await scan('BBS-wip');
+      await scan('BBS-harvest');
 
-      expect(await screen.findByText('WIP')).toBeInTheDocument();
+      expect(await screen.findByText('Harvest')).toBeInTheDocument();
       expect(screen.getByText('Open for 0s')).toBeInTheDocument();
       // The payload is round-tripped, not a slug derived client-side.
-      expect(captured.body).toMatchObject({ payload: 'BBS-wip' });
+      expect(captured.body).toMatchObject({ payload: 'BBS-harvest' });
       expect(captured.body?.device_id).toBeTruthy();
     });
 
@@ -120,16 +135,16 @@ describe('FloorScanPage (Phase 1b sessions)', () => {
       mockNoSession();
       mockScan({
         result: 'opened',
-        station_slug: 'wip',
-        station_name: 'WIP',
-        session: WIP_SESSION,
+        station_slug: 'harvest',
+        station_name: 'Harvest',
+        session: HARVEST_SESSION,
         blocking: null,
       });
       vi.useFakeTimers({ shouldAdvanceTime: true });
       try {
         render(<FloorScanPage />);
         await screen.findByText('Scan a code');
-        await scan('BBS-wip');
+        await scan('BBS-harvest');
         await screen.findByText('Open for 0s');
 
         act(() => {
@@ -150,17 +165,17 @@ describe('FloorScanPage (Phase 1b sessions)', () => {
       mockNoSession();
       mockScan({
         result: 'opened',
-        station_slug: 'wip',
-        station_name: 'WIP',
+        station_slug: 'harvest',
+        station_name: 'Harvest',
         // Opened 58s ago, so the boundary is two ticks away.
-        session: { ...WIP_SESSION, open_seconds: 58 },
+        session: { ...HARVEST_SESSION, open_seconds: 58 },
         blocking: null,
       });
       vi.useFakeTimers({ shouldAdvanceTime: true });
       try {
         render(<FloorScanPage />);
         await screen.findByText('Scan a code');
-        await scan('BBS-wip');
+        await scan('BBS-harvest');
         await screen.findByText('Open for 58s');
 
         act(() => {
@@ -181,44 +196,50 @@ describe('FloorScanPage (Phase 1b sessions)', () => {
       mockNoSession();
       mockScan({
         result: 'closed',
-        station_slug: 'wip',
-        station_name: 'WIP',
+        station_slug: 'harvest',
+        station_name: 'Harvest',
         session: null,
         blocking: null,
       });
       render(<FloorScanPage />);
       await screen.findByText('Scan a code');
 
-      await scan('BBS-wip');
+      await scan('BBS-harvest');
 
-      expect(await screen.findByText('WIP closed')).toBeInTheDocument();
+      expect(await screen.findByText('Harvest closed')).toBeInTheDocument();
     });
 
     it('shows the new station after a switch', async () => {
-      mockNoSession();
-      mockScan({
+      // Only Harvest is a session station today, but the page must still
+      // honour a `switched` response for any BBS- code routed to the session
+      // API (legacy labels like BBS-wip still classify as station client-side).
+      server.use(
+        http.get('/api/v1/floor/session', () => HttpResponse.json(HARVEST_SESSION)),
+      );
+      const captured = mockScan({
         result: 'switched',
-        station_slug: 'storage-receive',
-        station_name: '+ Storage',
-        session: { ...WIP_SESSION, id: 2, station_slug: 'storage-receive', station_name: '+ Storage' },
+        station_slug: 'fit-check',
+        station_name: 'Initial QC Pass',
+        session: { ...HARVEST_SESSION, id: 2, station_slug: 'fit-check', station_name: 'Initial QC Pass' },
         blocking: null,
       });
       render(<FloorScanPage />);
-      await screen.findByText('Scan a code');
+      await screen.findByText('Harvest');
 
-      await scan('BBS-storage-receive');
+      await scan('BBS-wip');
 
-      expect(await screen.findByText('+ Storage')).toBeInTheDocument();
+      expect(await screen.findByText('Initial QC Pass')).toBeInTheDocument();
+      expect(captured.body).toMatchObject({ payload: 'BBS-wip' });
     });
 
     it('closes the session from the on-screen control', async () => {
       server.use(
-        http.get('/api/v1/floor/session', () => HttpResponse.json(WIP_SESSION)),
-        http.delete('/api/v1/floor/session', () => HttpResponse.json(WIP_SESSION)),
+        http.get('/api/v1/floor/session', () => HttpResponse.json(HARVEST_SESSION)),
+        http.delete('/api/v1/floor/session', () => HttpResponse.json(HARVEST_SESSION)),
       );
       const user = userEvent.setup();
       render(<FloorScanPage />);
-      await screen.findByText('WIP');
+      await screen.findByText('Harvest');
 
       await user.click(screen.getByRole('button', { name: 'Close station' }));
 
@@ -229,10 +250,10 @@ describe('FloorScanPage (Phase 1b sessions)', () => {
   describe('a station held by another device', () => {
     const lockedResponse = {
       result: 'locked',
-      station_slug: 'wip',
-      station_name: 'WIP',
+      station_slug: 'harvest',
+      station_name: 'Harvest',
       session: null,
-      blocking: { ...WIP_SESSION, device_id: 'other-device', open_seconds: 50400 },
+      blocking: { ...HARVEST_SESSION, device_id: 'other-device', open_seconds: 50400 },
     };
 
     it('refuses with the holder and elapsed time, and offers takeover', async () => {
@@ -241,9 +262,9 @@ describe('FloorScanPage (Phase 1b sessions)', () => {
       render(<FloorScanPage />);
       await screen.findByText('Scan a code');
 
-      await scan('BBS-wip');
+      await scan('BBS-harvest');
 
-      expect(await screen.findByText('WIP is open elsewhere')).toBeInTheDocument();
+      expect(await screen.findByText('Harvest is open elsewhere')).toBeInTheDocument();
       // Elapsed time is the whole basis for the decision: 14h reads as
       // abandoned overnight, where 3m would read as someone mid-task.
       expect(screen.getByText('Open for 14h 0m on another device')).toBeInTheDocument();
@@ -256,9 +277,9 @@ describe('FloorScanPage (Phase 1b sessions)', () => {
       render(<FloorScanPage />);
       await screen.findByText('Scan a code');
 
-      await scan('BBS-wip');
+      await scan('BBS-harvest');
 
-      await screen.findByText('WIP is open elsewhere');
+      await screen.findByText('Harvest is open elsewhere');
       expect(floorSound.playScanErrorTone).toHaveBeenCalled();
     });
 
@@ -271,9 +292,9 @@ describe('FloorScanPage (Phase 1b sessions)', () => {
           captured.body = (await request.json()) as Record<string, unknown>;
           return HttpResponse.json({
             result: 'opened',
-            station_slug: 'wip',
-            station_name: 'WIP',
-            session: WIP_SESSION,
+            station_slug: 'harvest',
+            station_name: 'Harvest',
+            session: HARVEST_SESSION,
             blocking: null,
           });
         }),
@@ -282,11 +303,11 @@ describe('FloorScanPage (Phase 1b sessions)', () => {
       render(<FloorScanPage />);
       await screen.findByText('Scan a code');
 
-      await scan('BBS-wip');
+      await scan('BBS-harvest');
       await user.click(await screen.findByRole('button', { name: 'Take over' }));
 
       expect(await screen.findByText('Open for 0s')).toBeInTheDocument();
-      expect(captured.body).toMatchObject({ payload: 'BBS-wip' });
+      expect(captured.body).toMatchObject({ payload: 'BBS-harvest' });
     });
 
     it('warns that taking over discards the other session', async () => {
@@ -295,7 +316,7 @@ describe('FloorScanPage (Phase 1b sessions)', () => {
       render(<FloorScanPage />);
       await screen.findByText('Scan a code');
 
-      await scan('BBS-wip');
+      await scan('BBS-harvest');
 
       expect(await screen.findByText(/closes the other session/)).toBeInTheDocument();
     });
@@ -376,7 +397,7 @@ describe('FloorScanPage (Phase 1b sessions)', () => {
       render(<FloorScanPage />);
       await screen.findByText('Scan a code');
 
-      await scan('BBS-wip');
+      await scan('BBS-harvest');
 
       expect(await screen.findByText('Scan failed')).toBeInTheDocument();
     });
@@ -533,6 +554,7 @@ describe('FloorScanPage (Phase 1b sessions)', () => {
       await user.click(await screen.findByRole('button', { name: 'Done' }));
 
       expect(await screen.findByText('Scan a code')).toBeInTheDocument();
+      expect(screen.getByLabelText('Scan field')).toHaveFocus();
     });
 
     it('leads with the live status', async () => {
@@ -1623,6 +1645,212 @@ describe('FloorScanPage (Phase 1b sessions)', () => {
         expect(await screen.findByText('Part already scanned')).toBeInTheDocument();
         expect(floorSound.playScanErrorTone).toHaveBeenCalled();
       });
+
+      it('returns to idle scan after Done when a part opened harvest', async () => {
+        mockNoSession();
+        mockHarvestInfo();
+        server.use(
+          http.delete('/api/v1/floor/session', () => HttpResponse.json(HARVEST_SESSION)),
+        );
+        const user = userEvent.setup();
+        render(<FloorScanPage />);
+        await screen.findByText('Scan a code');
+        await scan('BBP-12');
+        await screen.findByText('Bench A');
+
+        mockPartScan({
+          result: 'labeled',
+          part: { id: 1, sticker_code: 'BBD-000042', printer_id: 12, archive_id: 88, labeled_at: '2026-08-24T15:00:00' },
+          printer: { id: 12, name: 'Bench A' },
+          archive: { id: 88, print_name: 'bracket_v4', completed_at: null, quantity: 1 },
+          part_count: 1,
+          session: HARVEST_SESSION,
+          blocking: null,
+        });
+        await scan('BBD-000042');
+        await screen.findByText('Linked · bracket_v4');
+
+        await user.click(await screen.findByRole('button', { name: 'Done' }));
+
+        expect(await screen.findByText('Scan a code')).toBeInTheDocument();
+        expect(screen.queryByText('Harvest')).not.toBeInTheDocument();
+        expect(screen.queryByRole('button', { name: 'Close station' })).not.toBeInTheDocument();
+        expect(screen.getByLabelText('Scan field')).toHaveFocus();
+      });
+
+      it('returns to idle scan when re-scanning the same printer after linking a part', async () => {
+        mockNoSession();
+        mockHarvestInfo();
+        server.use(
+          http.delete('/api/v1/floor/session', () => HttpResponse.json(HARVEST_SESSION)),
+        );
+        render(<FloorScanPage />);
+        await screen.findByText('Scan a code');
+        await scan('BBP-12');
+        await screen.findByText('Bench A');
+
+        mockPartScan({
+          result: 'labeled',
+          part: { id: 1, sticker_code: 'BBD-000042', printer_id: 12, archive_id: 88, labeled_at: '2026-08-24T15:00:00' },
+          printer: { id: 12, name: 'Bench A' },
+          archive: { id: 88, print_name: 'bracket_v4', completed_at: null, quantity: 1 },
+          part_count: 1,
+          session: HARVEST_SESSION,
+          blocking: null,
+        });
+        await scan('BBD-000042');
+        await screen.findByText('Linked · bracket_v4');
+
+        await scan('BBP-12');
+
+        expect(await screen.findByText('Scan a code')).toBeInTheDocument();
+        expect(screen.queryByText('Harvest')).not.toBeInTheDocument();
+        expect(screen.queryByRole('button', { name: 'Close station' })).not.toBeInTheDocument();
+      });
+
+      it('accumulates a session link count across multiple part scans', async () => {
+        mockNoSession();
+        mockHarvestInfo();
+        render(<FloorScanPage />);
+        await screen.findByText('Scan a code');
+        await scan('BBP-12');
+        await screen.findByText('Bench A');
+
+        mockPartScan({
+          result: 'labeled',
+          part: { id: 1, sticker_code: 'BBD-000042', printer_id: 12, archive_id: 88, labeled_at: '2026-08-24T15:00:00' },
+          printer: { id: 12, name: 'Bench A' },
+          archive: { id: 88, print_name: 'bracket_v4', completed_at: null, quantity: 1 },
+          part_count: 1,
+          session: HARVEST_SESSION,
+          blocking: null,
+        });
+        await scan('BBD-000042');
+        expect(await screen.findByText('Linked · bracket_v4')).toBeInTheDocument();
+
+        mockPartScan({
+          result: 'labeled',
+          part: { id: 2, sticker_code: 'BBD-000043', printer_id: 12, archive_id: 88, labeled_at: '2026-08-24T15:01:00' },
+          printer: { id: 12, name: 'Bench A' },
+          archive: { id: 88, print_name: 'bracket_v4', completed_at: null, quantity: 1 },
+          part_count: 2,
+          session: HARVEST_SESSION,
+          blocking: null,
+        });
+        await scan('BBD-000043');
+
+        expect(await screen.findByText('Linked · 2 parts · bracket_v4')).toBeInTheDocument();
+        expect(screen.getByText('Bench A')).toBeInTheDocument();
+      });
+
+      it('keeps the link message visible after the harvest flash window', async () => {
+        mockNoSession();
+        mockHarvestInfo();
+        vi.useFakeTimers({ shouldAdvanceTime: true });
+        try {
+          render(<FloorScanPage />);
+          await screen.findByText('Scan a code');
+          await scan('BBP-12');
+          await screen.findByText('Bench A');
+
+          mockPartScan({
+            result: 'labeled',
+            part: { id: 1, sticker_code: 'BBD-000042', printer_id: 12, archive_id: 88, labeled_at: '2026-08-24T15:00:00' },
+            printer: { id: 12, name: 'Bench A' },
+            archive: { id: 88, print_name: 'bracket_v4', completed_at: null, quantity: 1 },
+            part_count: 1,
+            session: HARVEST_SESSION,
+            blocking: null,
+          });
+          await scan('BBD-000042');
+          expect(await screen.findByText('Linked · bracket_v4')).toBeInTheDocument();
+
+          act(() => {
+            vi.advanceTimersByTime(3100);
+          });
+
+          expect(screen.getByText('Linked · bracket_v4')).toBeInTheDocument();
+        } finally {
+          vi.useRealTimers();
+        }
+      });
+
+      it('clears the link count when opening a different printer', async () => {
+        mockNoSession();
+        mockHarvestInfo();
+        server.use(
+          http.delete('/api/v1/floor/session', () => HttpResponse.json(HARVEST_SESSION)),
+          http.get('/api/v1/floor/printers/BBP-13/info', () =>
+            HttpResponse.json({ ...HARVEST_INFO, id: 13, payload: 'BBP-13', name: 'Bench B' }),
+          ),
+        );
+        render(<FloorScanPage />);
+        await screen.findByText('Scan a code');
+        await scan('BBP-12');
+        await screen.findByText('Bench A');
+
+        mockPartScan({
+          result: 'labeled',
+          part: { id: 1, sticker_code: 'BBD-000042', printer_id: 12, archive_id: 88, labeled_at: '2026-08-24T15:00:00' },
+          printer: { id: 12, name: 'Bench A' },
+          archive: { id: 88, print_name: 'bracket_v4', completed_at: null, quantity: 1 },
+          part_count: 1,
+          session: HARVEST_SESSION,
+          blocking: null,
+        });
+        await scan('BBD-000042');
+        await screen.findByText('Linked · bracket_v4');
+
+        await scan('BBP-12');
+        await screen.findByText('Scan a code');
+
+        await scan('BBP-13');
+        await screen.findByText('Bench B');
+
+        expect(screen.queryByText(/Linked ·/)).not.toBeInTheDocument();
+      });
+
+      it('clears the link message when Done after linking parts', async () => {
+        mockNoSession();
+        mockHarvestInfo();
+        server.use(
+          http.delete('/api/v1/floor/session', () => HttpResponse.json(HARVEST_SESSION)),
+        );
+        const user = userEvent.setup();
+        render(<FloorScanPage />);
+        await screen.findByText('Scan a code');
+        await scan('BBP-12');
+        await screen.findByText('Bench A');
+
+        mockPartScan({
+          result: 'labeled',
+          part: { id: 1, sticker_code: 'BBD-000042', printer_id: 12, archive_id: 88, labeled_at: '2026-08-24T15:00:00' },
+          printer: { id: 12, name: 'Bench A' },
+          archive: { id: 88, print_name: 'bracket_v4', completed_at: null, quantity: 1 },
+          part_count: 1,
+          session: HARVEST_SESSION,
+          blocking: null,
+        });
+        await scan('BBD-000042');
+        await screen.findByText('Linked · bracket_v4');
+
+        mockPartScan({
+          result: 'labeled',
+          part: { id: 2, sticker_code: 'BBD-000043', printer_id: 12, archive_id: 88, labeled_at: '2026-08-24T15:01:00' },
+          printer: { id: 12, name: 'Bench A' },
+          archive: { id: 88, print_name: 'bracket_v4', completed_at: null, quantity: 1 },
+          part_count: 2,
+          session: HARVEST_SESSION,
+          blocking: null,
+        });
+        await scan('BBD-000043');
+        await screen.findByText('Linked · 2 parts · bracket_v4');
+
+        await user.click(await screen.findByRole('button', { name: 'Done' }));
+
+        expect(await screen.findByText('Scan a code')).toBeInTheDocument();
+        expect(screen.queryByText(/Linked ·/)).not.toBeInTheDocument();
+      });
     });
 
     describe('closing harvest reports a summary', () => {
@@ -1794,6 +2022,14 @@ describe('FloorScanPage (Phase 1b sessions)', () => {
           latest_event_action: null,
           latest_event_reason: null,
         })),
+        http.get('/api/v1/floor/inventory/parts/:partId/events', () => HttpResponse.json([
+          {
+            id: 1,
+            action: 'enrolled',
+            details: { archive_id: 88 },
+            occurred_at: '2026-08-24T10:00:00',
+          },
+        ])),
       );
     });
 
@@ -1831,6 +2067,42 @@ describe('FloorScanPage (Phase 1b sessions)', () => {
       // No station opened — this is not a session, so nothing was posted to
       // the station-scan endpoint for it.
       expect(screen.queryByText('WIP')).not.toBeInTheDocument();
+    });
+
+    it('shows read-only part history while awaiting a location scan', async () => {
+      mockNoSession();
+      server.use(
+        http.get('/api/v1/floor/inventory/parts/:partId/events', () => HttpResponse.json([
+          {
+            id: 1,
+            action: 'enrolled',
+            details: { archive_id: 88 },
+            occurred_at: '2026-08-24T10:00:00',
+          },
+          {
+            id: 2,
+            action: 'fit_checked',
+            details: null,
+            occurred_at: '2026-08-24T11:30:00',
+          },
+          {
+            id: 3,
+            action: 'wip',
+            details: null,
+            occurred_at: '2026-08-24T12:00:00',
+          },
+        ])),
+      );
+      render(<FloorScanPage />);
+      await screen.findByText('Scan a code');
+
+      await scan('BBD-000042');
+
+      expect(await screen.findByText('History')).toBeInTheDocument();
+      expect(await screen.findByText('Fit Check Pass')).toBeInTheDocument();
+      expect(screen.getByText('wip')).toBeInTheDocument();
+      expect(screen.getByText('Sticker enrolled · linked at harvest')).toBeInTheDocument();
+      expect(screen.queryByRole('button', { name: /change status/i })).not.toBeInTheDocument();
     });
 
     it('commits Initial QC Pass on the location scan that follows, with no device_id involved', async () => {
@@ -1931,9 +2203,9 @@ describe('FloorScanPage (Phase 1b sessions)', () => {
       mockNoSession();
       mockScan({
         result: 'opened',
-        station_slug: 'wip',
-        station_name: 'WIP',
-        session: WIP_SESSION,
+        station_slug: 'harvest',
+        station_name: 'Harvest',
+        session: HARVEST_SESSION,
         blocking: null,
       });
       render(<FloorScanPage />);
@@ -1941,9 +2213,9 @@ describe('FloorScanPage (Phase 1b sessions)', () => {
       await scan('BBD-000042');
       await screen.findByText('Scan a location');
 
-      await scan('BBS-wip');
+      await scan('BBS-harvest');
 
-      expect(await screen.findByText('WIP')).toBeInTheDocument();
+      expect(await screen.findByText('Harvest')).toBeInTheDocument();
       expect(screen.queryByText('Scan a location')).not.toBeInTheDocument();
     });
 
@@ -2126,7 +2398,7 @@ describe('FloorScanPage (Phase 1b sessions)', () => {
 
       await scan('BBS-ready-for-production-inventory');
 
-      expect(await screen.findByText('Staged for production')).toBeInTheDocument();
+      expect(await screen.findByText('Staged for Production')).toBeInTheDocument();
       expect(captured.body).toEqual({ payload: 'BBD-000042', location_slug: 'ready-for-production-inventory' });
     });
 
@@ -2218,7 +2490,7 @@ describe('FloorScanPage (Phase 1b sessions)', () => {
 
       await scan('BBS-ready-for-production-inventory');
 
-      expect(await screen.findByText('Bin staged for production')).toBeInTheDocument();
+      expect(await screen.findByText('Bin Staged for Production')).toBeInTheDocument();
     });
 
     it('releases a bin at the Empty Bin location', async () => {
@@ -2275,33 +2547,33 @@ describe('FloorScanPage (Phase 1b sessions)', () => {
       mockNoSession();
       const captured = mockScan({
         result: 'opened',
-        station_slug: 'wip',
-        station_name: 'WIP',
-        session: WIP_SESSION,
+        station_slug: 'harvest',
+        station_name: 'Harvest',
+        session: HARVEST_SESSION,
         blocking: null,
       });
       render(<FloorScanPage />);
       await screen.findByText('Scan a code');
 
-      await scan('BBS-wip');
+      await scan('BBS-harvest');
 
       await waitFor(() => expect(captured.body).not.toBeNull());
-      expect(captured.body).toMatchObject({ payload: 'BBS-wip' });
+      expect(captured.body).toMatchObject({ payload: 'BBS-harvest' });
     });
 
     it('clears the field after each scan', async () => {
       mockNoSession();
       mockScan({
         result: 'opened',
-        station_slug: 'wip',
-        station_name: 'WIP',
-        session: WIP_SESSION,
+        station_slug: 'harvest',
+        station_name: 'Harvest',
+        session: HARVEST_SESSION,
         blocking: null,
       });
       render(<FloorScanPage />);
       await screen.findByText('Scan a code');
 
-      await scan('BBS-wip');
+      await scan('BBS-harvest');
 
       expect(screen.getByLabelText('Scan field')).toHaveValue('');
     });
@@ -2316,6 +2588,106 @@ describe('FloorScanPage (Phase 1b sessions)', () => {
       await user.click(document.body);
 
       await waitFor(() => expect(input).toHaveFocus());
+    });
+
+    it('has a touch-only back control that returns to /floor', async () => {
+      mockNoSession();
+      render(<FloorScanPage />);
+      await screen.findByText('Scan a code');
+
+      const back = screen.getByRole('button', { name: 'Back to Floor' });
+      expect(back).toHaveAttribute('tabindex', '-1');
+
+      fireEvent.pointerDown(back, { pointerType: 'touch', button: 0 });
+
+      expect(mockNavigate).toHaveBeenCalledWith('/floor');
+    });
+
+    it('does not go back when a wedge scanner sends Enter at the back control', async () => {
+      mockNoSession();
+      render(<FloorScanPage />);
+      await screen.findByText('Scan a code');
+
+      const back = screen.getByRole('button', { name: 'Back to Floor' });
+      back.focus();
+      fireEvent.keyDown(back, { key: 'Enter' });
+      fireEvent.keyUp(back, { key: 'Enter' });
+
+      expect(mockNavigate).not.toHaveBeenCalled();
+      expect(screen.getByText('Scan a code')).toBeInTheDocument();
+    });
+
+    it('captures a wedge scan at window level after focus leaves the scan input', async () => {
+      mockNoSession();
+      const captured = mockScan({
+        result: 'opened',
+        station_slug: 'harvest',
+        station_name: 'Harvest',
+        session: HARVEST_SESSION,
+        blocking: null,
+      });
+      const user = userEvent.setup();
+      render(<FloorScanPage />);
+      await screen.findByText('Scan a code');
+
+      const trap = document.createElement('button');
+      trap.type = 'button';
+      trap.setAttribute('aria-label', 'Focus trap');
+      trap.className = 'sr-only';
+      document.body.appendChild(trap);
+      await user.click(trap);
+      expect(trap).toHaveFocus();
+
+      wedgeScanAtWindow('BBS-harvest');
+
+      trap.remove();
+
+      await waitFor(() => expect(captured.body).not.toBeNull());
+      expect(captured.body).toMatchObject({ payload: 'BBS-harvest' });
+      expect(await screen.findByText('Harvest')).toBeInTheDocument();
+    });
+
+    it('does not steal keystrokes while typing in a quantity input', async () => {
+      mockNoSession();
+      server.use(
+        http.post('/api/v1/floor/bins/resolve', () =>
+          HttpResponse.json({
+            result: 'ready_for_qc',
+            bin: { payload: 'BBN-BUT-1', bin_number: 1, part_code: 'BUT', part_name: 'Button bin' },
+            batch: {
+              id: 91,
+              payload: 'BBN-BUT-1',
+              bin_number: 1,
+              printer_id: 12,
+              printer_name: 'P1S-3',
+              archive_id: 88,
+              print_name: 'button_plate',
+              part_code: 'BUT',
+              quantity: 25,
+              qc_passed_quantity: null,
+              remaining_quantity: 25,
+              status: 'harvested',
+              harvested_at: '2026-08-26T14:35:00',
+            },
+            printer: null,
+            session: null,
+            blocking: null,
+            archive: null,
+          }),
+        ),
+      );
+      const user = userEvent.setup();
+      render(<FloorScanPage />);
+      await screen.findByText('Scan a code');
+
+      await scan('BBN-BUT-1');
+      expect(await screen.findByText('Scan this bin again for visual QC')).toBeInTheDocument();
+      await scan('BBN-BUT-1');
+      const qtyInput = await screen.findByLabelText('Parts passed QC');
+      await user.click(qtyInput);
+      await user.type(qtyInput, '20');
+
+      expect(qtyInput).toHaveValue(20);
     });
   });
 
@@ -2354,22 +2726,22 @@ describe('FloorScanPage (Phase 1b sessions)', () => {
       mockNoSession();
       mockScan({
         result: 'locked',
-        station_slug: 'wip',
-        station_name: 'WIP',
+        station_slug: 'harvest',
+        station_name: 'Harvest',
         session: null,
-        blocking: { ...WIP_SESSION, device_id: 'other', open_seconds: 600 },
+        blocking: { ...HARVEST_SESSION, device_id: 'other', open_seconds: 600 },
       });
       render(<FloorScanPage />);
       await screen.findByText('Scan a code');
 
-      await scan('BBS-wip');
-      expect(await screen.findByText('WIP is open elsewhere')).toBeInTheDocument();
+      await scan('BBS-harvest');
+      expect(await screen.findByText('Harvest is open elsewhere')).toBeInTheDocument();
 
       act(() => {
         vi.advanceTimersByTime(30000);
       });
 
-      expect(screen.getByText('WIP is open elsewhere')).toBeInTheDocument();
+      expect(screen.getByText('Harvest is open elsewhere')).toBeInTheDocument();
     });
   });
 });

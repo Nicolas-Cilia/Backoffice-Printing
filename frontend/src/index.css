@@ -501,6 +501,13 @@ body {
   scrollbar-width: none;
 }
 
+/* Phone tab/chip rows: one line that swipes instead of wrapping. */
+.scroll-touch {
+  -webkit-overflow-scrolling: touch;
+  overscroll-behavior-x: contain;
+  scrollbar-width: thin;
+}
+
 .scrollbar-hide::-webkit-scrollbar {
   display: none;
 }

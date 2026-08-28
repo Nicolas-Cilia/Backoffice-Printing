@@ -101,6 +101,31 @@ describe('FloorBinManagementPage', () => {
     const badge = await screen.findByText('Visual QC pass');
     expect(badge).toHaveClass(
       'inline-flex',
+      'whitespace-nowrap',
+      'border-green-600',
+      'bg-green-100',
+      'text-green-800',
+      'dark:bg-green-500/20',
+      'dark:text-green-300',
+    );
+  });
+
+  it('uses the same green badge for Staged for Production', async () => {
+    server.use(
+      http.get('/api/v1/floor/inventory/bins', () => HttpResponse.json([
+        {
+          ...BINS[0],
+          status: 'ready_for_production',
+          batch: { ...BINS[0].batch, status: 'ready_for_production' },
+        },
+      ])),
+    );
+    render(<FloorBinManagementPage />);
+
+    const badge = await screen.findByText('Staged for Production');
+    expect(badge).toHaveClass(
+      'inline-flex',
+      'whitespace-nowrap',
       'border-green-600',
       'bg-green-100',
       'text-green-800',

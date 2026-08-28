@@ -76,6 +76,9 @@ PART_STATUS_METADATA_ACTIONS = (
     "part_code_assigned",
     "part_code_changed",
     "part_code_removed",
+    # Corrects which physical sticker points at the part; does not change
+    # workflow status (QC / WIP / shipped / …).
+    "sticker_replaced",
 )
 
 
@@ -87,6 +90,9 @@ class PartStatus(StrEnum):
     WIP = "wip"
     FIT_CHECKED = "fit_checked"
     REWORK = "rework"
+    SUPPORT_REMOVED = "support_removed"
+    OVERHANG_REMOVED = "overhang_removed"
+    HOT_AIR_REMOVED = "hot_air_removed"
     READY_FOR_PRODUCTION = "ready_for_production"
     CLEANUP = "cleanup"
     SHIPPED = "shipped"
@@ -607,8 +613,9 @@ class LocationScanResult(StrEnum):
     # Initial QC Pass or Rework has not been recorded yet — required before
     # finishing, Ready-for-Production, or Production WIP.
     QC_REQUIRED = "qc_required"
-    # The part has already entered Production WIP; Ready-for-Production and
-    # finishing benches are closed, and a second WIP commit is refused.
+    # The part has already entered Production WIP; finishing benches stay
+    # closed. Ready-for-Production Inventory may still be scanned to restage
+    # from WIP; a second WIP commit while already at WIP is refused.
     ALREADY_WIP = "already_wip"
     # The sticker has no TOP/BOT part code yet — assign one in inventory first.
     PART_CODE_REQUIRED = "part_code_required"
@@ -801,8 +808,9 @@ async def scan_part_at_location(db: AsyncSession, payload: str, location_slug: s
     - **Ready for Production Inventory** — optional staging after QC/Rework
       (and after finishing for TOP). Never a prerequisite for WIP.
     - **Production WIP** — after QC/Rework (and finishing for TOP), with or
-      without a Ready-for-Production visit. Once recorded, further Ready /
-      finishing / WIP scans are refused (``ALREADY_WIP``).
+      without a Ready-for-Production visit. Finishing benches stay closed once
+      WIP has been recorded; Ready-for-Production Inventory may still be
+      scanned to restage from WIP.
 
     Fit Check and Rework are deliberately *not* routed here — they keep their
     own entry points (``scan_fit_check_part`` / ``scan_rework_part``) because
@@ -817,11 +825,33 @@ async def scan_part_at_location(db: AsyncSession, payload: str, location_slug: s
         return await _to_location_outcome(db, LocationScanResult.PART_CODE_REQUIRED, part)
     is_top = part_code == TOP_PART_CODE
 
-    # Once a part is in Production WIP it stays there for this pipeline —
-    # Ready-for-Production and finishing benches must not reopen it.
+    # Once a part has entered Production WIP, finishing benches stay closed.
+    # Ready-for-Production Inventory may still be scanned to restage from WIP.
     if await _part_has_event(db, part.id, PRODUCTION_WIP_ACTION):
         if location_slug == PRODUCTION_WIP_LOCATION_SLUG:
-            return await _to_location_outcome(db, LocationScanResult.ALREADY_AT_LOCATION, part)
+            if await _part_is_at_location(db, part.id, PRODUCTION_WIP_ACTION):
+                return await _to_location_outcome(db, LocationScanResult.ALREADY_AT_LOCATION, part)
+            db.add(
+                FloorPartEvent(
+                    part_id=part.id,
+                    action=PRODUCTION_WIP_ACTION,
+                    details={"location_slug": location_slug},
+                )
+            )
+            await db.flush()
+            return await _to_location_outcome(db, LocationScanResult.RECORDED, part)
+        if location_slug == READY_FOR_PRODUCTION_LOCATION_SLUG:
+            if await _part_is_at_location(db, part.id, READY_FOR_PRODUCTION_ACTION):
+                return await _to_location_outcome(db, LocationScanResult.ALREADY_AT_LOCATION, part)
+            db.add(
+                FloorPartEvent(
+                    part_id=part.id,
+                    action=READY_FOR_PRODUCTION_ACTION,
+                    details={"location_slug": location_slug},
+                )
+            )
+            await db.flush()
+            return await _to_location_outcome(db, LocationScanResult.RECORDED, part)
         return await _to_location_outcome(db, LocationScanResult.ALREADY_WIP, part)
 
     if not await _part_has_qc_or_rework(db, part.id):

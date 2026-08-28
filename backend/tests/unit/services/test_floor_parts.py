@@ -59,7 +59,7 @@ DEVICE_A = "device-a"
 DEVICE_B = "device-b"
 
 HARVEST = station_for_slug("harvest")
-RECEIVE = station_for_slug("storage-receive")
+FIT_CHECK = station_for_slug("fit-check")
 
 
 async def _open_harvest(db_session, device_id: str):
@@ -245,7 +245,7 @@ class TestHarvestPrinterBinding:
         """This endpoint is only meaningful for a harvest session; a device
         in another station calling it should not be handled as if it were harvest."""
         printer = await printer_factory()
-        await apply_station_scan(db_session, RECEIVE, DEVICE_A)
+        await apply_station_scan(db_session, FIT_CHECK, DEVICE_A)
         await db_session.commit()
 
         outcome = await scan_harvest_printer(db_session, DEVICE_A, f"BBP-{printer.id}")
@@ -398,7 +398,7 @@ class TestPartScanFromHarvest:
         part written against it."""
         printer = await printer_factory()
         await archive_factory(printer_id=printer.id)
-        await apply_station_scan(db_session, RECEIVE, DEVICE_A)
+        await apply_station_scan(db_session, FIT_CHECK, DEVICE_A)
         await db_session.commit()
 
         outcome = await scan_part(db_session, DEVICE_A, "BBD-000001")
@@ -653,12 +653,11 @@ class TestFitCheckPartScan:
         self, db_session, printer_factory, archive_factory
     ):
         """Not a station, so it is not gated on — or affected by — any real
-        station session. WIP being open on some device must not block it."""
+        station session. Harvest being open on some device must not block it."""
         printer = await printer_factory()
         await archive_factory(printer_id=printer.id)
         await _harvest_one_part(db_session, printer.id)
-        WIP = station_for_slug("wip")
-        await apply_station_scan(db_session, WIP, DEVICE_B)
+        await apply_station_scan(db_session, HARVEST, DEVICE_B)
         await db_session.commit()
 
         outcome = await scan_fit_check_part(db_session, "BBD-000001")
@@ -900,6 +899,24 @@ class TestReplaceStickerCode:
         }
 
     @pytest.mark.asyncio
+    async def test_does_not_change_latest_workflow_status(self, db_session, printer_factory):
+        printer = await printer_factory()
+        outcome = await scan_part(db_session, DEVICE_A, "BBD-000001", printer_id_hint=printer.id)
+        await db_session.commit()
+        await set_part_status(db_session, outcome.part.id, "fit_checked")
+        await db_session.commit()
+
+        result = await replace_sticker_code(
+            db_session, outcome.part.id, "BBD-000002", ReplaceStickerReasonCode.DAMAGED.value, None
+        )
+        await db_session.commit()
+
+        assert result.result is ReplaceStickerResult.REPLACED
+        listed = await list_inventory_parts(db_session)
+        assert listed[0].sticker_code == "BBD-000002"
+        assert listed[0].latest_event_action == "fit_checked"
+
+    @pytest.mark.asyncio
     async def test_refuses_on_an_archived_part(self, db_session, printer_factory):
         printer = await printer_factory()
         outcome = await scan_part(db_session, DEVICE_A, "BBD-000001", printer_id_hint=printer.id)
@@ -1121,7 +1138,7 @@ class TestPartLocationPipeline:
         assert again.result is LocationScanResult.ALREADY_AT_LOCATION
 
     @pytest.mark.asyncio
-    async def test_ready_prod_after_wip_is_rejected(self, db_session, printer_factory, archive_factory):
+    async def test_wip_then_ready_prod_is_allowed(self, db_session, printer_factory, archive_factory):
         part = await _enroll_qc_linked_part(db_session, printer_factory, archive_factory, "BOT")
         await scan_part_at_location(db_session, part.sticker_code, PRODUCTION_WIP_LOCATION_SLUG)
         await db_session.commit()
@@ -1129,7 +1146,42 @@ class TestPartLocationPipeline:
         ready = await scan_part_at_location(db_session, part.sticker_code, READY_FOR_PRODUCTION_LOCATION_SLUG)
         await db_session.commit()
 
-        assert ready.result is LocationScanResult.ALREADY_WIP
+        assert ready.result is LocationScanResult.RECORDED
+        events = [e.action for e in await list_part_events(db_session, part.id)]
+        assert events[-2:] == ["wip", "ready_for_production"]
+
+    @pytest.mark.asyncio
+    async def test_wip_then_ready_then_wip_again_is_allowed(self, db_session, printer_factory, archive_factory):
+        part = await _enroll_qc_linked_part(db_session, printer_factory, archive_factory, "BOT")
+        await scan_part_at_location(db_session, part.sticker_code, PRODUCTION_WIP_LOCATION_SLUG)
+        await db_session.commit()
+        await scan_part_at_location(db_session, part.sticker_code, READY_FOR_PRODUCTION_LOCATION_SLUG)
+        await db_session.commit()
+
+        wip = await scan_part_at_location(db_session, part.sticker_code, PRODUCTION_WIP_LOCATION_SLUG)
+        await db_session.commit()
+
+        assert wip.result is LocationScanResult.RECORDED
+        events = [e.action for e in await list_part_events(db_session, part.id)]
+        assert events[-3:] == ["wip", "ready_for_production", "wip"]
+
+    @pytest.mark.asyncio
+    async def test_finishing_after_wip_is_still_refused(self, db_session, printer_factory, archive_factory):
+        part = await _enroll_qc_linked_part(db_session, printer_factory, archive_factory, "TOP")
+        for slug in (
+            SUPPORT_REMOVAL_LOCATION_SLUG,
+            OVERHANG_REMOVAL_LOCATION_SLUG,
+            HOT_AIR_REMOVAL_LOCATION_SLUG,
+        ):
+            await scan_part_at_location(db_session, part.sticker_code, slug)
+            await db_session.commit()
+        await scan_part_at_location(db_session, part.sticker_code, PRODUCTION_WIP_LOCATION_SLUG)
+        await db_session.commit()
+
+        outcome = await scan_part_at_location(db_session, part.sticker_code, SUPPORT_REMOVAL_LOCATION_SLUG)
+        await db_session.commit()
+
+        assert outcome.result is LocationScanResult.ALREADY_WIP
 
     @pytest.mark.asyncio
     async def test_missing_part_code_is_refused(self, db_session, printer_factory, archive_factory):
@@ -1340,6 +1392,30 @@ class TestSetPartStatus:
         }
         listed = await list_inventory_parts(db_session)
         assert listed[0].latest_event_action == "shipped"
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        "status",
+        [
+            "ready_for_production",
+            "support_removed",
+            "overhang_removed",
+            "hot_air_removed",
+            "cleanup",
+            "fit_checked",
+        ],
+    )
+    async def test_accepts_the_new_floor_pipeline_statuses(self, db_session, printer_factory, status):
+        printer = await printer_factory()
+        outcome = await scan_part(db_session, DEVICE_A, "BBD-000001", printer_id_hint=printer.id)
+        await db_session.commit()
+
+        result = await set_part_status(db_session, outcome.part.id, status)
+        await db_session.commit()
+
+        assert result.result is SetPartStatusResult.UPDATED
+        events = await list_part_events(db_session, outcome.part.id)
+        assert events[-1].action == status
 
     @pytest.mark.asyncio
     async def test_rejects_metadata_actions_and_archived_parts(self, db_session, printer_factory):
