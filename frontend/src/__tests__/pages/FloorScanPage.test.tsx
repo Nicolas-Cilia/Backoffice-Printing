@@ -2617,7 +2617,7 @@ describe('FloorScanPage (Phase 1b sessions)', () => {
       expect(screen.getByText('Scan a code')).toBeInTheDocument();
     });
 
-    it('captures a wedge scan at window level after focus leaves the scan input', async () => {
+    it('captures a wedge scan at window level even when the hidden input is not the event target', async () => {
       mockNoSession();
       const captured = mockScan({
         result: 'opened',
@@ -2626,21 +2626,13 @@ describe('FloorScanPage (Phase 1b sessions)', () => {
         session: HARVEST_SESSION,
         blocking: null,
       });
-      const user = userEvent.setup();
       render(<FloorScanPage />);
       await screen.findByText('Scan a code');
 
-      const trap = document.createElement('button');
-      trap.type = 'button';
-      trap.setAttribute('aria-label', 'Focus trap');
-      trap.className = 'sr-only';
-      document.body.appendChild(trap);
-      await user.click(trap);
-      expect(trap).toHaveFocus();
-
+      // Idle scan re-focuses the hidden field after pointer input; the pistol
+      // still has to work if some other node briefly holds focus, so this
+      // fires on window rather than the input.
       wedgeScanAtWindow('BBS-harvest');
-
-      trap.remove();
 
       await waitFor(() => expect(captured.body).not.toBeNull());
       expect(captured.body).toMatchObject({ payload: 'BBS-harvest' });
