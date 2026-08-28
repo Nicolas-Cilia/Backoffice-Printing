@@ -423,7 +423,7 @@ export function FilamentHoverCard({ data, children, disabled, className = '', sp
                         onClick={(e) => {
                           e.stopPropagation();
                           dismiss();
-                          navigate(`/inventory?spool=${spoolman.linkedSpoolId}`);
+                          navigate(`/filament?spool=${spoolman.linkedSpoolId}`);
                         }}
                         className="w-full flex items-center justify-center gap-1.5 px-2 py-1.5 text-xs font-medium rounded transition-colors bg-bambu-green/20 hover:bg-bambu-green/30 text-bambu-green"
                         title={t('inventory.openInInventory')}
@@ -476,7 +476,7 @@ export function FilamentHoverCard({ data, children, disabled, className = '', sp
                           onClick={(e) => {
                             e.stopPropagation();
                             dismiss();
-                            navigate(`/inventory?spool=${inventory.assignedSpool!.id}`);
+                            navigate(`/filament?spool=${inventory.assignedSpool!.id}`);
                           }}
                           className="w-full flex items-center justify-center gap-1.5 px-2 py-1.5 text-xs font-medium rounded transition-colors bg-bambu-green/20 hover:bg-bambu-green/30 text-bambu-green"
                           title={t('inventory.openInInventory')}

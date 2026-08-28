@@ -9,6 +9,7 @@ export default {
     floor: 'Produção',
     maintenance: 'Manutenção',
     inventory: 'Inventário',
+    filament: 'Filamento',
     files: 'Gerenciador de Arquivos',
     notifications: 'Notificações',
     settings: 'Configurações',

@@ -493,4 +493,100 @@ describe('Layout', () => {
       expect(sidebarLink('/queue')).toBeNull();
     });
   });
+
+  describe('Inventory / Filament nav split (Agent C)', () => {
+    // The sidebar now carries two distinct entries:
+    //   - "Inventory" → /inventory (production-floor parts), gated floor:scan
+    //   - "Filament"  → /filament (filament spools), gated inventory:read
+    // Each is hidden when the user lacks its own permission.
+    const enableAuthWithUser = (permissions: string[]) => {
+      server.use(
+        http.get('/api/v1/auth/status', () =>
+          HttpResponse.json({ auth_enabled: true, requires_setup: false }),
+        ),
+        http.get('/api/v1/auth/me', () =>
+          HttpResponse.json({
+            id: 1,
+            username: 'tester',
+            role: 'user',
+            is_active: true,
+            is_admin: false,
+            groups: [{ id: 2, name: 'Operators' }],
+            permissions,
+            created_at: '2026-01-01T00:00:00Z',
+          }),
+        ),
+      );
+      window.localStorage.setItem('auth_token', 'test-token');
+    };
+
+    const sidebarLink = (href: string) =>
+      document.querySelector(`aside a[href="${href}"]`);
+
+    it('renders the Inventory nav pointing to /inventory when auth is disabled', async () => {
+      render(<Layout />);
+
+      await waitFor(() => {
+        const link = sidebarLink('/inventory');
+        expect(link).toBeInTheDocument();
+        expect(link?.textContent).toContain('Inventory');
+      });
+    });
+
+    it('renders the Filament nav pointing to /filament when auth is disabled', async () => {
+      render(<Layout />);
+
+      await waitFor(() => {
+        const link = sidebarLink('/filament');
+        expect(link).toBeInTheDocument();
+        expect(link?.textContent).toContain('Filament');
+      });
+    });
+
+    it('shows the Inventory nav when the user has floor:scan', async () => {
+      enableAuthWithUser(['floor:scan']);
+
+      render(<Layout />);
+
+      await waitFor(() => {
+        expect(sidebarLink('/inventory')).toBeInTheDocument();
+      });
+    });
+
+    it('hides the Inventory nav when the user lacks floor:scan', async () => {
+      enableAuthWithUser(['inventory:read']);
+
+      render(<Layout />);
+
+      await waitFor(() => {
+        expect(document.querySelector('aside')).toBeInTheDocument();
+        expect(sidebarLink('/filament')).toBeInTheDocument();
+      });
+
+      expect(sidebarLink('/inventory')).toBeNull();
+    });
+
+    it('shows the Filament nav when the user has inventory:read', async () => {
+      enableAuthWithUser(['inventory:read']);
+
+      render(<Layout />);
+
+      await waitFor(() => {
+        expect(sidebarLink('/filament')).toBeInTheDocument();
+      });
+    });
+
+    it('hides the Filament nav when the user lacks inventory:read', async () => {
+      enableAuthWithUser(['floor:scan']);
+
+      render(<Layout />);
+
+      await waitFor(() => {
+        expect(document.querySelector('aside')).toBeInTheDocument();
+        expect(sidebarLink('/inventory')).toBeInTheDocument();
+      });
+
+      expect(sidebarLink('/filament')).toBeNull();
+    });
+  });
 });
