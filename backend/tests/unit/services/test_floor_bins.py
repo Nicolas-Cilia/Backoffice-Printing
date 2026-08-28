@@ -118,9 +118,7 @@ class TestBinLocationPipeline:
         assert ready.batch.status == "ready_for_production"
 
     @pytest.mark.asyncio
-    async def test_fit_check_does_not_reopen_qc_on_a_staged_bin(
-        self, db_session, printer_factory, archive_factory
-    ):
+    async def test_fit_check_does_not_reopen_qc_on_a_staged_bin(self, db_session, printer_factory, archive_factory):
         payload = await _fill_bin(db_session, printer_factory, archive_factory)
         await _pass_qc(db_session, payload)
         await scan_bin_wip(db_session, payload)
