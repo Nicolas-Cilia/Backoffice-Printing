@@ -7,15 +7,23 @@
  * This page exists so someone navigating normally has any way to *reach*
  * `/floor/codes` at all — before it existed nothing in the app linked there.
  */
-import { useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { useNavigate } from 'react-router-dom';
 import { useMutation, useQueries, useQuery, useQueryClient } from '@tanstack/react-query';
-import { ScanLine, QrCode, Loader2, AlertTriangle, ClipboardList } from 'lucide-react';
+import { ScanLine, QrCode, Loader2, AlertTriangle, ClipboardList, X } from 'lucide-react';
 import { Button } from '../components/Button';
-import { api, type FloorBinManagement, type FloorInventoryPart, type FloorSession } from '../api/client';
+import { DateRangePicker } from '../components/DateRangePicker';
+import {
+  api,
+  type FloorBinManagement,
+  type FloorDismissedBuildPlate,
+  type FloorInventoryPart,
+  type FloorSession,
+} from '../api/client';
 import { getDeviceId } from '../utils/floorDevice';
 import { formatElapsed } from '../utils/floorScan';
+import { isTimestampInDateRange, type CalendarDateRange } from '../utils/dateRange';
 
 /** How many needs-attention rows to fetch and show at once. Matches the
  *  panel's own request, not a separate page-size concept — there is no
@@ -33,7 +41,7 @@ export function FloorLandingPage() {
           {t('floor.landingEyebrow', 'Production floor')}
         </p>
         <h1 className="text-2xl font-bold text-white mt-1">{t('floor.landingTitle', 'Floor')}</h1>
-        <p className="text-bambu-gray mt-1 max-w-2xl">
+        <p className="text-bambu-gray mt-1 max-w-2xl break-words">
           {t(
             'floor.landingSubtitle',
             'Quick access to floor scanning, code printing, and your part history.',
@@ -192,7 +200,7 @@ function FloorStats({ t }: { t: ReturnType<typeof useTranslation>['t'] }) {
  */
 function SessionsPanel({ t }: { t: ReturnType<typeof useTranslation>['t'] }) {
   const queryClient = useQueryClient();
-  const [showHistory, setShowHistory] = useState(false);
+  const [historyOpen, setHistoryOpen] = useState(false);
   const thisDevice = getDeviceId();
 
   const sessionsQuery = useQuery({
@@ -213,30 +221,38 @@ function SessionsPanel({ t }: { t: ReturnType<typeof useTranslation>['t'] }) {
 
   return (
     <section className="bg-bambu-dark-secondary rounded-lg overflow-hidden w-full">
-      <div className="px-4 py-3 border-b border-bambu-dark-tertiary flex flex-wrap items-center justify-between gap-3">
-        <div>
+      <div className="flex items-start justify-between gap-3 border-b border-bambu-dark-tertiary px-4 py-3">
+        <div className="min-w-0 flex-1">
           <h2 className="text-white font-semibold">
             {t('floor.sessionsHeading', 'Open stations')}
           </h2>
-          <p className="text-xs text-bambu-gray mt-0.5">
+          <p className="mt-0.5 break-words text-xs text-bambu-gray">
             {t(
               'floor.sessionsHint',
               'A station stays claimed until it is closed. Close one here if nobody is coming back to it.',
             )}
           </p>
         </div>
-        {recent.length > 0 && (
-          <button
-            type="button"
-            className="text-sm text-bambu-gray hover:text-white transition-colors"
-            onClick={() => setShowHistory((v) => !v)}
-          >
-            {showHistory
-              ? t('floor.sessionsHideHistory', 'Hide history')
-              : t('floor.sessionsShowHistory', 'Recent history')}
-          </button>
-        )}
+        <Button
+          variant="secondary"
+          size="sm"
+          className="shrink-0"
+          onClick={() => setHistoryOpen(true)}
+        >
+          {t('floor.sessionsShowHistory', 'Recent history')}
+        </Button>
       </div>
+
+      {historyOpen && (
+        <RecentHistoryModal
+          t={t}
+          recent={recent}
+          loading={sessionsQuery.isLoading}
+          error={sessionsQuery.isError}
+          onRetry={() => sessionsQuery.refetch()}
+          onClose={() => setHistoryOpen(false)}
+        />
+      )}
 
       {sessionsQuery.isLoading ? (
         <div className="flex items-center justify-center py-10 text-bambu-gray">
@@ -259,9 +275,9 @@ function SessionsPanel({ t }: { t: ReturnType<typeof useTranslation>['t'] }) {
       ) : (
         <ul className="divide-y divide-bambu-dark-tertiary">
           {open.map((session) => (
-            <li key={session.id} className="flex items-center gap-4 px-4 py-3">
+            <li key={session.id} className="flex flex-col gap-3 px-4 py-3 md:flex-row md:items-center md:gap-4">
               <div className="min-w-0 flex-1">
-                <div className="text-white font-medium">{session.station_name}</div>
+                <div className="break-words font-medium text-white">{session.station_name}</div>
                 <div className="text-xs text-bambu-gray">
                   {/* A raw UUID means nothing to a reader; what matters is
                       whether the session is theirs to close or someone
@@ -277,6 +293,7 @@ function SessionsPanel({ t }: { t: ReturnType<typeof useTranslation>['t'] }) {
               </div>
               <Button
                 variant="secondary"
+                className="w-full shrink-0 md:w-auto"
                 disabled={closeMutation.isPending}
                 onClick={() => closeMutation.mutate(session.id)}
               >
@@ -286,20 +303,138 @@ function SessionsPanel({ t }: { t: ReturnType<typeof useTranslation>['t'] }) {
           ))}
         </ul>
       )}
-
-      {showHistory && recent.length > 0 && (
-        <div className="border-t border-bambu-dark-tertiary">
-          <p className="px-4 pt-3 text-xs uppercase tracking-wide text-bambu-gray">
-            {t('floor.sessionsHistoryHeading', 'Closed in the last 24 hours')}
-          </p>
-          <ul className="divide-y divide-bambu-dark-tertiary">
-            {recent.map((session) => (
-              <HistoryRow key={session.id} session={session} t={t} />
-            ))}
-          </ul>
-        </div>
-      )}
     </section>
+  );
+}
+
+/** Modal for stations closed in the last 24h: search by station and filter
+ *  by closed date range. */
+function RecentHistoryModal({
+  t,
+  recent,
+  loading,
+  error,
+  onRetry,
+  onClose,
+}: {
+  t: ReturnType<typeof useTranslation>['t'];
+  recent: FloorSession[];
+  loading: boolean;
+  error: boolean;
+  onRetry: () => void;
+  onClose: () => void;
+}) {
+  const [query, setQuery] = useState('');
+  const [dateRange, setDateRange] = useState<CalendarDateRange>({ from: null, to: null });
+
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') onClose();
+    };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [onClose]);
+
+  const filtered = useMemo(() => {
+    const needle = query.trim().toLowerCase();
+    return recent.filter((session) => {
+      if (needle) {
+        const hay = `${session.station_name} ${session.station_slug}`.toLowerCase();
+        if (!hay.includes(needle)) return false;
+      }
+      const closedAt = parseFloorTimestamp(session.closed_at ?? null);
+      return isTimestampInDateRange(closedAt, dateRange.from, dateRange.to);
+    });
+  }, [recent, query, dateRange]);
+
+  return (
+    <div
+      className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-4"
+      role="presentation"
+      onClick={onClose}
+    >
+      <div
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="floor-history-modal-title"
+        className="bg-bambu-dark-secondary border border-bambu-dark-tertiary rounded-lg shadow-xl w-full max-w-2xl max-h-[85vh] flex flex-col"
+        onClick={(e) => e.stopPropagation()}
+      >
+        <div className="px-4 py-3 border-b border-bambu-dark-tertiary flex items-center justify-between gap-3 shrink-0">
+          <div className="min-w-0">
+            <h2 id="floor-history-modal-title" className="text-white font-semibold">
+              {t('floor.sessionsHistoryModalTitle', 'Recent station history')}
+            </h2>
+            <p className="text-xs text-bambu-gray mt-0.5">
+              {t(
+                'floor.sessionsHistoryHeading',
+                'Closed in the last 24 hours',
+              )}
+            </p>
+          </div>
+          <button
+            type="button"
+            className="p-1.5 rounded-md text-bambu-gray hover:text-white hover:bg-bambu-dark-tertiary transition-colors shrink-0"
+            onClick={onClose}
+            aria-label={t('common.close', 'Close')}
+          >
+            <X className="w-5 h-5" />
+          </button>
+        </div>
+
+        <div className="px-4 py-3 border-b border-bambu-dark-tertiary grid grid-cols-1 sm:grid-cols-[minmax(0,1fr)_minmax(12rem,16rem)] gap-3 shrink-0 relative z-10">
+          <label className="flex flex-col gap-1 min-w-0">
+            <span className="text-xs text-bambu-gray">
+              {t('floor.sessionsHistorySearchLabel', 'Search')}
+            </span>
+            <input
+              type="search"
+              value={query}
+              onChange={(e) => setQuery(e.target.value)}
+              placeholder={t('floor.sessionsHistorySearchPlaceholder', 'Station…')}
+              className="w-full rounded-md bg-bambu-dark border border-bambu-dark-tertiary px-3 py-2 text-sm text-white placeholder:text-bambu-gray focus:outline-none focus:ring-1 focus:ring-bambu-green"
+            />
+          </label>
+          <DateRangePicker
+            label={t('floor.sessionsHistoryDateRangeLabel', 'Date range')}
+            value={dateRange}
+            onChange={setDateRange}
+          />
+        </div>
+
+        <div className="overflow-y-auto flex-1 min-h-0">
+          {loading ? (
+            <div className="flex items-center justify-center py-12 text-bambu-gray">
+              <Loader2 className="w-5 h-5 animate-spin mr-2" />
+              {t('common.loading', 'Loading…')}
+            </div>
+          ) : error ? (
+            <div className="text-center py-12 px-4">
+              <p className="text-white font-medium">
+                {t('floor.sessionsLoadError', 'Could not load sessions')}
+              </p>
+              <Button className="mt-3" variant="secondary" onClick={onRetry}>
+                {t('common.retry', 'Retry')}
+              </Button>
+            </div>
+          ) : recent.length === 0 ? (
+            <p className="px-4 py-12 text-center text-bambu-gray">
+              {t('floor.sessionsHistoryNone', 'No stations closed in the last 24 hours.')}
+            </p>
+          ) : filtered.length === 0 ? (
+            <p className="px-4 py-12 text-center text-bambu-gray">
+              {t('floor.sessionsHistoryNoMatches', 'No sessions match this search.')}
+            </p>
+          ) : (
+            <ul className="divide-y divide-bambu-dark-tertiary">
+              {filtered.map((session) => (
+                <HistoryRow key={session.id} session={session} t={t} />
+              ))}
+            </ul>
+          )}
+        </div>
+      </div>
+    </div>
   );
 }
 
@@ -311,27 +446,31 @@ function HistoryRow({
   t: ReturnType<typeof useTranslation>['t'];
 }) {
   return (
-    <li className="flex items-center gap-4 px-4 py-2">
+    <li className="flex items-center gap-3 px-4 py-3">
       <div className="min-w-0 flex-1">
-        <span className="text-bambu-gray-light text-sm">{session.station_name}</span>
-        {/* Ended by someone else, not by its holder — the thing the history
-            exists to make visible. */}
-        {session.closed_by_takeover && (
-          <span className="ml-2 text-xs text-amber-500">
-            {t('floor.sessionsTakenOver', 'taken over')}
-          </span>
-        )}
+        <div className="text-white font-medium truncate">
+          {session.station_name}
+          {/* Ended by someone else, not by its holder — the thing the history
+              exists to make visible. */}
+          {session.closed_by_takeover && (
+            <span className="ml-2 text-xs font-normal text-amber-500">
+              {t('floor.sessionsTakenOver', 'taken over')}
+            </span>
+          )}
+        </div>
+        <div className="text-xs text-bambu-gray mt-0.5">
+          {t('floor.sessionsWasOpenFor', 'was open {{elapsed}}', {
+            elapsed: formatElapsed(session.open_seconds),
+          })}
+          {session.closed_at && (
+            <>
+              {' · '}
+              {parseFloorTimestamp(session.closed_at)?.toLocaleString() ??
+                new Date(session.closed_at).toLocaleString()}
+            </>
+          )}
+        </div>
       </div>
-      <span className="text-xs text-bambu-gray whitespace-nowrap">
-        {t('floor.sessionsWasOpenFor', 'was open {{elapsed}}', {
-          elapsed: formatElapsed(session.open_seconds),
-        })}
-      </span>
-      {session.closed_at && (
-        <span className="text-xs text-bambu-gray whitespace-nowrap">
-          {new Date(session.closed_at).toLocaleTimeString()}
-        </span>
-      )}
     </li>
   );
 }
@@ -348,7 +487,7 @@ function HistoryRow({
  *  phrased as if something usually is. */
 function UnlabeledBuildPlatesPanel({ t }: { t: ReturnType<typeof useTranslation>['t'] }) {
   const queryClient = useQueryClient();
-  const [showDismissed, setShowDismissed] = useState(false);
+  const [dismissedOpen, setDismissedOpen] = useState(false);
   const partsQuery = useQuery({
     queryKey: ['floor-unlabeled-build-plates'],
     queryFn: () => api.getFloorUnlabeledBuildPlates(NEEDS_ATTENTION_LIMIT),
@@ -373,31 +512,34 @@ function UnlabeledBuildPlatesPanel({ t }: { t: ReturnType<typeof useTranslation>
 
   return (
     <section className="bg-bambu-dark-secondary rounded-lg overflow-hidden w-full">
-      <div className="px-4 py-3 border-b border-bambu-dark-tertiary flex flex-wrap items-start justify-between gap-3">
-        <div>
+      <div className="flex items-start justify-between gap-3 border-b border-bambu-dark-tertiary px-4 py-3">
+        <div className="min-w-0 flex-1">
           <h2 className="text-white font-semibold">
             {t('floor.needsAttentionHeading', 'Build plates needing linking')}
           </h2>
-          <p className="text-xs text-bambu-gray mt-0.5">
+          <p className="mt-0.5 break-words text-xs text-bambu-gray">
             {t(
               'floor.needsAttentionHint',
               'Completed jobs that have not received a linked part yet.',
             )}
           </p>
         </div>
-        <button
-          type="button"
-          className="text-sm text-bambu-gray hover:text-white transition-colors whitespace-nowrap"
-          onClick={() => setShowDismissed((v) => !v)}
+        <Button
+          variant="secondary"
+          size="sm"
+          className="shrink-0"
+          onClick={() => setDismissedOpen(true)}
         >
-          {showDismissed
-            ? t('floor.dismissedHide', 'Hide non-production')
-            : t('floor.dismissedShow', 'Non-production list')}
-        </button>
+          {t('floor.dismissedShow', 'Non-production list')}
+        </Button>
       </div>
 
-      {showDismissed && (
-        <DismissedBuildPlatesList t={t} onRestoreSuccess={invalidateBothLists} />
+      {dismissedOpen && (
+        <DismissedBuildPlatesModal
+          t={t}
+          onClose={() => setDismissedOpen(false)}
+          onRestoreSuccess={invalidateBothLists}
+        />
       )}
 
       {partsQuery.isLoading ? (
@@ -423,22 +565,27 @@ function UnlabeledBuildPlatesPanel({ t }: { t: ReturnType<typeof useTranslation>
       ) : (
         <ul className="divide-y divide-bambu-dark-tertiary">
           {parts.map((part) => (
-            <li key={part.id} className="flex items-center gap-4 px-4 py-3">
-              <AlertTriangle
-                className="w-4 h-4 text-amber-500 flex-shrink-0"
-                aria-hidden="true"
-              />
-              <div className="min-w-0 flex-1">
-                <div className="text-white font-medium">{part.print_name}</div>
-                <div className="text-xs text-bambu-gray">{part.printer_name}</div>
+            <li key={part.id} className="flex flex-col gap-3 px-4 py-3 md:flex-row md:items-center md:gap-4">
+              <div className="flex min-w-0 flex-1 items-start gap-3">
+                <AlertTriangle
+                  className="mt-0.5 h-4 w-4 shrink-0 text-amber-500"
+                  aria-hidden="true"
+                />
+                <div className="min-w-0 flex-1 md:flex md:items-center md:justify-between md:gap-4">
+                  <div className="min-w-0">
+                    <div className="break-words font-medium text-white">{part.print_name}</div>
+                    <div className="text-xs text-bambu-gray">{part.printer_name}</div>
+                  </div>
+                  <span className="mt-0.5 block text-xs text-bambu-gray md:mt-0 md:shrink-0 md:whitespace-nowrap">
+                    {part.completed_at
+                      ? new Date(`${part.completed_at}Z`).toLocaleString()
+                      : t('floor.needsAttentionUnknownTime', 'Unknown time')}
+                  </span>
+                </div>
               </div>
-              <span className="text-xs text-bambu-gray whitespace-nowrap">
-                {part.completed_at
-                  ? new Date(`${part.completed_at}Z`).toLocaleString()
-                  : t('floor.needsAttentionUnknownTime', 'Unknown time')}
-              </span>
               <Button
                 variant="secondary"
+                className="w-full shrink-0 md:w-auto"
                 onClick={() => {
                   if (
                     window.confirm(
@@ -462,17 +609,27 @@ function UnlabeledBuildPlatesPanel({ t }: { t: ReturnType<typeof useTranslation>
   );
 }
 
-/** The reverse side of "Not for production": plates an operator hid from the
- *  backlog, with a Restore that puts one back. Rendered inline under the
- *  panel header only when the reader opens the non-production list, so the
- *  common case — working the live backlog — stays uncluttered. */
-function DismissedBuildPlatesList({
+function parseFloorTimestamp(raw: string | null): Date | null {
+  if (!raw) return null;
+  const value = raw.endsWith('Z') ? raw : `${raw}Z`;
+  const date = new Date(value);
+  return Number.isNaN(date.getTime()) ? null : date;
+}
+
+/** Modal for plates marked non-production: search by name and filter by
+ *  dismissed date range, with Restore to return one to the backlog. */
+function DismissedBuildPlatesModal({
   t,
+  onClose,
   onRestoreSuccess,
 }: {
   t: ReturnType<typeof useTranslation>['t'];
+  onClose: () => void;
   onRestoreSuccess: () => void;
 }) {
+  const [query, setQuery] = useState('');
+  const [dateRange, setDateRange] = useState<CalendarDateRange>({ from: null, to: null });
+
   const dismissedQuery = useQuery({
     queryKey: ['floor-dismissed-build-plates'],
     queryFn: () => api.getFloorDismissedBuildPlates(NEEDS_ATTENTION_LIMIT),
@@ -482,55 +639,136 @@ function DismissedBuildPlatesList({
     onSuccess: onRestoreSuccess,
   });
 
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') onClose();
+    };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [onClose]);
+
   const plates = dismissedQuery.data ?? [];
+  const filtered = useMemo(() => {
+    const needle = query.trim().toLowerCase();
+    return plates.filter((plate: FloorDismissedBuildPlate) => {
+      if (needle) {
+        const hay = `${plate.print_name ?? ''} ${plate.printer_name ?? ''}`.toLowerCase();
+        if (!hay.includes(needle)) return false;
+      }
+      const dismissedAt = parseFloorTimestamp(plate.dismissed_at) ?? parseFloorTimestamp(plate.completed_at);
+      return isTimestampInDateRange(dismissedAt, dateRange.from, dateRange.to);
+    });
+  }, [plates, query, dateRange]);
 
   return (
-    <div className="border-b border-bambu-dark-tertiary bg-bambu-dark">
-      <p className="px-4 pt-3 text-xs uppercase tracking-wide text-bambu-gray">
-        {t('floor.dismissedHeading', 'Marked non-production')}
-      </p>
-      {dismissedQuery.isLoading ? (
-        <div className="flex items-center justify-center py-8 text-bambu-gray">
-          <Loader2 className="w-5 h-5 animate-spin mr-2" />
-          {t('common.loading', 'Loading…')}
+    <div
+      className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-4"
+      role="presentation"
+      onClick={onClose}
+    >
+      <div
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="floor-dismissed-modal-title"
+        className="bg-bambu-dark-secondary border border-bambu-dark-tertiary rounded-lg shadow-xl w-full max-w-2xl max-h-[85vh] flex flex-col"
+        onClick={(e) => e.stopPropagation()}
+      >
+        <div className="px-4 py-3 border-b border-bambu-dark-tertiary flex items-center justify-between gap-3 shrink-0">
+          <div className="min-w-0">
+            <h2 id="floor-dismissed-modal-title" className="text-white font-semibold">
+              {t('floor.dismissedModalTitle', 'Non-production build plates')}
+            </h2>
+            <p className="text-xs text-bambu-gray mt-0.5">
+              {t(
+                'floor.dismissedModalHint',
+                'Plates hidden from the production backlog. Restore one to put it back.',
+              )}
+            </p>
+          </div>
+          <button
+            type="button"
+            className="p-1.5 rounded-md text-bambu-gray hover:text-white hover:bg-bambu-dark-tertiary transition-colors shrink-0"
+            onClick={onClose}
+            aria-label={t('common.close', 'Close')}
+          >
+            <X className="w-5 h-5" />
+          </button>
         </div>
-      ) : dismissedQuery.isError ? (
-        <div className="text-center py-8 px-4">
-          <p className="text-white font-medium">
-            {t('floor.dismissedLoadError', 'Could not load this list')}
-          </p>
-          <Button className="mt-3" variant="secondary" onClick={() => dismissedQuery.refetch()}>
-            {t('common.retry', 'Retry')}
-          </Button>
+
+        <div className="px-4 py-3 border-b border-bambu-dark-tertiary grid grid-cols-1 sm:grid-cols-[minmax(0,1fr)_minmax(12rem,16rem)] gap-3 shrink-0 relative z-10">
+          <label className="flex flex-col gap-1 min-w-0">
+            <span className="text-xs text-bambu-gray">
+              {t('floor.dismissedSearchLabel', 'Search')}
+            </span>
+            <input
+              type="search"
+              value={query}
+              onChange={(e) => setQuery(e.target.value)}
+              placeholder={t('floor.dismissedSearchPlaceholder', 'Name or printer…')}
+              className="w-full rounded-md bg-bambu-dark border border-bambu-dark-tertiary px-3 py-2 text-sm text-white placeholder:text-bambu-gray focus:outline-none focus:ring-1 focus:ring-bambu-green"
+            />
+          </label>
+          <DateRangePicker
+            label={t('floor.dismissedDateRangeLabel', 'Date range')}
+            value={dateRange}
+            onChange={setDateRange}
+          />
         </div>
-      ) : plates.length === 0 ? (
-        <p className="px-4 py-6 text-center text-bambu-gray">
-          {t('floor.dismissedNone', 'Nothing has been marked non-production.')}
-        </p>
-      ) : (
-        <ul className="divide-y divide-bambu-dark-tertiary">
-          {plates.map((plate) => (
-            <li key={plate.id} className="flex items-center gap-4 px-4 py-3">
-              <div className="min-w-0 flex-1">
-                <div className="text-white font-medium">{plate.print_name}</div>
-                <div className="text-xs text-bambu-gray">{plate.printer_name}</div>
-              </div>
-              <span className="text-xs text-bambu-gray whitespace-nowrap">
-                {plate.completed_at
-                  ? new Date(`${plate.completed_at}Z`).toLocaleString()
-                  : t('floor.needsAttentionUnknownTime', 'Unknown time')}
-              </span>
-              <Button
-                variant="secondary"
-                onClick={() => restore.mutate(plate.id)}
-                disabled={restore.isPending}
-              >
-                {t('floor.restoreBuildPlate', 'Restore')}
+
+        <div className="overflow-y-auto flex-1 min-h-0">
+          {dismissedQuery.isLoading ? (
+            <div className="flex items-center justify-center py-12 text-bambu-gray">
+              <Loader2 className="w-5 h-5 animate-spin mr-2" />
+              {t('common.loading', 'Loading…')}
+            </div>
+          ) : dismissedQuery.isError ? (
+            <div className="text-center py-12 px-4">
+              <p className="text-white font-medium">
+                {t('floor.dismissedLoadError', 'Could not load this list')}
+              </p>
+              <Button className="mt-3" variant="secondary" onClick={() => dismissedQuery.refetch()}>
+                {t('common.retry', 'Retry')}
               </Button>
-            </li>
-          ))}
-        </ul>
-      )}
+            </div>
+          ) : plates.length === 0 ? (
+            <p className="px-4 py-12 text-center text-bambu-gray">
+              {t('floor.dismissedNone', 'Nothing has been marked non-production.')}
+            </p>
+          ) : filtered.length === 0 ? (
+            <p className="px-4 py-12 text-center text-bambu-gray">
+              {t('floor.dismissedNoMatches', 'No plates match this search.')}
+            </p>
+          ) : (
+            <ul className="divide-y divide-bambu-dark-tertiary">
+              {filtered.map((plate) => (
+                <li key={plate.id} className="flex items-center gap-3 px-4 py-3">
+                  <div className="min-w-0 flex-1">
+                    <div className="text-white font-medium truncate">{plate.print_name}</div>
+                    <div className="text-xs text-bambu-gray truncate">{plate.printer_name}</div>
+                    <div className="text-xs text-bambu-gray mt-0.5">
+                      {plate.dismissed_at
+                        ? t('floor.dismissedAt', 'Hidden {{when}}', {
+                            when: new Date(`${plate.dismissed_at}Z`).toLocaleString(),
+                          })
+                        : plate.completed_at
+                          ? new Date(`${plate.completed_at}Z`).toLocaleString()
+                          : t('floor.needsAttentionUnknownTime', 'Unknown time')}
+                    </div>
+                  </div>
+                  <Button
+                    variant="secondary"
+                    className="shrink-0"
+                    onClick={() => restore.mutate(plate.id)}
+                    disabled={restore.isPending}
+                  >
+                    {t('floor.restoreBuildPlate', 'Restore')}
+                  </Button>
+                </li>
+              ))}
+            </ul>
+          )}
+        </div>
+      </div>
     </div>
   );
 }
