@@ -131,6 +131,7 @@ describe('FloorLandingPage open-sessions panel', () => {
   });
 
   afterEach(() => {
+    vi.useRealTimers();
     vi.restoreAllMocks();
   });
 
@@ -190,9 +191,17 @@ describe('FloorLandingPage open-sessions panel', () => {
     expect(await screen.findByText('No stations are open.')).toBeInTheDocument();
   });
 
-  it('hides history behind a toggle', async () => {
+  it('opens recent history in a searchable modal', async () => {
     const recent = [
       { ...OPEN_SESSION, id: 9, closed_at: '2026-08-24T11:00:00', open_seconds: 120 },
+      {
+        ...OPEN_SESSION,
+        id: 10,
+        station_name: 'Initial QC',
+        station_slug: 'initial-qc',
+        closed_at: '2026-08-24T12:00:00',
+        open_seconds: 60,
+      },
     ];
     mockSessions({ recent });
     const user = userEvent.setup();
@@ -203,7 +212,48 @@ describe('FloorLandingPage open-sessions panel', () => {
 
     await user.click(screen.getByRole('button', { name: 'Recent history' }));
 
+    expect(await screen.findByRole('dialog', { name: 'Recent station history' })).toBeInTheDocument();
+    expect(screen.getByText(/was open 2m/)).toBeInTheDocument();
+    expect(screen.getByText('Initial QC')).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Date range' })).toBeInTheDocument();
+
+    await user.type(screen.getByPlaceholderText('Station…'), 'WIP');
+    expect(screen.getByText(/was open 2m/)).toBeInTheDocument();
+    expect(screen.queryByText('Initial QC')).not.toBeInTheDocument();
+  });
+
+  it('filters recent history by calendar date range', async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    vi.setSystemTime(new Date(2026, 7, 27, 12, 0, 0));
+    const day24 = new Date(2026, 7, 24, 15, 0, 0).toISOString();
+    const day26 = new Date(2026, 7, 26, 15, 0, 0).toISOString();
+    mockSessions({
+      recent: [
+        { ...OPEN_SESSION, id: 9, closed_at: day24, open_seconds: 120 },
+        {
+          ...OPEN_SESSION,
+          id: 10,
+          station_name: 'Initial QC',
+          station_slug: 'initial-qc',
+          closed_at: day26,
+          open_seconds: 60,
+        },
+      ],
+    });
+    const user = userEvent.setup({ advanceTimers: vi.advanceTimersByTime });
+    render(<FloorLandingPage />);
+
+    await user.click(await screen.findByRole('button', { name: 'Recent history' }));
     expect(await screen.findByText(/was open 2m/)).toBeInTheDocument();
+    expect(screen.getByText('Initial QC')).toBeInTheDocument();
+
+    await user.click(screen.getByRole('button', { name: 'Date range' }));
+    await user.click(screen.getByRole('button', { name: '24' }));
+    await user.click(screen.getByRole('button', { name: '24' }));
+
+    expect(screen.getByText(/was open 2m/)).toBeInTheDocument();
+    expect(screen.queryByText('Initial QC')).not.toBeInTheDocument();
+    vi.useRealTimers();
   });
 
   it('flags a session that was taken over rather than closed', async () => {
@@ -226,12 +276,17 @@ describe('FloorLandingPage open-sessions panel', () => {
     expect(await screen.findByText('taken over')).toBeInTheDocument();
   });
 
-  it('offers no history toggle when there is none', async () => {
+  it('still offers history when nothing closed recently', async () => {
     mockSessions();
+    const user = userEvent.setup();
     render(<FloorLandingPage />);
 
     await screen.findByText('No stations are open.');
-    expect(screen.queryByRole('button', { name: 'Recent history' })).not.toBeInTheDocument();
+    await user.click(screen.getByRole('button', { name: 'Recent history' }));
+
+    expect(
+      await screen.findByText('No stations closed in the last 24 hours.'),
+    ).toBeInTheDocument();
   });
 
   it('surfaces a load failure with a retry', async () => {
@@ -266,6 +321,7 @@ describe('FloorLandingPage unlabeled build-plates panel', () => {
   });
 
   afterEach(() => {
+    vi.useRealTimers();
     vi.restoreAllMocks();
   });
 
@@ -345,6 +401,7 @@ describe('FloorLandingPage non-production list', () => {
   });
 
   afterEach(() => {
+    vi.useRealTimers();
     vi.restoreAllMocks();
   });
 
@@ -372,16 +429,75 @@ describe('FloorLandingPage non-production list', () => {
     ).toBeInTheDocument();
   });
 
-  it('shows the dismissed plates when the control is opened', async () => {
+  it('opens a searchable modal of dismissed plates', async () => {
     mockDismissedPlates([DISMISSED_PLATE]);
     const user = userEvent.setup();
     render(<FloorLandingPage />);
 
     await user.click(await screen.findByRole('button', { name: 'Non-production list' }));
 
-    expect(await screen.findByText('Jig block')).toBeInTheDocument();
+    expect(await screen.findByRole('dialog', { name: 'Non-production build plates' })).toBeInTheDocument();
+    expect(screen.getByText('Jig block')).toBeInTheDocument();
     expect(screen.getByText('P1S-2')).toBeInTheDocument();
     expect(screen.getByRole('button', { name: 'Restore' })).toBeInTheDocument();
+    expect(screen.getByLabelText('Search')).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Date range' })).toBeInTheDocument();
+    expect(screen.queryByLabelText('From date & time')).not.toBeInTheDocument();
+    expect(screen.queryByLabelText('To date & time')).not.toBeInTheDocument();
+  });
+
+  it('filters the modal list by calendar date range', async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    vi.setSystemTime(new Date(2026, 7, 27, 12, 0, 0));
+    const day24 = new Date(2026, 7, 24, 15, 0, 0).toISOString();
+    const day26 = new Date(2026, 7, 26, 15, 0, 0).toISOString();
+    mockDismissedPlates([
+      { ...DISMISSED_PLATE, dismissed_at: day24 },
+      {
+        id: 8,
+        print_name: 'Cable guide',
+        printer_name: 'X1C-1',
+        completed_at: day26,
+        dismissed_at: day26,
+      },
+    ]);
+    const user = userEvent.setup({ advanceTimers: vi.advanceTimersByTime });
+    render(<FloorLandingPage />);
+
+    await user.click(await screen.findByRole('button', { name: 'Non-production list' }));
+    expect(await screen.findByText('Jig block')).toBeInTheDocument();
+    expect(screen.getByText('Cable guide')).toBeInTheDocument();
+
+    await user.click(screen.getByRole('button', { name: 'Date range' }));
+    await user.click(screen.getByRole('button', { name: '24' }));
+    await user.click(screen.getByRole('button', { name: '24' }));
+
+    expect(screen.getByText('Jig block')).toBeInTheDocument();
+    expect(screen.queryByText('Cable guide')).not.toBeInTheDocument();
+    vi.useRealTimers();
+  });
+
+  it('filters the modal list by search text', async () => {
+    mockDismissedPlates([
+      DISMISSED_PLATE,
+      {
+        id: 8,
+        print_name: 'Cable guide',
+        printer_name: 'X1C-1',
+        completed_at: '2026-08-24T12:00:00',
+        dismissed_at: '2026-08-24T16:00:00',
+      },
+    ]);
+    const user = userEvent.setup();
+    render(<FloorLandingPage />);
+
+    await user.click(await screen.findByRole('button', { name: 'Non-production list' }));
+    await screen.findByText('Jig block');
+
+    await user.type(screen.getByLabelText('Search'), 'Cable');
+
+    expect(screen.getByText('Cable guide')).toBeInTheDocument();
+    expect(screen.queryByText('Jig block')).not.toBeInTheDocument();
   });
 
   it('restores a dismissed plate and drops it from the list', async () => {

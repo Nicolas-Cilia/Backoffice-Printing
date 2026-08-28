@@ -7266,24 +7266,27 @@ export function AddPrinterModal({
                 {t('printers.discovery.subnetToScan')}
               </label>
               {detectedSubnets.length > 0 ? (
-                <select
-                  className="w-full px-3 py-2 bg-bambu-dark border border-bambu-dark-tertiary rounded-lg text-white focus:border-bambu-green focus:outline-none text-sm"
-                  value={useCustomSubnet ? '__custom__' : subnet}
-                  onChange={(e) => {
-                    if (e.target.value === '__custom__') {
-                      setUseCustomSubnet(true);
-                    } else {
-                      setUseCustomSubnet(false);
-                      setSubnet(e.target.value);
-                    }
-                  }}
-                  disabled={discovering}
-                >
-                  {detectedSubnets.map(s => (
-                    <option key={s} value={s}>{s}</option>
-                  ))}
-                  <option value="__custom__">{t('printers.discovery.customSubnetOption')}</option>
-                </select>
+                <div className="relative">
+                  <select
+                    className="w-full appearance-none px-3 py-2 pr-10 bg-bambu-dark border border-bambu-dark-tertiary rounded-lg text-white focus:border-bambu-green focus:outline-none text-sm"
+                    value={useCustomSubnet ? '__custom__' : subnet}
+                    onChange={(e) => {
+                      if (e.target.value === '__custom__') {
+                        setUseCustomSubnet(true);
+                      } else {
+                        setUseCustomSubnet(false);
+                        setSubnet(e.target.value);
+                      }
+                    }}
+                    disabled={discovering}
+                  >
+                    {detectedSubnets.map(s => (
+                      <option key={s} value={s}>{s}</option>
+                    ))}
+                    <option value="__custom__">{t('printers.discovery.customSubnetOption')}</option>
+                  </select>
+                  <ChevronDown aria-hidden="true" className="pointer-events-none absolute right-3 top-1/2 h-4 w-4 -translate-y-1/2 text-bambu-gray" />
+                </div>
               ) : (
                 <input
                   type="text"
@@ -7430,39 +7433,42 @@ export function AddPrinterModal({
             </div>
             <div>
               <label className="block text-sm text-bambu-gray mb-1">{t('printers.modal.modelOptional')}</label>
-              <select
-                className="w-full px-3 py-2 bg-bambu-dark border border-bambu-dark-tertiary rounded-lg text-white focus:border-bambu-green focus:outline-none"
-                value={form.model || ''}
-                onChange={(e) => setForm({ ...form, model: e.target.value })}
-              >
-                <option value="">{t('printers.modal.selectModel')}</option>
-                <optgroup label="A1 Series">
-                  <option value="A1">A1</option>
-                  <option value="A1 Mini">A1 Mini</option>
-                </optgroup>
-                <optgroup label="A2 Series">
-                  <option value="A2L">A2L</option>
-                </optgroup>
-                <optgroup label="H2 Series">
-                  <option value="H2C">H2C</option>
-                  <option value="H2D">H2D</option>
-                  <option value="H2D Pro">H2D Pro</option>
-                  <option value="H2S">H2S</option>
-                </optgroup>
-                <optgroup label="P Series">
-                  <option value="P1P">P1P</option>
-                  <option value="P1S">P1S</option>
-                  <option value="P2S">P2S</option>
-                </optgroup>
-                <optgroup label="X1 Series">
-                  <option value="X1">X1</option>
-                  <option value="X1C">X1 Carbon</option>
-                  <option value="X1E">X1E</option>
-                </optgroup>
-                <optgroup label="X2 Series">
-                  <option value="X2D">X2D</option>
-                </optgroup>
-              </select>
+              <div className="relative">
+                <select
+                  className="w-full appearance-none px-3 py-2 pr-10 bg-bambu-dark border border-bambu-dark-tertiary rounded-lg text-white focus:border-bambu-green focus:outline-none"
+                  value={form.model || ''}
+                  onChange={(e) => setForm({ ...form, model: e.target.value })}
+                >
+                  <option value="">{t('printers.modal.selectModel')}</option>
+                  <optgroup label="A1 Series">
+                    <option value="A1">A1</option>
+                    <option value="A1 Mini">A1 Mini</option>
+                  </optgroup>
+                  <optgroup label="A2 Series">
+                    <option value="A2L">A2L</option>
+                  </optgroup>
+                  <optgroup label="H2 Series">
+                    <option value="H2C">H2C</option>
+                    <option value="H2D">H2D</option>
+                    <option value="H2D Pro">H2D Pro</option>
+                    <option value="H2S">H2S</option>
+                  </optgroup>
+                  <optgroup label="P Series">
+                    <option value="P1P">P1P</option>
+                    <option value="P1S">P1S</option>
+                    <option value="P2S">P2S</option>
+                  </optgroup>
+                  <optgroup label="X1 Series">
+                    <option value="X1">X1</option>
+                    <option value="X1C">X1 Carbon</option>
+                    <option value="X1E">X1E</option>
+                  </optgroup>
+                  <optgroup label="X2 Series">
+                    <option value="X2D">X2D</option>
+                  </optgroup>
+                </select>
+                <ChevronDown aria-hidden="true" className="pointer-events-none absolute right-3 top-1/2 h-4 w-4 -translate-y-1/2 text-bambu-gray" />
+              </div>
             </div>
             <div>
               <label className="block text-sm text-bambu-gray mb-1">{t('printers.modal.locationGroup')}</label>
@@ -7961,39 +7967,42 @@ function EditPrinterModal({
             </div>
             <div>
               <label className="block text-sm text-bambu-gray mb-1">{t('printers.model')}</label>
-              <select
-                className="w-full px-3 py-2 bg-bambu-dark border border-bambu-dark-tertiary rounded-lg text-white focus:border-bambu-green focus:outline-none"
-                value={form.model}
-                onChange={(e) => setForm({ ...form, model: e.target.value })}
-              >
-                <option value="">{t('printers.modal.selectModel')}</option>
-                <optgroup label="A1 Series">
-                  <option value="A1">A1</option>
-                  <option value="A1 Mini">A1 Mini</option>
-                </optgroup>
-                <optgroup label="A2 Series">
-                  <option value="A2L">A2L</option>
-                </optgroup>
-                <optgroup label="H2 Series">
-                  <option value="H2C">H2C</option>
-                  <option value="H2D">H2D</option>
-                  <option value="H2D Pro">H2D Pro</option>
-                  <option value="H2S">H2S</option>
-                </optgroup>
-                <optgroup label="P Series">
-                  <option value="P1P">P1P</option>
-                  <option value="P1S">P1S</option>
-                  <option value="P2S">P2S</option>
-                </optgroup>
-                <optgroup label="X1 Series">
-                  <option value="X1">X1</option>
-                  <option value="X1C">X1 Carbon</option>
-                  <option value="X1E">X1E</option>
-                </optgroup>
-                <optgroup label="X2 Series">
-                  <option value="X2D">X2D</option>
-                </optgroup>
-              </select>
+              <div className="relative">
+                <select
+                  className="w-full appearance-none px-3 py-2 pr-10 bg-bambu-dark border border-bambu-dark-tertiary rounded-lg text-white focus:border-bambu-green focus:outline-none"
+                  value={form.model}
+                  onChange={(e) => setForm({ ...form, model: e.target.value })}
+                >
+                  <option value="">{t('printers.modal.selectModel')}</option>
+                  <optgroup label="A1 Series">
+                    <option value="A1">A1</option>
+                    <option value="A1 Mini">A1 Mini</option>
+                  </optgroup>
+                  <optgroup label="A2 Series">
+                    <option value="A2L">A2L</option>
+                  </optgroup>
+                  <optgroup label="H2 Series">
+                    <option value="H2C">H2C</option>
+                    <option value="H2D">H2D</option>
+                    <option value="H2D Pro">H2D Pro</option>
+                    <option value="H2S">H2S</option>
+                  </optgroup>
+                  <optgroup label="P Series">
+                    <option value="P1P">P1P</option>
+                    <option value="P1S">P1S</option>
+                    <option value="P2S">P2S</option>
+                  </optgroup>
+                  <optgroup label="X1 Series">
+                    <option value="X1">X1</option>
+                    <option value="X1C">X1 Carbon</option>
+                    <option value="X1E">X1E</option>
+                  </optgroup>
+                  <optgroup label="X2 Series">
+                    <option value="X2D">X2D</option>
+                  </optgroup>
+                </select>
+                <ChevronDown aria-hidden="true" className="pointer-events-none absolute right-3 top-1/2 h-4 w-4 -translate-y-1/2 text-bambu-gray" />
+              </div>
             </div>
             <div>
               <label className="block text-sm text-bambu-gray mb-1">Location / Group</label>
