@@ -2969,7 +2969,7 @@ function BinLocationScreen({ batch, t }: { batch: FloorBinBatch; t: ReturnType<t
           <p className="mt-8 text-2xl text-white">{t('floor.binScanAgainForQc', 'Scan this bin again for visual QC')}</p>
           <p className="mt-2 text-lg text-bambu-gray">{t('floor.binScanFitCheckAlternative', 'Or scan the Fit Check label')}</p>
         </>
-      ) : batch.status === 'visual_qc_passed' ? (
+      ) : batch.status === 'visual_qc_passed' || batch.status === 'ready_for_production' ? (
         <p className="mt-8 text-lg text-bambu-gray">
           {t('floor.binAlreadyPassedQcHint', 'Scan WIP when this bin goes into use')}
         </p>

@@ -114,6 +114,8 @@ export function partEventLabel(
       return t('floor.inventoryEventHotAirRemoved', 'Hot Air Removed');
     case 'ready_for_production':
       return t('floor.inventoryEventStagedForProduction', 'Staged for Production');
+    case 'wip':
+      return t('floor.inventoryEventInWip', 'In WIP');
     case 'archived':
       return t('floor.inventoryEventArchived', 'Archived from active view');
     case 'restored':
