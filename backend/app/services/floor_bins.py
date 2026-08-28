@@ -403,7 +403,9 @@ async def scan_bin_fit_check(
         return outcome
     if outcome.batch.status == "wip":
         return BinScanOutcome(result=BinScanResult.ALREADY_WIP, bin=outcome.bin, batch=outcome.batch)
-    if outcome.batch.status == "visual_qc_passed":
+    if outcome.batch.status in ("visual_qc_passed", "ready_for_production"):
+        # Restaging from WIP must not reopen visual QC; staged fills already
+        # passed inspection.
         return BinScanOutcome(result=BinScanResult.QC_RECORDED, bin=outcome.bin, batch=outcome.batch)
     if passed_quantity is None:
         return BinScanOutcome(

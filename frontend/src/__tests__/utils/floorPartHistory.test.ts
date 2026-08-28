@@ -6,6 +6,7 @@ import {
   isFloorPassBinStatus,
   isFloorPassPartAction,
   partEventDotClass,
+  partEventLabel,
 } from '../../utils/floorPartHistory';
 
 describe('floorPartHistory pass status styling', () => {
@@ -33,5 +34,16 @@ describe('floorPartHistory pass status styling', () => {
     expect(formatCustomStatus('support_removed')).toBe('Support Removed');
     expect(formatCustomStatus('overhang_removed')).toBe('Overhang Removed');
     expect(formatCustomStatus('hot_air_removed')).toBe('Hot Air Removed');
+  });
+
+  it('labels a WIP audit event as In WIP', () => {
+    const t = (_key: string, fallback: string) => fallback;
+    expect(
+      partEventLabel(
+        { id: 1, action: 'wip', details: null, occurred_at: '2026-08-27T12:00:00' },
+        'TOP',
+        t,
+      ),
+    ).toBe('In WIP');
   });
 });
