@@ -33,8 +33,8 @@ from backend.app.services.floor_sessions import (
 DEVICE_A = "device-a"
 DEVICE_B = "device-b"
 
-WIP = station_for_slug("wip")
-RECEIVE = station_for_slug("storage-receive")
+HARVEST = station_for_slug("harvest")
+FIT_CHECK = station_for_slug("fit-check")
 
 
 async def _open_rows(db) -> list[FloorStationSession]:
@@ -45,22 +45,22 @@ async def _open_rows(db) -> list[FloorStationSession]:
 class TestOpenCloseSwitch:
     @pytest.mark.asyncio
     async def test_scanning_an_idle_station_opens_it(self, db_session):
-        outcome = await apply_station_scan(db_session, WIP, DEVICE_A)
+        outcome = await apply_station_scan(db_session, HARVEST, DEVICE_A)
         await db_session.commit()
 
         assert outcome.result is ScanResult.OPENED
         assert outcome.session is not None
-        assert outcome.session.station_slug == "wip"
+        assert outcome.session.station_slug == "harvest"
         assert outcome.session.device_id == DEVICE_A
 
     @pytest.mark.asyncio
     async def test_rescanning_the_same_station_closes_it(self, db_session):
         """The documented toggle (§5.1): the station's own QR ends the
         session, so a bench needs one label, not a separate 'close' code."""
-        await apply_station_scan(db_session, WIP, DEVICE_A)
+        await apply_station_scan(db_session, HARVEST, DEVICE_A)
         await db_session.commit()
 
-        outcome = await apply_station_scan(db_session, WIP, DEVICE_A)
+        outcome = await apply_station_scan(db_session, HARVEST, DEVICE_A)
         await db_session.commit()
 
         assert outcome.result is ScanResult.CLOSED
@@ -69,29 +69,29 @@ class TestOpenCloseSwitch:
 
     @pytest.mark.asyncio
     async def test_scanning_a_different_station_switches(self, db_session):
-        await apply_station_scan(db_session, WIP, DEVICE_A)
+        await apply_station_scan(db_session, HARVEST, DEVICE_A)
         await db_session.commit()
 
-        outcome = await apply_station_scan(db_session, RECEIVE, DEVICE_A)
+        outcome = await apply_station_scan(db_session, FIT_CHECK, DEVICE_A)
         await db_session.commit()
 
         assert outcome.result is ScanResult.SWITCHED
         assert outcome.previous is not None
-        assert outcome.previous.station_slug == "wip"
+        assert outcome.previous.station_slug == "harvest"
         assert outcome.previous.closed_at is not None
 
         # Rule 1: the switch must leave exactly one open session, not two.
         rows = await _open_rows(db_session)
         assert len(rows) == 1
-        assert rows[0].station_slug == "storage-receive"
+        assert rows[0].station_slug == "fit-check"
 
     @pytest.mark.asyncio
     async def test_closing_is_a_write_not_a_delete(self, db_session):
         """The ledger references sessions by id (§6.2), so history has to
         survive a close."""
-        await apply_station_scan(db_session, WIP, DEVICE_A)
+        await apply_station_scan(db_session, HARVEST, DEVICE_A)
         await db_session.commit()
-        await apply_station_scan(db_session, WIP, DEVICE_A)
+        await apply_station_scan(db_session, HARVEST, DEVICE_A)
         await db_session.commit()
 
         result = await db_session.execute(select(FloorStationSession))
@@ -101,13 +101,13 @@ class TestOpenCloseSwitch:
 
     @pytest.mark.asyncio
     async def test_reopening_after_a_close_creates_a_new_session(self, db_session):
-        await apply_station_scan(db_session, WIP, DEVICE_A)
+        await apply_station_scan(db_session, HARVEST, DEVICE_A)
         await db_session.commit()
         first = (await get_open_session_for_device(db_session, DEVICE_A)).id
 
-        await apply_station_scan(db_session, WIP, DEVICE_A)
+        await apply_station_scan(db_session, HARVEST, DEVICE_A)
         await db_session.commit()
-        outcome = await apply_station_scan(db_session, WIP, DEVICE_A)
+        outcome = await apply_station_scan(db_session, HARVEST, DEVICE_A)
         await db_session.commit()
 
         assert outcome.result is ScanResult.OPENED
@@ -117,10 +117,10 @@ class TestOpenCloseSwitch:
 class TestFloorWideLock:
     @pytest.mark.asyncio
     async def test_second_device_is_refused_an_exclusive_station(self, db_session):
-        await apply_station_scan(db_session, WIP, DEVICE_A)
+        await apply_station_scan(db_session, HARVEST, DEVICE_A)
         await db_session.commit()
 
-        outcome = await apply_station_scan(db_session, WIP, DEVICE_B)
+        outcome = await apply_station_scan(db_session, HARVEST, DEVICE_B)
         await db_session.commit()
 
         assert outcome.result is ScanResult.LOCKED
@@ -135,39 +135,39 @@ class TestFloorWideLock:
     async def test_a_refusal_changes_nothing(self, db_session):
         """§9: a refused scan is not a state change. The blocked device must
         not lose whatever it was already holding."""
-        await apply_station_scan(db_session, RECEIVE, DEVICE_B)
+        await apply_station_scan(db_session, FIT_CHECK, DEVICE_B)
         await db_session.commit()
-        await apply_station_scan(db_session, WIP, DEVICE_A)
+        await apply_station_scan(db_session, HARVEST, DEVICE_A)
         await db_session.commit()
 
-        # B, holding receive, is refused WIP.
-        outcome = await apply_station_scan(db_session, WIP, DEVICE_B)
+        # B, holding fit-check, is refused harvest.
+        outcome = await apply_station_scan(db_session, HARVEST, DEVICE_B)
         await db_session.commit()
 
         assert outcome.result is ScanResult.LOCKED
         still = await get_open_session_for_device(db_session, DEVICE_B)
         assert still is not None
-        assert still.station_slug == "storage-receive"
+        assert still.station_slug == "fit-check"
 
     @pytest.mark.asyncio
     async def test_a_locked_station_frees_up_when_the_holder_closes(self, db_session):
-        await apply_station_scan(db_session, WIP, DEVICE_A)
+        await apply_station_scan(db_session, HARVEST, DEVICE_A)
         await db_session.commit()
-        await apply_station_scan(db_session, WIP, DEVICE_A)  # close
+        await apply_station_scan(db_session, HARVEST, DEVICE_A)  # close
         await db_session.commit()
 
-        outcome = await apply_station_scan(db_session, WIP, DEVICE_B)
+        outcome = await apply_station_scan(db_session, HARVEST, DEVICE_B)
         await db_session.commit()
         assert outcome.result is ScanResult.OPENED
 
     @pytest.mark.asyncio
-    async def test_different_exclusive_stations_do_not_block_each_other(self, db_session):
-        """The lock is per station, not one session for the whole floor —
-        otherwise a storage screen and a WIP screen could never coexist."""
-        await apply_station_scan(db_session, WIP, DEVICE_A)
+    async def test_exclusive_and_non_exclusive_stations_coexist(self, db_session):
+        """Harvest takes the floor-wide lock; fit-check does not — so both
+        can be open on different devices at once."""
+        await apply_station_scan(db_session, HARVEST, DEVICE_A)
         await db_session.commit()
 
-        outcome = await apply_station_scan(db_session, RECEIVE, DEVICE_B)
+        outcome = await apply_station_scan(db_session, FIT_CHECK, DEVICE_B)
         await db_session.commit()
 
         assert outcome.result is ScanResult.OPENED
@@ -177,10 +177,10 @@ class TestFloorWideLock:
 class TestTakeover:
     @pytest.mark.asyncio
     async def test_takeover_closes_the_holder_and_opens_for_the_taker(self, db_session):
-        await apply_station_scan(db_session, WIP, DEVICE_A)
+        await apply_station_scan(db_session, HARVEST, DEVICE_A)
         await db_session.commit()
 
-        outcome = await take_over(db_session, WIP, DEVICE_B)
+        outcome = await take_over(db_session, HARVEST, DEVICE_B)
         await db_session.commit()
 
         assert outcome.result is ScanResult.OPENED
@@ -196,9 +196,9 @@ class TestTakeover:
     async def test_takeover_is_recorded_as_such(self, db_session):
         """So a stale-session takeover stays distinguishable from a normal
         close when the history is read back later."""
-        await apply_station_scan(db_session, WIP, DEVICE_A)
+        await apply_station_scan(db_session, HARVEST, DEVICE_A)
         await db_session.commit()
-        await take_over(db_session, WIP, DEVICE_B)
+        await take_over(db_session, HARVEST, DEVICE_B)
         await db_session.commit()
 
         result = await db_session.execute(select(FloorStationSession).where(FloorStationSession.device_id == DEVICE_A))
@@ -207,22 +207,22 @@ class TestTakeover:
     @pytest.mark.asyncio
     async def test_takeover_also_closes_the_takers_own_other_session(self, db_session):
         """Otherwise rule 1 breaks: the taker would hold two stations."""
-        await apply_station_scan(db_session, WIP, DEVICE_A)
+        await apply_station_scan(db_session, HARVEST, DEVICE_A)
         await db_session.commit()
-        await apply_station_scan(db_session, RECEIVE, DEVICE_B)
+        await apply_station_scan(db_session, FIT_CHECK, DEVICE_B)
         await db_session.commit()
 
-        await take_over(db_session, WIP, DEVICE_B)
+        await take_over(db_session, HARVEST, DEVICE_B)
         await db_session.commit()
 
         rows = await _open_rows(db_session)
         assert len(rows) == 1
         assert rows[0].device_id == DEVICE_B
-        assert rows[0].station_slug == "wip"
+        assert rows[0].station_slug == "harvest"
 
     @pytest.mark.asyncio
     async def test_takeover_of_a_free_station_just_opens_it(self, db_session):
-        outcome = await take_over(db_session, WIP, DEVICE_A)
+        outcome = await take_over(db_session, HARVEST, DEVICE_A)
         await db_session.commit()
 
         assert outcome.result is ScanResult.OPENED
@@ -233,14 +233,14 @@ class TestTakeover:
         """The likeliest v1 deadlock (§2.4): one PC clears localStorage, gets
         a new device id, and its own old session holds the station forever.
         Without takeover the only fix is editing the database by hand."""
-        await apply_station_scan(db_session, WIP, "old-identity")
+        await apply_station_scan(db_session, HARVEST, "old-identity")
         await db_session.commit()
 
-        blocked = await apply_station_scan(db_session, WIP, "new-identity")
+        blocked = await apply_station_scan(db_session, HARVEST, "new-identity")
         await db_session.commit()
         assert blocked.result is ScanResult.LOCKED
 
-        recovered = await take_over(db_session, WIP, "new-identity")
+        recovered = await take_over(db_session, HARVEST, "new-identity")
         await db_session.commit()
         assert recovered.result is ScanResult.OPENED
         assert len(await _open_rows(db_session)) == 1
@@ -259,10 +259,10 @@ class TestOpenRace:
         """
         import backend.app.services.floor_sessions as svc
 
-        # Device A holds WIP; device B is mid-switch from receive.
-        await apply_station_scan(db_session, WIP, DEVICE_A)
+        # Device A holds harvest; device B is mid-switch from fit-check.
+        await apply_station_scan(db_session, HARVEST, DEVICE_A)
         await db_session.commit()
-        await apply_station_scan(db_session, RECEIVE, DEVICE_B)
+        await apply_station_scan(db_session, FIT_CHECK, DEVICE_B)
         await db_session.commit()
 
         real_lookup = svc.get_open_session_for_station
@@ -278,30 +278,30 @@ class TestOpenRace:
 
         monkeypatch.setattr(svc, "get_open_session_for_station", blind_first_call)
 
-        outcome = await svc.apply_station_scan(db_session, WIP, DEVICE_B)
+        outcome = await svc.apply_station_scan(db_session, HARVEST, DEVICE_B)
 
         assert outcome.result is ScanResult.LOCKED
         assert outcome.session is None
         assert outcome.blocking is not None
         assert outcome.blocking.device_id == DEVICE_A
 
-        # The rollback must have restored B's receive session: a refused scan
+        # The rollback must have restored B's fit-check session: a refused scan
         # cannot cost the operator the station they were already holding.
         still = await get_open_session_for_device(db_session, DEVICE_B)
         assert still is not None
-        assert still.station_slug == "storage-receive"
+        assert still.station_slug == "fit-check"
 
-        # And A keeps WIP — exactly one open session per station.
+        # And A keeps harvest — exactly one open session per station.
         rows = await _open_rows(db_session)
         assert len(rows) == 2
-        assert {r.station_slug for r in rows} == {"wip", "storage-receive"}
+        assert {r.station_slug for r in rows} == {"harvest", "fit-check"}
 
 
 class TestCloseAndQueries:
     @pytest.mark.asyncio
     async def test_close_for_device_is_idempotent(self, db_session):
         """The on-screen close control must not error on a double click."""
-        await apply_station_scan(db_session, WIP, DEVICE_A)
+        await apply_station_scan(db_session, HARVEST, DEVICE_A)
         await db_session.commit()
 
         assert await close_session_for_device(db_session, DEVICE_A) is not None
@@ -310,7 +310,7 @@ class TestCloseAndQueries:
 
     @pytest.mark.asyncio
     async def test_open_session_lookup_ignores_closed_rows(self, db_session):
-        await apply_station_scan(db_session, WIP, DEVICE_A)
+        await apply_station_scan(db_session, HARVEST, DEVICE_A)
         await db_session.commit()
         await close_session_for_device(db_session, DEVICE_A)
         await db_session.commit()
@@ -319,7 +319,7 @@ class TestCloseAndQueries:
 
     @pytest.mark.asyncio
     async def test_list_open_sessions_returns_oldest_first(self, db_session):
-        await apply_station_scan(db_session, WIP, DEVICE_A)
+        await apply_station_scan(db_session, HARVEST, DEVICE_A)
         await db_session.commit()
         first = await get_open_session_for_device(db_session, DEVICE_A)
         # Force a distinguishable ordering: sub-second inserts would otherwise
@@ -327,7 +327,7 @@ class TestCloseAndQueries:
         first.opened_at = datetime.utcnow() - timedelta(hours=2)
         await db_session.commit()
 
-        await apply_station_scan(db_session, RECEIVE, DEVICE_B)
+        await apply_station_scan(db_session, FIT_CHECK, DEVICE_B)
         await db_session.commit()
 
         rows = await list_open_sessions(db_session)

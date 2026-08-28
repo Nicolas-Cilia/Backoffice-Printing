@@ -35,9 +35,6 @@ class TestStationCatalog:
         on the floor have to be reprinted — that should be a deliberate edit
         to this test, never an incidental refactor."""
         assert {s.payload for s in FLOOR_STATIONS} == {
-            "BBS-wip",
-            "BBS-storage-receive",
-            "BBS-storage-move",
             "BBS-harvest",
             "BBS-initial-qc-pass",
             "BBS-rework",
@@ -57,7 +54,7 @@ class TestStationCatalog:
         assert len({s.name for s in FLOOR_STATIONS}) == len(FLOOR_STATIONS)
 
     def test_all_current_floor_codes_are_present(self):
-        assert len(FLOOR_STATIONS) == 12
+        assert len(FLOOR_STATIONS) == 9
 
     def test_fit_check_and_rework_carry_no_floor_wide_lock(self):
         """Parallel fit-check and rework benches on separate machines are
@@ -80,8 +77,11 @@ class TestStationCatalog:
             "overhang-removal",
             "hot-air-removal",
         }
-        for slug in ("wip", "storage-receive", "storage-move", "harvest"):
-            assert by_slug[slug].category == "station"
+        assert by_slug["harvest"].category == "station"
+        # Filament WIP / + Storage / Move stay out of the catalog until their
+        # SKU-move flows ship.
+        for slug in ("wip", "storage-receive", "storage-move"):
+            assert slug not in by_slug
 
     def test_item_location_destinations_carry_no_floor_wide_lock(self):
         """None of the item→location destinations is a session — parallel
@@ -101,9 +101,9 @@ class TestStationCatalog:
 
 class TestStationLookup:
     def test_resolves_a_known_payload(self):
-        station = station_for_payload("BBS-wip")
+        station = station_for_payload("BBS-harvest")
         assert station is not None
-        assert station.name == "WIP"
+        assert station.name == "Harvest"
 
     def test_resolves_the_legacy_fit_check_payload(self):
         station = station_for_payload("BBS-fit-check")

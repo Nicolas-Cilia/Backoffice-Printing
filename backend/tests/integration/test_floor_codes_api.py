@@ -18,13 +18,10 @@ class TestListStations:
         assert resp.status_code == 200
 
         stations = resp.json()
-        assert len(stations) == 12
+        assert len(stations) == 9
 
         payloads = [s["payload"] for s in stations]
         assert payloads == [
-            "BBS-wip",
-            "BBS-storage-receive",
-            "BBS-storage-move",
             "BBS-harvest",
             "BBS-initial-qc-pass",
             "BBS-rework",
@@ -37,14 +34,17 @@ class TestListStations:
         ]
         # Order is the documented workflow order (§5), not alphabetical — the
         # Codes page prints them in this sequence.
-        assert stations[0]["name"] == "WIP"
+        assert stations[0]["name"] == "Harvest"
         assert all(s["description"] for s in stations)
 
         by_slug = {s["slug"]: s for s in stations}
         assert by_slug["fit-check"]["name"] == "Initial QC Pass"
         assert by_slug["fit-check"]["category"] == "location"
         assert by_slug["rework"]["category"] == "location"
-        assert by_slug["wip"]["category"] == "station"
+        assert by_slug["harvest"]["category"] == "station"
+        assert "wip" not in by_slug
+        assert "storage-receive" not in by_slug
+        assert "storage-move" not in by_slug
         # The new item→location destinations all print under the Locations tab.
         for slug in (
             "ready-for-production-inventory",
@@ -63,7 +63,7 @@ class TestRenderStationLabels:
     async def test_renders_a_pdf(self, async_client: AsyncClient):
         resp = await async_client.post(
             "/api/v1/floor/labels/stations",
-            json={"payloads": ["BBS-wip", "BBS-harvest"], "width_mm": 60, "height_mm": 60},
+            json={"payloads": ["BBS-harvest", "BBS-rework"], "width_mm": 60, "height_mm": 60},
         )
         assert resp.status_code == 200
         assert resp.headers["content-type"] == "application/pdf"
@@ -79,7 +79,7 @@ class TestRenderStationLabels:
         labels — a missing label is only discovered at the shelf."""
         resp = await async_client.post(
             "/api/v1/floor/labels/stations",
-            json={"payloads": ["BBS-wip", "BBS-not-a-station"], "width_mm": 60, "height_mm": 60},
+            json={"payloads": ["BBS-harvest", "BBS-not-a-station"], "width_mm": 60, "height_mm": 60},
         )
         assert resp.status_code == 400
         assert "BBS-not-a-station" in resp.json()["detail"]
@@ -95,7 +95,7 @@ class TestRenderStationLabels:
     ):
         resp = await async_client.post(
             "/api/v1/floor/labels/stations",
-            json={"payloads": ["BBS-wip"], "width_mm": width, "height_mm": height},
+            json={"payloads": ["BBS-harvest"], "width_mm": width, "height_mm": height},
         )
         assert resp.status_code == 422
 
@@ -113,7 +113,45 @@ class TestRenderStationLabels:
     async def test_accepts_a_non_square_custom_size(self, async_client: AsyncClient):
         resp = await async_client.post(
             "/api/v1/floor/labels/stations",
-            json={"payloads": ["BBS-storage-move"], "width_mm": 80, "height_mm": 40},
+            json={"payloads": ["BBS-harvest"], "width_mm": 80, "height_mm": 40},
         )
         assert resp.status_code == 200
         assert resp.content.startswith(b"%PDF-")
+
+
+class TestErrorLabels:
+    @pytest.mark.asyncio
+    @pytest.mark.integration
+    async def test_other_cannot_be_removed(self, async_client: AsyncClient):
+        created = await async_client.post(
+            "/api/v1/floor/error-labels",
+            json={"name": "Other", "slug": "other"},
+        )
+        assert created.status_code == 201
+        body = created.json()
+        assert body["payload"] == "BBF-other"
+        assert body["is_protected"] is True
+
+        deleted = await async_client.delete(f"/api/v1/floor/error-labels/{body['id']}")
+        assert deleted.status_code == 400
+        assert "cannot be removed" in deleted.json()["detail"]
+
+        remaining = await async_client.get("/api/v1/floor/error-labels")
+        assert any(label["slug"] == "other" for label in remaining.json())
+
+    @pytest.mark.asyncio
+    @pytest.mark.integration
+    async def test_custom_label_can_be_removed(self, async_client: AsyncClient):
+        created = await async_client.post(
+            "/api/v1/floor/error-labels",
+            json={"name": "Warping", "slug": "warping"},
+        )
+        assert created.status_code == 201
+        body = created.json()
+        assert body["is_protected"] is False
+
+        deleted = await async_client.delete(f"/api/v1/floor/error-labels/{body['id']}")
+        assert deleted.status_code == 204
+
+        remaining = await async_client.get("/api/v1/floor/error-labels")
+        assert all(label["slug"] != "warping" for label in remaining.json())

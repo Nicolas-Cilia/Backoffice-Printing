@@ -146,7 +146,7 @@ class FloorStationResponse(BaseModel):
     payload: str
     name: str
     description: str
-    # "station" (WIP/+Storage/Move/Harvest) vs "location" (Fit
+    # "station" (Harvest) vs "location" (Fit
     # Check/Rework) — which Codes-page tab this label prints under (§3.3).
     category: str
 
@@ -172,10 +172,17 @@ class ErrorLabelResponse(BaseModel):
     name: str
     slug: str
     payload: str
+    is_protected: bool
 
 
 def _to_error_label_response(label: FloorErrorLabel) -> ErrorLabelResponse:
-    return ErrorLabelResponse(id=label.id, name=label.name, slug=label.slug, payload=f"BBF-{label.slug}")
+    return ErrorLabelResponse(
+        id=label.id,
+        name=label.name,
+        slug=label.slug,
+        payload=f"BBF-{label.slug}",
+        is_protected=label.is_protected,
+    )
 
 
 @router.get("/error-labels", response_model=list[ErrorLabelResponse])
@@ -213,6 +220,8 @@ async def delete_error_label(
     label = await db.get(FloorErrorLabel, label_id)
     if label is None:
         raise HTTPException(404, "Error label not found")
+    if label.is_protected:
+        raise HTTPException(400, "The Other error label cannot be removed")
     await db.delete(label)
     await db.commit()
 

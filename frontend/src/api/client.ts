@@ -1274,6 +1274,7 @@ export interface FloorErrorLabel {
   name: string;
   slug: string;
   payload: string;
+  is_protected: boolean;
 }
 
 /** An open (or just-closed) claim on a floor station (docs/floor-plan.md §2.4).

@@ -5,8 +5,8 @@ Implements the two composing rules from ``docs/floor-plan.md`` §2.4:
 1. **One open session per device** — so scanning a new station QR closes the
    device's current session and opens the new one, atomically.
 2. **One open session per exclusive station, floor-wide** — a second device
-   scanning WIP / + Storage / Move / Harvest is refused and told who holds
-   it.
+   scanning Harvest (the only exclusive session station today) is refused
+   and told who holds it.
 
 Every outcome is returned as a :class:`ScanOutcome` rather than signalled by
 exception, because the caller has to *render* the difference: opened, closed,

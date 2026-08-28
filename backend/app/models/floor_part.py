@@ -123,6 +123,11 @@ class FloorPrintStopReason(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
 
 
+# Scan flow hardcodes ``BBF-other`` as the catch-all keyboard prompt for both
+# Rework and discard, so that row cannot be removed from the catalog.
+PROTECTED_ERROR_LABEL_SLUGS = frozenset({"other"})
+
+
 class FloorErrorLabel(Base):
     """A user-managed ``BBF-…`` label used for both Rework and discard."""
 
@@ -133,6 +138,10 @@ class FloorErrorLabel(Base):
     slug: Mapped[str] = mapped_column(String(64), unique=True, index=True)
     name: Mapped[str] = mapped_column(String(120), unique=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
+
+    @property
+    def is_protected(self) -> bool:
+        return self.slug in PROTECTED_ERROR_LABEL_SLUGS
 
 
 class FloorDismissedBuildPlate(Base):
