@@ -7,11 +7,10 @@ type TouchOnlyButtonProps = {
   'aria-label': string;
 } & Omit<ButtonHTMLAttributes<HTMLButtonElement>, 'onClick' | 'onKeyDown' | 'type' | 'tabIndex'>;
 
-function isPointerActivation(event: Pick<PointerEvent<HTMLElement>, 'pointerType' | 'button'>): boolean {
-  // Keyboard never dispatches pointer events. Right-click / other mouse buttons
-  // are ignored; jsdom often omits pointerType, so a missing type still counts.
-  if (event.button != null && event.button !== 0) return false;
-  return event.pointerType !== 'keyboard';
+function isPointerActivation(event: Pick<PointerEvent<HTMLElement>, 'button'>): boolean {
+  // Keyboard never dispatches pointer events. Right-click / other mouse
+  // buttons are ignored; a missing button (jsdom) still counts as primary.
+  return event.button == null || event.button === 0;
 }
 
 /**
