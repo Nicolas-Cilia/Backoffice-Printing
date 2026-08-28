@@ -1236,6 +1236,27 @@ class TestReusableBinFlow:
         assert response.json()["result"] == "no_batch"
 
 
+async def _enroll_linked_part_with_code(
+    async_client, printer_factory, archive_factory, part_code, sticker="BBD-000001", *, fit_check: bool = True
+):
+    """Enroll a job-linked part via Harvest, then stamp a part code on it so
+    the item→location rules have a TOP-vs-BOT distinction to act on. Closes
+    the harvest session afterward — locations are not sessions. By default
+    also records Initial QC Pass (required before finishing / ready / WIP)."""
+    await _create_tracking_section_with_part(async_client, code=part_code)
+    printer = await printer_factory()
+    await archive_factory(printer_id=printer.id)
+    await _open_harvest(async_client, DEVICE_A)
+    await _scan_printer(async_client, printer.id, DEVICE_A)
+    scanned = await _scan_part(async_client, sticker, DEVICE_A)
+    part_id = scanned.json()["part"]["id"]
+    await async_client.post(f"/api/v1/floor/inventory/parts/{part_id}/part-code", json={"code": part_code})
+    await _open_harvest(async_client, DEVICE_A)  # re-scanning Harvest's own QR closes the session
+    if fit_check:
+        await _scan_fit_check_part(async_client, sticker)
+    return sticker
+
+
 async def _seed_completed_archive(async_client, db_session, printer_factory, archive_factory, **archive_kwargs):
     """Set up part tracking and a completed build plate that shows up in the
     unlabeled list, so a test can dismiss and then restore it."""
@@ -1255,6 +1276,166 @@ async def _seed_completed_archive(async_client, db_session, printer_factory, arc
         **archive_kwargs,
     )
     return archive
+
+
+@pytest.mark.asyncio
+@pytest.mark.integration
+class TestPartLocationApi:
+    """`POST /floor/locations/part` — the item→location pipeline for parts."""
+
+    async def test_bot_part_wip_without_qc_is_refused(self, async_client, printer_factory, archive_factory):
+        sticker = await _enroll_linked_part_with_code(
+            async_client, printer_factory, archive_factory, "BOT", fit_check=False
+        )
+
+        resp = await async_client.post(
+            "/api/v1/floor/locations/part",
+            json={"payload": sticker, "location_slug": "production-wip"},
+        )
+
+        assert resp.status_code == 200
+        assert resp.json()["result"] == "qc_required"
+
+    async def test_bot_part_moves_to_wip(self, async_client, printer_factory, archive_factory):
+        sticker = await _enroll_linked_part_with_code(async_client, printer_factory, archive_factory, "BOT")
+
+        resp = await async_client.post(
+            "/api/v1/floor/locations/part",
+            json={"payload": sticker, "location_slug": "production-wip"},
+        )
+
+        assert resp.status_code == 200
+        assert resp.json()["result"] == "recorded"
+
+    async def test_bot_part_is_refused_at_a_finishing_location(self, async_client, printer_factory, archive_factory):
+        sticker = await _enroll_linked_part_with_code(async_client, printer_factory, archive_factory, "BOT")
+
+        resp = await async_client.post(
+            "/api/v1/floor/locations/part",
+            json={"payload": sticker, "location_slug": "support-removal"},
+        )
+
+        assert resp.status_code == 200
+        assert resp.json()["result"] == "wrong_part_type"
+
+    async def test_top_part_wip_before_finishing_is_refused(self, async_client, printer_factory, archive_factory):
+        sticker = await _enroll_linked_part_with_code(async_client, printer_factory, archive_factory, "TOP")
+
+        resp = await async_client.post(
+            "/api/v1/floor/locations/part",
+            json={"payload": sticker, "location_slug": "production-wip"},
+        )
+
+        assert resp.status_code == 200
+        assert resp.json()["result"] == "finishing_required"
+
+    async def test_top_part_full_finishing_then_wip(self, async_client, printer_factory, archive_factory):
+        sticker = await _enroll_linked_part_with_code(async_client, printer_factory, archive_factory, "TOP")
+
+        for slug in ("support-removal", "overhang-removal", "hot-air-removal", "production-wip"):
+            resp = await async_client.post(
+                "/api/v1/floor/locations/part",
+                json={"payload": sticker, "location_slug": slug},
+            )
+            assert resp.status_code == 200, slug
+            assert resp.json()["result"] == "recorded", slug
+
+    async def test_fit_check_slug_is_refused_here(self, async_client, printer_factory, archive_factory):
+        """Fit Check keeps its own route; routing it through the generic
+        endpoint is a 404 so its special handling cannot be bypassed."""
+        sticker = await _enroll_linked_part_with_code(async_client, printer_factory, archive_factory, "BOT")
+
+        resp = await async_client.post(
+            "/api/v1/floor/locations/part",
+            json={"payload": sticker, "location_slug": "fit-check"},
+        )
+
+        assert resp.status_code == 404
+
+    async def test_unknown_location_is_404(self, async_client):
+        resp = await async_client.post(
+            "/api/v1/floor/locations/part",
+            json={"payload": "BBD-000001", "location_slug": "nope"},
+        )
+        assert resp.status_code == 404
+
+
+@pytest.mark.asyncio
+@pytest.mark.integration
+class TestBinLocationApi:
+    """`POST /floor/locations/bin` — the item→location pipeline for bins,
+    replacing the old open-WIP-session path."""
+
+    async def _fill_and_qc(self, async_client, printer_factory, payload="BBN-KNB-1", quantity=20):
+        printer = await printer_factory(name="Bench A")
+        await _open_harvest(async_client, DEVICE_A)
+        await _scan_printer(async_client, printer.id, DEVICE_A)
+        await async_client.post(
+            "/api/v1/floor/harvest/bin",
+            json={"device_id": DEVICE_A, "payload": payload, "quantity": quantity},
+        )
+        await async_client.post("/api/v1/floor/locations/fit-check/bin", json={"payload": payload})
+        await async_client.post(
+            "/api/v1/floor/locations/fit-check/bin",
+            json={"payload": payload, "passed_quantity": quantity},
+        )
+        return payload
+
+    async def test_wip_requires_qc(self, async_client, printer_factory):
+        printer = await printer_factory(name="Bench A")
+        await _open_harvest(async_client, DEVICE_A)
+        await _scan_printer(async_client, printer.id, DEVICE_A)
+        await async_client.post(
+            "/api/v1/floor/harvest/bin",
+            json={"device_id": DEVICE_A, "payload": "BBN-KNB-1", "quantity": 12},
+        )
+
+        resp = await async_client.post(
+            "/api/v1/floor/locations/bin",
+            json={"payload": "BBN-KNB-1", "location_slug": "production-wip"},
+        )
+
+        assert resp.status_code == 200
+        assert resp.json()["result"] == "qc_required"
+
+    async def test_ready_for_production_then_wip_then_empty(self, async_client, printer_factory):
+        payload = await self._fill_and_qc(async_client, printer_factory)
+
+        ready = await async_client.post(
+            "/api/v1/floor/locations/bin",
+            json={"payload": payload, "location_slug": "ready-for-production-inventory"},
+        )
+        wip = await async_client.post(
+            "/api/v1/floor/locations/bin",
+            json={"payload": payload, "location_slug": "production-wip"},
+        )
+        empty = await async_client.post(
+            "/api/v1/floor/locations/bin",
+            json={"payload": payload, "location_slug": "bin-empty"},
+        )
+
+        assert ready.json()["result"] == "ready_for_production_recorded"
+        assert wip.json()["result"] == "wip_recorded"
+        assert empty.json()["result"] == "empty_recorded"
+        assert empty.json()["batch"]["remaining_quantity"] == 0
+
+    async def test_empty_requires_wip(self, async_client, printer_factory):
+        payload = await self._fill_and_qc(async_client, printer_factory)
+
+        resp = await async_client.post(
+            "/api/v1/floor/locations/bin",
+            json={"payload": payload, "location_slug": "bin-empty"},
+        )
+
+        assert resp.status_code == 200
+        assert resp.json()["result"] == "empty_requires_wip"
+
+    async def test_fit_check_slug_is_refused_here(self, async_client):
+        resp = await async_client.post(
+            "/api/v1/floor/locations/bin",
+            json={"payload": "BBN-KNB-1", "location_slug": "fit-check"},
+        )
+        assert resp.status_code == 404
 
 
 @pytest.mark.asyncio

@@ -28,6 +28,15 @@ from backend.app.services.floor_sessions import (
 
 BIN_PREFIX = "BBN-"
 BIN_PART_CODES = ("KNB", "BUT")
+
+# Item→location pipeline slugs a bin understands (§ item-then-location). Fit
+# Check keeps its own quantity-carrying entry point and is not routed here.
+READY_FOR_PRODUCTION_LOCATION_SLUG = "ready-for-production-inventory"
+PRODUCTION_WIP_LOCATION_SLUG = "production-wip"
+BIN_EMPTY_LOCATION_SLUG = "bin-empty"
+BIN_LOCATION_SLUGS = frozenset(
+    {READY_FOR_PRODUCTION_LOCATION_SLUG, PRODUCTION_WIP_LOCATION_SLUG, BIN_EMPTY_LOCATION_SLUG}
+)
 BIN_COUNT = 3
 BIN_FREE_STATUSES = frozenset(("empty", "empty_override", "unlinked"))
 BIN_NON_STATUS_EVENTS = frozenset(("quantity_override",))
@@ -67,6 +76,8 @@ class BinScanResult(StrEnum):
     QC_REQUIRED = "qc_required"
     ALREADY_WIP = "already_wip"
     WIP_RECORDED = "wip_recorded"
+    READY_FOR_PRODUCTION_RECORDED = "ready_for_production_recorded"
+    ALREADY_READY_FOR_PRODUCTION = "already_ready_for_production"
     EMPTY_RECORDED = "empty_recorded"
     ALREADY_EMPTY = "already_empty"
     EMPTY_REQUIRES_WIP = "empty_requires_wip"
@@ -425,14 +436,47 @@ async def scan_bin_fit_check(
     )
 
 
-async def scan_bin_wip(db: AsyncSession, payload: str) -> BinScanOutcome:
-    """Move a visually inspected fill into WIP."""
+async def scan_bin_ready_for_production(db: AsyncSession, payload: str) -> BinScanOutcome:
+    """Stage a visually inspected fill in Ready-for-Production Inventory.
+
+    Optional step between Initial QC and Production WIP (§ item→location):
+    requires visual QC to have passed, and is never itself a prerequisite for
+    WIP. Idempotent — a fill already at Ready-for-Production reports so rather
+    than appending a duplicate event."""
     outcome = await resolve_bin_for_flow(db, payload)
     if outcome.batch is None:
         return outcome
     if outcome.batch.status == "wip":
         return BinScanOutcome(result=BinScanResult.ALREADY_WIP, bin=outcome.bin, batch=outcome.batch)
+    if outcome.batch.status == "ready_for_production":
+        return BinScanOutcome(result=BinScanResult.ALREADY_READY_FOR_PRODUCTION, bin=outcome.bin, batch=outcome.batch)
     if outcome.batch.status != "visual_qc_passed":
+        return BinScanOutcome(result=BinScanResult.QC_REQUIRED, bin=outcome.bin, batch=outcome.batch)
+    db.add(
+        FloorBinBatchEvent(batch_id=outcome.batch.id, action="ready_for_production", details={"source": "floor_scan"})
+    )
+    await db.flush()
+    batch = await db.get(FloorBinBatch, outcome.batch.id)
+    return BinScanOutcome(
+        result=BinScanResult.READY_FOR_PRODUCTION_RECORDED,
+        bin=outcome.bin,
+        batch=await _batch_info(db, batch, outcome.bin),
+    )
+
+
+async def scan_bin_wip(db: AsyncSession, payload: str) -> BinScanOutcome:
+    """Move a visually inspected fill into WIP.
+
+    Accepts a fill straight from Initial QC (``visual_qc_passed``) or one that
+    stopped at Ready-for-Production Inventory first — Ready-for-Production is
+    optional, so both are valid predecessors. Anything earlier (still
+    ``harvested``, never QC'd) is refused with ``QC_REQUIRED``."""
+    outcome = await resolve_bin_for_flow(db, payload)
+    if outcome.batch is None:
+        return outcome
+    if outcome.batch.status == "wip":
+        return BinScanOutcome(result=BinScanResult.ALREADY_WIP, bin=outcome.bin, batch=outcome.batch)
+    if outcome.batch.status not in ("visual_qc_passed", "ready_for_production"):
         return BinScanOutcome(result=BinScanResult.QC_REQUIRED, bin=outcome.bin, batch=outcome.batch)
     db.add(FloorBinBatchEvent(batch_id=outcome.batch.id, action="wip", details={"source": "floor_scan"}))
     await db.flush()
@@ -458,6 +502,21 @@ async def scan_bin_empty(db: AsyncSession, payload: str) -> BinScanOutcome:
     db.add(FloorBinBatchEvent(batch_id=batch.id, action="empty", details={"source": "floor_scan"}))
     await db.flush()
     return BinScanOutcome(result=BinScanResult.EMPTY_RECORDED, bin=info, batch=await _batch_info(db, batch, info))
+
+
+async def scan_bin_at_location(db: AsyncSession, payload: str, location_slug: str) -> BinScanOutcome:
+    """Dispatch a bin item→location scan to the matching workflow step.
+
+    The bin half of the universal scan-item-then-location pattern. Only the
+    three bin locations are accepted here; a finishing or unknown location
+    slug is an ``INVALID_CODE`` rather than a silent no-op."""
+    if location_slug == READY_FOR_PRODUCTION_LOCATION_SLUG:
+        return await scan_bin_ready_for_production(db, payload)
+    if location_slug == PRODUCTION_WIP_LOCATION_SLUG:
+        return await scan_bin_wip(db, payload)
+    if location_slug == BIN_EMPTY_LOCATION_SLUG:
+        return await scan_bin_empty(db, payload)
+    return BinScanOutcome(result=BinScanResult.INVALID_CODE, bin=await _resolve_bin(db, payload))
 
 
 async def list_floor_bin_management(db: AsyncSession) -> list[BinManagementInfo]:
@@ -697,7 +756,13 @@ __all__ = [
     "resolve_bin_for_flow",
     "scan_bin_fit_check",
     "scan_bin_wip",
+    "scan_bin_ready_for_production",
+    "scan_bin_at_location",
     "scan_bin_empty",
+    "BIN_LOCATION_SLUGS",
+    "READY_FOR_PRODUCTION_LOCATION_SLUG",
+    "PRODUCTION_WIP_LOCATION_SLUG",
+    "BIN_EMPTY_LOCATION_SLUG",
     "list_floor_bin_management",
     "list_floor_bin_history",
     "list_bin_batch_events",

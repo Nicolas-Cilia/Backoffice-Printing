@@ -124,6 +124,53 @@ FLOOR_STATIONS: tuple[FloorStation, ...] = (
         exclusive=False,
         category="location",
     ),
+    # ── Item→location pipeline locations ──────────────────────────────────
+    # Every station below is a *location*, not a session: the operator scans
+    # an item first (a `BBD-` part sticker or a `BBN-` bin) and then this QR,
+    # and the pairing is committed with no open-station-first step. None of
+    # them takes the floor-wide lock — parallel benches are normal work.
+    FloorStation(
+        slug="ready-for-production-inventory",
+        name="Ready for Production Inventory",
+        description="Optional staging before Production WIP. Scan a bin or part, then this location.",
+        exclusive=False,
+        category="location",
+    ),
+    FloorStation(
+        slug="production-wip",
+        name="Production WIP",
+        description="Move a bin or part into production WIP. Scan the item, then this location.",
+        exclusive=False,
+        category="location",
+    ),
+    FloorStation(
+        slug="bin-empty",
+        name="Empty Bin",
+        description="Release a consumed bin (unlinks it, quantity 0). Scan the bin, then this location.",
+        exclusive=False,
+        category="location",
+    ),
+    FloorStation(
+        slug="support-removal",
+        name="Support Removal",
+        description="TOP parts only, first finishing step. Scan the part, then this location.",
+        exclusive=False,
+        category="location",
+    ),
+    FloorStation(
+        slug="overhang-removal",
+        name="Overhang Removal",
+        description="TOP parts only, after Support Removal. Scan the part, then this location.",
+        exclusive=False,
+        category="location",
+    ),
+    FloorStation(
+        slug="hot-air-removal",
+        name="Hot Air Removal",
+        description="TOP parts only, after Overhang Removal. Scan the part, then this location.",
+        exclusive=False,
+        category="location",
+    ),
 )
 
 _STATIONS_BY_PAYLOAD: dict[str, FloorStation] = {s.payload: s for s in FLOOR_STATIONS}

@@ -42,6 +42,7 @@ from backend.app.models.floor_session import FloorStationSession
 from backend.app.models.printer import Printer
 from backend.app.models.user import User
 from backend.app.services.floor_bins import (
+    BIN_LOCATION_SLUGS,
     BinScanOutcome,
     BinScanResult,
     discard_bin,
@@ -53,6 +54,7 @@ from backend.app.services.floor_bins import (
     override_bin_quantity,
     relink_bin,
     resolve_bin_for_flow,
+    scan_bin_at_location,
     scan_bin_empty,
     scan_bin_fit_check,
     scan_bin_wip,
@@ -70,6 +72,7 @@ from backend.app.services.floor_codes import (
     station_for_slug,
 )
 from backend.app.services.floor_parts import (
+    PART_LOCATION_SLUGS,
     HarvestPrinterResult,
     LocationScanOutcome,
     LocationScanResult,
@@ -100,6 +103,7 @@ from backend.app.services.floor_parts import (
     scan_fit_check_part,
     scan_harvest_printer,
     scan_part,
+    scan_part_at_location,
     scan_rework_error,
     scan_rework_part,
     search_completed_jobs,
@@ -1421,6 +1425,63 @@ async def scan_fit_check_part_route(
     await db.commit()
     logger.info("Fit check: payload=%s result=%s", body.payload, outcome.result)
     return _to_location_response(outcome)
+
+
+class PartLocationScanRequest(BaseModel):
+    """A pending `BBD-…` part plus the item→location location it was scanned
+    into (Support/Overhang/Hot Air removal, Ready-for-Production, or WIP)."""
+
+    payload: str = Field(..., min_length=1, max_length=256)
+    location_slug: str = Field(..., min_length=1, max_length=64)
+
+
+@router.post("/locations/part", response_model=LocationPartScanResponse)
+async def scan_part_location_route(
+    body: PartLocationScanRequest,
+    db: AsyncSession = Depends(get_db),
+    _: User | None = RequirePermissionIfAuthEnabled(Permission.FLOOR_SCAN),
+) -> LocationPartScanResponse:
+    """Commit a part into one of the item→location pipeline locations.
+
+    The universal scan-item-then-location pattern for parts: the scan page
+    holds the pending sticker locally, then this route records the location
+    with all the TOP-vs-BOT finishing rules applied server-side. Fit Check
+    and Rework keep their own dedicated routes and are refused here (404) so
+    their special handling (reasons, no ordering) cannot be bypassed.
+    """
+    if body.location_slug not in PART_LOCATION_SLUGS:
+        raise HTTPException(404, f"Not a part location: {body.location_slug}")
+    outcome = await scan_part_at_location(db, body.payload, body.location_slug)
+    await db.commit()
+    logger.info("Part location: payload=%s location=%s result=%s", body.payload, body.location_slug, outcome.result)
+    return _to_location_response(outcome)
+
+
+class BinLocationScanRequest(BaseModel):
+    """A pending `BBN-…` bin plus the item→location location it was scanned
+    into (Ready-for-Production, Production WIP, or Empty Bin)."""
+
+    payload: str = Field(..., min_length=1, max_length=256)
+    location_slug: str = Field(..., min_length=1, max_length=64)
+
+
+@router.post("/locations/bin", response_model=BinScanResponse)
+async def scan_bin_location_route(
+    body: BinLocationScanRequest,
+    db: AsyncSession = Depends(get_db),
+    _: User | None = RequirePermissionIfAuthEnabled(Permission.FLOOR_SCAN),
+) -> BinScanResponse:
+    """Commit a bin into one of the item→location pipeline locations.
+
+    The bin half of the universal pattern, replacing the old open-WIP-session
+    bin path: scan the bin, then the location QR. Initial QC keeps its own
+    quantity-carrying route and is refused here (404)."""
+    if body.location_slug not in BIN_LOCATION_SLUGS:
+        raise HTTPException(404, f"Not a bin location: {body.location_slug}")
+    outcome = await scan_bin_at_location(db, body.payload, body.location_slug)
+    await db.commit()
+    logger.info("Bin location: payload=%s location=%s result=%s", body.payload, body.location_slug, outcome.result)
+    return _to_bin_scan_response(outcome)
 
 
 class ReworkScanRequest(BaseModel):

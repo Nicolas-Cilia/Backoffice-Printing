@@ -235,12 +235,38 @@ describe('routeScan', () => {
       });
     });
 
-    it('routes bins in WIP to the QC-gated intake path', () => {
-      expect(routeScan('BBN-KNB-1', 'wip')).toEqual({ action: 'wip-bin', payload: 'BBN-KNB-1' });
+    it('no longer routes bins through an open WIP session', () => {
+      // The open-WIP-session bin path was removed in favour of
+      // item→location: a bin scanned with any real station open is now
+      // unhandled rather than starting a production-WIP intake.
+      expect(routeScan('BBN-KNB-1', 'wip').action).toBe('not-implemented');
     });
 
-    it('starts the visual-QC flow for a bin scanned at idle', () => {
+    it('starts the scan-bin-then-location flow for a bin scanned at idle', () => {
       expect(routeScan('BBN-KNB-1', null)).toEqual({ action: 'bin-scanned', payload: 'BBN-KNB-1' });
+    });
+  });
+
+  describe('item→location destinations', () => {
+    it.each([
+      ['BBS-ready-for-production-inventory', 'ready-for-production-inventory'],
+      ['BBS-production-wip', 'production-wip'],
+      ['BBS-bin-empty', 'bin-empty'],
+      ['BBS-support-removal', 'support-removal'],
+      ['BBS-overhang-removal', 'overhang-removal'],
+      ['BBS-hot-air-removal', 'hot-air-removal'],
+    ])('classifies %s as a location scan', (payload, slug) => {
+      expect(routeScan(payload, null)).toEqual({ action: 'location', slug, payload });
+    });
+
+    it('classifies an item→location code the same way regardless of station context', () => {
+      // Whether it is usable right now (is an item pending?) is the page's
+      // call — the classification never depends on stationSlug.
+      expect(routeScan('BBS-production-wip', 'harvest')).toEqual({
+        action: 'location',
+        slug: 'production-wip',
+        payload: 'BBS-production-wip',
+      });
     });
   });
 

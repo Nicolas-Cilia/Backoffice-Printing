@@ -2021,6 +2021,252 @@ describe('FloorScanPage (Phase 1b sessions)', () => {
     });
   });
 
+  describe('item→location pipeline (scan item, then location QR)', () => {
+    const LOC_PART = { id: 42, sticker_code: 'BBD-000042', printer_id: 12, archive_id: 88, part_code: 'BOT', labeled_at: '2026-08-24T10:00:00' };
+    const LOC_PRINTER = { id: 12, name: 'P1S-3' };
+    const LOC_ARCHIVE = { id: 88, print_name: 'bracket_v4', completed_at: '2026-08-24T14:32:00', quantity: 4 };
+
+    function mockInventoryPart(partCode: string) {
+      server.use(
+        http.get('/api/v1/floor/inventory/parts/by-sticker/:stickerCode', ({ params }) => HttpResponse.json({
+          id: 42,
+          sticker_code: params.stickerCode,
+          printer_id: 12,
+          printer_name: 'P1S-3',
+          archive_id: 88,
+          part_code: partCode,
+          section_part_id: null,
+          part_name: 'Part',
+          part_source: 'Production',
+          print_name: 'bracket_v4',
+          labeled_at: '2026-08-24T10:00:00',
+          archived_at: null,
+          released_at: null,
+          latest_event_action: null,
+          latest_event_reason: null,
+        })),
+      );
+    }
+
+    function mockPartLocation(response: unknown, status = 200) {
+      const captured: { body: Record<string, unknown> | null } = { body: null };
+      server.use(
+        http.post('/api/v1/floor/locations/part', async ({ request }) => {
+          captured.body = (await request.json()) as Record<string, unknown>;
+          return HttpResponse.json(response, { status });
+        }),
+      );
+      return captured;
+    }
+
+    const BIN_BATCH = {
+      id: 91,
+      payload: 'BBN-KNB-1',
+      bin_number: 1,
+      printer_id: 12,
+      printer_name: 'P1S-3',
+      archive_id: 88,
+      print_name: 'knob_plate',
+      part_code: 'KNB',
+      quantity: 25,
+      qc_passed_quantity: 25,
+      remaining_quantity: 25,
+      status: 'visual_qc_passed',
+      harvested_at: '2026-08-26T14:35:00',
+    };
+
+    function mockBinResolve() {
+      server.use(
+        http.post('/api/v1/floor/bins/resolve', () => HttpResponse.json({
+          result: 'ready_for_qc',
+          bin: { payload: 'BBN-KNB-1', bin_number: 1, part_code: 'KNB', part_name: 'Knob bin' },
+          batch: BIN_BATCH,
+          printer: null,
+          session: null,
+          blocking: null,
+          archive: null,
+        })),
+      );
+    }
+
+    function mockBinLocation(response: unknown, status = 200) {
+      const captured: { body: Record<string, unknown> | null } = { body: null };
+      server.use(
+        http.post('/api/v1/floor/locations/bin', async ({ request }) => {
+          captured.body = (await request.json()) as Record<string, unknown>;
+          return HttpResponse.json(response, { status });
+        }),
+      );
+      return captured;
+    }
+
+    it('sends a BOT part to Production WIP, posting the item and the location slug', async () => {
+      mockNoSession();
+      mockInventoryPart('BOT');
+      const captured = mockPartLocation({ result: 'recorded', part: LOC_PART, printer: LOC_PRINTER, archive: LOC_ARCHIVE });
+      render(<FloorScanPage />);
+      await screen.findByText('Scan a code');
+      await scan('BBD-000042');
+      await screen.findByText('Scan a location');
+
+      await scan('BBS-production-wip');
+
+      expect(await screen.findByText('Added to production WIP')).toBeInTheDocument();
+      expect(captured.body).toEqual({ payload: 'BBD-000042', location_slug: 'production-wip' });
+    });
+
+    it('stages a part at Ready-for-Production Inventory', async () => {
+      mockNoSession();
+      mockInventoryPart('BOT');
+      const captured = mockPartLocation({ result: 'recorded', part: LOC_PART, printer: LOC_PRINTER, archive: LOC_ARCHIVE });
+      render(<FloorScanPage />);
+      await screen.findByText('Scan a code');
+      await scan('BBD-000042');
+      await screen.findByText('Scan a location');
+
+      await scan('BBS-ready-for-production-inventory');
+
+      expect(await screen.findByText('Staged for production')).toBeInTheDocument();
+      expect(captured.body).toEqual({ payload: 'BBD-000042', location_slug: 'ready-for-production-inventory' });
+    });
+
+    it('refuses a BOT part at a finishing bench with the wrong-part-type reason', async () => {
+      mockNoSession();
+      mockInventoryPart('BOT');
+      mockPartLocation({ result: 'wrong_part_type', part: null, printer: null, archive: null });
+      render(<FloorScanPage />);
+      await screen.findByText('Scan a code');
+      await scan('BBD-000042');
+      await screen.findByText('Scan a location');
+
+      await scan('BBS-support-removal');
+
+      expect(await screen.findByText('Finishing steps apply to TOP parts only')).toBeInTheDocument();
+      expect(floorSound.playScanErrorTone).toHaveBeenCalled();
+    });
+
+    it('refuses a TOP part at Production WIP before its finishing steps are done', async () => {
+      mockNoSession();
+      mockInventoryPart('TOP');
+      mockPartLocation({ result: 'finishing_required', part: null, printer: null, archive: null });
+      render(<FloorScanPage />);
+      await screen.findByText('Scan a code');
+      await scan('BBD-000042');
+      await screen.findByText('Scan a location');
+
+      await scan('BBS-production-wip');
+
+      expect(await screen.findByText('Finish Support, Overhang and Hot Air removal first')).toBeInTheDocument();
+    });
+
+    it('refuses the Empty Bin location for a pending part without calling the API', async () => {
+      mockNoSession();
+      mockInventoryPart('BOT');
+      const captured = mockPartLocation({ result: 'recorded', part: LOC_PART, printer: LOC_PRINTER, archive: LOC_ARCHIVE });
+      render(<FloorScanPage />);
+      await screen.findByText('Scan a code');
+      await scan('BBD-000042');
+      await screen.findByText('Scan a location');
+
+      await scan('BBS-bin-empty');
+
+      expect(await screen.findByText("This location isn't available for parts")).toBeInTheDocument();
+      expect(captured.body).toBeNull();
+    });
+
+    it('sends a QC-passed bin to Production WIP', async () => {
+      mockNoSession();
+      mockBinResolve();
+      const captured = mockBinLocation({
+        result: 'wip_recorded', bin: null, batch: { ...BIN_BATCH, status: 'wip' }, printer: null, session: null, blocking: null, archive: null,
+      });
+      render(<FloorScanPage />);
+      await screen.findByText('Scan a code');
+      await scan('BBN-KNB-1');
+      await screen.findByText('Scan WIP when this bin goes into use');
+
+      await scan('BBS-production-wip');
+
+      expect(await screen.findByText('Bin added to WIP')).toBeInTheDocument();
+      expect(captured.body).toEqual({ payload: 'BBN-KNB-1', location_slug: 'production-wip' });
+    });
+
+    it('refuses a bin at Production WIP when visual QC has not passed', async () => {
+      mockNoSession();
+      mockBinResolve();
+      mockBinLocation({ result: 'qc_required', bin: null, batch: null, printer: null, session: null, blocking: null, archive: null });
+      render(<FloorScanPage />);
+      await screen.findByText('Scan a code');
+      await scan('BBN-KNB-1');
+      await screen.findByText('Scan WIP when this bin goes into use');
+
+      await scan('BBS-production-wip');
+
+      expect(await screen.findByText('Visual QC is required before WIP')).toBeInTheDocument();
+    });
+
+    it('stages a bin at Ready-for-Production Inventory', async () => {
+      mockNoSession();
+      mockBinResolve();
+      mockBinLocation({
+        result: 'ready_for_production_recorded', bin: null, batch: { ...BIN_BATCH, status: 'ready_for_production' }, printer: null, session: null, blocking: null, archive: null,
+      });
+      render(<FloorScanPage />);
+      await screen.findByText('Scan a code');
+      await scan('BBN-KNB-1');
+      await screen.findByText('Scan WIP when this bin goes into use');
+
+      await scan('BBS-ready-for-production-inventory');
+
+      expect(await screen.findByText('Bin staged for production')).toBeInTheDocument();
+    });
+
+    it('releases a bin at the Empty Bin location', async () => {
+      mockNoSession();
+      mockBinResolve();
+      mockBinLocation({
+        result: 'empty_recorded', bin: null, batch: { ...BIN_BATCH, status: 'empty', quantity: 0 }, printer: null, session: null, blocking: null, archive: null,
+      });
+      render(<FloorScanPage />);
+      await screen.findByText('Scan a code');
+      await scan('BBN-KNB-1');
+      await screen.findByText('Scan WIP when this bin goes into use');
+
+      await scan('BBS-bin-empty');
+
+      expect(await screen.findByText('Bin marked empty and ready to reuse')).toBeInTheDocument();
+    });
+
+    it('refuses Empty Bin before the bin has entered WIP', async () => {
+      mockNoSession();
+      mockBinResolve();
+      mockBinLocation({ result: 'empty_requires_wip', bin: null, batch: null, printer: null, session: null, blocking: null, archive: null });
+      render(<FloorScanPage />);
+      await screen.findByText('Scan a code');
+      await scan('BBN-KNB-1');
+      await screen.findByText('Scan WIP when this bin goes into use');
+
+      await scan('BBS-bin-empty');
+
+      expect(await screen.findByText('A bin can only be marked empty after it has entered WIP')).toBeInTheDocument();
+    });
+
+    it('refuses a TOP finishing bench for a pending bin without calling the API', async () => {
+      mockNoSession();
+      mockBinResolve();
+      const captured = mockBinLocation({ result: 'wip_recorded', bin: null, batch: BIN_BATCH, printer: null, session: null, blocking: null, archive: null });
+      render(<FloorScanPage />);
+      await screen.findByText('Scan a code');
+      await scan('BBN-KNB-1');
+      await screen.findByText('Scan WIP when this bin goes into use');
+
+      await scan('BBS-support-removal');
+
+      expect(await screen.findByText("This location isn't available for bins")).toBeInTheDocument();
+      expect(captured.body).toBeNull();
+    });
+  });
+
   describe('pistol input handling', () => {
     it('reads the just-typed value when Enter fires in the same tick', async () => {
       // A pistol fires characters and Enter with no yield between, before

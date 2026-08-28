@@ -272,10 +272,12 @@ Five tabs: Station labels, Locations, Printer labels, Bins, Error labels.
 **Station labels** — WIP, + Storage, Move, Harvest, Cleanup (each `BBS-…`).
 Fit Check and Rework are **not** in this tab — see Locations below.
 
-**Locations** — Fit Check and Rework (each `BBS-…`, same catalog and print
+**Locations** — Fit Check, Rework, and the six item→location destinations
+(Ready for Production Inventory, Production WIP, Empty Bin, Support Removal,
+Overhang Removal, Hot Air Removal — each `BBS-…`, same catalog and print
 pipeline as Station labels, split out by a `category` field on the station
-entry, §5.4a/§5.4b). Printed and scanned identically to a station QR; the
-only difference is what scanning one *does* — no session opens.
+entry, §5.4a/§5.4b/§5.4c). Printed and scanned identically to a station QR;
+the only difference is what scanning one *does* — no session opens.
 
 **Printer labels** — one row per 3D printer already in the app (`BBP-{printer_id}`).
 Print → preview (QR + name + payload) → size → browser print dialog.
@@ -658,6 +660,61 @@ reason named.
 
 **No floor-wide lock**, same reasoning as Fit Check — there is no session to
 lock.
+
+### 5.4c Item→location pipeline (Ready-for-Production, Production WIP, Empty Bin, TOP finishing)
+
+**Same universal pattern as Fit Check and Rework: scan the item, then scan a
+location QR.** None of the destinations below is a station — no session, no
+open/close, no floor-wide lock. Each `BBS-…` QR is a printable location label
+(they appear under the **Locations** tab of the Codes page, §3.3, because
+their `category` is `location`, not `station`). Parallel benches are normal,
+so nothing here is exclusive.
+
+| Location | Payload | Item | Purpose |
+| --- | --- | --- | --- |
+| Ready for Production Inventory | `BBS-ready-for-production-inventory` | bin or part | Optional staging shelf before Production WIP. Never required |
+| Production WIP | `BBS-production-wip` | bin or part | Move the item into production WIP |
+| Empty Bin | `BBS-bin-empty` | bin only | Release a consumed bin — unlinks it and sets quantity 0 |
+| Support Removal | `BBS-support-removal` | **TOP** part only | First finishing step |
+| Overhang Removal | `BBS-overhang-removal` | **TOP** part only | After Support Removal |
+| Hot Air Removal | `BBS-hot-air-removal` | **TOP** part only | After Overhang Removal |
+
+Each scan appends an event on the item (append-only, same table and pattern
+as `fit_checked` / `rework`, §7.2); nothing is ever overwritten.
+
+**Bins** (`BBN-…`, KNB/BUT — always a bin, never `BBD`):
+`Initial QC (Fit Check) → optional Ready-for-Production Inventory →
+Production WIP → Empty Bin`.
+- **Production WIP requires a passed visual QC** (`visual_qc_passed`). A bin
+  scanned into WIP without it is refused — "Visual QC is required before WIP."
+- **Ready-for-Production is optional** — WIP does not require it, and it may
+  be skipped entirely. Re-scanning it is refused as already staged.
+- **Empty Bin requires the bin to have entered WIP** — refused otherwise
+  ("a bin can only be marked empty after it has entered WIP"). It unlinks the
+  bin from its printer and sets quantity 0 so the physical bin can be reused.
+
+**BOT parts** (`BBD-…`):
+`QC or Rework → optional Ready-for-Production → Production WIP`.
+- The three finishing benches are **refused for BOT** — "finishing steps
+  apply to TOP parts only."
+
+**TOP parts** (`BBD-…`, never `BBN`):
+`QC or Rework → Support Removal → Overhang Removal → Hot Air Removal
+(each: scan the part, then the location, in that order) → optional
+Ready-for-Production → Production WIP`.
+- **Finishing is ordered and mandatory before staging.** Ready-for-Production
+  and Production WIP are **refused until all three finishing steps are on
+  record** — "finish Support, Overhang and Hot Air removal first."
+- A finishing bench scanned out of order, or one already recorded, is
+  refused.
+
+**Refusals are specific, not generic.** A bin scanned at a TOP finishing
+bench, or a part at Empty Bin, is told the location is not available for that
+item type rather than silently starting an unrelated flow. Scanning a
+location QR with nothing pending is refused with "scan a part first."
+
+**No floor-wide lock anywhere in this pipeline** — same reasoning as Fit
+Check and Rework.
 
 ### 5.5 Cleanup
 
