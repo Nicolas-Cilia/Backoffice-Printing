@@ -21,8 +21,8 @@ are imported from that module rather than duplicated.
 
 Station names are intentionally *not* translated: the printed label is a
 physical object matched against the workflow written in ``floor-plan.md``,
-and "WIP" or "Move" on a shelf should read the same as the doc regardless of
-the operator's UI language.
+and "Harvest" or "Production WIP" on a shelf should read the same as the doc
+regardless of the operator's UI language.
 """
 
 from __future__ import annotations
@@ -50,7 +50,7 @@ PAYLOAD_FONT = "Courier"
 MIN_LABEL_MM = 20.0
 MAX_LABEL_MM = 200.0
 
-# Cap one request's page count. Station labels come five at a time today;
+# Cap one request's page count. Station labels are few today;
 # this only guards against a malformed bulk request.
 MAX_LABELS_PER_REQUEST = 100
 
@@ -72,10 +72,10 @@ class FloorStation:
     # Which Codes-page tab this station's printable label sits under (§3.3).
     # Purely a presentation grouping — every station here is identical
     # session-machinery-wise (open/close/switch, `exclusive`, scan dispatch
-    # keyed by slug) regardless of category. "station" covers the workflow
-    # stations (WIP/+Storage/Move/Harvest); "location"
-    # covers QC checkpoints a part passes through (Initial QC Pass/Rework) — an
-    # operator's mental model the label sheet should match, even though
+    # keyed by slug) regardless of category. "station" covers session benches
+    # (Harvest today; filament WIP/+Storage/Move are deferred). "location"
+    # covers QC / finishing / WIP destinations a part or bin passes through —
+    # an operator's mental model the label sheet should match, even though
     # nothing in the backend actually treats the two groups differently.
     category: Literal["station", "location"] = "station"
 
@@ -86,22 +86,10 @@ class FloorStation:
 
 
 # The stations from §5. Slugs match the payload examples in §4 verbatim.
+# Filament WIP / + Storage / Move (BBS-wip, BBS-storage-receive,
+# BBS-storage-move) are omitted until their SKU-move flows ship — only
+# session open/close existed, which is not enough to print labels for.
 FLOOR_STATIONS: tuple[FloorStation, ...] = (
-    FloorStation(
-        slug="wip",
-        name="WIP",
-        description="Production shelf. Scan filament SKUs to add kg to WIP.",
-    ),
-    FloorStation(
-        slug="storage-receive",
-        name="+ Storage",
-        description="Warehouse shelf. Scan filament SKUs to add kg to storage.",
-    ),
-    FloorStation(
-        slug="storage-move",
-        name="Move",
-        description="Queue kg to move off storage; scan WIP to complete the move.",
-    ),
     FloorStation(
         slug="harvest",
         name="Harvest",

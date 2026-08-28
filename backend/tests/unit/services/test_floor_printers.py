@@ -50,7 +50,7 @@ class TestPrinterLookup:
             "BBP-0",  # ids are positive
             "BBP- 12",  # internal space is not a valid id
             "bbp-12",  # case matters — pistols emit verbatim
-            "BBS-wip",  # station code
+            "BBS-harvest",  # station code
             "BBD-000042",  # part code
             "4001234567890",  # factory SKU
         ],

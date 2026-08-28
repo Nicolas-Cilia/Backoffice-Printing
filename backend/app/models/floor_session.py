@@ -12,7 +12,8 @@ business rules forbid:
    at a time, or none. Station switching is close-then-open in a single
    transaction.
 2. **One open session per station, floor-wide — for exclusive stations.**
-   WIP, + Storage, Move and Harvest are each held by at most one device.
+   Harvest (and future filament WIP/+Storage/Move once they return) are each
+   held by at most one device.
 
 ``exclusive`` is denormalized from the station catalog
 (``services/floor_codes.FloorStation.exclusive``) at open time. The catalog

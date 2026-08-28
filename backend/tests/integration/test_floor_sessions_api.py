@@ -31,34 +31,36 @@ class TestScanStation:
     @pytest.mark.asyncio
     @pytest.mark.integration
     async def test_opens_a_station(self, async_client: AsyncClient):
-        resp = await _scan(async_client, "BBS-wip", DEVICE_A)
+        resp = await _scan(async_client, "BBS-harvest", DEVICE_A)
         assert resp.status_code == 200
 
         body = resp.json()
         assert body["result"] == "opened"
-        assert body["station_slug"] == "wip"
-        assert body["station_name"] == "WIP"
+        assert body["station_slug"] == "harvest"
+        assert body["station_name"] == "Harvest"
         assert body["session"]["device_id"] == DEVICE_A
         assert body["blocking"] is None
 
     @pytest.mark.asyncio
     @pytest.mark.integration
     async def test_rescanning_closes(self, async_client: AsyncClient):
-        await _scan(async_client, "BBS-wip", DEVICE_A)
-        resp = await _scan(async_client, "BBS-wip", DEVICE_A)
+        await _scan(async_client, "BBS-harvest", DEVICE_A)
+        resp = await _scan(async_client, "BBS-harvest", DEVICE_A)
 
         assert resp.json()["result"] == "closed"
         assert resp.json()["session"] is None
 
     @pytest.mark.asyncio
     @pytest.mark.integration
-    async def test_scanning_another_station_switches(self, async_client: AsyncClient):
-        await _scan(async_client, "BBS-wip", DEVICE_A)
-        resp = await _scan(async_client, "BBS-storage-receive", DEVICE_A)
+    async def test_scanning_a_location_code_does_not_switch_the_session(self, async_client: AsyncClient):
+        """Locations resolve through the same catalog but are not sessions —
+        the scan route refuses them so item→location flows handle them instead."""
+        await _scan(async_client, "BBS-harvest", DEVICE_A)
+        resp = await _scan(async_client, "BBS-initial-qc-pass", DEVICE_A)
 
-        body = resp.json()
-        assert body["result"] == "switched"
-        assert body["session"]["station_slug"] == "storage-receive"
+        assert resp.status_code == 404
+        body = (await async_client.get("/api/v1/floor/session", params={"device_id": DEVICE_A})).json()
+        assert body["station_slug"] == "harvest"
 
     @pytest.mark.asyncio
     @pytest.mark.integration
@@ -82,14 +84,14 @@ class TestScanStation:
     async def test_tolerates_a_pistol_whitespace_suffix(self, async_client: AsyncClient):
         """Some guns append whitespace depending on their suffix config; a
         stray space must not read as an unknown code."""
-        resp = await _scan(async_client, "  BBS-wip \n", DEVICE_A)
+        resp = await _scan(async_client, "  BBS-harvest \n", DEVICE_A)
         assert resp.status_code == 200
         assert resp.json()["result"] == "opened"
 
     @pytest.mark.asyncio
     @pytest.mark.integration
     async def test_rejects_a_missing_device_id(self, async_client: AsyncClient):
-        resp = await async_client.post("/api/v1/floor/session/scan", json={"payload": "BBS-wip"})
+        resp = await async_client.post("/api/v1/floor/session/scan", json={"payload": "BBS-harvest"})
         assert resp.status_code == 422
 
 
@@ -97,8 +99,8 @@ class TestLockAndTakeover:
     @pytest.mark.asyncio
     @pytest.mark.integration
     async def test_second_device_gets_locked_with_holder_details(self, async_client: AsyncClient):
-        await _scan(async_client, "BBS-wip", DEVICE_A)
-        resp = await _scan(async_client, "BBS-wip", DEVICE_B)
+        await _scan(async_client, "BBS-harvest", DEVICE_A)
+        resp = await _scan(async_client, "BBS-harvest", DEVICE_B)
 
         assert resp.status_code == 200
         body = resp.json()
@@ -107,7 +109,7 @@ class TestLockAndTakeover:
         # The refusal must carry enough to act on: who, and for how long.
         assert body["blocking"]["device_id"] == DEVICE_A
         assert body["blocking"]["open_seconds"] >= 0
-        assert body["blocking"]["station_name"] == "WIP"
+        assert body["blocking"]["station_name"] == "Harvest"
 
     @pytest.mark.asyncio
     @pytest.mark.integration
@@ -119,11 +121,11 @@ class TestLockAndTakeover:
     @pytest.mark.asyncio
     @pytest.mark.integration
     async def test_takeover_transfers_the_station(self, async_client: AsyncClient):
-        await _scan(async_client, "BBS-wip", DEVICE_A)
+        await _scan(async_client, "BBS-harvest", DEVICE_A)
 
         resp = await async_client.post(
             "/api/v1/floor/session/takeover",
-            json={"payload": "BBS-wip", "device_id": DEVICE_B},
+            json={"payload": "BBS-harvest", "device_id": DEVICE_B},
         )
         assert resp.status_code == 200
         assert resp.json()["result"] == "opened"
@@ -156,18 +158,18 @@ class TestCurrentSession:
     async def test_survives_a_reload(self, async_client: AsyncClient):
         """The session lives on the server precisely so a reload resumes it
         rather than stranding an open station nobody can see."""
-        await _scan(async_client, "BBS-storage-move", DEVICE_A)
+        await _scan(async_client, "BBS-harvest", DEVICE_A)
 
         resp = await async_client.get("/api/v1/floor/session", params={"device_id": DEVICE_A})
         body = resp.json()
-        assert body["station_slug"] == "storage-move"
-        assert body["station_name"] == "Move"
+        assert body["station_slug"] == "harvest"
+        assert body["station_name"] == "Harvest"
         assert body["open_seconds"] >= 0
 
     @pytest.mark.asyncio
     @pytest.mark.integration
     async def test_is_scoped_to_the_asking_device(self, async_client: AsyncClient):
-        await _scan(async_client, "BBS-wip", DEVICE_A)
+        await _scan(async_client, "BBS-harvest", DEVICE_A)
 
         resp = await async_client.get("/api/v1/floor/session", params={"device_id": DEVICE_B})
         assert resp.json() is None
@@ -175,11 +177,11 @@ class TestCurrentSession:
     @pytest.mark.asyncio
     @pytest.mark.integration
     async def test_close_endpoint_is_idempotent(self, async_client: AsyncClient):
-        await _scan(async_client, "BBS-wip", DEVICE_A)
+        await _scan(async_client, "BBS-harvest", DEVICE_A)
 
         resp = await async_client.request("DELETE", "/api/v1/floor/session", params={"device_id": DEVICE_A})
         assert resp.status_code == 200
-        assert resp.json()["station_slug"] == "wip"
+        assert resp.json()["station_slug"] == "harvest"
 
         resp = await async_client.request("DELETE", "/api/v1/floor/session", params={"device_id": DEVICE_A})
         assert resp.status_code == 200
@@ -198,14 +200,14 @@ class TestSessionOverview:
     async def test_lists_open_sessions(self, async_client):
         await async_client.post(
             "/api/v1/floor/session/scan",
-            json={"payload": "BBS-wip", "device_id": "pc-A"},
+            json={"payload": "BBS-harvest", "device_id": "pc-A"},
         )
 
         resp = await async_client.get("/api/v1/floor/sessions")
 
         assert resp.status_code == 200
         body = resp.json()
-        assert [s["station_slug"] for s in body["open"]] == ["wip"]
+        assert [s["station_slug"] for s in body["open"]] == ["harvest"]
         assert body["open"][0]["device_id"] == "pc-A"
         assert body["open"][0]["closed_at"] is None
 
@@ -214,7 +216,7 @@ class TestSessionOverview:
         # came back to, so the stalest belongs at the top.
         await async_client.post(
             "/api/v1/floor/session/scan",
-            json={"payload": "BBS-wip", "device_id": "pc-A"},
+            json={"payload": "BBS-harvest", "device_id": "pc-A"},
         )
         await async_client.post(
             "/api/v1/floor/session/scan",
@@ -229,29 +231,29 @@ class TestSessionOverview:
     async def test_closed_sessions_appear_in_recent(self, async_client):
         await async_client.post(
             "/api/v1/floor/session/scan",
-            json={"payload": "BBS-wip", "device_id": "pc-A"},
+            json={"payload": "BBS-harvest", "device_id": "pc-A"},
         )
         # Rescanning the same station closes it.
         await async_client.post(
             "/api/v1/floor/session/scan",
-            json={"payload": "BBS-wip", "device_id": "pc-A"},
+            json={"payload": "BBS-harvest", "device_id": "pc-A"},
         )
 
         body = (await async_client.get("/api/v1/floor/sessions")).json()
 
         assert body["open"] == []
-        assert any(s["station_slug"] == "wip" for s in body["recent"])
+        assert any(s["station_slug"] == "harvest" for s in body["recent"])
 
     async def test_recent_records_a_takeover(self, async_client):
         """The distinction the history exists to show: ended by someone else,
         not closed by its holder."""
         await async_client.post(
             "/api/v1/floor/session/scan",
-            json={"payload": "BBS-wip", "device_id": "pc-A"},
+            json={"payload": "BBS-harvest", "device_id": "pc-A"},
         )
         await async_client.post(
             "/api/v1/floor/session/takeover",
-            json={"payload": "BBS-wip", "device_id": "pc-B"},
+            json={"payload": "BBS-harvest", "device_id": "pc-B"},
         )
 
         body = (await async_client.get("/api/v1/floor/sessions")).json()
@@ -265,11 +267,11 @@ class TestSessionOverview:
         opened — otherwise finished sessions keep growing in the history."""
         await async_client.post(
             "/api/v1/floor/session/scan",
-            json={"payload": "BBS-wip", "device_id": "pc-A"},
+            json={"payload": "BBS-harvest", "device_id": "pc-A"},
         )
         await async_client.post(
             "/api/v1/floor/session/scan",
-            json={"payload": "BBS-wip", "device_id": "pc-A"},
+            json={"payload": "BBS-harvest", "device_id": "pc-A"},
         )
 
         first = (await async_client.get("/api/v1/floor/sessions")).json()["recent"][0]
@@ -280,7 +282,7 @@ class TestSessionOverview:
     async def test_closes_any_session_by_id(self, async_client):
         scan = await async_client.post(
             "/api/v1/floor/session/scan",
-            json={"payload": "BBS-wip", "device_id": "pc-A"},
+            json={"payload": "BBS-harvest", "device_id": "pc-A"},
         )
         session_id = scan.json()["session"]["id"]
 
@@ -295,13 +297,13 @@ class TestSessionOverview:
     async def test_closing_frees_the_station_for_another_device(self, async_client):
         scan = await async_client.post(
             "/api/v1/floor/session/scan",
-            json={"payload": "BBS-wip", "device_id": "pc-A"},
+            json={"payload": "BBS-harvest", "device_id": "pc-A"},
         )
         await async_client.delete(f"/api/v1/floor/sessions/{scan.json()['session']['id']}")
 
         retry = await async_client.post(
             "/api/v1/floor/session/scan",
-            json={"payload": "BBS-wip", "device_id": "pc-B"},
+            json={"payload": "BBS-harvest", "device_id": "pc-B"},
         )
 
         assert retry.json()["result"] == "opened"
@@ -310,7 +312,7 @@ class TestSessionOverview:
         """A double click must not resurrect a row to re-close it."""
         scan = await async_client.post(
             "/api/v1/floor/session/scan",
-            json={"payload": "BBS-wip", "device_id": "pc-A"},
+            json={"payload": "BBS-harvest", "device_id": "pc-A"},
         )
         session_id = scan.json()["session"]["id"]
         await async_client.delete(f"/api/v1/floor/sessions/{session_id}")

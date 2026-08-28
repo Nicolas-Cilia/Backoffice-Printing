@@ -358,7 +358,10 @@ async def _backfill_floor_part_codes() -> None:
 
 
 async def _seed_floor_error_labels() -> None:
-    """Install the starter labels once; users can subsequently manage them."""
+    """Install the starter labels once; users can add or remove custom ones.
+
+    ``other`` is the catch-all keyboard prompt and cannot be deleted later.
+    """
     from sqlalchemy import select
 
     from backend.app.models.floor_part import FloorErrorLabel
