@@ -400,7 +400,7 @@ export function FloorCodesPage() {
                 subtitle={item.subtitle}
                 checked={selected.has(item.payload)}
                 onToggle={() => toggle(item.payload)}
-                action={tab === 'errors' && 'id' in item && !item.isProtected ? (
+                action={tab === 'errors' && 'id' in item && !('isProtected' in item && item.isProtected) ? (
                   <Button size="sm" variant="danger" className="w-full md:w-auto" onClick={() => setDeleteTarget({ id: Number(item.id), name: item.title })}>
                     <Trash2 className="h-4 w-4" />
                     Remove
