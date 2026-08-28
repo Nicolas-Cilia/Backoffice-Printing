@@ -335,3 +335,87 @@ describe('FloorLandingPage unlabeled build-plates panel', () => {
     expect(await screen.findByText('Cable guide')).toBeInTheDocument();
   });
 });
+
+describe('FloorLandingPage non-production list', () => {
+  beforeEach(() => {
+    vi.mocked(localStorage.getItem).mockReset();
+    vi.mocked(localStorage.getItem).mockReturnValue(null);
+    vi.mocked(localStorage.setItem).mockReset();
+    mockSessions();
+  });
+
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  const DISMISSED_PLATE = {
+    id: 7,
+    print_name: 'Jig block',
+    printer_name: 'P1S-2',
+    completed_at: '2026-08-24T13:00:00',
+    dismissed_at: '2026-08-24T15:00:00',
+  };
+
+  function mockDismissedPlates(plates: unknown[] = []) {
+    server.use(
+      http.get('/api/v1/floor/parts/unlabeled-build-plates', () => HttpResponse.json([])),
+      http.get('/api/v1/floor/parts/dismissed-build-plates', () => HttpResponse.json(plates)),
+    );
+  }
+
+  it('offers a Non-production list control in the panel header', async () => {
+    mockDismissedPlates([DISMISSED_PLATE]);
+    render(<FloorLandingPage />);
+
+    expect(
+      await screen.findByRole('button', { name: 'Non-production list' }),
+    ).toBeInTheDocument();
+  });
+
+  it('shows the dismissed plates when the control is opened', async () => {
+    mockDismissedPlates([DISMISSED_PLATE]);
+    const user = userEvent.setup();
+    render(<FloorLandingPage />);
+
+    await user.click(await screen.findByRole('button', { name: 'Non-production list' }));
+
+    expect(await screen.findByText('Jig block')).toBeInTheDocument();
+    expect(screen.getByText('P1S-2')).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Restore' })).toBeInTheDocument();
+  });
+
+  it('restores a dismissed plate and drops it from the list', async () => {
+    let restored = false;
+    server.use(
+      http.get('/api/v1/floor/parts/unlabeled-build-plates', () => HttpResponse.json([])),
+      http.get('/api/v1/floor/parts/dismissed-build-plates', () =>
+        HttpResponse.json(restored ? [] : [DISMISSED_PLATE]),
+      ),
+      http.post('/api/v1/floor/parts/dismissed-build-plates/:id/restore', () => {
+        restored = true;
+        return HttpResponse.json({ status: 'restored' });
+      }),
+    );
+    const user = userEvent.setup();
+    render(<FloorLandingPage />);
+
+    await user.click(await screen.findByRole('button', { name: 'Non-production list' }));
+    await screen.findByText('Jig block');
+
+    await user.click(screen.getByRole('button', { name: 'Restore' }));
+
+    await waitFor(() => expect(screen.queryByText('Jig block')).not.toBeInTheDocument());
+  });
+
+  it('says plainly when nothing has been dismissed', async () => {
+    mockDismissedPlates();
+    const user = userEvent.setup();
+    render(<FloorLandingPage />);
+
+    await user.click(await screen.findByRole('button', { name: 'Non-production list' }));
+
+    expect(
+      await screen.findByText('Nothing has been marked non-production.'),
+    ).toBeInTheDocument();
+  });
+});
