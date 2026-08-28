@@ -348,6 +348,7 @@ function HistoryRow({
  *  phrased as if something usually is. */
 function UnlabeledBuildPlatesPanel({ t }: { t: ReturnType<typeof useTranslation>['t'] }) {
   const queryClient = useQueryClient();
+  const [showDismissed, setShowDismissed] = useState(false);
   const partsQuery = useQuery({
     queryKey: ['floor-unlabeled-build-plates'],
     queryFn: () => api.getFloorUnlabeledBuildPlates(NEEDS_ATTENTION_LIMIT),
@@ -358,24 +359,46 @@ function UnlabeledBuildPlatesPanel({ t }: { t: ReturnType<typeof useTranslation>
   });
 
   const parts = partsQuery.data ?? [];
+  // Dismissing and restoring both move a plate between these two lists, so
+  // every mutation has to refresh both — otherwise the plate lingers in the
+  // list it just left until the next poll.
+  const invalidateBothLists = () => {
+    queryClient.invalidateQueries({ queryKey: ['floor-unlabeled-build-plates'] });
+    queryClient.invalidateQueries({ queryKey: ['floor-dismissed-build-plates'] });
+  };
   const dismiss = useMutation({
     mutationFn: (id: number) => api.dismissFloorUnlabeledBuildPlate(id),
-    onSuccess: () => queryClient.invalidateQueries({ queryKey: ['floor-unlabeled-build-plates'] }),
+    onSuccess: invalidateBothLists,
   });
 
   return (
     <section className="bg-bambu-dark-secondary rounded-lg overflow-hidden w-full">
-      <div className="px-4 py-3 border-b border-bambu-dark-tertiary">
-        <h2 className="text-white font-semibold">
-          {t('floor.needsAttentionHeading', 'Build plates needing linking')}
-        </h2>
-        <p className="text-xs text-bambu-gray mt-0.5">
-          {t(
-            'floor.needsAttentionHint',
-            'Completed jobs that have not received a linked part yet.',
-          )}
-        </p>
+      <div className="px-4 py-3 border-b border-bambu-dark-tertiary flex flex-wrap items-start justify-between gap-3">
+        <div>
+          <h2 className="text-white font-semibold">
+            {t('floor.needsAttentionHeading', 'Build plates needing linking')}
+          </h2>
+          <p className="text-xs text-bambu-gray mt-0.5">
+            {t(
+              'floor.needsAttentionHint',
+              'Completed jobs that have not received a linked part yet.',
+            )}
+          </p>
+        </div>
+        <button
+          type="button"
+          className="text-sm text-bambu-gray hover:text-white transition-colors whitespace-nowrap"
+          onClick={() => setShowDismissed((v) => !v)}
+        >
+          {showDismissed
+            ? t('floor.dismissedHide', 'Hide non-production')
+            : t('floor.dismissedShow', 'Non-production list')}
+        </button>
       </div>
+
+      {showDismissed && (
+        <DismissedBuildPlatesList t={t} onRestoreSuccess={invalidateBothLists} />
+      )}
 
       {partsQuery.isLoading ? (
         <div className="flex items-center justify-center py-10 text-bambu-gray">
@@ -436,6 +459,79 @@ function UnlabeledBuildPlatesPanel({ t }: { t: ReturnType<typeof useTranslation>
         </ul>
       )}
     </section>
+  );
+}
+
+/** The reverse side of "Not for production": plates an operator hid from the
+ *  backlog, with a Restore that puts one back. Rendered inline under the
+ *  panel header only when the reader opens the non-production list, so the
+ *  common case — working the live backlog — stays uncluttered. */
+function DismissedBuildPlatesList({
+  t,
+  onRestoreSuccess,
+}: {
+  t: ReturnType<typeof useTranslation>['t'];
+  onRestoreSuccess: () => void;
+}) {
+  const dismissedQuery = useQuery({
+    queryKey: ['floor-dismissed-build-plates'],
+    queryFn: () => api.getFloorDismissedBuildPlates(NEEDS_ATTENTION_LIMIT),
+  });
+  const restore = useMutation({
+    mutationFn: (id: number) => api.restoreFloorDismissedBuildPlate(id),
+    onSuccess: onRestoreSuccess,
+  });
+
+  const plates = dismissedQuery.data ?? [];
+
+  return (
+    <div className="border-b border-bambu-dark-tertiary bg-bambu-dark">
+      <p className="px-4 pt-3 text-xs uppercase tracking-wide text-bambu-gray">
+        {t('floor.dismissedHeading', 'Marked non-production')}
+      </p>
+      {dismissedQuery.isLoading ? (
+        <div className="flex items-center justify-center py-8 text-bambu-gray">
+          <Loader2 className="w-5 h-5 animate-spin mr-2" />
+          {t('common.loading', 'Loading…')}
+        </div>
+      ) : dismissedQuery.isError ? (
+        <div className="text-center py-8 px-4">
+          <p className="text-white font-medium">
+            {t('floor.dismissedLoadError', 'Could not load this list')}
+          </p>
+          <Button className="mt-3" variant="secondary" onClick={() => dismissedQuery.refetch()}>
+            {t('common.retry', 'Retry')}
+          </Button>
+        </div>
+      ) : plates.length === 0 ? (
+        <p className="px-4 py-6 text-center text-bambu-gray">
+          {t('floor.dismissedNone', 'Nothing has been marked non-production.')}
+        </p>
+      ) : (
+        <ul className="divide-y divide-bambu-dark-tertiary">
+          {plates.map((plate) => (
+            <li key={plate.id} className="flex items-center gap-4 px-4 py-3">
+              <div className="min-w-0 flex-1">
+                <div className="text-white font-medium">{plate.print_name}</div>
+                <div className="text-xs text-bambu-gray">{plate.printer_name}</div>
+              </div>
+              <span className="text-xs text-bambu-gray whitespace-nowrap">
+                {plate.completed_at
+                  ? new Date(`${plate.completed_at}Z`).toLocaleString()
+                  : t('floor.needsAttentionUnknownTime', 'Unknown time')}
+              </span>
+              <Button
+                variant="secondary"
+                onClick={() => restore.mutate(plate.id)}
+                disabled={restore.isPending}
+              >
+                {t('floor.restoreBuildPlate', 'Restore')}
+              </Button>
+            </li>
+          ))}
+        </ul>
+      )}
+    </div>
   );
 }
 

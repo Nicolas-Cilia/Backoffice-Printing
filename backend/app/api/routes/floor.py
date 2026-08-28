@@ -90,6 +90,7 @@ from backend.app.services.floor_parts import (
     find_part_code_thumbnail,
     get_harvest_summary,
     get_inventory_part_by_sticker,
+    list_dismissed_build_plates,
     list_inventory_parts,
     list_needs_attention,
     list_part_code_options,
@@ -98,6 +99,7 @@ from backend.app.services.floor_parts import (
     list_unlabeled_build_plates,
     relink_part,
     replace_sticker_code,
+    restore_build_plate,
     scan_fit_check_part,
     scan_harvest_printer,
     scan_part,
@@ -1558,6 +1560,14 @@ class UnlabeledBuildPlateResponse(BaseModel):
     completed_at: datetime | None
 
 
+class DismissedBuildPlateResponse(BaseModel):
+    id: int
+    print_name: str | None
+    printer_name: str | None
+    completed_at: datetime | None
+    dismissed_at: datetime | None
+
+
 class HarvestSummaryLineResponse(BaseModel):
     printer_id: int | None
     printer_name: str | None
@@ -1963,3 +1973,24 @@ async def dismiss_unlabeled_build_plate(
         raise HTTPException(404, "Completed build plate not found")
     await db.commit()
     return {"status": "dismissed"}
+
+
+@router.get("/parts/dismissed-build-plates", response_model=list[DismissedBuildPlateResponse])
+async def get_dismissed_build_plates(
+    limit: int = 50,
+    db: AsyncSession = Depends(get_db),
+    _: User | None = RequirePermissionIfAuthEnabled(Permission.FLOOR_SCAN),
+) -> list[DismissedBuildPlateResponse]:
+    return [DismissedBuildPlateResponse(**plate) for plate in await list_dismissed_build_plates(db, limit=limit)]
+
+
+@router.post("/parts/dismissed-build-plates/{archive_id}/restore")
+async def restore_dismissed_build_plate(
+    archive_id: int,
+    db: AsyncSession = Depends(get_db),
+    _: User | None = RequirePermissionIfAuthEnabled(Permission.FLOOR_SCAN),
+) -> dict[str, str]:
+    if not await restore_build_plate(db, archive_id):
+        raise HTTPException(404, "Dismissed build plate not found")
+    await db.commit()
+    return {"status": "restored"}
