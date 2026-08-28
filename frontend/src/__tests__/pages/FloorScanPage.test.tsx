@@ -2100,7 +2100,7 @@ describe('FloorScanPage (Phase 1b sessions)', () => {
 
       expect(await screen.findByText('History')).toBeInTheDocument();
       expect(await screen.findByText('Fit Check Pass')).toBeInTheDocument();
-      expect(screen.getByText('wip')).toBeInTheDocument();
+      expect(screen.getByText('In WIP')).toBeInTheDocument();
       expect(screen.getByText('Sticker enrolled · linked at harvest')).toBeInTheDocument();
       expect(screen.queryByRole('button', { name: /change status/i })).not.toBeInTheDocument();
     });
