@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it } from "vitest";
-import { screen, waitFor } from "@testing-library/react";
+import { screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { http, HttpResponse } from "msw";
 import { render } from "../utils";
@@ -99,6 +99,18 @@ describe("FloorInventoryPage", () => {
     expect(screen.getByText("BBN-KNB-1")).toBeInTheDocument();
   });
 
+  it("keeps filter pill labels and status badges from wrapping inside themselves", async () => {
+    mockPartHistory();
+    render(<FloorInventoryPage />);
+
+    const printFailureLog = await screen.findByRole("button", { name: "Print failure log" });
+    expect(printFailureLog).toHaveClass("whitespace-nowrap", "shrink-0");
+    expect(printFailureLog.parentElement).toHaveClass("flex-nowrap");
+
+    const statusBadge = await screen.findByText("Linked");
+    expect(statusBadge).toHaveClass("whitespace-nowrap");
+  });
+
   it("shows active knob and button bin fills in the part history table", async () => {
     const user = userEvent.setup();
     mockPartHistory();
@@ -190,6 +202,87 @@ describe("FloorInventoryPage", () => {
     expect(qcEvent.previousElementSibling).toHaveClass("bg-green-500");
     const rejectedEvent = screen.getByText("2 parts failed visual QC");
     expect(rejectedEvent.previousElementSibling).toHaveClass("bg-red-500");
+  });
+
+  it("overrides, clears, and unlinks a bin from the Part history bin record", async () => {
+    const user = userEvent.setup();
+    mockPartHistory();
+    let overrideBody: unknown = null;
+    let unlinkBody: unknown = null;
+    server.use(
+      http.get("/api/v1/floor/inventory/bins", () =>
+        HttpResponse.json([
+          {
+            payload: "BBN-KNB-1",
+            bin_number: 1,
+            part_code: "KNB",
+            part_name: "Knob bin",
+            status: "visual_qc_passed",
+            batch: {
+              id: 101,
+              payload: "BBN-KNB-1",
+              bin_number: 1,
+              printer_id: 4,
+              printer_name: "X1 Carbon 04",
+              archive_id: 31,
+              print_name: "Knob plate",
+              part_code: "KNB",
+              quantity: 20,
+              qc_passed_quantity: 18,
+              remaining_quantity: 18,
+              status: "visual_qc_passed",
+              harvested_at: "2026-08-26T14:35:00",
+            },
+          },
+        ]),
+      ),
+      http.get("/api/v1/floor/inventory/bins/batches/:batchId/events", () =>
+        HttpResponse.json([
+          {
+            id: 201,
+            action: "harvested",
+            details: { quantity: 20 },
+            occurred_at: "2026-08-26T14:35:00",
+          },
+        ]),
+      ),
+      http.post("/api/v1/floor/inventory/bins/quantity-override", async ({ request }) => {
+        overrideBody = await request.json();
+        return HttpResponse.json({ result: "quantity_overridden" });
+      }),
+      http.post("/api/v1/floor/inventory/bins/unlink", async ({ request }) => {
+        unlinkBody = await request.json();
+        return HttpResponse.json({ result: "unlinked" });
+      }),
+    );
+    render(<FloorInventoryPage />);
+
+    await user.click(await screen.findByText("BBN-KNB-1"));
+    expect(await screen.findByRole("heading", { name: "BBN-KNB-1" })).toBeInTheDocument();
+
+    const quantityInput = screen.getByLabelText("Knob bin 1 remaining quantity");
+    await user.clear(quantityInput);
+    expect(screen.getByRole("button", { name: "Override" })).toBeDisabled();
+    await user.type(quantityInput, "0");
+    expect(screen.getByRole("button", { name: "Override" })).toBeDisabled();
+    await user.clear(quantityInput);
+    await user.type(quantityInput, "12");
+    await user.click(screen.getByRole("button", { name: "Override" }));
+    await waitFor(() =>
+      expect(overrideBody).toEqual({ payload: "BBN-KNB-1", remaining_quantity: 12 }),
+    );
+
+    overrideBody = null;
+    await user.click(screen.getByRole("button", { name: "Clear quantity" }));
+    expect(screen.getByText("Clear remaining quantity?")).toBeInTheDocument();
+    await user.click(screen.getAllByRole("button", { name: "Clear quantity" })[1]);
+    await waitFor(() =>
+      expect(overrideBody).toEqual({ payload: "BBN-KNB-1", remaining_quantity: 0 }),
+    );
+
+    await user.click(screen.getByRole("button", { name: "Unlink" }));
+    await user.click(screen.getByRole("button", { name: "Unlink bin" }));
+    await waitFor(() => expect(unlinkBody).toEqual({ payload: "BBN-KNB-1" }));
   });
 
   it("keeps the bin history linear when every part passes visual QC", async () => {
@@ -536,6 +629,22 @@ describe("FloorInventoryPage", () => {
     expect(screen.getByRole("button", { name: /Fulfilled fulfilled/ })).toBeInTheDocument();
   });
 
+  it("offers the new floor statuses as suggested searches", async () => {
+    const user = userEvent.setup();
+    mockPartHistory();
+    render(<FloorInventoryPage />);
+
+    await user.click(screen.getByRole("textbox", { name: "Search part history" }));
+
+    expect(screen.getByRole("button", { name: /Staged for Production staged/ })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /Support Removed support/ })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /Overhang Removed overhang/ })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /Hot Air Removed hot air/ })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /Cleanup Pass cleanup/ })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /Visual QC pass visual qc/ })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /Fit Check Pass fit check/ })).toBeInTheDocument();
+  });
+
   it("clears the search from the inline X button", async () => {
     const user = userEvent.setup();
     mockPartHistory();
@@ -771,13 +880,17 @@ describe("FloorInventoryPage", () => {
     expect(matched).toEqual({ archive_id: 77 });
   });
 
-  it("replaces a sticker code and appends a timeline event", async () => {
+  it("replaces a sticker code without changing the workflow status", async () => {
     const user = userEvent.setup();
     mockPartHistory();
     let replaced = false;
     // Same reasoning as the unlink test above: the parts list handler must
     // reflect the new sticker code, or the post-mutation refetch reverts it.
-    let parts = PARTS.map((part) => ({ ...part }));
+    let parts = PARTS.map((part) =>
+      part.id === 1
+        ? { ...part, latest_event_action: "fit_checked", part_code: "TOP" }
+        : { ...part },
+    );
     server.use(
       http.get("/api/v1/floor/inventory/parts", () =>
         HttpResponse.json(parts),
@@ -800,10 +913,16 @@ describe("FloorInventoryPage", () => {
             details: { archive_id: 31 },
             occurred_at: "2026-08-25T14:31:00",
           },
+          {
+            id: 11,
+            action: "fit_checked",
+            details: { status_override: true },
+            occurred_at: "2026-08-25T15:00:00",
+          },
         ];
         if (replaced) {
           events.push({
-            id: 11,
+            id: 12,
             action: "sticker_replaced",
             details: {
               previous_code: "BBD-000101",
@@ -823,7 +942,12 @@ describe("FloorInventoryPage", () => {
           replaced = true;
           parts = parts.map((part) =>
             part.id === 1
-              ? { ...part, sticker_code: body.new_sticker_code }
+              ? {
+                  ...part,
+                  sticker_code: body.new_sticker_code,
+                  // Server keeps the prior workflow status for latest_event_action.
+                  latest_event_action: "fit_checked",
+                }
               : part,
           );
           return HttpResponse.json(parts[0]);
@@ -834,10 +958,11 @@ describe("FloorInventoryPage", () => {
     await screen.findByText("BBD-000101");
 
     await user.click(screen.getByText("BBD-000101"));
+    const detail = await screen.findByLabelText("Part detail");
     expect(
       await screen.findByRole("heading", { name: "BBD-000101" }),
     ).toBeInTheDocument();
-    expect(screen.getAllByRole("listitem")).toHaveLength(1);
+    expect(within(detail).getByText("Fit Check Pass")).toBeInTheDocument();
 
     await user.click(screen.getByRole("button", { name: "Replace sticker" }));
     await user.type(
@@ -852,8 +977,10 @@ describe("FloorInventoryPage", () => {
       await screen.findByRole("heading", { name: "BBD-000199" }),
     ).toBeInTheDocument();
     await waitFor(() =>
-      expect(screen.getAllByRole("listitem")).toHaveLength(2),
+      expect(within(detail).getByText(/Sticker replaced/)).toBeInTheDocument(),
     );
+    expect(within(detail).getByText("Fit Check Pass")).toBeInTheDocument();
+    expect(within(detail).queryByText("Linked")).not.toBeInTheDocument();
   });
 
   it("hides unlink and replace-sticker actions for an archived record", async () => {
@@ -1074,6 +1201,12 @@ describe("FloorInventoryPage", () => {
     await user.click(await screen.findByText("BBD-000101"));
     await user.click(await screen.findByRole("button", { name: "Change status" }));
     const status = screen.getByRole("combobox", { name: "Manual status" });
+    expect(within(status).getByRole("option", { name: "Staged for Production" })).toBeInTheDocument();
+    expect(within(status).getByRole("option", { name: "Support Removed" })).toBeInTheDocument();
+    expect(within(status).getByRole("option", { name: "Overhang Removed" })).toBeInTheDocument();
+    expect(within(status).getByRole("option", { name: "Hot Air Removed" })).toBeInTheDocument();
+    expect(within(status).getByRole("option", { name: "Cleanup Pass" })).toBeInTheDocument();
+    expect(within(status).getByRole("option", { name: "Fit Check Pass" })).toBeInTheDocument();
     await user.selectOptions(status, "shipped");
     await user.click(screen.getByRole("button", { name: "Save" }));
 

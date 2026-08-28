@@ -9,8 +9,10 @@ import {
   CheckCircle2,
   ChevronDown,
   Clock3,
+  Eraser,
   Hash,
   Link2,
+  Link2Off,
   Loader2,
   Pencil,
   Search,
@@ -21,6 +23,7 @@ import {
 } from "lucide-react";
 import { Button } from "../components/Button";
 import { ConfirmModal } from "../components/ConfirmModal";
+import { HorizontalScrollFade } from "../components/HorizontalScrollFade";
 import {
   api,
   type FloorBinBatch,
@@ -36,6 +39,16 @@ import {
 } from "../api/client";
 import { useToast } from "../contexts/ToastContext";
 import { formatFloorDate } from "../utils/floorScan";
+import {
+  buildPartTimeline,
+  FLOOR_PASS_BADGE_CLASS,
+  FLOOR_PASS_EVENT_DOT_CLASS,
+  formatCustomStatus,
+  isFloorPassBinStatus,
+  isFloorPassPartAction,
+  partEventDotClass,
+  partEventLabel,
+} from "../utils/floorPartHistory";
 import { FloorBinManagementPage } from "./FloorBinManagementPage";
 
 type PartFilter = "all" | "attention" | "linked" | "fulfilled" | "archived" | "failures";
@@ -47,6 +60,8 @@ const NON_STATUS_EVENT_ACTIONS = new Set([
   "part_code_assigned",
   "part_code_changed",
   "part_code_removed",
+  // Sticker replacement is audit-only — keep the last workflow status.
+  "sticker_replaced",
 ]);
 const FAILURE_REASON_OPTIONS: Array<{ value: FloorStopReasonCode; label: string }> = [
   { value: "first_layer_issue", label: "First layer issue" },
@@ -56,21 +71,33 @@ const FAILURE_REASON_OPTIONS: Array<{ value: FloorStopReasonCode; label: string 
   { value: "other", label: "Other" },
 ];
 const STATUS_SEARCH_SHORTCUTS = [
+  { label: "Needs matching", query: "matching" },
   { label: "Initial QC Pass", query: "qc" },
-  { label: "Fulfilled", query: "fulfilled" },
+  { label: "Fit Check Pass", query: "fit check" },
+  { label: "Visual QC pass", query: "visual qc" },
   { label: "Reworks", query: "rework" },
+  { label: "Support Removed", query: "support" },
+  { label: "Overhang Removed", query: "overhang" },
+  { label: "Hot Air Removed", query: "hot air" },
+  { label: "Cleanup Pass", query: "cleanup" },
+  { label: "Staged for Production", query: "staged" },
   { label: "WIP", query: "wip" },
   { label: "Shipped", query: "shipped" },
+  { label: "Fulfilled", query: "fulfilled" },
   { label: "Failed", query: "failed" },
   { label: "Discarded", query: "discarded" },
 ];
 const MANUAL_STATUS_OPTIONS = [
-  { value: "linked", label: "Linked" },
   { value: "needs_matching", label: "Needs matching" },
-  { value: "wip", label: "In WIP" },
+  { value: "linked", label: "Linked" },
   { value: "fit_checked", label: "Fit Check Pass" },
   { value: "rework", label: "Rework" },
+  { value: "support_removed", label: "Support Removed" },
+  { value: "overhang_removed", label: "Overhang Removed" },
+  { value: "hot_air_removed", label: "Hot Air Removed" },
   { value: "cleanup", label: "Cleanup Pass" },
+  { value: "ready_for_production", label: "Staged for Production" },
+  { value: "wip", label: "In WIP" },
   { value: "shipped", label: "Shipped" },
   { value: "discarded", label: "Discarded" },
 ];
@@ -83,6 +110,13 @@ const NON_WORKFLOW_STATUS_ACTIONS = new Set([
 ]);
 const DISCARDED_STATUS_CLASS =
   "border border-red-600 bg-red-100 text-red-800 shadow-sm shadow-red-500/20 dark:border-red-400/50 dark:bg-red-500/20 dark:text-red-300";
+const STATUS_PILL_CLASS =
+  "inline-flex max-w-full whitespace-nowrap rounded-full px-2 py-1 text-xs font-medium";
+const INVENTORY_TABLE_CLASS = "w-full text-left text-sm md:min-w-[680px]";
+const INVENTORY_THEAD_CLASS =
+  "hidden border-b border-bambu-dark-tertiary text-xs uppercase tracking-wide text-bambu-gray md:table-header-group";
+const INVENTORY_ROW_CLASS = "block border-b border-bambu-dark-tertiary last:border-0 md:table-row";
+const INVENTORY_CELL_CLASS = "block min-w-0 px-4 py-1.5 first:pt-3 last:pb-3 md:table-cell md:py-3";
 
 type FloorInventoryTab = "parts" | "bins";
 
@@ -99,14 +133,14 @@ function FloorInventoryTabs({
       <button
         type="button"
         onClick={() => onChange("parts")}
-        className={`rounded-md px-3 py-1.5 text-sm transition-colors ${tab === "parts" ? "bg-bambu-green text-white" : "text-bambu-gray hover:text-white"}`}
+        className={`whitespace-nowrap rounded-md px-3 py-1.5 text-sm transition-colors ${tab === "parts" ? "bg-bambu-green text-white" : "text-bambu-gray hover:text-white"}`}
       >
         {t("floor.partHistoryTab", "Part history")}
       </button>
       <button
         type="button"
         onClick={() => onChange("bins")}
-        className={`rounded-md px-3 py-1.5 text-sm transition-colors ${tab === "bins" ? "bg-bambu-green text-white" : "text-bambu-gray hover:text-white"}`}
+        className={`whitespace-nowrap rounded-md px-3 py-1.5 text-sm transition-colors ${tab === "bins" ? "bg-bambu-green text-white" : "text-bambu-gray hover:text-white"}`}
       >
         {t("floor.binsTab", "Bins")}
       </button>
@@ -593,20 +627,7 @@ export function FloorInventoryPage() {
       return (
         included &&
         (!term ||
-          [
-            bin.payload,
-            bin.part_code,
-            bin.part_name,
-            batch.print_name,
-            batch.printer_name,
-            batch.status,
-            "fulfilled",
-            "depleted",
-            "manually cleared",
-            "bin",
-            "button",
-            "knob",
-          ].some((value) => value?.toLowerCase().includes(term)))
+          binSearchValues(bin).some((value) => value.includes(term)))
       );
     });
   }, [historyBins, filter, search]);
@@ -669,7 +690,7 @@ export function FloorInventoryPage() {
           <h1 className="mt-1 text-2xl font-bold text-white">
             {t("floor.inventoryTitle", "Part history")}
           </h1>
-          <p className="mt-1 max-w-2xl text-bambu-gray">
+          <p className="mt-1 max-w-2xl break-words text-bambu-gray">
             {t(
               "floor.inventorySubtitle",
               "Trace each stickered part back to its harvest and completed job. Resolve only the records that could not be linked at harvest.",
@@ -725,7 +746,7 @@ export function FloorInventoryPage() {
                   {t("floor.inventorySearchSuggestionHint", "Search by status or choose a shortcut.")}
                 </p>
               </div>
-              <div className="p-1.5">
+              <div className="max-h-80 overflow-y-auto p-1.5">
                 {STATUS_SEARCH_SHORTCUTS.map((shortcut) => (
                   <button
                     key={shortcut.query}
@@ -767,30 +788,30 @@ export function FloorInventoryPage() {
         />
       </div>
       <div className="grid gap-6 xl:grid-cols-[minmax(0,1fr)_24rem] xl:items-start">
-        <section className="overflow-hidden rounded-lg border border-bambu-dark-tertiary bg-bambu-dark-secondary">
-          <div className="flex flex-col gap-3 border-b border-bambu-dark-tertiary p-4 sm:flex-row sm:items-start sm:justify-between">
-            <div className="flex items-center">
-              <div className="inline-flex rounded-lg bg-bambu-dark p-1">
-              {filters.map((item) => (
-                <button
-                  key={item.id}
-                  type="button"
-                  onClick={() => setFilter(item.id)}
-                  className={`rounded-md px-3 py-1.5 text-sm transition-colors ${filter === item.id ? "bg-bambu-green text-white" : "text-bambu-gray hover:text-white"}`}
-                >
-                  {item.label}
-                  {item.id === "attention" && counts.attention > 0
-                    ? ` (${counts.attention})`
-                    : ""}
-                </button>
-              ))}
+        <section className="min-w-0 overflow-hidden rounded-lg border border-bambu-dark-tertiary bg-bambu-dark-secondary">
+          <div className="flex flex-col gap-3 border-b border-bambu-dark-tertiary p-4 md:flex-row md:items-start">
+            <HorizontalScrollFade className="w-full md:flex-1" fadeFromClassName="from-bambu-dark-secondary">
+              <div className="inline-flex min-w-full flex-nowrap gap-1 rounded-lg bg-bambu-dark p-1 md:min-w-0">
+                {filters.map((item) => (
+                  <button
+                    key={item.id}
+                    type="button"
+                    onClick={() => setFilter(item.id)}
+                    className={`shrink-0 whitespace-nowrap rounded-md px-3 py-2.5 text-sm transition-colors md:py-1.5 ${filter === item.id ? "bg-bambu-green text-white" : "text-bambu-gray hover:text-white"}`}
+                  >
+                    {item.label}
+                    {item.id === "attention" && counts.attention > 0
+                      ? ` (${counts.attention})`
+                      : ""}
+                  </button>
+                ))}
               </div>
-            </div>
-            <div className="flex flex-col items-start gap-2 sm:items-end">
+            </HorizontalScrollFade>
+            <div className="flex shrink-0 items-center justify-between gap-2 md:flex-col md:items-end">
               <button
                 type="button"
                 onClick={() => setFilter("archived")}
-                className={`rounded-md border px-3 py-1.5 text-sm transition-colors ${filter === "archived" ? "border-bambu-green bg-bambu-green text-white" : "border-bambu-dark-tertiary bg-bambu-dark-tertiary text-white hover:border-bambu-gray hover:bg-bambu-dark hover:text-white"}`}
+                className={`whitespace-nowrap rounded-md border px-3 py-1.5 text-sm transition-colors ${filter === "archived" ? "border-bambu-green bg-bambu-green text-white" : "border-bambu-dark-tertiary bg-bambu-dark-tertiary text-white hover:border-bambu-gray hover:bg-bambu-dark hover:text-white"}`}
               >
                 {t("floor.inventoryShowArchived", "Show archived")}
               </button>
@@ -1039,14 +1060,14 @@ function InventoryHistoryTable({
   t: ReturnType<typeof useTranslation>["t"];
 }) {
   return (
-    <div className="overflow-x-auto">
-      <table className="w-full min-w-[680px] text-left text-sm">
-        <thead className="border-b border-bambu-dark-tertiary text-xs uppercase tracking-wide text-bambu-gray">
+    <div className="min-w-0 overflow-x-auto">
+      <table className={INVENTORY_TABLE_CLASS}>
+        <thead className={INVENTORY_THEAD_CLASS}>
           <tr>
             <th className="px-4 py-3 font-medium">
               {t("floor.inventoryColStickerOrBin", "Sticker / bin")}
             </th>
-            <th className="px-4 py-3 font-medium">
+            <th className="whitespace-nowrap px-4 py-3 font-medium">
               {t("floor.inventoryColStatus", "Status")}
             </th>
             <th className="px-4 py-3 font-medium">
@@ -1069,27 +1090,27 @@ function InventoryHistoryTable({
               onKeyDown={(event) => {
                 if (event.key === "Enter" || event.key === " ") onSelectFailure(record);
               }}
-              className={`cursor-pointer border-b border-bambu-dark-tertiary last:border-0 transition-colors hover:bg-bambu-dark-tertiary/60 focus:bg-bambu-dark-tertiary/60 focus:outline-none ${selectedFailure?.id === record.id ? "bg-red-100/50 dark:bg-red-500/10" : ""}`}
+              className={`cursor-pointer ${INVENTORY_ROW_CLASS} transition-colors hover:bg-bambu-dark-tertiary/60 focus:bg-bambu-dark-tertiary/60 focus:outline-none ${selectedFailure?.id === record.id ? "bg-red-100/50 dark:bg-red-500/10" : ""}`}
             >
-              <td className="px-4 py-3 font-mono font-medium text-bambu-gray">—</td>
-              <td className="px-4 py-3">
-                <span className={`inline-flex rounded-full px-2 py-1 text-xs font-medium ${DISCARDED_STATUS_CLASS}`}>
+              <td className={`${INVENTORY_CELL_CLASS} font-mono font-medium text-bambu-gray`}>—</td>
+              <td className={`${INVENTORY_CELL_CLASS} md:whitespace-nowrap`}>
+                <span className={`${STATUS_PILL_CLASS} ${DISCARDED_STATUS_CLASS}`}>
                   {t("floor.inventoryStatusFailed", "Failed")}
                 </span>
               </td>
-              <td className="px-4 py-3 text-white">
+              <td className={`${INVENTORY_CELL_CLASS} break-words text-white`}>
                 {record.part_code && (
-                  <span className="mr-2 font-mono text-bambu-green-light">{record.part_code}</span>
+                  <span className="mb-0.5 mr-2 block font-mono text-bambu-green-light md:mb-0 md:inline">{record.part_code}</span>
                 )}
                 {record.print_name ?? t("floor.inventoryNoJob", "No completed job")}
-                <span className="ml-2 text-red-800 dark:text-red-300">
+                <span className="ml-0 mt-0.5 block text-red-800 md:ml-2 md:mt-0 md:inline dark:text-red-300">
                   {printFailureReasonLabel(record.reason_code, record.reason_text, t)}
                 </span>
               </td>
-              <td className="px-4 py-3 text-bambu-gray-light">
+              <td className={`${INVENTORY_CELL_CLASS} text-bambu-gray-light`}>
                 {record.printer_name ?? t("floor.inventoryDeletedPrinter", "Deleted printer")}
               </td>
-              <td className="whitespace-nowrap px-4 py-3 text-bambu-gray">
+              <td className={`${INVENTORY_CELL_CLASS} text-bambu-gray md:whitespace-nowrap`}>
                 {formatFloorDate(record.stopped_at, { dateStyle: "medium", timeStyle: "short" })}
               </td>
             </tr>
@@ -1104,24 +1125,24 @@ function InventoryHistoryTable({
                 onKeyDown={(event) => {
                   if (event.key === "Enter" || event.key === " ") onSelectPart(part);
                 }}
-                className={`cursor-pointer border-b border-bambu-dark-tertiary last:border-0 transition-colors hover:bg-bambu-dark-tertiary/60 focus:bg-bambu-dark-tertiary/60 focus:outline-none ${selectedId === part.id ? "bg-bambu-dark-tertiary/60" : ""}`}
+                className={`cursor-pointer ${INVENTORY_ROW_CLASS} transition-colors hover:bg-bambu-dark-tertiary/60 focus:bg-bambu-dark-tertiary/60 focus:outline-none ${selectedId === part.id ? "bg-bambu-dark-tertiary/60" : ""}`}
               >
-                <td className="px-4 py-3 font-mono font-medium text-white">{part.sticker_code}</td>
-                <td className="px-4 py-3">
-                  <span className={`inline-flex rounded-full px-2 py-1 text-xs font-medium ${statusClass(part, latestEventAction)}`}>
+                <td className={`${INVENTORY_CELL_CLASS} break-all font-mono font-medium text-white`}>{part.sticker_code}</td>
+                <td className={`${INVENTORY_CELL_CLASS} md:whitespace-nowrap`}>
+                  <span className={`${STATUS_PILL_CLASS} ${statusClass(part, latestEventAction)}`}>
                     {statusLabel(part, t, latestEventAction)}
                   </span>
                 </td>
-                <td className="px-4 py-3 text-white">
-                  {part.part_code && <span className="mr-2 font-mono text-bambu-green-light">{part.part_code}</span>}
+                <td className={`${INVENTORY_CELL_CLASS} break-words text-white`}>
+                  {part.part_code && <span className="mb-0.5 mr-2 block font-mono text-bambu-green-light md:mb-0 md:inline">{part.part_code}</span>}
                   {part.print_name ?? (
                     <span className="text-bambu-gray">{t("floor.inventoryNoJob", "No completed job")}</span>
                   )}
                 </td>
-                <td className="px-4 py-3 text-bambu-gray-light">
+                <td className={`${INVENTORY_CELL_CLASS} text-bambu-gray-light`}>
                   {part.printer_name ?? t("floor.inventoryDeletedPrinter", "Deleted printer")}
                 </td>
-                <td className="whitespace-nowrap px-4 py-3 text-bambu-gray">
+                <td className={`${INVENTORY_CELL_CLASS} text-bambu-gray md:whitespace-nowrap`}>
                   {formatFloorDate(part.labeled_at, { dateStyle: "medium", timeStyle: "short" })}
                 </td>
               </tr>
@@ -1138,25 +1159,25 @@ function InventoryHistoryTable({
                 onKeyDown={(event) => {
                   if (event.key === "Enter" || event.key === " ") onSelectBin(bin);
                 }}
-                className={`cursor-pointer border-b border-bambu-dark-tertiary last:border-0 transition-colors hover:bg-bambu-dark-tertiary/60 focus:bg-bambu-dark-tertiary/60 focus:outline-none ${selectedBinId === batch.id ? "bg-bambu-dark-tertiary/60" : ""}`}
+                className={`cursor-pointer ${INVENTORY_ROW_CLASS} transition-colors hover:bg-bambu-dark-tertiary/60 focus:bg-bambu-dark-tertiary/60 focus:outline-none ${selectedBinId === batch.id ? "bg-bambu-dark-tertiary/60" : ""}`}
               >
-                <td className="px-4 py-3 font-mono font-medium text-white">{bin.payload}</td>
-                <td className="px-4 py-3">
-                  <span className={`inline-flex rounded-full px-2 py-1 text-xs font-medium ${binStatusClass(batch.status)}`}>
+                <td className={`${INVENTORY_CELL_CLASS} break-all font-mono font-medium text-white`}>{bin.payload}</td>
+                <td className={`${INVENTORY_CELL_CLASS} md:whitespace-nowrap`}>
+                  <span className={`${STATUS_PILL_CLASS} ${binStatusClass(batch.status)}`}>
                     {binStatusLabel(batch.status, t)}
                   </span>
                 </td>
-                <td className="px-4 py-3 text-white">
-                  <span className="mr-2 font-mono text-bambu-green-light">{bin.part_code}</span>
+                <td className={`${INVENTORY_CELL_CLASS} break-words text-white`}>
+                  <span className="mb-0.5 mr-2 block font-mono text-bambu-green-light md:mb-0 md:inline">{bin.part_code}</span>
                   {batch.print_name ?? (
                     <span className="text-bambu-gray">{t("floor.inventoryNoJob", "No completed job")}</span>
                   )}
-                  <span className="ml-2 text-bambu-gray">({batch.remaining_quantity}/{batch.quantity})</span>
+                  <span className="ml-0 mt-0.5 block text-bambu-gray md:ml-2 md:mt-0 md:inline">({batch.remaining_quantity}/{batch.quantity})</span>
                 </td>
-                <td className="px-4 py-3 text-bambu-gray-light">
+                <td className={`${INVENTORY_CELL_CLASS} text-bambu-gray-light`}>
                   {batch.printer_name ?? t("floor.inventoryDeletedPrinter", "Deleted printer")}
                 </td>
-                <td className="whitespace-nowrap px-4 py-3 text-bambu-gray">
+                <td className={`${INVENTORY_CELL_CLASS} text-bambu-gray md:whitespace-nowrap`}>
                   {formatFloorDate(batch.harvested_at, { dateStyle: "medium", timeStyle: "short" })}
                 </td>
               </tr>
@@ -1224,7 +1245,7 @@ function PrintFailureDetail({
       </div>
       <div className="min-h-0 flex-1 overflow-y-auto p-4">
         <div className="flex items-center gap-2">
-          <span className={`inline-flex rounded-full px-2 py-1 text-xs font-medium ${DISCARDED_STATUS_CLASS}`}>
+          <span className={`${STATUS_PILL_CLASS} ${DISCARDED_STATUS_CLASS}`}>
             {t("floor.inventoryStatusFailed", "Failed")}
           </span>
         </div>
@@ -1381,14 +1402,14 @@ function PrintFailureReasonLog({
           {t("floor.printFailureLogEmpty", "No print failure reasons logged yet.")}
         </div>
       ) : (
-        <div className="overflow-x-auto">
-          <table className="w-full min-w-[680px] text-left text-sm">
-            <thead className="border-b border-bambu-dark-tertiary text-xs uppercase tracking-wide text-bambu-gray">
+        <div className="min-w-0 overflow-x-auto">
+          <table className={INVENTORY_TABLE_CLASS}>
+            <thead className={INVENTORY_THEAD_CLASS}>
               <tr>
                 <th className="px-4 py-3 font-medium">
                   {t("floor.inventoryColSticker", "Sticker")}
                 </th>
-                <th className="px-4 py-3 font-medium">
+                <th className="whitespace-nowrap px-4 py-3 font-medium">
                   {t("floor.inventoryColStatus", "Status")}
                 </th>
                 <th className="px-4 py-3 font-medium">
@@ -1422,35 +1443,35 @@ function PrintFailureReasonLog({
                         select();
                       }
                     }}
-                    className={`cursor-pointer border-b border-bambu-dark-tertiary last:border-0 transition-colors hover:bg-bambu-dark-tertiary/60 focus:bg-bambu-dark-tertiary/60 focus:outline-none ${selected ? isFailure ? "bg-red-100/50 dark:bg-red-500/10" : "bg-bambu-dark-tertiary/60" : ""}`}
+                    className={`cursor-pointer ${INVENTORY_ROW_CLASS} transition-colors hover:bg-bambu-dark-tertiary/60 focus:bg-bambu-dark-tertiary/60 focus:outline-none ${selected ? isFailure ? "bg-red-100/50 dark:bg-red-500/10" : "bg-bambu-dark-tertiary/60" : ""}`}
                   >
-                    <td className={`px-4 py-3 font-mono font-medium ${isFailure ? "text-bambu-gray" : "text-white"}`}>
+                    <td className={`${INVENTORY_CELL_CLASS} break-all font-mono font-medium ${isFailure ? "text-bambu-gray" : "text-white"}`}>
                       {isFailure ? "—" : entry.part.sticker_code}
                     </td>
-                    <td className="px-4 py-3">
-                      <span className={`inline-flex rounded-full px-2 py-1 text-xs font-medium ${isFailure ? DISCARDED_STATUS_CLASS : statusClass(entry.part, "discarded")}`}>
+                    <td className={`${INVENTORY_CELL_CLASS} md:whitespace-nowrap`}>
+                      <span className={`${STATUS_PILL_CLASS} ${isFailure ? DISCARDED_STATUS_CLASS : statusClass(entry.part, "discarded")}`}>
                         {isFailure
                           ? t("floor.inventoryStatusFailed", "Failed")
                           : statusLabel(entry.part, t, "discarded")}
                       </span>
                     </td>
-                    <td className="px-4 py-3 text-white">
+                    <td className={`${INVENTORY_CELL_CLASS} break-words text-white`}>
                       {isFailure ? (
                         <>
                           {entry.record.part_code && (
-                            <span className="mr-2 font-mono text-bambu-green-light">
+                            <span className="mb-0.5 mr-2 block font-mono text-bambu-green-light md:mb-0 md:inline">
                               {entry.record.part_code}
                             </span>
                           )}
                           {entry.record.print_name ?? t("floor.inventoryNoJob", "No completed job")}
-                          <span className="ml-2 text-red-800 dark:text-red-300">
+                          <span className="ml-0 mt-0.5 block text-red-800 md:ml-2 md:mt-0 md:inline dark:text-red-300">
                             {printFailureReasonLabel(entry.record.reason_code, entry.record.reason_text, t)}
                           </span>
                         </>
                       ) : (
                         <>
                           {entry.part.part_code && (
-                            <span className="mr-2 font-mono text-bambu-green-light">
+                            <span className="mb-0.5 mr-2 block font-mono text-bambu-green-light md:mb-0 md:inline">
                               {entry.part.part_code}
                             </span>
                           )}
@@ -1462,11 +1483,11 @@ function PrintFailureReasonLog({
                         </>
                       )}
                     </td>
-                    <td className="px-4 py-3 text-bambu-gray-light">
+                    <td className={`${INVENTORY_CELL_CLASS} text-bambu-gray-light`}>
                       {(isFailure ? entry.record.printer_name : entry.part.printer_name) ??
                         t("floor.inventoryDeletedPrinter", "Deleted printer")}
                     </td>
-                    <td className="whitespace-nowrap px-4 py-3 text-bambu-gray">
+                    <td className={`${INVENTORY_CELL_CLASS} text-bambu-gray md:whitespace-nowrap`}>
                       {formatFloorDate(isFailure ? entry.record.stopped_at : entry.part.labeled_at, {
                         dateStyle: "medium",
                         timeStyle: "short",
@@ -1503,26 +1524,7 @@ function partSearchValues(part: FloorInventoryPart, latestEventAction: string | 
     ? ["archived"]
     : ["registered", "registered parts", "linked", "linked parts", "active"];
   const action = latestEventAction ?? part.latest_event_action ?? null;
-  const actionTerms =
-    action === "fit_check" || action === "fit_checked"
-      ? part.part_code === "BUT" || part.part_code === "KNB"
-        ? ["visual", "visual qc", "visual qc pass", "initial qc pass", "qc"]
-        : ["fit", "fit check", "fit checks", "fit check pass", "initial qc pass", "qc"]
-      : action === "rework" || action === "sanding"
-        ? ["rework", "reworks", "sanding"]
-        : action === "wip" || action === "in_wip"
-          ? ["wip", "in wip", "in_wip"]
-          : action === "shipped"
-            ? ["shipped", "shipping", "fulfilled"]
-            : action === "discarded"
-              ? ["discarded", "discard"]
-              : action === "cleanup" || action === "cleaned_up"
-                ? ["cleanup", "cleanup pass"]
-                : action
-                  ? [action, formatCustomStatus(action)]
-                : part.archive_id === null
-                  ? ["needs matching", "matching", "attention", "unmatched"]
-                  : [];
+  const actionTerms = partStatusSearchTerms(part.part_code, action, part.archive_id);
   return [
     part.sticker_code,
     part.part_code,
@@ -1530,6 +1532,62 @@ function partSearchValues(part: FloorInventoryPart, latestEventAction: string | 
     part.printer_name,
     ...statusTerms,
     ...actionTerms,
+  ]
+    .filter((value): value is string => Boolean(value))
+    .map((value) => value.toLowerCase());
+}
+
+function partStatusSearchTerms(
+  partCode: string | null | undefined,
+  action: string | null,
+  archiveId: number | null,
+) {
+  if (action === "fit_check" || action === "fit_checked") {
+    return partCode === "BUT" || partCode === "KNB"
+      ? ["visual", "visual qc", "visual qc pass", "initial qc pass", "qc"]
+      : ["fit", "fit check", "fit checks", "fit check pass", "initial qc pass", "qc"];
+  }
+  if (action === "rework" || action === "sanding") return ["rework", "reworks", "sanding"];
+  if (action === "wip" || action === "in_wip") return ["wip", "in wip", "in_wip"];
+  if (action === "ready_for_production") {
+    return ["staged", "staged for production", "ready for production", "ready_for_production"];
+  }
+  if (action === "shipped") return ["shipped", "shipping", "fulfilled"];
+  if (action === "discarded") return ["discarded", "discard"];
+  if (action === "cleanup" || action === "cleaned_up") return ["cleanup", "cleanup pass"];
+  if (action === "support_removed") return ["support", "support removed", "support removal"];
+  if (action === "overhang_removed") return ["overhang", "overhang removed", "overhang removal"];
+  if (action === "hot_air_removed") return ["hot air", "hot air removed", "hot air removal"];
+  if (action === "needs_matching") return ["needs matching", "matching", "attention", "unmatched"];
+  if (action) return [action, formatCustomStatus(action)];
+  return archiveId === null ? ["needs matching", "matching", "attention", "unmatched"] : [];
+}
+
+function binSearchValues(bin: FloorBinManagement) {
+  const batch = bin.batch;
+  if (!batch) return [];
+  const statusTerms =
+    batch.status === "visual_qc_passed"
+      ? ["visual", "visual qc", "visual qc pass", "initial qc pass", "qc"]
+      : batch.status === "ready_for_production"
+        ? ["staged", "staged for production", "ready for production", "ready_for_production"]
+        : batch.status === "wip"
+          ? ["wip", "in wip"]
+          : [];
+  return [
+    bin.payload,
+    bin.part_code,
+    bin.part_name,
+    batch.print_name,
+    batch.printer_name,
+    batch.status,
+    "fulfilled",
+    "depleted",
+    "manually cleared",
+    "bin",
+    "button",
+    "knob",
+    ...statusTerms,
   ]
     .filter((value): value is string => Boolean(value))
     .map((value) => value.toLowerCase());
@@ -1556,6 +1614,9 @@ function statusLabel(
   if (latestEventAction === "wip" || latestEventAction === "in_wip") {
     return t("floor.inventoryStatusWip", "In WIP");
   }
+  if (latestEventAction === "ready_for_production") {
+    return t("floor.inventoryStatusStagedForProduction", "Staged for Production");
+  }
   if (latestEventAction === "shipped") return t("floor.inventoryStatusShipped", "Shipped");
   if (latestEventAction === "linked") return t("floor.inventoryStatusLinked", "Linked");
   if (latestEventAction === "needs_matching") {
@@ -1567,12 +1628,6 @@ function statusLabel(
   return part.archive_id === null
     ? t("floor.inventoryFilterAttention", "Needs matching")
     : t("floor.inventoryStatusLinked", "Linked");
-}
-
-function formatCustomStatus(status: string) {
-  return status
-    .replaceAll("_", " ")
-    .replace(/\b\w/g, (character) => character.toUpperCase());
 }
 
 function manualStatusValue(part: FloorInventoryPart, latestEventAction: string | null) {
@@ -1595,8 +1650,8 @@ function statusClass(
   latestEventAction = part.latest_event_action ?? null,
 ) {
   if (part.archived_at) return "bg-bambu-dark-tertiary text-bambu-gray-light";
-  if (latestEventAction === "fit_check" || latestEventAction === "fit_checked") {
-    return "border border-green-600 bg-green-100 text-green-800 shadow-sm shadow-green-500/20 dark:border-green-400/50 dark:bg-green-500/20 dark:text-green-300";
+  if (isFloorPassPartAction(latestEventAction ?? "")) {
+    return FLOOR_PASS_BADGE_CLASS;
   }
   if (latestEventAction === "rework" || latestEventAction === "sanding") {
     return "border border-orange-600 bg-orange-100 text-orange-800 shadow-sm shadow-orange-500/20 dark:border-orange-400/50 dark:bg-orange-500/20 dark:text-orange-300";
@@ -1623,8 +1678,8 @@ function binStatusClass(status: string) {
   if (status === "wip") {
     return "border border-amber-600 bg-amber-100 text-amber-800 shadow-sm shadow-amber-500/20 dark:border-amber-400/50 dark:bg-amber-500/20 dark:text-amber-300";
   }
-  if (status === "visual_qc_passed") {
-    return "border border-green-600 bg-green-100 text-green-800 shadow-sm shadow-green-500/20 dark:border-green-400/50 dark:bg-green-500/20 dark:text-green-300";
+  if (isFloorPassBinStatus(status)) {
+    return FLOOR_PASS_BADGE_CLASS;
   }
   return "border border-cyan-600 bg-cyan-100 text-cyan-800 dark:border-bambu-green/25 dark:bg-bambu-green/15 dark:text-bambu-green-light";
 }
@@ -1638,6 +1693,8 @@ function binStatusLabel(
       return t("floor.inventoryBinVisualQcPassed", "Visual QC pass");
     case "wip":
       return t("floor.inventoryBinWip", "In WIP");
+    case "ready_for_production":
+      return t("floor.inventoryBinStagedForProduction", "Staged for Production");
     case "empty_override":
       return t("floor.inventoryBinDepletedManual", "Depleted (manually cleared)");
     case "empty":
@@ -1647,163 +1704,6 @@ function binStatusLabel(
     default:
       return t("floor.inventoryBinAwaitingQc", "Awaiting visual QC");
   }
-}
-
-function eventLabel(
-  event: FloorInventoryPartEvent,
-  partCode: string | null | undefined,
-  t: ReturnType<typeof useTranslation>["t"],
-) {
-  const archiveId = event.details?.archive_id;
-  if (event.details?.status_override === true) {
-    return t("floor.inventoryEventStatusOverride", "Status overridden to {{status}}", {
-      status: formatCustomStatus(event.action),
-    });
-  }
-  switch (event.action) {
-    case "enrolled":
-      return archiveId
-        ? t(
-            "floor.inventoryEventEnrolledLinked",
-            "Sticker enrolled · linked at harvest",
-          )
-        : t(
-            "floor.inventoryEventEnrolledNoJob",
-            "Sticker enrolled · no job found at harvest",
-          );
-    case "scanned":
-      return t("floor.inventoryEventScanned", "Scanned at floor");
-    case "relinked":
-      return t("floor.inventoryEventRelinked", "Matched to completed job");
-    case "relinked_by_scan":
-      return t("floor.inventoryEventRelinkedByScan", "Linked by scanner");
-    case "fit_check":
-    case "fit_checked":
-      return partCode === "BUT" || partCode === "KNB"
-        ? t("floor.inventoryEventVisualQcPassed", "Visual QC pass")
-        : t("floor.inventoryEventFitChecked", "Fit Check Pass");
-    case "rework":
-    case "sanding": {
-      const reasonCode = event.details?.reason_code;
-      const reasonText = event.details?.reason_text;
-      const errorName = event.details?.error_name;
-      const reasonLabel =
-        typeof errorName === "string" && errorName
-          ? errorName
-          : typeof reasonCode === "string" && reasonCode !== "other"
-            ? reasonCode.replaceAll("_", " ")
-            : null;
-      const description =
-        typeof reasonText === "string" && reasonText.trim()
-          ? compactEventReason(reasonText)
-          : null;
-      const reason = [reasonLabel, description].filter(Boolean).join(" · ") || null;
-      return reason
-        ? t("floor.inventoryEventReworkWithReason", "Sent to Rework · {{reason}}", { reason })
-        : t("floor.inventoryEventRework", "Sent to Rework");
-    }
-    case "discarded": {
-      const errorName = typeof event.details?.error_name === "string" ? event.details.error_name : null;
-      const reasonText = typeof event.details?.reason_text === "string" ? event.details.reason_text : null;
-      const reason = [errorName, reasonText ? compactEventReason(reasonText) : null].filter(Boolean).join(" · ") || null;
-      return reason
-        ? t("floor.inventoryEventDiscardedWithReason", "Discarded · {{reason}}", { reason })
-        : t("floor.inventoryEventDiscarded", "Discarded");
-    }
-    case "cleanup":
-    case "cleaned_up":
-      return t("floor.inventoryEventCleanedUp", "Cleaned up");
-    case "archived":
-      return t("floor.inventoryEventArchived", "Archived from active view");
-    case "restored":
-      return t("floor.inventoryEventRestored", "Restored to active view");
-    case "unlinked": {
-      const reasonCode = event.details?.reason_code;
-      const reasonText = event.details?.reason_text;
-      const reason =
-        reasonCode === "wrong_job"
-          ? t("floor.inventoryUnlinkReasonWrongJob", "Wrong job matched")
-          : reasonCode === "wrong_printer"
-            ? t(
-                "floor.inventoryUnlinkReasonWrongPrinter",
-                "Wrong printer scanned",
-              )
-            : reasonCode === "other"
-              ? (typeof reasonText === "string" && reasonText) ||
-                t("floor.inventoryReasonOther", "Other")
-              : null;
-      return reason
-        ? t(
-            "floor.inventoryEventUnlinkedWithReason",
-            "Job link removed · {{reason}}",
-            { reason },
-          )
-        : t("floor.inventoryEventUnlinked", "Job link removed");
-    }
-    case "sticker_replaced": {
-      const previousCode = event.details?.previous_code;
-      const newCode = event.details?.new_code;
-      return typeof previousCode === "string" && typeof newCode === "string"
-        ? t(
-            "floor.inventoryEventStickerReplacedWithCodes",
-            "Sticker replaced · {{previousCode}} → {{newCode}}",
-            { previousCode, newCode },
-          )
-        : t("floor.inventoryEventStickerReplaced", "Sticker replaced");
-    }
-    case "part_code_assigned": {
-      const partCode = event.details?.part_code;
-      return typeof partCode === "string"
-        ? t(
-            "floor.inventoryEventPartCodeAssignedWithCode",
-            "Part code assigned · {{partCode}}",
-            { partCode },
-          )
-        : t("floor.inventoryEventPartCodeAssigned", "Part code assigned");
-    }
-    case "part_code_changed": {
-      const previousCode = event.details?.previous_code;
-      const partCode = event.details?.part_code;
-      return typeof previousCode === "string" && typeof partCode === "string"
-        ? t("floor.inventoryEventPartCodeChanged", "Part code changed · {{previousCode}} → {{partCode}}", { previousCode, partCode })
-        : t("floor.inventoryEventPartCodeChangedGeneric", "Part code changed");
-    }
-    case "part_code_removed": {
-      const previousCode = event.details?.previous_code;
-      return typeof previousCode === "string"
-        ? t("floor.inventoryEventPartCodeRemovedWithCode", "Part code removed · {{partCode}}", { partCode: previousCode })
-        : t("floor.inventoryEventPartCodeRemoved", "Part code removed");
-    }
-    default:
-      return event.action.replaceAll("_", " ");
-  }
-}
-
-function compactEventReason(value: string) {
-  const compact = value.trim().replace(/\s+/g, " ");
-  return compact.length > 56 ? `${compact.slice(0, 53)}…` : compact;
-}
-
-/** Always includes enroll from the part row; merges API audit events on top. */
-function buildPartTimeline(
-  part: FloorInventoryPart,
-  events: FloorInventoryPartEvent[],
-): FloorInventoryPartEvent[] {
-  const extras = events.filter(
-    (event) => event.action !== "enrolled" && event.action !== "scanned",
-  );
-  const enrolledFromApi = events.find((event) => event.action === "enrolled");
-  const enrolled: FloorInventoryPartEvent = enrolledFromApi ?? {
-    id: -part.id,
-    action: "enrolled",
-    details: part.archive_id != null ? { archive_id: part.archive_id } : null,
-    occurred_at: part.labeled_at,
-  };
-  return [enrolled, ...extras].sort(
-    (left, right) =>
-      new Date(left.occurred_at).getTime() -
-      new Date(right.occurred_at).getTime(),
-  );
 }
 
 function SummaryCard({
@@ -1848,17 +1748,71 @@ function BinDetail({
   onClose: () => void;
 }) {
   const { t } = useTranslation();
+  const { showToast } = useToast();
+  const queryClient = useQueryClient();
   const batch = bin.batch;
   const historyScrollRef = useRef<HTMLDivElement>(null);
   const [historyAtBottom, setHistoryAtBottom] = useState(true);
+  const [quantityDraft, setQuantityDraft] = useState(
+    String(batch?.remaining_quantity ?? 0),
+  );
+  const [clearOpen, setClearOpen] = useState(false);
+  const [unlinkOpen, setUnlinkOpen] = useState(false);
 
   useEffect(() => {
     setHistoryAtBottom(true);
-  }, [batch?.id]);
+    setQuantityDraft(String(batch?.remaining_quantity ?? 0));
+    setClearOpen(false);
+    setUnlinkOpen(false);
+  }, [batch?.id, batch?.remaining_quantity]);
+
+  const refreshBinData = () =>
+    Promise.all([
+      queryClient.invalidateQueries({ queryKey: ["floor-bin-history"] }),
+      queryClient.invalidateQueries({ queryKey: ["floor-bin-management"] }),
+      queryClient.invalidateQueries({
+        queryKey: ["floor-bin-batch-events", batch?.id ?? null],
+      }),
+    ]);
+
+  const overrideMutation = useMutation({
+    mutationFn: (remaining_quantity: number) =>
+      api.overrideFloorBinQuantity({ payload: bin.payload, remaining_quantity }),
+    onSuccess: async () => {
+      setClearOpen(false);
+      await refreshBinData();
+      showToast(
+        t("inventory.binQuantityUpdated", "Bin quantity updated"),
+        "success",
+      );
+    },
+    onError: () =>
+      showToast(
+        t("inventory.binQuantityUpdateFailed", "Could not update bin quantity"),
+        "error",
+      ),
+  });
+
+  const unlinkMutation = useMutation({
+    mutationFn: () => api.unlinkFloorBin({ payload: bin.payload }),
+    onSuccess: async () => {
+      setUnlinkOpen(false);
+      await refreshBinData();
+      showToast(
+        t("inventory.binUnlinked", "Bin assignment cleared"),
+        "success",
+      );
+    },
+    onError: () =>
+      showToast(
+        t("inventory.binUnlinkFailed", "Could not clear bin assignment"),
+        "error",
+      ),
+  });
 
   if (!batch) {
     return (
-      <aside className="rounded-lg border border-dashed border-bambu-dark-tertiary p-6 text-center text-sm text-bambu-gray xl:sticky xl:top-6">
+      <aside className="rounded-lg border border-dashed border-bambu-dark-tertiary p-6 text-center text-sm text-bambu-gray break-words xl:sticky xl:top-6">
         {t("floor.inventoryBinDetailUnavailable", "This bin fill is no longer active.")}
       </aside>
     );
@@ -1876,6 +1830,17 @@ function BinDetail({
             occurred_at: batch.harvested_at,
           },
         ];
+
+  const depleted =
+    batch.status === "empty" || batch.status === "empty_override";
+  const unlinked = batch.status === "unlinked" || bin.status === "unlinked";
+  const parsedQuantity = Number(quantityDraft);
+  const quantityValid =
+    Number.isInteger(parsedQuantity) &&
+    parsedQuantity > 0 &&
+    parsedQuantity <= batch.quantity;
+  const busy = overrideMutation.isPending || unlinkMutation.isPending;
+  const canManage = !depleted;
 
   return (
     <aside
@@ -1903,7 +1868,7 @@ function BinDetail({
       <div className="flex min-h-0 flex-none flex-col gap-5 overflow-hidden p-4">
         <div>
           <span
-            className={`inline-flex rounded-full px-2 py-1 text-xs font-medium ${binStatusClass(batch.status)}`}
+            className={`${STATUS_PILL_CLASS} ${binStatusClass(batch.status)}`}
           >
             {binStatusLabel(batch.status, t)}
           </span>
@@ -1942,6 +1907,60 @@ function BinDetail({
             </dd>
           </div>
         </dl>
+
+        {canManage && (
+          <div className="space-y-3 border-t border-bambu-dark-tertiary pt-4">
+            <div className="flex items-end gap-2">
+              <label className="min-w-0 flex-1">
+                <span className="mb-1 block text-xs text-bambu-gray">
+                  {t("inventory.binOverrideLabel", "Remaining quantity")}
+                </span>
+                <input
+                  aria-label={`${bin.part_name} ${bin.bin_number} remaining quantity`}
+                  type="number"
+                  min={1}
+                  max={batch.quantity}
+                  step={1}
+                  value={quantityDraft}
+                  disabled={busy}
+                  onChange={(event) => setQuantityDraft(event.target.value)}
+                  className="w-full rounded border border-bambu-dark-tertiary bg-bambu-dark px-2 py-2 text-sm text-white focus:border-bambu-green focus:outline-none"
+                />
+              </label>
+              <Button
+                size="sm"
+                variant="secondary"
+                disabled={!quantityValid || busy}
+                onClick={() => overrideMutation.mutate(parsedQuantity)}
+              >
+                {t("inventory.binOverride", "Override")}
+              </Button>
+            </div>
+            {!unlinked && (
+              <div className="flex items-center justify-between gap-2">
+                <Button
+                  size="sm"
+                  variant="secondary"
+                  disabled={busy}
+                  onClick={() => setClearOpen(true)}
+                >
+                  <Eraser className="h-4 w-4" />
+                  {t("inventory.binClearQuantity", "Clear quantity")}
+                </Button>
+                <Button
+                  size="sm"
+                  variant="danger"
+                  disabled={busy}
+                  onClick={() => setUnlinkOpen(true)}
+                >
+                  <Link2Off className="h-4 w-4" />
+                  {t("inventory.binUnlink", "Unlink")}
+                </Button>
+              </div>
+            )}
+          </div>
+        )}
+
         <section className="flex min-h-0 flex-none flex-col">
           <div className="flex items-center gap-2">
             <Clock3 className="h-4 w-4 text-bambu-gray" />
@@ -1993,6 +2012,41 @@ function BinDetail({
           )}
         </section>
       </div>
+
+      {clearOpen && (
+        <ConfirmModal
+          title={t("inventory.binClearQuantityTitle", "Clear remaining quantity?")}
+          message={t(
+            "inventory.binClearQuantityMessage",
+            "This will set {{bin}} remaining quantity to 0 and release the bin for reuse. It will leave the active bin list, but the historical batch and audit events will not be deleted.",
+            { bin: `${bin.part_name} ${bin.bin_number}` },
+          )}
+          confirmText={t("inventory.binClearQuantityConfirm", "Clear quantity")}
+          variant="warning"
+          isLoading={overrideMutation.isPending}
+          onCancel={() => setClearOpen(false)}
+          onConfirm={() => overrideMutation.mutate(0)}
+        />
+      )}
+
+      {unlinkOpen && (
+        <ConfirmModal
+          title={t("inventory.binUnlinkTitle", "Unlink bin assignment?")}
+          message={t(
+            "inventory.binUnlinkMessage",
+            "This will release {{bin}} from {{printer}} and make it available for another harvest. The historical batch record will remain in the audit history.",
+            {
+              bin: `${bin.part_name} ${bin.bin_number}`,
+              printer: batch.printer_name ?? "its printer",
+            },
+          )}
+          confirmText={t("inventory.binUnlinkConfirm", "Unlink bin")}
+          variant="danger"
+          isLoading={unlinkMutation.isPending}
+          onCancel={() => setUnlinkOpen(false)}
+          onConfirm={() => unlinkMutation.mutate()}
+        />
+      )}
     </aside>
   );
 }
@@ -2087,13 +2141,15 @@ function BinQcBranch({
           })}
         </p>
       </div>
-      <div className="relative mt-3 grid grid-cols-2 gap-x-3 gap-y-3">
-        <span
-          aria-hidden="true"
-          className="pointer-events-none absolute -top-3 left-[3px] h-[1.4375rem] w-[calc(50%-6.5625rem)] rounded-bl-[1.25rem] border-b-2 border-l-2 border-bambu-gray/70"
-        />
-        <div className="relative col-start-2 row-start-1 -ml-[7rem] pl-7">
-          <span className="absolute left-1 top-1.5 z-10 h-2 w-2 -translate-x-1/2 rounded-full bg-red-500" />
+      {/* Fixed arm (w-14), not a 50% grid column — below xl the detail is full-width
+          and a percentage branch stretches across half the page. */}
+      <div className="relative mt-3 space-y-3">
+        <div className="relative pl-[5.25rem]">
+          <span
+            aria-hidden="true"
+            className="pointer-events-none absolute -top-3 left-[3px] h-[1.4375rem] w-14 rounded-bl-[1.25rem] border-b-2 border-l-2 border-bambu-gray/70"
+          />
+          <span className="absolute left-[3.75rem] top-1.5 z-10 h-2 w-2 -translate-x-1/2 rounded-full bg-red-500" />
           <p className="text-white">
             {t(
               "floor.inventoryBinEventVisualQcRejected",
@@ -2108,7 +2164,7 @@ function BinQcBranch({
             })}
           </p>
         </div>
-        <div className="relative col-span-2 row-start-2 pl-7">
+        <div className="relative pl-7">
           <span className="absolute left-1 top-1.5 z-10 h-2 w-2 -translate-x-1/2 rounded-full bg-green-500" />
           <p className="text-white">
             {t(
@@ -2197,6 +2253,8 @@ function binEventLabel(
       }
     case "wip":
       return t("floor.inventoryBinEventWip", "Moved to WIP");
+    case "ready_for_production":
+      return t("floor.inventoryBinEventStagedForProduction", "Staged for Production");
     case "empty":
       return t("floor.inventoryBinEventEmpty", "Bin marked empty");
     case "empty_override":
@@ -2216,7 +2274,7 @@ function binEventLabel(
 
 function binEventDotClass(action: string) {
   if (action === "harvested") return "bg-bambu-green";
-  if (action === "visual_qc_passed") return "bg-green-500";
+  if (action === "visual_qc_passed" || action === "ready_for_production") return FLOOR_PASS_EVENT_DOT_CLASS;
   if (action === "wip") return "bg-amber-500";
   if (action === "empty" || action === "empty_override") return "bg-sky-500";
   if (action === "relinked") return "bg-bambu-green";
@@ -2323,7 +2381,7 @@ function PartDetail({
   }, [part?.id, events.length]);
   if (!part)
     return (
-      <aside className="rounded-lg border border-dashed border-bambu-dark-tertiary p-6 text-center text-sm text-bambu-gray xl:sticky xl:top-6">
+      <aside className="rounded-lg border border-dashed border-bambu-dark-tertiary p-6 text-center text-sm text-bambu-gray break-words xl:sticky xl:top-6">
         {t(
           "floor.inventoryDetailEmpty",
           "Select a part record to inspect its harvest evidence and event history.",
@@ -2365,7 +2423,7 @@ function PartDetail({
       <div className="flex min-h-0 flex-none flex-col gap-5 overflow-hidden p-4">
         <div className="flex items-center gap-2">
           <span
-            className={`inline-flex rounded-full px-2 py-1 text-xs font-medium ${statusClass(part, latestEventAction)}`}
+            className={`${STATUS_PILL_CLASS} ${statusClass(part, latestEventAction)}`}
           >
             {statusLabel(part, t, latestEventAction)}
           </span>
@@ -2408,7 +2466,10 @@ function PartDetail({
             >
               {MANUAL_STATUS_OPTIONS.map((option) => (
                 <option key={option.value} value={option.value}>
-                  {option.label}
+                  {option.value === "fit_checked" &&
+                  (part.part_code === "BUT" || part.part_code === "KNB")
+                    ? t("floor.inventoryStatusVisualQcPass", "Visual QC pass")
+                    : option.label}
                 </option>
               ))}
             </select>
@@ -2584,22 +2645,9 @@ function PartDetail({
                   {timeline.map((event) => (
                     <li key={event.id} className="relative pl-7 text-sm">
                       <span
-                        className={`absolute left-1 top-1.5 z-10 h-2 w-2 -translate-x-1/2 rounded-full ${
-                          event.action === "enrolled" ||
-                          event.action === "relinked" ||
-                          event.action === "relinked_by_scan"
-                            ? "bg-bambu-green"
-                            : event.action === "fit_check" ||
-                                event.action === "fit_checked"
-                              ? "bg-green-500"
-                              : event.action === "rework" || event.action === "sanding"
-                                ? "bg-orange-500"
-                              : event.action === "discarded"
-                                ? "bg-red-500"
-                            : "bg-bambu-gray"
-                        }`}
+                        className={`absolute left-1 top-1.5 z-10 h-2 w-2 -translate-x-1/2 rounded-full ${partEventDotClass(event.action)}`}
                       />
-                      <p className="text-white">{eventLabel(event, part?.part_code, t)}</p>
+                      <p className="text-white">{partEventLabel(event, part?.part_code, t)}</p>
                       <p className="text-xs text-bambu-gray">
                         {formatFloorDate(event.occurred_at, {
                           dateStyle: "medium",
@@ -2808,18 +2856,18 @@ function MatchJob({
           </p>
         </div>
       </div>
-      <div className="mt-3 inline-flex rounded-lg bg-bambu-dark p-1 text-xs">
+      <div className="mt-3 inline-flex max-w-full flex-wrap rounded-lg bg-bambu-dark p-1 text-xs">
         <button
           type="button"
           onClick={() => setMode("recent")}
-          className={`rounded-md px-2 py-1 transition-colors ${mode === "recent" ? "bg-bambu-green text-white" : "text-bambu-gray hover:text-white"}`}
+          className={`shrink-0 whitespace-nowrap rounded-md px-2 py-1 transition-colors ${mode === "recent" ? "bg-bambu-green text-white" : "text-bambu-gray hover:text-white"}`}
         >
           {t("floor.inventoryMatchModeRecent", "Recent on this printer")}
         </button>
         <button
           type="button"
           onClick={() => setMode("search")}
-          className={`rounded-md px-2 py-1 transition-colors ${mode === "search" ? "bg-bambu-green text-white" : "text-bambu-gray hover:text-white"}`}
+          className={`shrink-0 whitespace-nowrap rounded-md px-2 py-1 transition-colors ${mode === "search" ? "bg-bambu-green text-white" : "text-bambu-gray hover:text-white"}`}
         >
           {t("floor.inventoryMatchModeSearch", "Search all jobs")}
         </button>

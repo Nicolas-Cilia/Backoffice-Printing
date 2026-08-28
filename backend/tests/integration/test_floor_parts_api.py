@@ -240,7 +240,7 @@ class TestPartScan:
     async def test_no_printer_when_a_different_stations_session_is_held(self, async_client):
         await async_client.post(
             "/api/v1/floor/session/scan",
-            json={"payload": "BBS-storage-receive", "device_id": DEVICE_A},
+            json={"payload": "BBS-initial-qc-pass", "device_id": DEVICE_A},
         )
 
         resp = await _scan_part(async_client, "BBD-000001", DEVICE_A)
@@ -1340,6 +1340,21 @@ class TestPartLocationApi:
             assert resp.status_code == 200, slug
             assert resp.json()["result"] == "recorded", slug
 
+    async def test_bot_part_wip_then_ready_for_production(self, async_client, printer_factory, archive_factory):
+        sticker = await _enroll_linked_part_with_code(async_client, printer_factory, archive_factory, "BOT")
+
+        wip = await async_client.post(
+            "/api/v1/floor/locations/part",
+            json={"payload": sticker, "location_slug": "production-wip"},
+        )
+        ready = await async_client.post(
+            "/api/v1/floor/locations/part",
+            json={"payload": sticker, "location_slug": "ready-for-production-inventory"},
+        )
+
+        assert wip.json()["result"] == "recorded"
+        assert ready.json()["result"] == "recorded"
+
     async def test_fit_check_slug_is_refused_here(self, async_client, printer_factory, archive_factory):
         """Fit Check keeps its own route; routing it through the generic
         endpoint is a 404 so its special handling cannot be bypassed."""
@@ -1418,6 +1433,22 @@ class TestBinLocationApi:
         assert wip.json()["result"] == "wip_recorded"
         assert empty.json()["result"] == "empty_recorded"
         assert empty.json()["batch"]["remaining_quantity"] == 0
+
+    async def test_wip_then_ready_for_production(self, async_client, printer_factory):
+        payload = await self._fill_and_qc(async_client, printer_factory)
+
+        wip = await async_client.post(
+            "/api/v1/floor/locations/bin",
+            json={"payload": payload, "location_slug": "production-wip"},
+        )
+        ready = await async_client.post(
+            "/api/v1/floor/locations/bin",
+            json={"payload": payload, "location_slug": "ready-for-production-inventory"},
+        )
+
+        assert wip.json()["result"] == "wip_recorded"
+        assert ready.json()["result"] == "ready_for_production_recorded"
+        assert ready.json()["batch"]["status"] == "ready_for_production"
 
     async def test_empty_requires_wip(self, async_client, printer_factory):
         payload = await self._fill_and_qc(async_client, printer_factory)

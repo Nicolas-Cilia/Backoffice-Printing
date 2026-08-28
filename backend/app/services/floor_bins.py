@@ -403,7 +403,9 @@ async def scan_bin_fit_check(
         return outcome
     if outcome.batch.status == "wip":
         return BinScanOutcome(result=BinScanResult.ALREADY_WIP, bin=outcome.bin, batch=outcome.batch)
-    if outcome.batch.status == "visual_qc_passed":
+    if outcome.batch.status in ("visual_qc_passed", "ready_for_production"):
+        # Restaging from WIP must not reopen visual QC; staged fills already
+        # passed inspection.
         return BinScanOutcome(result=BinScanResult.QC_RECORDED, bin=outcome.bin, batch=outcome.batch)
     if passed_quantity is None:
         return BinScanOutcome(
@@ -441,16 +443,15 @@ async def scan_bin_ready_for_production(db: AsyncSession, payload: str) -> BinSc
 
     Optional step between Initial QC and Production WIP (§ item→location):
     requires visual QC to have passed, and is never itself a prerequisite for
-    WIP. Idempotent — a fill already at Ready-for-Production reports so rather
-    than appending a duplicate event."""
+    WIP. A fill already in Production WIP may be restaged here. Idempotent — a
+    fill already at Ready-for-Production reports so rather than appending a
+    duplicate event."""
     outcome = await resolve_bin_for_flow(db, payload)
     if outcome.batch is None:
         return outcome
-    if outcome.batch.status == "wip":
-        return BinScanOutcome(result=BinScanResult.ALREADY_WIP, bin=outcome.bin, batch=outcome.batch)
     if outcome.batch.status == "ready_for_production":
         return BinScanOutcome(result=BinScanResult.ALREADY_READY_FOR_PRODUCTION, bin=outcome.bin, batch=outcome.batch)
-    if outcome.batch.status != "visual_qc_passed":
+    if outcome.batch.status not in ("visual_qc_passed", "wip"):
         return BinScanOutcome(result=BinScanResult.QC_REQUIRED, bin=outcome.bin, batch=outcome.batch)
     db.add(
         FloorBinBatchEvent(batch_id=outcome.batch.id, action="ready_for_production", details={"source": "floor_scan"})

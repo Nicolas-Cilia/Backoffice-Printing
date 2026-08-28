@@ -7,14 +7,6 @@ import { FloorCodesPage } from '../../pages/FloorCodesPage';
 import { server } from '../mocks/server';
 
 const STATIONS = [
-  { slug: 'wip', payload: 'BBS-wip', name: 'WIP', description: 'Production shelf.', category: 'station' },
-  {
-    slug: 'storage-receive',
-    payload: 'BBS-storage-receive',
-    name: '+ Storage',
-    description: 'Warehouse shelf.',
-    category: 'station',
-  },
   {
     slug: 'harvest',
     payload: 'BBS-harvest',
@@ -78,20 +70,19 @@ describe('FloorCodesPage', () => {
     mockStationsAndCapturePrint();
     render(<FloorCodesPage />);
 
-    expect(await screen.findByText('WIP')).toBeInTheDocument();
-    expect(screen.getByText('+ Storage')).toBeInTheDocument();
-    expect(screen.getByText('BBS-storage-receive')).toBeInTheDocument();
+    expect(await screen.findByText('Harvest')).toBeInTheDocument();
+    expect(screen.getByText('BBS-harvest')).toBeInTheDocument();
   });
 
   it('selects every station by default so the common "print the set" case is one click', async () => {
     mockStationsAndCapturePrint();
     render(<FloorCodesPage />);
 
-    await screen.findByText('WIP');
+    await screen.findByText('Harvest');
     for (const station of STATIONS.filter((s) => s.category === 'station')) {
       expect(screen.getByRole('checkbox', { name: station.name })).toBeChecked();
     }
-    expect(screen.getByRole('button', { name: /Print selected \(3\)/ })).toBeEnabled();
+    expect(screen.getByRole('button', { name: /Print selected \(1\)/ })).toBeEnabled();
   });
 
   it('prints the selected payloads at the chosen preset size', async () => {
@@ -99,15 +90,13 @@ describe('FloorCodesPage', () => {
     const user = userEvent.setup();
     render(<FloorCodesPage />);
 
-    await screen.findByText('WIP');
-    await user.click(screen.getByRole('checkbox', { name: '+ Storage' }));
+    await screen.findByText('Harvest');
     await user.click(screen.getByRole('button', { name: '80 × 80 mm' }));
-    await user.click(screen.getByRole('button', { name: /Print selected \(2\)/ }));
+    await user.click(screen.getByRole('button', { name: /Print selected \(1\)/ }));
 
     await waitFor(() => expect(captured.body).not.toBeNull());
-    // Deselected station is excluded; catalog order is preserved.
     expect(captured.body).toEqual({
-      payloads: ['BBS-wip', 'BBS-harvest'],
+      payloads: ['BBS-harvest'],
       width_mm: 80,
       height_mm: 80,
     });
@@ -119,7 +108,7 @@ describe('FloorCodesPage', () => {
     const user = userEvent.setup();
     render(<FloorCodesPage />);
 
-    await screen.findByText('WIP');
+    await screen.findByText('Harvest');
     await user.click(screen.getByRole('button', { name: 'Custom' }));
 
     const widthInput = screen.getByLabelText('Width (mm)');
@@ -129,7 +118,7 @@ describe('FloorCodesPage', () => {
     await user.clear(heightInput);
     await user.type(heightInput, '40');
 
-    await user.click(screen.getByRole('button', { name: /Print selected \(3\)/ }));
+    await user.click(screen.getByRole('button', { name: /Print selected \(1\)/ }));
 
     await waitFor(() => expect(captured.body).not.toBeNull());
     expect(captured.body).toMatchObject({ width_mm: 80, height_mm: 40 });
@@ -140,7 +129,7 @@ describe('FloorCodesPage', () => {
     const user = userEvent.setup();
     render(<FloorCodesPage />);
 
-    await screen.findByText('WIP');
+    await screen.findByText('Harvest');
     await user.click(screen.getByRole('button', { name: 'Custom' }));
 
     const widthInput = screen.getByLabelText('Width (mm)');
@@ -148,7 +137,7 @@ describe('FloorCodesPage', () => {
     await user.type(widthInput, '5'); // below the 20 mm floor
 
     expect(await screen.findByText(/Size must be between/)).toBeInTheDocument();
-    expect(screen.getByRole('button', { name: /Print selected \(3\)/ })).toBeDisabled();
+    expect(screen.getByRole('button', { name: /Print selected \(1\)/ })).toBeDisabled();
   });
 
   it('blocks printing when nothing is selected', async () => {
@@ -156,7 +145,7 @@ describe('FloorCodesPage', () => {
     const user = userEvent.setup();
     render(<FloorCodesPage />);
 
-    await screen.findByText('WIP');
+    await screen.findByText('Harvest');
     await user.click(screen.getByRole('button', { name: 'Select none' }));
 
     expect(screen.getByRole('button', { name: /Print selected \(0\)/ })).toBeDisabled();
@@ -170,7 +159,7 @@ describe('FloorCodesPage', () => {
     const user = userEvent.setup();
     render(<FloorCodesPage />);
 
-    await screen.findByText('WIP');
+    await screen.findByText('Harvest');
     await user.click(screen.getByRole('button', { name: '40 × 40 mm' }));
 
     await waitFor(() =>
@@ -189,7 +178,7 @@ describe('FloorCodesPage', () => {
     );
     render(<FloorCodesPage />);
 
-    await screen.findByText('WIP');
+    await screen.findByText('Harvest');
     // The preset button renders active (green) when it is the stored size.
     expect(screen.getByRole('button', { name: '40 × 40 mm' }).className).toContain('bg-bambu-green');
   });
@@ -201,7 +190,7 @@ describe('FloorCodesPage', () => {
     );
     render(<FloorCodesPage />);
 
-    await screen.findByText('WIP');
+    await screen.findByText('Harvest');
     expect(screen.getByRole('button', { name: '60 × 60 mm' }).className).toContain('bg-bambu-green');
   });
 
@@ -215,8 +204,8 @@ describe('FloorCodesPage', () => {
     const user = userEvent.setup();
     render(<FloorCodesPage />);
 
-    await screen.findByText('WIP');
-    await user.click(screen.getByRole('button', { name: /Print selected \(3\)/ }));
+    await screen.findByText('Harvest');
+    await user.click(screen.getByRole('button', { name: /Print selected \(1\)/ }));
 
     expect(await screen.findByText(/Unknown station code/)).toBeInTheDocument();
     expect(window.open).not.toHaveBeenCalled();
@@ -236,7 +225,7 @@ describe('FloorCodesPage', () => {
     mockStationsAndCapturePrint();
     render(<FloorCodesPage />);
 
-    await screen.findByText('WIP');
+    await screen.findByText('Harvest');
     const tabs = screen.getByRole('button', { name: 'Station labels' }).parentElement as HTMLElement;
     // Printers and Locations shipped in phases 7 and 9a/9b; Error labels
     // shipped alongside Rework/Discard's error-label step.
@@ -250,14 +239,14 @@ describe('FloorCodesPage', () => {
       mockStationsAndCapturePrint();
       const user = userEvent.setup();
       render(<FloorCodesPage />);
-      await screen.findByText('WIP');
+      await screen.findByText('Harvest');
 
       await user.click(screen.getByRole('button', { name: 'Processes' }));
 
       expect(await screen.findByText('Initial QC Pass')).toBeInTheDocument();
       expect(screen.getByText('Rework')).toBeInTheDocument();
       expect(screen.getByText('BBS-initial-qc-pass')).toBeInTheDocument();
-      expect(screen.queryByText('WIP')).not.toBeInTheDocument();
+      expect(screen.queryByText('Harvest')).not.toBeInTheDocument();
       expect(screen.queryByText('Harvest')).not.toBeInTheDocument();
     });
 
@@ -265,7 +254,7 @@ describe('FloorCodesPage', () => {
       const captured = mockStationsAndCapturePrint();
       const user = userEvent.setup();
       render(<FloorCodesPage />);
-      await screen.findByText('WIP');
+      await screen.findByText('Harvest');
 
       await user.click(screen.getByRole('button', { name: 'Processes' }));
       await screen.findByText('Initial QC Pass');
@@ -280,8 +269,8 @@ describe('FloorCodesPage', () => {
       mockStationsAndCapturePrint();
       const user = userEvent.setup();
       render(<FloorCodesPage />);
-      await screen.findByText('WIP');
-      expect(screen.getByRole('button', { name: /Print selected \(3\)/ })).toBeEnabled();
+      await screen.findByText('Harvest');
+      expect(screen.getByRole('button', { name: /Print selected \(1\)/ })).toBeEnabled();
 
       await user.click(screen.getByRole('button', { name: 'Processes' }));
       await screen.findByText('Initial QC Pass');
@@ -315,7 +304,7 @@ describe('FloorCodesPage', () => {
       mockPrinters();
       const user = userEvent.setup();
       render(<FloorCodesPage />);
-      await screen.findByText('WIP');
+      await screen.findByText('Harvest');
 
       await user.click(screen.getByRole('button', { name: 'Printer labels' }));
 
@@ -327,7 +316,7 @@ describe('FloorCodesPage', () => {
       mockPrinters();
       const user = userEvent.setup();
       render(<FloorCodesPage />);
-      await screen.findByText('WIP');
+      await screen.findByText('Harvest');
 
       await user.click(screen.getByRole('button', { name: 'Printer labels' }));
 
@@ -338,7 +327,7 @@ describe('FloorCodesPage', () => {
       const captured = mockPrinters();
       const user = userEvent.setup();
       render(<FloorCodesPage />);
-      await screen.findByText('WIP');
+      await screen.findByText('Harvest');
 
       await user.click(screen.getByRole('button', { name: 'Printer labels' }));
       await screen.findByText('Bench A');
@@ -356,8 +345,8 @@ describe('FloorCodesPage', () => {
       mockPrinters();
       const user = userEvent.setup();
       render(<FloorCodesPage />);
-      await screen.findByText('WIP');
-      expect(screen.getByRole('button', { name: /Print selected \(3\)/ })).toBeEnabled();
+      await screen.findByText('Harvest');
+      expect(screen.getByRole('button', { name: /Print selected \(1\)/ })).toBeEnabled();
 
       await user.click(screen.getByRole('button', { name: 'Printer labels' }));
       await screen.findByText('Bench A');
@@ -369,7 +358,7 @@ describe('FloorCodesPage', () => {
       mockPrinters([]);
       const user = userEvent.setup();
       render(<FloorCodesPage />);
-      await screen.findByText('WIP');
+      await screen.findByText('Harvest');
 
       await user.click(screen.getByRole('button', { name: 'Printer labels' }));
 
@@ -385,7 +374,7 @@ describe('FloorCodesPage', () => {
       );
       const user = userEvent.setup();
       render(<FloorCodesPage />);
-      await screen.findByText('WIP');
+      await screen.findByText('Harvest');
 
       await user.click(screen.getByRole('button', { name: 'Printer labels' }));
 
@@ -414,7 +403,7 @@ describe('FloorCodesPage', () => {
       );
       const user = userEvent.setup();
       render(<FloorCodesPage />);
-      await screen.findByText('WIP');
+      await screen.findByText('Harvest');
 
       await user.click(screen.getByRole('button', { name: 'Bins' }));
       expect(await screen.findByText('Knob bin 1')).toBeInTheDocument();
@@ -424,6 +413,33 @@ describe('FloorCodesPage', () => {
       await user.click(screen.getByRole('checkbox', { name: 'Button bin 1' }));
       await user.click(screen.getByRole('button', { name: /Print selected \(1\)/ }));
       await waitFor(() => expect(captured.body).toMatchObject({ payloads: ['BBN-KNB-1'] }));
+    });
+  });
+
+  describe('error labels tab', () => {
+    const LABELS = [
+      { id: 1, name: 'Other', slug: 'other', payload: 'BBF-other', is_protected: true },
+      { id: 2, name: 'Horizontal line', slug: 'horizontal-line', payload: 'BBF-horizontal-line', is_protected: false },
+    ];
+
+    it('does not offer Remove on the built-in Other label', async () => {
+      server.use(
+        http.get('/api/v1/floor/stations', () => HttpResponse.json(STATIONS)),
+        http.get('/api/v1/floor/error-labels', () => HttpResponse.json(LABELS)),
+      );
+      const user = userEvent.setup();
+      render(<FloorCodesPage />);
+      await screen.findByText('Harvest');
+      await user.click(screen.getByRole('button', { name: 'Error labels' }));
+
+      expect(await screen.findByText('Other')).toBeInTheDocument();
+      const otherRow = screen.getByText('BBF-other').closest('li');
+      expect(otherRow).not.toBeNull();
+      expect(within(otherRow as HTMLElement).queryByRole('button', { name: 'Remove' })).not.toBeInTheDocument();
+
+      const lineRow = screen.getByText('BBF-horizontal-line').closest('li');
+      expect(lineRow).not.toBeNull();
+      expect(within(lineRow as HTMLElement).getByRole('button', { name: 'Remove' })).toBeInTheDocument();
     });
   });
 });

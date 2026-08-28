@@ -105,6 +105,49 @@ class TestBinLocationPipeline:
         assert again.result is BinScanResult.ALREADY_READY_FOR_PRODUCTION
 
     @pytest.mark.asyncio
+    async def test_wip_then_ready_for_production_is_allowed(self, db_session, printer_factory, archive_factory):
+        payload = await _fill_bin(db_session, printer_factory, archive_factory)
+        await _pass_qc(db_session, payload)
+        await scan_bin_wip(db_session, payload)
+        await db_session.commit()
+
+        ready = await scan_bin_ready_for_production(db_session, payload)
+        await db_session.commit()
+
+        assert ready.result is BinScanResult.READY_FOR_PRODUCTION_RECORDED
+        assert ready.batch.status == "ready_for_production"
+
+    @pytest.mark.asyncio
+    async def test_fit_check_does_not_reopen_qc_on_a_staged_bin(self, db_session, printer_factory, archive_factory):
+        payload = await _fill_bin(db_session, printer_factory, archive_factory)
+        await _pass_qc(db_session, payload)
+        await scan_bin_wip(db_session, payload)
+        await db_session.commit()
+        await scan_bin_ready_for_production(db_session, payload)
+        await db_session.commit()
+
+        again = await scan_bin_fit_check(db_session, payload, passed_quantity=10)
+        await db_session.commit()
+
+        assert again.result is BinScanResult.QC_RECORDED
+        assert again.batch.status == "ready_for_production"
+
+    @pytest.mark.asyncio
+    async def test_wip_then_ready_then_wip_again_is_allowed(self, db_session, printer_factory, archive_factory):
+        payload = await _fill_bin(db_session, printer_factory, archive_factory)
+        await _pass_qc(db_session, payload)
+        await scan_bin_wip(db_session, payload)
+        await db_session.commit()
+        await scan_bin_ready_for_production(db_session, payload)
+        await db_session.commit()
+
+        wip = await scan_bin_wip(db_session, payload)
+        await db_session.commit()
+
+        assert wip.result is BinScanResult.WIP_RECORDED
+        assert wip.batch.status == "wip"
+
+    @pytest.mark.asyncio
     async def test_empty_without_wip_is_refused(self, db_session, printer_factory, archive_factory):
         payload = await _fill_bin(db_session, printer_factory, archive_factory)
         await _pass_qc(db_session, payload)

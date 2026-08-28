@@ -21,6 +21,7 @@ import { Loader2, Printer, QrCode, Trash2 } from 'lucide-react';
 import { api } from '../api/client';
 import { Button } from '../components/Button';
 import { ConfirmModal } from '../components/ConfirmModal';
+import { HorizontalScrollFade } from '../components/HorizontalScrollFade';
 import { useToast } from '../contexts/ToastContext';
 import { openBlobInNewTab } from '../utils/file';
 
@@ -136,7 +137,13 @@ export function FloorCodesPage() {
     if (tab === 'locations') return locations.map((s) => ({ payload: s.payload, title: s.name, subtitle: s.description }));
     if (tab === 'errors') return [
       { payload: 'BBX-discard', title: 'Discard', subtitle: 'Then scan an error label.' },
-      ...errors.map((error) => ({ payload: error.payload, title: error.name, subtitle: 'Rework and discard reason', id: error.id })),
+      ...errors.map((error) => ({
+        payload: error.payload,
+        title: error.name,
+        subtitle: 'Rework and discard reason',
+        id: error.id,
+        isProtected: error.is_protected || error.slug === 'other',
+      })),
     ];
     if (tab === 'bins') return bins.map((bin) => ({
       payload: bin.payload,
@@ -235,7 +242,7 @@ export function FloorCodesPage() {
           {t('floor.landingEyebrow', 'Production floor')}
         </p>
         <h1 className="text-2xl font-bold text-white mt-1">{t('floor.codesTitle', 'Codes')}</h1>
-        <p className="text-bambu-gray mt-1 max-w-2xl">
+        <p className="text-bambu-gray mt-1 max-w-2xl break-words">
           {t(
             'floor.codesSubtitle',
             'Print the QR labels the floor scans. Print to office paper, cut out, and tape them where they belong.',
@@ -243,12 +250,13 @@ export function FloorCodesPage() {
         </p>
       </div>
 
-      <div className="inline-flex rounded-lg bg-bambu-dark-secondary p-1">
+      <HorizontalScrollFade className="w-full md:w-auto" fadeFromClassName="from-bambu-dark">
+        <div className="inline-flex flex-nowrap gap-1 rounded-lg bg-bambu-dark-secondary p-1">
         <button
           type="button"
           onClick={() => setTab('stations')}
           aria-current={tab === 'stations' ? 'page' : undefined}
-          className={`px-3 py-1.5 text-sm rounded-md transition-colors ${
+          className={`shrink-0 whitespace-nowrap px-3 py-2.5 text-sm rounded-md transition-colors md:py-1.5 ${
             tab === 'stations' ? 'bg-bambu-green text-white' : 'text-bambu-gray hover:text-white'
           }`}
         >
@@ -258,7 +266,7 @@ export function FloorCodesPage() {
           type="button"
           onClick={() => setTab('locations')}
           aria-current={tab === 'locations' ? 'page' : undefined}
-          className={`px-3 py-1.5 text-sm rounded-md transition-colors ${
+          className={`shrink-0 whitespace-nowrap px-3 py-2.5 text-sm rounded-md transition-colors md:py-1.5 ${
             tab === 'locations' ? 'bg-bambu-green text-white' : 'text-bambu-gray hover:text-white'
           }`}
         >
@@ -268,7 +276,7 @@ export function FloorCodesPage() {
           type="button"
           onClick={() => setTab('printers')}
           aria-current={tab === 'printers' ? 'page' : undefined}
-          className={`px-3 py-1.5 text-sm rounded-md transition-colors ${
+          className={`shrink-0 whitespace-nowrap px-3 py-2.5 text-sm rounded-md transition-colors md:py-1.5 ${
             tab === 'printers' ? 'bg-bambu-green text-white' : 'text-bambu-gray hover:text-white'
           }`}
         >
@@ -278,7 +286,7 @@ export function FloorCodesPage() {
           type="button"
           onClick={() => setTab('bins')}
           aria-current={tab === 'bins' ? 'page' : undefined}
-          className={`px-3 py-1.5 text-sm rounded-md transition-colors ${
+          className={`shrink-0 whitespace-nowrap px-3 py-2.5 text-sm rounded-md transition-colors md:py-1.5 ${
             tab === 'bins' ? 'bg-bambu-green text-white' : 'text-bambu-gray hover:text-white'
           }`}
         >
@@ -288,11 +296,12 @@ export function FloorCodesPage() {
           type="button"
           onClick={() => setTab('errors')}
           aria-current={tab === 'errors' ? 'page' : undefined}
-          className={`px-3 py-1.5 text-sm rounded-md transition-colors ${tab === 'errors' ? 'bg-bambu-green text-white' : 'text-bambu-gray hover:text-white'}`}
+          className={`shrink-0 whitespace-nowrap px-3 py-2.5 text-sm rounded-md transition-colors md:py-1.5 ${tab === 'errors' ? 'bg-bambu-green text-white' : 'text-bambu-gray hover:text-white'}`}
         >
           {t('floor.codesTabErrors', 'Error labels')}
         </button>
-      </div>
+        </div>
+      </HorizontalScrollFade>
 
       <section className="bg-bambu-dark-secondary rounded-lg overflow-hidden">
         <div className="px-4 py-3 border-b border-bambu-dark-tertiary flex flex-wrap items-center justify-between gap-3">
@@ -391,8 +400,8 @@ export function FloorCodesPage() {
                 subtitle={item.subtitle}
                 checked={selected.has(item.payload)}
                 onToggle={() => toggle(item.payload)}
-                action={tab === 'errors' && 'id' in item ? (
-                  <Button size="sm" variant="danger" onClick={() => setDeleteTarget({ id: Number(item.id), name: item.title })}>
+                action={tab === 'errors' && 'id' in item && !('isProtected' in item && item.isProtected) ? (
+                  <Button size="sm" variant="danger" className="w-full md:w-auto" onClick={() => setDeleteTarget({ id: Number(item.id), name: item.title })}>
                     <Trash2 className="h-4 w-4" />
                     Remove
                   </Button>
@@ -499,15 +508,15 @@ export function FloorCodesPage() {
           </p>
         )}
 
-        <div className="flex flex-wrap items-center gap-3 pt-1">
-          <Button onClick={handlePrint} disabled={!canPrint}>
+        <div className="flex flex-col items-stretch gap-2 pt-1 md:flex-row md:flex-wrap md:items-center">
+          <Button onClick={handlePrint} disabled={!canPrint} className="w-full md:w-auto">
             {printing ? <Loader2 className="w-4 h-4 animate-spin" /> : <Printer className="w-4 h-4" />}
             {/* Phrased to avoid a plural form: these strings are inline
                 defaults, so a real _one/_other pair would have to be added to
                 all 13 locale files for one button. */}
             {t('floor.codesPrint', 'Print selected ({{count}})', { count: selected.size })}
           </Button>
-          <span className="text-xs text-bambu-gray">
+          <span className="text-xs text-bambu-gray break-words">
             {t('floor.codesPrintHint', 'Opens a PDF in a new tab — print it from there.')}
           </span>
         </div>
@@ -557,27 +566,33 @@ function CodeRow({
   action?: React.ReactNode;
 }) {
   return (
-    <li className="flex items-center gap-4 px-4 py-3">
-      <input
-        type="checkbox"
-        checked={checked}
-        onChange={onToggle}
-        aria-label={title}
-        className="w-4 h-4 flex-shrink-0 accent-bambu-green"
-      />
-      {/* White plate behind the preview: a QR needs light quiet-zone contrast,
-          and the page background is near-black. */}
-      <div
-        className="flex-shrink-0 rounded border border-gray-300 bg-white p-1 shadow-md shadow-gray-400/40 dark:border-gray-700 dark:shadow-none"
-        aria-hidden="true"
-      >
-        <QRCodeSVG value={payload} size={48} />
+    <li className="flex flex-col gap-3 px-4 py-3 md:flex-row md:items-center md:gap-4">
+      <div className="flex min-w-0 flex-1 items-start gap-3 md:items-center">
+        <input
+          type="checkbox"
+          checked={checked}
+          onChange={onToggle}
+          aria-label={title}
+          className="mt-1 h-4 w-4 shrink-0 accent-bambu-green md:mt-0"
+        />
+        {/* White plate behind the preview: a QR needs light quiet-zone contrast,
+            and the page background is near-black. */}
+        <div
+          className="shrink-0 rounded border border-gray-300 bg-white p-1 shadow-md shadow-gray-400/40 dark:border-gray-700 dark:shadow-none"
+          aria-hidden="true"
+        >
+          <QRCodeSVG value={payload} size={48} />
+        </div>
+        <div className="min-w-0 flex-1 md:flex md:items-center md:justify-between md:gap-4">
+          <div className="min-w-0">
+            <div className="break-words font-medium text-white">{title}</div>
+            <div className="mt-0.5 break-words text-xs text-bambu-gray md:truncate">{subtitle}</div>
+          </div>
+          <code className="mt-1 block break-all font-mono text-xs text-bambu-gray-light md:mt-0 md:shrink-0 md:whitespace-nowrap">
+            {payload}
+          </code>
+        </div>
       </div>
-      <div className="min-w-0 flex-1">
-        <div className="text-white font-medium">{title}</div>
-        <div className="text-xs text-bambu-gray truncate">{subtitle}</div>
-      </div>
-      <code className="text-xs text-bambu-gray-light font-mono whitespace-nowrap">{payload}</code>
       {action}
     </li>
   );

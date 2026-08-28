@@ -7,9 +7,11 @@ import { Button } from '../components/Button';
 import { ConfirmModal } from '../components/ConfirmModal';
 import { useToast } from '../contexts/ToastContext';
 import { formatFloorDate } from '../utils/floorScan';
+import { FLOOR_PASS_BADGE_CLASS, isFloorPassBinStatus } from '../utils/floorPartHistory';
 
 function statusLabel(status: string): string {
   if (status === 'visual_qc_passed') return 'Visual QC pass';
+  if (status === 'ready_for_production') return 'Staged for Production';
   if (status === 'wip') return 'In WIP';
   if (status === 'harvested') return 'Awaiting visual QC';
   if (status === 'unlinked') return 'Needs relinking';
@@ -19,8 +21,8 @@ function statusLabel(status: string): string {
 }
 
 function statusClass(status: string): string {
-  if (status === 'visual_qc_passed') {
-    return 'border border-green-600 bg-green-100 text-green-800 shadow-sm shadow-green-500/20 dark:border-green-400/50 dark:bg-green-500/20 dark:text-green-300';
+  if (isFloorPassBinStatus(status)) {
+    return FLOOR_PASS_BADGE_CLASS;
   }
   if (status === 'unlinked') {
     return 'border border-amber-600 bg-amber-100 text-amber-800 shadow-sm shadow-amber-500/20 dark:border-amber-400/50 dark:bg-amber-500/20 dark:text-amber-300';
@@ -153,7 +155,7 @@ export function FloorBinManagementPage() {
                       <h3 className="font-semibold text-white">{bin.part_name} {bin.bin_number}</h3>
                       <p className="mt-1 font-mono text-xs text-bambu-gray">{bin.payload}</p>
                     </div>
-                    <span className={`inline-flex rounded-full px-2 py-1 text-xs font-medium ${batch ? statusClass(bin.status) : 'bg-bambu-dark-tertiary text-bambu-gray'}`}>
+                    <span className={`inline-flex whitespace-nowrap rounded-full px-2 py-1 text-xs font-medium ${batch ? statusClass(bin.status) : 'bg-bambu-dark-tertiary text-bambu-gray'}`}>
                       {batch ? statusLabel(bin.status) : t('inventory.binAvailable', 'Available')}
                     </span>
                   </div>
