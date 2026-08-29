@@ -10,12 +10,18 @@ style as ``test_floor_parts.py``.
 from __future__ import annotations
 
 import pytest
+from sqlalchemy import select
 
+from backend.app.models.floor_bin import FloorBinBatch, FloorBinBatchEvent
 from backend.app.services.floor_bins import (
     BIN_EMPTY_LOCATION_SLUG,
     PRODUCTION_WIP_LOCATION_SLUG,
     READY_FOR_PRODUCTION_LOCATION_SLUG,
     BinScanResult,
+    archive_bin_batch,
+    delete_bin_batch,
+    list_bin_batch_events,
+    list_floor_bin_history,
     scan_bin_at_location,
     scan_bin_empty,
     scan_bin_fit_check,
@@ -196,3 +202,124 @@ class TestBinLocationDispatch:
         await db_session.commit()
 
         assert outcome.result is BinScanResult.INVALID_CODE
+
+
+class TestDeleteBinBatch:
+    @pytest.mark.asyncio
+    async def test_refuses_active_fill(self, db_session, printer_factory, archive_factory):
+        await _fill_bin(db_session, printer_factory, archive_factory, quantity=12)
+        batch_id = (await list_floor_bin_history(db_session))[0].batch.id
+
+        assert await delete_bin_batch(db_session, batch_id) == "active"
+        assert await db_session.get(FloorBinBatch, batch_id) is not None
+
+    @pytest.mark.asyncio
+    async def test_deletes_after_archive(self, db_session, printer_factory, archive_factory):
+        payload = await _fill_bin(db_session, printer_factory, archive_factory, quantity=12)
+        history = await list_floor_bin_history(db_session)
+        assert len(history) == 1
+        batch_id = history[0].batch.id
+        events = await list_bin_batch_events(db_session, batch_id)
+        assert events is not None
+        assert len(events) >= 1
+
+        await _pass_qc(db_session, payload, passed_quantity=12)
+        await scan_bin_wip(db_session, payload)
+        await db_session.commit()
+        await scan_bin_empty(db_session, payload)
+        await db_session.commit()
+
+        assert await archive_bin_batch(db_session, batch_id, archived=True) == "ok"
+        await db_session.commit()
+
+        assert await delete_bin_batch(db_session, batch_id) == "deleted"
+        await db_session.commit()
+
+        assert await list_floor_bin_history(db_session) == []
+        assert await list_bin_batch_events(db_session, batch_id) is None
+        assert await db_session.get(FloorBinBatch, batch_id) is None
+        remaining_events = (
+            (await db_session.execute(select(FloorBinBatchEvent).where(FloorBinBatchEvent.batch_id == batch_id)))
+            .scalars()
+            .all()
+        )
+        assert remaining_events == []
+
+    @pytest.mark.asyncio
+    async def test_deletes_depleted_fill(self, db_session, printer_factory, archive_factory):
+        payload = await _fill_bin(db_session, printer_factory, archive_factory, quantity=4)
+        await _pass_qc(db_session, payload, passed_quantity=4)
+        await scan_bin_wip(db_session, payload)
+        await db_session.commit()
+        await scan_bin_empty(db_session, payload)
+        await db_session.commit()
+        batch_id = (await list_floor_bin_history(db_session))[0].batch.id
+
+        assert await delete_bin_batch(db_session, batch_id) == "deleted"
+        await db_session.commit()
+        assert await db_session.get(FloorBinBatch, batch_id) is None
+
+    @pytest.mark.asyncio
+    async def test_missing_batch_returns_not_found(self, db_session):
+        assert await delete_bin_batch(db_session, 999_999) == "not_found"
+
+
+class TestArchiveBinBatch:
+    @pytest.mark.asyncio
+    async def test_refuses_stocked_linked_fill(self, db_session, printer_factory, archive_factory):
+        await _fill_bin(db_session, printer_factory, archive_factory, quantity=8)
+        batch_id = (await list_floor_bin_history(db_session))[0].batch.id
+
+        assert await archive_bin_batch(db_session, batch_id, archived=True) == "in_use"
+        batch = await db_session.get(FloorBinBatch, batch_id)
+        assert batch is not None
+        assert batch.archived_at is None
+
+    @pytest.mark.asyncio
+    async def test_archive_after_empty_frees_tote_for_reuse(self, db_session, printer_factory, archive_factory):
+        payload = await _fill_bin(db_session, printer_factory, archive_factory, quantity=8)
+        batch_id = (await list_floor_bin_history(db_session))[0].batch.id
+        await _pass_qc(db_session, payload, passed_quantity=8)
+        await scan_bin_wip(db_session, payload)
+        await db_session.commit()
+        await scan_bin_empty(db_session, payload)
+        await db_session.commit()
+
+        assert await archive_bin_batch(db_session, batch_id, archived=True) == "ok"
+        await db_session.commit()
+        batch = await db_session.get(FloorBinBatch, batch_id)
+        assert batch is not None
+        assert batch.archived_at is not None
+
+        # Physical tote can take a new harvest fill while the old row stays in history.
+        printer = await printer_factory()
+        await archive_factory(printer_id=printer.id)
+        prompt = await scan_harvest_bin(db_session, DEVICE_A, payload, printer_id_hint=printer.id)
+        await db_session.commit()
+        assert prompt.result is BinScanResult.READY_FOR_QUANTITY
+
+        recorded = await scan_harvest_bin(db_session, DEVICE_A, payload, quantity=5)
+        await db_session.commit()
+        assert recorded.result is BinScanResult.RECORDED
+        history = await list_floor_bin_history(db_session)
+        assert len(history) == 2
+        assert any(item.batch and item.batch.id == batch_id and item.batch.archived_at for item in history)
+
+    @pytest.mark.asyncio
+    async def test_restore_clears_archived_at(self, db_session, printer_factory, archive_factory):
+        payload = await _fill_bin(db_session, printer_factory, archive_factory, quantity=3)
+        batch_id = (await list_floor_bin_history(db_session))[0].batch.id
+        await _pass_qc(db_session, payload, passed_quantity=3)
+        await scan_bin_wip(db_session, payload)
+        await db_session.commit()
+        await scan_bin_empty(db_session, payload)
+        await db_session.commit()
+
+        assert await archive_bin_batch(db_session, batch_id, archived=True) == "ok"
+        await db_session.commit()
+
+        assert await archive_bin_batch(db_session, batch_id, archived=False) == "ok"
+        await db_session.commit()
+        restored = await db_session.get(FloorBinBatch, batch_id)
+        assert restored is not None
+        assert restored.archived_at is None

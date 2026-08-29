@@ -100,8 +100,25 @@ export function formatFloorDate(value: string, options?: Intl.DateTimeFormatOpti
 }
 export const HARVEST_STATION_PAYLOAD = `${PREFIX_STATION}${HARVEST_STATION_SLUG}`;
 
-/** What kind of code a payload is, before any station context is applied. */
-export type ScanKind = 'station' | 'printer' | 'part' | 'bin' | 'defect' | 'command' | 'reason' | 'sku';
+/** What kind of code a payload is, before any station context is applied.
+ *  `product-serial` is Part Assembly Linking (Wave 2): a bought product
+ *  serial (`XG2SNP`) — six alphanumeric, no hyphen, at least one letter —
+ *  that starts the assembly-linking ceremony. */
+export type ScanKind =
+  | 'station'
+  | 'printer'
+  | 'part'
+  | 'bin'
+  | 'defect'
+  | 'command'
+  | 'reason'
+  | 'product-serial'
+  | 'sku';
+
+/** Exactly six alphanumeric characters after trim + uppercase (§4). The
+ *  additional `/[A-Z]/` guard below keeps all-numeric vendor barcodes out of
+ *  this shape — those stay `sku`. Hyphenated floor codes never match. */
+const PRODUCT_SERIAL_PATTERN = /^[A-Z0-9]{6}$/;
 
 export type ScanClassification =
   | { kind: 'empty' }
@@ -135,6 +152,16 @@ export function classifyScan(raw: string): ScanClassification {
   for (const [prefix, kind] of PREFIX_KINDS) {
     if (value.startsWith(prefix)) return { kind, value };
   }
+
+  // Part Assembly Linking (Wave 2): a bought product serial (`XG2SNP`) —
+  // exactly six alphanumeric characters, no hyphen, with at least one letter.
+  // Normalized to upper before matching (the pistol may emit either case);
+  // all-numeric barcodes fail the `/[A-Z]/` guard and fall through to `sku`.
+  const upper = value.toUpperCase();
+  if (PRODUCT_SERIAL_PATTERN.test(upper) && /[A-Z]/.test(upper)) {
+    return { kind: 'product-serial', value: upper };
+  }
+
   return { kind: 'sku', value };
 }
 
@@ -175,6 +202,11 @@ export type ScanAction =
   | { action: 'rework-reason'; payload: string }
   | { action: 'error-label'; payload: string }
   | { action: 'command'; payload: string }
+  /** A bought product serial (`XG2SNP`) — Part Assembly Linking (Wave 2).
+   *  Only meaningful at idle (start the link ceremony) or on an already-linked
+   *  serial (lookup); the *page* decides that, same as 'location' above, so
+   *  this classification never depends on the open station. */
+  | { action: 'product-serial'; value: string }
   /** A real code whose handling lands in a later phase. */
   | { action: 'not-implemented'; kind: ScanKind; value: string }
   /** Nothing scannable. */
@@ -200,6 +232,13 @@ export function routeScan(
 ): ScanAction {
   const scan = classifyScan(raw);
   if (scan.kind === 'empty') return { action: 'ignore' };
+
+  if (scan.kind === 'product-serial') {
+    // Station-independent, like 'location'/'rework-reason': the page decides
+    // whether a serial starts a ceremony (idle) or is a lookup (already
+    // linked), so the router only classifies it here.
+    return { action: 'product-serial', value: scan.value };
+  }
 
   if (scan.kind === 'station') {
     // Initial QC Pass and Rework print `BBS-…` QRs but are not sessions

@@ -60,6 +60,7 @@ import {
   type BinScanResponse,
   type FloorBin,
   type FloorBinBatch,
+  type FloorProductUnit,
   type HarvestSummaryLine,
   type PrinterMaintenanceOverview,
   type ReworkReasonCode,
@@ -95,6 +96,12 @@ const FLASH_MS = 3000;
  *  so it ticks slowly — a kiosk runs for days and this is pure display. */
 const ELAPSED_TICK_MS = 15000;
 const HARVEST_SUMMARY_MS = 10000;
+/** A read-only lookup that persists (unlike a flash) but still shouldn't sit
+ *  on a shared kiosk forever: a TOP-with-kit part lookup or an In-WIP bin
+ *  lookup returns to idle after this long untouched, and re-scanning the same
+ *  code closes it early. Long enough to read and act, short enough that the
+ *  next operator finds the screen clear. */
+const LOOKUP_DISMISS_MS = 10_000;
 
 type Status =
   | { kind: 'idle' }
@@ -121,13 +128,33 @@ type Status =
    *  since it is itself a prompt waiting for the next scan; abandoned by
    *  scanning anything that isn't a location code, same as every other
    *  status transition here. */
-  | { kind: 'awaiting-location'; payload: string; part: PartImageIdentity | null }
+  /** `reassignSlot` (Part Assembly Linking, Wave 1): the operator tapped
+   *  Reassign knob/button on a TOP-with-kit lookup, so the *next* matching
+   *  bin scan moves that kit slot instead of being refused as a stray bin.
+   *  `reassignNote` shows the outcome of the last reassign without leaving
+   *  the still-useful part lookup. */
+  | {
+      kind: 'awaiting-location';
+      payload: string;
+      part: PartImageIdentity | null;
+      reassignSlot?: 'KNB' | 'BUT';
+      reassignNote?: string;
+    }
   /** The part's location was Rework — a pure UI transition, no server call
    *  (§5.4b) — now waiting for the reason that actually commits it. */
   | { kind: 'awaiting-rework-reason'; payload: string; part: PartImageIdentity | null }
   | { kind: 'awaiting-discard-reason'; payload: string; part: PartImageIdentity | null }
   | { kind: 'awaiting-custom-reason'; locationSlug: 'rework' | 'discard'; payload: string; reasonPayload: string; part: PartImageIdentity | null }
-  | { kind: 'awaiting-bin-quantity'; payload: string; bin: FloorBin | null; archive: FloorPlateArchive | null }
+  /** Quantity prompt after a harvest bin scan. `returnToPrinter` is set when
+   *  the bin was scanned from the printer info page (§5.6 entry #2), so Save
+   *  restores that panel instead of dropping into the Harvest station screen. */
+  | {
+      kind: 'awaiting-bin-quantity';
+      payload: string;
+      bin: FloorBin | null;
+      archive: FloorPlateArchive | null;
+      returnToPrinter?: FloorPrinterInfo;
+    }
   | { kind: 'awaiting-bin-location'; payload: string; batch: FloorBinBatch }
   | { kind: 'awaiting-bin-qc-quantity'; payload: string; batch: FloorBinBatch }
   | { kind: 'awaiting-bin-empty'; payload: string; batch: FloorBinBatch }
@@ -145,17 +172,65 @@ type Status =
       printer: FloorPlatePrinter | null;
       archive: FloorPlateArchive | null;
       reasonCode?: string;
+      /** Part Assembly Linking (Wave 1): a kit consume that took a KNB/BUT
+       *  fill to 0 on a TOP's WIP commit — prompt to scan that bin off. */
+      kitWarning?: string;
     }
   | {
       kind: 'bin-recorded';
       action: 'harvested' | 'qc' | 'wip' | 'ready-for-production' | 'empty' | 'discarded';
       batch: FloorBinBatch | null;
-    };
+    }
+  /** Part Assembly Linking (Wave 2): an unlinked product serial was scanned —
+   *  the ceremony is waiting for the first housing (a TOP or a BOT). Persists
+   *  like `awaiting-location`; scanning a different serial restarts it, and the
+   *  on-screen Cancel aborts with no write. */
+  | { kind: 'awaiting-unit-part'; serial: string }
+  /** One housing is parked; waiting for the other one. `firstRole` is the
+   *  parked housing's TOP/BOT code, so a second housing of the same role
+   *  (TOP+TOP / BOT+BOT) is refused without a write. */
+  | {
+      kind: 'awaiting-unit-second';
+      serial: string;
+      firstRole: 'TOP' | 'BOT';
+      firstSticker: string;
+      firstPart: PartImageIdentity | null;
+    }
+  /** A linked product unit — either just linked, or looked up from an
+   *  already-linked serial (read-only, no ceremony). Carries the four
+   *  identities and an Unlink control. */
+  | { kind: 'unit-linked'; unit: FloorProductUnit };
 
-type PartImageIdentity = Pick<FloorInventoryPart, 'id' | 'part_code' | 'section_part_id' | 'part_name' | 'part_source' | 'labeled_at' | 'archived_at' | 'archive_id' | 'latest_event_action' | 'latest_event_reason'> & {
+type PartImageIdentity = Pick<FloorInventoryPart, 'id' | 'part_code' | 'section_part_id' | 'part_name' | 'part_source' | 'labeled_at' | 'archived_at' | 'archive_id' | 'latest_event_action' | 'latest_event_reason' | 'kit_knob_batch_id' | 'kit_button_batch_id'> & {
   printer_name: string | null;
   printer_id: number | null;
 };
+
+/** Which kit slot a `BBN-` bin payload targets — its type picks the slot
+ *  (Part Assembly Linking, Wave 1). Null for anything that isn't a KNB/BUT
+ *  bin code. */
+function binReassignSlot(payload: string): 'KNB' | 'BUT' | null {
+  const match = /^BBN-(KNB|BUT)-/i.exec(payload.trim());
+  return match ? (match[1].toUpperCase() as 'KNB' | 'BUT') : null;
+}
+
+/** The two persistent lookups that auto-dismiss (§ scan-page auto-dismiss): a
+ *  TOP that entered WIP with a kit assigned, carrying the Reassign controls. A
+ *  BOT or a TOP without a kit shows the plain location prompt and stays put. */
+function isKitTopLookup(status: Status): boolean {
+  return (
+    status.kind === 'awaiting-location' &&
+    status.part?.part_code === 'TOP' &&
+    (status.part.kit_knob_batch_id != null || status.part.kit_button_batch_id != null)
+  );
+}
+
+/** An In-WIP bin fill — the lookup that shows the subtract pad. A bin still
+ *  awaiting QC or QC-passed-but-not-yet-WIP is a decision point (its re-scan
+ *  advances the flow), so it is left alone. */
+function isInWipBinLookup(status: Status): boolean {
+  return status.kind === 'awaiting-bin-location' && status.batch.status === 'wip';
+}
 
 const FLOOR_STOP_REASON_OPTIONS: Array<{
   value: FloorStopReasonCode;
@@ -201,23 +276,32 @@ type HarvestPlate = {
   binQuantity: number;
 } | null;
 
-/** The result of the most recent `BBD-` scan, shown as a brief, deliberately
- *  neutral line. Kept separate from
- *  `Status` because it can overlay either the harvest screen or the printer
- *  info panel, whichever is on top when the scan happens. */
-type PartFeedback = {
-  result: Extract<PartScanResult, 'labeled' | 'no_job'>;
-  part: FloorLabeledPart | null;
-  printer: FloorPlatePrinter | null;
-  archive: FloorPlateArchive | null;
-  /** Parts linked on the current harvest plate (server `part_count`). */
-  linkCount: number;
-};
+/** The result of the most recent harvest scan from the printer info page or
+ *  Harvest screen — a brief overlay line. Kept separate from `Status` because
+ *  it can sit on top of either screen. Bins use the same overlay shape as
+ *  stickered parts so §5.6 entry #2 feels identical either way. */
+type PartFeedback =
+  | {
+      result: Extract<PartScanResult, 'labeled' | 'no_job'>;
+      part: FloorLabeledPart | null;
+      printer: FloorPlatePrinter | null;
+      archive: FloorPlateArchive | null;
+      /** Parts linked on the current harvest plate (server `part_count`). */
+      linkCount: number;
+    }
+  | {
+      result: 'bin_harvested';
+      batch: FloorBinBatch;
+      archive: FloorPlateArchive | null;
+      /** Running bin quantity on this plate after this scan. */
+      binQuantity: number;
+    };
 
 export function FloorScanPage() {
   const { t } = useTranslation();
   const navigate = useNavigate();
   const queryClient = useQueryClient();
+  const { showToast } = useToast();
   const inputRef = useRef<HTMLInputElement>(null);
   const [value, setValue] = useState('');
   // A USB pistol fires its whole scan (characters + Enter) far faster than a
@@ -245,6 +329,10 @@ export function FloorScanPage() {
   // screen was on top when it happened (the harvest screen or the printer
   // info panel) — see `PartFeedback`.
   const [partFeedback, setPartFeedback] = useState<PartFeedback | null>(null);
+  // Bumped by any on-screen interaction with an auto-dismissing lookup (kit
+  // reassign, subtract pad) to restart its idle-dismiss timer without changing
+  // `status` — the operator is clearly still here.
+  const [dismissNudge, setDismissNudge] = useState(0);
 
   // The session state the Enter handler reads. Same reasoning as valueRef:
   // two scans in quick succession must not both act on the pre-first state.
@@ -369,6 +457,22 @@ export function FloorScanPage() {
     const timer = window.setTimeout(() => setStatus({ kind: 'idle' }), HARVEST_SUMMARY_MS);
     return () => window.clearTimeout(timer);
   }, [status]);
+
+  // Scan-page auto-dismiss: a persistent TOP-with-kit or In-WIP bin lookup
+  // returns to idle after LOOKUP_DISMISS_MS so it doesn't linger on a shared
+  // kiosk. `dismissNudge` and the `status` identity both reset the timer, so
+  // any on-screen interaction (arming/cancelling reassign, adjusting the
+  // subtract pad) keeps it up. While a kit reassign is armed the timer pauses
+  // entirely — the operator is mid-flow waiting to scan a bin, and dropping to
+  // idle would silently abandon it.
+  useEffect(() => {
+    if (status.kind === 'awaiting-location' && status.reassignSlot) return;
+    if (!isKitTopLookup(status) && !isInWipBinLookup(status)) return;
+    const timer = window.setTimeout(() => setStatus({ kind: 'idle' }), LOOKUP_DISMISS_MS);
+    return () => window.clearTimeout(timer);
+  }, [status, dismissNudge]);
+
+  const nudgeDismiss = useCallback(() => setDismissNudge((value) => value + 1), []);
 
   // A part-scan result overlays whichever screen was on top. On the harvest
   // screen it flashes briefly — the big running count already carries the
@@ -646,12 +750,46 @@ export function FloorScanPage() {
         }));
       }
       if (resp.result === 'ready_for_quantity') {
-        setStatus({ kind: 'awaiting-bin-quantity', payload: resp.bin?.payload ?? '', bin: resp.bin, archive: resp.archive });
+        // Preserve the printer info page when the bin was scanned from it
+        // (§5.6) — without this, Save quantity lands on Harvest station idle
+        // and the operator has to close Harvest separately.
+        const returnToPrinter =
+          statusRef.current.kind === 'printer'
+            ? statusRef.current.info
+            : statusRef.current.kind === 'awaiting-bin-quantity'
+              ? statusRef.current.returnToPrinter
+              : undefined;
+        setStatus({
+          kind: 'awaiting-bin-quantity',
+          payload: resp.bin?.payload ?? '',
+          bin: resp.bin,
+          archive: resp.archive,
+          returnToPrinter,
+        });
         return;
       }
       if (resp.result === 'recorded') {
         if (resp.batch) {
-          setHarvestPlate((current) => current ? { ...current, binQuantity: current.binQuantity + resp.batch!.quantity } : current);
+          setHarvestPlate((current) =>
+            current ? { ...current, binQuantity: current.binQuantity + resp.batch!.quantity } : current,
+          );
+        }
+        const returnToPrinter =
+          statusRef.current.kind === 'awaiting-bin-quantity'
+            ? statusRef.current.returnToPrinter
+            : undefined;
+        if (returnToPrinter && resp.batch) {
+          // Same resting place as a part link from this page: stay on the
+          // printer panel with a Linked line. Done closes the harvest lock
+          // silently (§5.6), matching stickered parts.
+          setPartFeedback({
+            result: 'bin_harvested',
+            batch: resp.batch,
+            archive: resp.archive,
+            binQuantity: resp.batch.quantity,
+          });
+          setStatus({ kind: 'printer', info: returnToPrinter });
+          return;
         }
         setStatus({ kind: 'bin-recorded', action: 'harvested', batch: resp.batch });
         return;
@@ -801,6 +939,90 @@ export function FloorScanPage() {
     [failScan, t],
   );
 
+  // Part Assembly Linking (Wave 1): move one kit slot of a pending TOP part
+  // to a freshly-scanned bin. Only reached after the operator tapped Reassign
+  // knob/button (a pistol alone never starts this) and the scanned bin's type
+  // matches the pending slot — the caller checks both. Success clears the
+  // reassign mode but keeps the part lookup up (with a note); a bin the
+  // backend refuses (`invalid_bin`/`no_target`) rings the tone and stays
+  // pending on the same slot so another bin can be tried.
+  const submitReassignKit = useCallback(
+    async (payload: string, binPayload: string, part: PartImageIdentity | null) => {
+      setBusy(true);
+      busyRef.current = true;
+      try {
+        const resp = await api.reassignKit({ payload, bin_payload: binPayload });
+        if (resp.result === 'reassigned') {
+          const updatedPart = part
+            ? {
+                ...part,
+                kit_knob_batch_id: resp.part?.kit_knob_batch_id ?? part.kit_knob_batch_id,
+                kit_button_batch_id: resp.part?.kit_button_batch_id ?? part.kit_button_batch_id,
+              }
+            : part;
+          const remaining = resp.new_remaining;
+          setStatus({
+            kind: 'awaiting-location',
+            payload,
+            part: updatedPart,
+            reassignNote:
+              typeof remaining === 'number'
+                ? t('floor.kitReassignedRemaining', 'Kit reassigned · {{count}} left', { count: remaining })
+                : t('floor.kitReassigned', 'Kit reassigned'),
+          });
+        } else if (resp.result === 'invalid_bin' || resp.result === 'no_target') {
+          // Stay pending on the same slot — do not touch `status`.
+          playScanErrorTone();
+          showToast(
+            t('floor.kitReassignBinUnavailable', 'That bin can’t take this kit — scan another'),
+            'error',
+          );
+        } else if (resp.result === 'shipped') {
+          failScan(
+            t(
+              'floor.locationPartShipped',
+              'Part is shipped on a product serial — unlink it first',
+            ),
+            binPayload,
+          );
+        } else {
+          failScan(t('floor.kitReassignFailed', 'Kit reassign failed'), binPayload);
+        }
+      } catch {
+        failScan(t('floor.scanFailed', 'Scan failed'), binPayload);
+      } finally {
+        setBusy(false);
+        busyRef.current = false;
+      }
+    },
+    [failScan, showToast, t],
+  );
+
+  // Part Assembly Linking (Wave 1): subtract N from an In-WIP fill's remaining
+  // count from the kiosk. Refreshes the pending bin lookup with the new
+  // remaining; landing on 0 leaves the bin In WIP but empty, which the bin
+  // lookup screen surfaces as an empty-bin prompt.
+  const submitBinAdjust = useCallback(
+    async (payload: string, subtract: number) => {
+      setBusy(true);
+      busyRef.current = true;
+      try {
+        const resp = await api.adjustFloorBin({ payload, subtract });
+        if (resp.result === 'adjusted' && resp.batch) {
+          setStatus({ kind: 'awaiting-bin-location', payload, batch: resp.batch });
+        } else {
+          failScan(t('floor.binAdjustFailed', 'Could not adjust this bin'), payload);
+        }
+      } catch {
+        failScan(t('floor.scanFailed', 'Scan failed'), payload);
+      } finally {
+        setBusy(false);
+        busyRef.current = false;
+      }
+    },
+    [failScan, t],
+  );
+
   // Item→location destinations for parts (Ready-for-Production, Production
   // WIP, and the three TOP finishing benches). No session, no device_id: the
   // sticker plus the location slug is all the backend needs, and TOP/BOT
@@ -812,12 +1034,20 @@ export function FloorScanPage() {
       try {
         const resp = await api.scanPartLocation({ payload, location_slug: locationSlug });
         if (resp.result === 'recorded') {
+          const emptied: string[] = [];
+          if (resp.kit_knob_emptied) emptied.push(t('floor.kitKnobLabel', 'knob (KNB)'));
+          if (resp.kit_button_emptied) emptied.push(t('floor.kitButtonLabel', 'button (BUT)'));
           setStatus({
             kind: 'location-recorded',
             locationSlug,
             part: resp.part,
             printer: resp.printer,
             archive: resp.archive,
+            kitWarning: emptied.length
+              ? t('floor.kitBinEmptied', 'Kit bin now empty: {{types}} — scan it off the line', {
+                  types: emptied.join(' · '),
+                })
+              : undefined,
           });
         } else if (resp.result === 'already_at_location') {
           failScan(t('floor.locationAlreadyRecorded', 'Part is already at this location'), payload);
@@ -835,6 +1065,16 @@ export function FloorScanPage() {
           );
         } else if (resp.result === 'already_wip') {
           failScan(t('floor.locationAlreadyWip', 'This part is already in Production WIP'), payload);
+        } else if (resp.result === 'kit_knob_unavailable') {
+          failScan(
+            t('floor.locationKitKnobUnavailable', 'No knob (KNB) bin on the line — scan one into WIP first'),
+            payload,
+          );
+        } else if (resp.result === 'kit_button_unavailable') {
+          failScan(
+            t('floor.locationKitButtonUnavailable', 'No button (BUT) bin on the line — scan one into WIP first'),
+            payload,
+          );
         } else if (resp.result === 'part_code_required') {
           failScan(
             t('floor.locationPartCodeRequired', 'Assign a TOP or BOT part code in Inventory first'),
@@ -842,6 +1082,14 @@ export function FloorScanPage() {
           );
         } else if (resp.result === 'unknown_part') {
           failScan(t('floor.locationUnknownPart', 'Not enrolled — scan it at Harvest first'), payload);
+        } else if (resp.result === 'shipped') {
+          failScan(
+            t(
+              'floor.locationPartShipped',
+              'Part is shipped on a product serial — unlink it first',
+            ),
+            payload,
+          );
         } else {
           failScan(t('floor.scanInvalidCode', 'Invalid part code'), payload);
         }
@@ -921,6 +1169,19 @@ export function FloorScanPage() {
             ? t('floor.initialQcAlreadyRecorded', 'Part is already in Initial QC Pass')
             : t('floor.reworkAlreadyRecorded', 'Part is already in Rework'),
         );
+        return;
+      }
+      if (resp.result === 'shipped') {
+        failScan(
+          t(
+            'floor.locationPartShipped',
+            'Part is shipped on a product serial — unlink it first',
+          ),
+        );
+        return;
+      }
+      if (resp.result !== 'recorded') {
+        failScan(t('floor.scanInvalidCode', 'Invalid part code'));
         return;
       }
       // recorded: for Fit Check, a first check or a re-check both land here
@@ -1007,6 +1268,17 @@ export function FloorScanPage() {
           failScan(t('floor.discardAlreadyRecorded', 'Part is already discarded'), payload);
           return;
         }
+        if (response.result === 'shipped') {
+          if (!showResult) return;
+          failScan(
+            t(
+              'floor.locationPartShipped',
+              'Part is shipped on a product serial — unlink it first',
+            ),
+            payload,
+          );
+          return;
+        }
         if (response.result !== 'recorded') {
           if (!showResult) return;
           failScan(t('floor.scanInvalidCode', 'Invalid part code'), payload);
@@ -1055,6 +1327,161 @@ export function FloorScanPage() {
     setStatus({ kind: 'idle' });
   }, [deviceId, failScan, restoreScanFocus]);
 
+  // ── Part Assembly Linking (Wave 2): product-serial linking ceremony ──────
+
+  const toPartIdentity = useCallback((part: FloorInventoryPart): PartImageIdentity => ({
+    id: part.id,
+    part_code: part.part_code,
+    section_part_id: part.section_part_id,
+    part_name: part.part_name,
+    part_source: part.part_source,
+    printer_name: part.printer_name,
+    printer_id: part.printer_id,
+    labeled_at: part.labeled_at,
+    archived_at: part.archived_at,
+    archive_id: part.archive_id,
+    latest_event_action: part.latest_event_action,
+    latest_event_reason: part.latest_event_reason,
+    kit_knob_batch_id: part.kit_knob_batch_id ?? null,
+    kit_button_batch_id: part.kit_button_batch_id ?? null,
+  }), []);
+
+  /** An unlinked serial starts the ceremony; an already-linked one is a
+   *  read-only lookup (no ceremony, no write). The router only classifies the
+   *  serial shape, so which of the two this is only becomes known here. */
+  const submitProductSerial = useCallback(
+    async (serial: string) => {
+      setBusy(true);
+      busyRef.current = true;
+      try {
+        const unit = await api.getUnitBySerial(serial);
+        setStatus({ kind: 'unit-linked', unit });
+      } catch (error: unknown) {
+        if (error instanceof ApiError && error.status === 404) {
+          setStatus({ kind: 'awaiting-unit-part', serial });
+          return;
+        }
+        failScan(t('floor.scanFailed', 'Scan failed'), serial);
+      } finally {
+        setBusy(false);
+        busyRef.current = false;
+      }
+    },
+    [failScan, t],
+  );
+
+  /** A housing scanned during the ceremony. The first parks (TOP or BOT); the
+   *  second either completes the link (opposite role) or is refused as a
+   *  TOP+TOP / BOT+BOT mismatch, keeping the serial pending with no write. */
+  const submitUnitHousing = useCallback(
+    async (sticker: string) => {
+      const pending = statusRef.current;
+      if (pending.kind !== 'awaiting-unit-part' && pending.kind !== 'awaiting-unit-second') return;
+      setBusy(true);
+      busyRef.current = true;
+      try {
+        let part: FloorInventoryPart;
+        try {
+          part = await api.getFloorInventoryPartBySticker(sticker);
+        } catch (error: unknown) {
+          if (error instanceof ApiError && error.status === 404) {
+            // Keep the ceremony pending (same as wrong-role / link refusals) —
+            // do not failScan and drop the parked serial.
+            playScanErrorTone();
+            showToast(
+              t('floor.scanPartNotRegistered', 'Part is not registered — scan it at Harvest first'),
+              'error',
+            );
+            return;
+          }
+          throw error;
+        }
+        const role = (part.part_code ?? '').trim().toUpperCase();
+        if (role !== 'TOP' && role !== 'BOT') {
+          // Neither housing — the ceremony only pairs a TOP with a BOT.
+          playScanErrorTone();
+          showToast(t('floor.unitScanHousing', 'Scan a top or a bottom'), 'error');
+          return;
+        }
+        if (pending.kind === 'awaiting-unit-part') {
+          setStatus({
+            kind: 'awaiting-unit-second',
+            serial: pending.serial,
+            firstRole: role,
+            firstSticker: sticker,
+            firstPart: toPartIdentity(part),
+          });
+          return;
+        }
+        // Second housing. Same role as the first is a TOP+TOP / BOT+BOT
+        // mismatch — hard error, keep the serial pending (no write).
+        if (role === pending.firstRole) {
+          playScanErrorTone();
+          showToast(
+            t('floor.unitSameRole', 'Scan one top and one bottom — not two of the same'),
+            'error',
+          );
+          return;
+        }
+        const topSticker = pending.firstRole === 'TOP' ? pending.firstSticker : sticker;
+        const bottomSticker = pending.firstRole === 'BOT' ? pending.firstSticker : sticker;
+        const outcome = await api.linkUnit({
+          serial: pending.serial,
+          top_sticker: topSticker,
+          bottom_sticker: bottomSticker,
+        });
+        if (outcome.result === 'linked' && outcome.unit) {
+          setStatus({ kind: 'unit-linked', unit: outcome.unit });
+          showToast(t('floor.unitLinked', 'Unit linked'), 'success');
+          return;
+        }
+        // Any refusal keeps the serial pending so the operator can retry with
+        // the right housings, rather than dropping the whole ceremony.
+        const messages: Record<string, string> = {
+          serial_in_use: t('floor.unitSerialInUse', 'That serial is already linked'),
+          top_not_found: t('floor.unitPartNotFound', 'That housing is not registered'),
+          bottom_not_found: t('floor.unitPartNotFound', 'That housing is not registered'),
+          same_part: t('floor.unitSamePart', 'Scan two different housings'),
+          top_not_eligible: t('floor.unitTopNotEligible', 'The top must be In WIP with a kit assigned'),
+          bottom_not_eligible: t('floor.unitBottomNotEligible', 'The bottom must be In WIP'),
+          top_already_linked: t('floor.unitAlreadyLinked', 'That housing is already on another unit'),
+          bottom_already_linked: t('floor.unitAlreadyLinked', 'That housing is already on another unit'),
+          invalid_serial: t('floor.unitInvalidSerial', 'That serial is not valid'),
+        };
+        playScanErrorTone();
+        showToast(messages[outcome.result] ?? t('floor.scanFailed', 'Scan failed'), 'error');
+      } catch {
+        failScan(t('floor.scanFailed', 'Scan failed'), sticker);
+      } finally {
+        setBusy(false);
+        busyRef.current = false;
+      }
+    },
+    [failScan, showToast, t, toPartIdentity],
+  );
+
+  /** Reverse a link from the already-linked card: free the serial + both
+   *  stickers so the pair can be corrected and linked again. */
+  const submitUnitUnlink = useCallback(
+    async (unitId: number) => {
+      restoreScanFocus();
+      setBusy(true);
+      busyRef.current = true;
+      try {
+        await api.unlinkUnit(unitId);
+        setStatus({ kind: 'idle' });
+        showToast(t('floor.unitUnlinked', 'Unit unlinked — both housings back in WIP'), 'success');
+      } catch (err) {
+        failScan(err instanceof Error ? err.message : String(err));
+      } finally {
+        setBusy(false);
+        busyRef.current = false;
+        restoreScanFocus();
+      }
+    },
+    [failScan, restoreScanFocus, showToast, t],
+  );
+
   const handleScan = useCallback(
     (scanned: string) => {
       // Drop scans fired while a request is in flight rather than queueing
@@ -1075,6 +1502,13 @@ export function FloorScanPage() {
         } else {
           failScan(t('floor.binEmptyDifferent', 'Scan the same bin to confirm it is empty'), route.payload);
         }
+        return;
+      }
+      if (route.action === 'product-serial') {
+        // Part Assembly Linking (Wave 2): an unlinked serial starts the link
+        // ceremony; an already-linked one is a read-only lookup. Either way
+        // this restarts from the serial, abandoning any other pending flow.
+        void submitProductSerial(route.value);
         return;
       }
       if (route.action === 'station') {
@@ -1106,6 +1540,28 @@ export function FloorScanPage() {
         return;
       }
       if (route.action === 'bin-scanned') {
+        // Part Assembly Linking (Wave 1): the operator armed a kit reassign by
+        // tapping Reassign knob/button on a TOP-with-kit lookup. The next bin
+        // scan moves that slot — but only if its type matches; a wrong bin
+        // rings the tone and stays pending rather than committing or aborting.
+        if (
+          statusRef.current.kind === 'awaiting-location' &&
+          statusRef.current.reassignSlot
+        ) {
+          const pending = statusRef.current;
+          if (binReassignSlot(route.payload) === pending.reassignSlot) {
+            void submitReassignKit(pending.payload, route.payload, pending.part);
+          } else {
+            playScanErrorTone();
+            showToast(
+              t('floor.kitReassignWrongType', 'Wrong bin type — scan a {{type}} bin', {
+                type: pending.reassignSlot,
+              }),
+              'error',
+            );
+          }
+          return;
+        }
         // A KNB/BUT bin has no place in the part-only Fit Check/Rework/
         // Discard flow (§5.4a/§5.4b) — without this, the bin scan would
         // silently abandon whichever part is pending and jump into the bin
@@ -1140,6 +1596,16 @@ export function FloorScanPage() {
           });
           return;
         }
+        // Scan-page auto-dismiss: re-scanning the same In-WIP bin whose
+        // subtract lookup is up closes it to idle rather than re-resolving it.
+        if (
+          statusRef.current.kind === 'awaiting-bin-location' &&
+          route.payload === statusRef.current.payload &&
+          statusRef.current.batch.status === 'wip'
+        ) {
+          setStatus({ kind: 'idle' });
+          return;
+        }
         void submitBinResolve(route.payload);
         return;
       }
@@ -1148,6 +1614,29 @@ export function FloorScanPage() {
         return;
       }
       if (route.action === 'part-scanned') {
+        // Scan-page auto-dismiss: re-scanning the same sticker while its
+        // TOP-with-kit lookup is up closes it to idle instead of re-fetching
+        // and re-opening the same card — a deliberate "I'm done here", not an
+        // error.
+        if (
+          statusRef.current.kind === 'awaiting-location' &&
+          route.payload === statusRef.current.payload &&
+          isKitTopLookup(statusRef.current)
+        ) {
+          setStatus({ kind: 'idle' });
+          return;
+        }
+        // Part Assembly Linking (Wave 2): during the serial ceremony a `BBD-`
+        // scan is a housing for the pending unit, not the start of an
+        // item→location flow. A serial must have been scanned first — scanning
+        // TOP then BOT with no serial never pairs them (falls through below).
+        if (
+          statusRef.current.kind === 'awaiting-unit-part' ||
+          statusRef.current.kind === 'awaiting-unit-second'
+        ) {
+          void submitUnitHousing(route.payload);
+          return;
+        }
         // First half of scan-part-then-location (§5.4a/§5.4b). Overwrites
         // whatever was pending before, if anything — scanning a different
         // part just restarts the flow on the new one.
@@ -1193,6 +1682,8 @@ export function FloorScanPage() {
                 archive_id: part.archive_id,
                 latest_event_action: part.latest_event_action,
                 latest_event_reason: part.latest_event_reason,
+                kit_knob_batch_id: part.kit_knob_batch_id ?? null,
+                kit_button_batch_id: part.kit_button_batch_id ?? null,
               },
             });
           })
@@ -1240,6 +1731,21 @@ export function FloorScanPage() {
           return;
         }
         if (statusRef.current.kind === 'awaiting-location') {
+          // Kit reassign is armed: a location QR must not silently commit the
+          // part and drop the pending reassign. Stay armed until a matching
+          // bin is scanned or the operator cancels on screen.
+          if (statusRef.current.reassignSlot) {
+            playScanErrorTone();
+            showToast(
+              t(
+                'floor.kitReassignScanBinNotLocation',
+                'Reassign armed — scan a {{type}} bin, or cancel',
+                { type: statusRef.current.reassignSlot },
+              ),
+              'error',
+            );
+            return;
+          }
           const pendingPayload = statusRef.current.payload;
           const pendingPart = statusRef.current.part;
           if (route.slug === 'fit-check') {
@@ -1296,6 +1802,18 @@ export function FloorScanPage() {
       }
       if (route.action === 'command') {
         if (route.payload === 'BBX-discard' && statusRef.current.kind === 'awaiting-location') {
+          if (statusRef.current.reassignSlot) {
+            playScanErrorTone();
+            showToast(
+              t(
+                'floor.kitReassignScanBinNotLocation',
+                'Reassign armed — scan a {{type}} bin, or cancel',
+                { type: statusRef.current.reassignSlot },
+              ),
+              'error',
+            );
+            return;
+          }
           if (isAlreadyAtLocation(statusRef.current.part, 'discard')) {
             failScan(t('floor.discardAlreadyRecorded', 'Part is already discarded'), route.payload);
             return;
@@ -1381,6 +1899,10 @@ export function FloorScanPage() {
       submitReworkPartScan,
       submitReworkErrorScan,
       submitDiscardScan,
+      submitReassignKit,
+      submitProductSerial,
+      submitUnitHousing,
+      showToast,
       t,
     ],
   );
@@ -1593,7 +2115,13 @@ export function FloorScanPage() {
           onSubmit={(quantity) => void submitBinFlow(status.payload, 'qc', quantity)}
         />
       ) : status.kind === 'awaiting-bin-location' ? (
-        <BinLocationScreen batch={status.batch} t={t} />
+        <BinLocationScreen
+          batch={status.batch}
+          busy={busy}
+          onSubtract={(subtract) => void submitBinAdjust(status.payload, subtract)}
+          onInteract={nudgeDismiss}
+          t={t}
+        />
       ) : status.kind === 'awaiting-bin-empty' ? (
         <BinEmptyScreen batch={status.batch} t={t} />
       ) : status.kind === 'awaiting-bin-discard-confirm' ? (
@@ -1628,10 +2156,44 @@ export function FloorScanPage() {
           onClose={handleClose}
           t={t}
         />
+      ) : status.kind === 'awaiting-unit-part' ? (
+        // Part Assembly Linking (Wave 2): an unlinked serial was scanned —
+        // waiting for the first housing.
+        <UnitCeremonyScreen serial={status.serial} step="first" onCancel={() => setStatus({ kind: 'idle' })} t={t} />
+      ) : status.kind === 'awaiting-unit-second' ? (
+        <UnitCeremonyScreen
+          serial={status.serial}
+          step="second"
+          firstRole={status.firstRole}
+          firstSticker={status.firstSticker}
+          onCancel={() => setStatus({ kind: 'idle' })}
+          t={t}
+        />
+      ) : status.kind === 'unit-linked' ? (
+        <UnitLinkedScreen
+          unit={status.unit}
+          busy={busy}
+          onUnlink={() => submitUnitUnlink(status.unit.id)}
+          onDone={() => setStatus({ kind: 'idle' })}
+          t={t}
+        />
       ) : status.kind === 'awaiting-location' ? (
         // First half of scan-part-then-location, done (§5.4a/§5.4b) — not a
         // station, so nothing about `session` is involved here at all.
-        <AwaitingLocationScreen payload={status.payload} part={status.part} t={t} />
+        <AwaitingLocationScreen
+          payload={status.payload}
+          part={status.part}
+          reassignSlot={status.reassignSlot}
+          reassignNote={status.reassignNote}
+          busy={busy}
+          onReassign={(slot) =>
+            setStatus({ kind: 'awaiting-location', payload: status.payload, part: status.part, reassignSlot: slot })
+          }
+          onCancelReassign={() =>
+            setStatus({ kind: 'awaiting-location', payload: status.payload, part: status.part })
+          }
+          t={t}
+        />
       ) : status.kind === 'awaiting-rework-reason' ? (
         <AwaitingReworkReasonScreen payload={status.payload} part={status.part} t={t} />
       ) : status.kind === 'awaiting-discard-reason' ? (
@@ -1663,6 +2225,7 @@ export function FloorScanPage() {
           printer={status.printer}
           archive={status.archive}
           reasonCode={status.reasonCode}
+          kitWarning={status.kitWarning}
           t={t}
         />
       ) : (
@@ -1768,15 +2331,28 @@ function StatusDot({ live }: { live: FloorLiveStatus | null }) {
   return <span className={`w-3 h-3 rounded-full flex-shrink-0 ${color}`} aria-hidden="true" />;
 }
 
-/** Turns a successful part scan into display text plus a tone. Shared by
- *  `HarvestScreen` and `PrinterInfoPanel` — the two screens a `BBD-` scan can
- *  land on (§5.4/§5.6) — so the wording (and the "never red" rule for
- *  `no_job` (§7.2) can't drift between them. */
+/** Turns a successful harvest scan into display text plus a tone. Shared by
+ *  `HarvestScreen` and `PrinterInfoPanel` — the two screens a part or bin
+ *  harvest can land on (§5.4/§5.6) — so the wording (and the "never red" rule
+ *  for `no_job` (§7.2)) can't drift between them. */
 function partFeedbackMessage(
   feedback: PartFeedback,
   t: ReturnType<typeof useTranslation>['t'],
   options?: { showSessionLinkCount?: boolean },
 ): { text: string; tone: 'positive' | 'neutral' } {
+  if (feedback.result === 'bin_harvested') {
+    const model =
+      feedback.archive?.print_name ??
+      feedback.batch.print_name ??
+      t('floor.printerUnnamedJob', 'Unnamed job');
+    return {
+      text: t('floor.partLabeledCount', 'Linked · {{count}} parts · {{model}}', {
+        count: feedback.binQuantity,
+        model,
+      }),
+      tone: 'positive',
+    };
+  }
   if (feedback.result === 'labeled') {
     const model = feedback.archive?.print_name ?? t('floor.printerUnnamedJob', 'Unnamed job');
     if (options?.showSessionLinkCount && feedback.linkCount > 1) {
@@ -1804,6 +2380,17 @@ function partFeedbackMessage(
     }),
     tone: 'neutral',
   };
+}
+
+function feedbackThumbnailCode(feedback: PartFeedback | null): string | null | undefined {
+  if (!feedback) return null;
+  if (feedback.result === 'bin_harvested') return feedback.batch.part_code;
+  return feedback.part?.part_code;
+}
+
+function feedbackThumbnailSectionPartId(feedback: PartFeedback | null): number | null | undefined {
+  if (!feedback || feedback.result === 'bin_harvested') return null;
+  return feedback.part?.section_part_id;
 }
 
 /** The 3MF cover image Files already has on file for a scanned part's
@@ -2045,7 +2632,11 @@ function PrinterInfoPanel({
               : 'border-bambu-dark-tertiary bg-bambu-dark-secondary'
           }`}
         >
-          <PartCodeThumbnail partCode={feedback?.part?.part_code} sectionPartId={feedback?.part?.section_part_id} className="h-12 w-12 shrink-0 rounded object-cover bg-bambu-dark" />
+          <PartCodeThumbnail
+            partCode={feedbackThumbnailCode(feedback)}
+            sectionPartId={feedbackThumbnailSectionPartId(feedback)}
+            className="h-12 w-12 shrink-0 rounded object-cover bg-bambu-dark"
+          />
           <p className={feedbackMsg.tone === 'positive' ? 'text-bambu-green font-semibold' : 'text-white font-semibold'}>
             {feedbackMsg.text}
           </p>
@@ -2778,7 +3369,10 @@ function HarvestScreen({
 
       {feedbackMsg && (
         <div className="mt-8 flex flex-col items-center gap-2">
-          <PartCodeThumbnail partCode={feedback?.part?.part_code} sectionPartId={feedback?.part?.section_part_id} />
+          <PartCodeThumbnail
+            partCode={feedbackThumbnailCode(feedback)}
+            sectionPartId={feedbackThumbnailSectionPartId(feedback)}
+          />
           <p
             className={`text-lg ${
               feedbackMsg.tone === 'positive' ? 'text-bambu-green' : 'text-bambu-gray-light'
@@ -2947,7 +3541,20 @@ function binLifecycleStatusClass(status: string) {
   return 'text-amber-400';
 }
 
-function BinLocationScreen({ batch, t }: { batch: FloorBinBatch; t: ReturnType<typeof useTranslation>['t'] }) {
+function BinLocationScreen({
+  batch,
+  busy,
+  onSubtract,
+  onInteract,
+  t,
+}: {
+  batch: FloorBinBatch;
+  busy: boolean;
+  onSubtract: (subtract: number) => void;
+  onInteract?: () => void;
+  t: ReturnType<typeof useTranslation>['t'];
+}) {
+  const inWip = batch.status === 'wip';
   return (
     <>
       <ScanLine className="w-16 h-16 mb-6 text-bambu-green" aria-hidden="true" />
@@ -2973,12 +3580,95 @@ function BinLocationScreen({ batch, t }: { batch: FloorBinBatch; t: ReturnType<t
         <p className="mt-8 text-lg text-bambu-gray">
           {t('floor.binAlreadyPassedQcHint', 'Scan WIP when this bin goes into use')}
         </p>
+      ) : inWip && batch.remaining_quantity > 0 ? (
+        <>
+          {/* Keyed on remaining so a successful subtract resets the picker
+              to 1 rather than clamping a now-too-large amount. */}
+          <BinSubtractPad
+            key={batch.remaining_quantity}
+            remaining={batch.remaining_quantity}
+            busy={busy}
+            onSubtract={onSubtract}
+            onInteract={onInteract}
+            t={t}
+          />
+          <p className="mt-6 text-lg text-bambu-gray">
+            {t('floor.binInWipHint', 'Scan Empty when this bin is used up')}
+          </p>
+        </>
+      ) : inWip ? (
+        <p className="mt-8 text-2xl text-amber-400">
+          {t('floor.binAdjustedEmpty', 'Bin now empty — scan it off the line')}
+        </p>
       ) : (
         <p className="mt-8 text-lg text-bambu-gray">
           {t('floor.binInWipHint', 'Scan Empty when this bin is used up')}
         </p>
       )}
     </>
+  );
+}
+
+/** Part Assembly Linking (Wave 1): a gloves-friendly stepper to subtract N
+ *  (1..remaining) from an In-WIP fill's remaining count. Big touch targets,
+ *  no text field — the operator picks an amount and commits it, never below
+ *  0 (the +/− buttons clamp to the [1, remaining] range). */
+function BinSubtractPad({
+  remaining,
+  busy,
+  onSubtract,
+  onInteract,
+  t,
+}: {
+  remaining: number;
+  busy: boolean;
+  onSubtract: (subtract: number) => void;
+  onInteract?: () => void;
+  t: ReturnType<typeof useTranslation>['t'];
+}) {
+  const [amount, setAmount] = useState(1);
+  const decrease = () => {
+    onInteract?.();
+    setAmount((value) => Math.max(1, value - 1));
+  };
+  const increase = () => {
+    onInteract?.();
+    setAmount((value) => Math.min(remaining, value + 1));
+  };
+  return (
+    <div className="mt-8 flex flex-col items-center gap-3">
+      <p className="text-lg text-bambu-gray">{t('floor.binRemainingLabel', 'Remaining')}</p>
+      <p className="text-6xl font-bold text-sky-400 tabular-nums">{remaining}</p>
+      <div className="mt-1 flex items-center gap-4">
+        <button
+          type="button"
+          aria-label={t('floor.binSubtractDecrease', 'Decrease')}
+          onClick={decrease}
+          disabled={busy || amount <= 1}
+          className="flex h-16 w-16 items-center justify-center rounded-xl bg-bambu-dark-secondary text-4xl font-bold text-white transition-colors hover:bg-bambu-dark-tertiary disabled:opacity-40"
+        >
+          −
+        </button>
+        <span className="w-20 text-center text-5xl font-bold text-white tabular-nums">{amount}</span>
+        <button
+          type="button"
+          aria-label={t('floor.binSubtractIncrease', 'Increase')}
+          onClick={increase}
+          disabled={busy || amount >= remaining}
+          className="flex h-16 w-16 items-center justify-center rounded-xl bg-bambu-dark-secondary text-4xl font-bold text-white transition-colors hover:bg-bambu-dark-tertiary disabled:opacity-40"
+        >
+          +
+        </button>
+      </div>
+      <button
+        type="button"
+        onClick={() => onSubtract(amount)}
+        disabled={busy}
+        className="mt-2 min-h-14 rounded-xl bg-sky-600 px-8 py-3 text-2xl font-semibold text-white transition-colors hover:bg-sky-700 disabled:opacity-50"
+      >
+        {t('floor.binSubtractConfirm', 'Subtract')}
+      </button>
+    </div>
   );
 }
 
@@ -3094,22 +3784,202 @@ function PartScanHistorySection({ part }: { part: PartImageIdentity | null }) {
 function AwaitingLocationScreen({
   payload,
   part,
+  reassignSlot,
+  reassignNote,
+  busy,
+  onReassign,
+  onCancelReassign,
   t,
 }: {
   payload: string;
   part: PartImageIdentity | null;
+  reassignSlot?: 'KNB' | 'BUT';
+  reassignNote?: string;
+  busy: boolean;
+  onReassign: (slot: 'KNB' | 'BUT') => void;
+  onCancelReassign: () => void;
   t: ReturnType<typeof useTranslation>['t'];
 }) {
+  // Part Assembly Linking (Wave 1): only a TOP that has entered WIP carries a
+  // kit, and only then can a slot be reassigned. BOT / no-kit parts show the
+  // plain location prompt with no reassign controls.
+  const hasKnobKit = part?.part_code === 'TOP' && part?.kit_knob_batch_id != null;
+  const hasButtonKit = part?.part_code === 'TOP' && part?.kit_button_batch_id != null;
+  const canReassign =
+    (hasKnobKit || hasButtonKit) && part?.latest_event_action !== 'shipped';
   return (
     <div className="flex max-h-full w-full max-w-2xl flex-col items-center overflow-y-auto py-6">
       <ScanLine className="w-16 h-16 mb-6 text-bambu-green shrink-0" aria-hidden="true" />
       <PartCodeThumbnail partCode={part?.part_code} sectionPartId={part?.section_part_id} className="mb-4 h-48 w-48 rounded-xl object-cover bg-bambu-dark-secondary shrink-0" />
       <PartSourceLabel part={part} t={t} />
       <p className="text-3xl font-bold text-white font-mono">{payload}</p>
-      <p className="mt-3 text-2xl text-bambu-gray">
-        {t('floor.locationScanLocation', 'Scan a location')}
-      </p>
+      {reassignSlot ? (
+        <>
+          <p className="mt-3 text-2xl text-amber-400">
+            {reassignSlot === 'KNB'
+              ? t('floor.kitReassignScanKnob', 'Scan a KNB bin to reassign')
+              : t('floor.kitReassignScanButton', 'Scan a BUT bin to reassign')}
+          </p>
+          <button
+            type="button"
+            onClick={onCancelReassign}
+            disabled={busy}
+            className="mt-5 min-h-12 rounded-lg bg-bambu-dark-secondary px-6 py-2 text-lg text-bambu-gray-light transition-colors hover:text-white disabled:opacity-50"
+          >
+            {t('floor.kitReassignCancel', 'Cancel')}
+          </button>
+        </>
+      ) : (
+        <>
+          <p className="mt-3 text-2xl text-bambu-gray">
+            {t('floor.locationScanLocation', 'Scan a location')}
+          </p>
+          {reassignNote && (
+            <p className="mt-2 text-lg font-semibold text-bambu-green">{reassignNote}</p>
+          )}
+          {canReassign && (
+            <div className="mt-4 flex flex-wrap items-center justify-center gap-3">
+              {hasKnobKit && (
+                <button
+                  type="button"
+                  onClick={() => onReassign('KNB')}
+                  disabled={busy}
+                  className="min-h-12 rounded-lg bg-bambu-dark-secondary px-5 py-2 text-lg font-medium text-white transition-colors hover:bg-bambu-dark-tertiary disabled:opacity-50"
+                >
+                  {t('floor.kitReassignKnob', 'Reassign knob')}
+                </button>
+              )}
+              {hasButtonKit && (
+                <button
+                  type="button"
+                  onClick={() => onReassign('BUT')}
+                  disabled={busy}
+                  className="min-h-12 rounded-lg bg-bambu-dark-secondary px-5 py-2 text-lg font-medium text-white transition-colors hover:bg-bambu-dark-tertiary disabled:opacity-50"
+                >
+                  {t('floor.kitReassignButton', 'Reassign button')}
+                </button>
+              )}
+            </div>
+          )}
+        </>
+      )}
       <PartScanHistorySection part={part} />
+    </div>
+  );
+}
+
+/** Part Assembly Linking (Wave 2): the serial ceremony prompt. `first` asks
+ *  for either housing; `second` shows the parked one and asks for the other.
+ *  Cancel aborts with no write, matching the plan's clear/cancel path. */
+function UnitCeremonyScreen({
+  serial,
+  step,
+  firstRole,
+  firstSticker,
+  onCancel,
+  t,
+}: {
+  serial: string;
+  step: 'first' | 'second';
+  firstRole?: 'TOP' | 'BOT';
+  firstSticker?: string;
+  onCancel: () => void;
+  t: ReturnType<typeof useTranslation>['t'];
+}) {
+  return (
+    <div className="flex max-h-full w-full max-w-2xl flex-col items-center overflow-y-auto py-6">
+      <ScanLine className="w-16 h-16 mb-6 text-bambu-green shrink-0" aria-hidden="true" />
+      <p className="text-lg text-bambu-gray">{t('floor.unitSerial', 'Serial')}</p>
+      <p className="text-3xl font-bold text-white font-mono">{serial}</p>
+      {step === 'first' ? (
+        <p className="mt-4 text-2xl text-bambu-gray">{t('floor.unitScanHousing', 'Scan a top or a bottom')}</p>
+      ) : (
+        <>
+          <p className="mt-4 text-lg text-bambu-green">
+            {firstRole === 'TOP'
+              ? t('floor.unitTopParked', 'Top parked')
+              : t('floor.unitBottomParked', 'Bottom parked')}
+            {firstSticker ? ` · ${firstSticker}` : ''}
+          </p>
+          <p className="mt-2 text-2xl text-bambu-gray">{t('floor.unitScanOther', 'Scan the other housing')}</p>
+        </>
+      )}
+      <button
+        type="button"
+        onClick={onCancel}
+        className="mt-6 min-h-12 rounded-lg bg-bambu-dark-secondary px-6 py-2 text-lg text-bambu-gray-light transition-colors hover:text-white"
+      >
+        {t('floor.unitCancel', 'Cancel')}
+      </button>
+    </div>
+  );
+}
+
+/** Part Assembly Linking (Wave 2): a linked product unit — the four
+ *  identities (top, bottom, knob, button) with an Unlink control that frees
+ *  the serial and both stickers back to WIP. Shown both after a fresh link and
+ *  when an already-linked serial is looked up (read-only either way). */
+function UnitLinkedScreen({
+  unit,
+  busy,
+  onUnlink,
+  onDone,
+  t,
+}: {
+  unit: FloorProductUnit;
+  busy: boolean;
+  onUnlink: () => void;
+  onDone: () => void;
+  t: ReturnType<typeof useTranslation>['t'];
+}) {
+  const [confirming, setConfirming] = useState(false);
+  const rows: Array<[string, string | null]> = [
+    [t('floor.unitTop', 'Top'), unit.top_sticker],
+    [t('floor.unitBottom', 'Bottom'), unit.bottom_sticker],
+    [t('floor.unitKnob', 'Knob'), unit.knob_bin_payload],
+    [t('floor.unitButton', 'Button'), unit.button_bin_payload],
+  ];
+  return (
+    <div className="flex max-h-full w-full max-w-2xl flex-col items-center overflow-y-auto py-6">
+      <ScanLine className="w-16 h-16 mb-6 text-bambu-green shrink-0" aria-hidden="true" />
+      <p className="text-lg text-bambu-green">{t('floor.unitLinkedHeading', 'Linked unit')}</p>
+      <p className="text-4xl font-bold text-white font-mono">{unit.serial_code}</p>
+      <dl className="mt-5 w-full max-w-md space-y-2">
+        {rows.map(([label, value]) => (
+          <div key={label} className="flex items-center justify-between gap-4 rounded-lg bg-bambu-dark-secondary px-4 py-2">
+            <dt className="text-lg text-bambu-gray">{label}</dt>
+            <dd className="text-lg font-mono text-white">{value ?? '—'}</dd>
+          </div>
+        ))}
+      </dl>
+      <div className="mt-6 flex flex-wrap items-center justify-center gap-3">
+        {confirming ? (
+          <button
+            type="button"
+            onClick={onUnlink}
+            disabled={busy}
+            className="min-h-12 rounded-lg bg-red-600 px-6 py-2 text-lg font-medium text-white transition-colors hover:bg-red-500 disabled:opacity-50"
+          >
+            {t('floor.unitUnlinkConfirm', 'Confirm unlink')}
+          </button>
+        ) : (
+          <button
+            type="button"
+            onClick={() => setConfirming(true)}
+            disabled={busy}
+            className="min-h-12 rounded-lg bg-bambu-dark-secondary px-6 py-2 text-lg font-medium text-white transition-colors hover:bg-bambu-dark-tertiary disabled:opacity-50"
+          >
+            {t('floor.unitUnlink', 'Unlink')}
+          </button>
+        )}
+        <button
+          type="button"
+          onClick={onDone}
+          className="min-h-12 rounded-lg bg-bambu-dark-secondary px-6 py-2 text-lg text-bambu-gray-light transition-colors hover:text-white"
+        >
+          {t('floor.unitDone', 'Done')}
+        </button>
+      </div>
     </div>
   );
 }
@@ -3245,6 +4115,7 @@ function LocationRecordedFlash({
   printer,
   archive,
   reasonCode,
+  kitWarning,
   t,
 }: {
   locationSlug: 'fit-check' | 'rework' | 'discard' | PartLocationSlug;
@@ -3252,6 +4123,7 @@ function LocationRecordedFlash({
   printer: FloorPlatePrinter | null;
   archive: FloorPlateArchive | null;
   reasonCode?: string;
+  kitWarning?: string;
   t: ReturnType<typeof useTranslation>['t'];
 }) {
   const color = locationSlug === 'discard'
@@ -3287,6 +4159,7 @@ function LocationRecordedFlash({
           .join(' · ')}
       </p>
       <p className={`mt-3 text-lg ${color}`}>{message}</p>
+      {kitWarning && <p className="mt-2 text-base text-orange-400">{kitWarning}</p>}
     </>
   );
 }

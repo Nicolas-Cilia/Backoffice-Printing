@@ -1008,6 +1008,26 @@ async def _enroll_qc_linked_part(
     return part
 
 
+async def _knb_and_but_on_line(db_session, printer_factory, archive_factory):
+    """Put one KNB and one BUT fill In WIP so a TOP part can draw a kit when it
+    reaches Production WIP (Part Assembly Linking, Wave 1)."""
+    from backend.app.services.floor_bins import scan_bin_fit_check, scan_bin_wip, scan_harvest_bin
+
+    for payload, qty in (("BBN-KNB-1", 10), ("BBN-BUT-1", 10)):
+        printer = await printer_factory()
+        await archive_factory(printer_id=printer.id)
+        await scan_harvest_bin(db_session, DEVICE_A, payload, printer_id_hint=printer.id)
+        await db_session.commit()
+        await scan_harvest_bin(db_session, DEVICE_A, payload, quantity=qty)
+        await db_session.commit()
+        await apply_station_scan(db_session, HARVEST, DEVICE_A)
+        await db_session.commit()
+        await scan_bin_fit_check(db_session, payload, qty)
+        await db_session.commit()
+        await scan_bin_wip(db_session, payload)
+        await db_session.commit()
+
+
 class TestPartLocationPipeline:
     """§ item→location: scan a part, then a location QR. TOP parts must clear
     Support → Overhang → Hot Air before Ready-for-Production or WIP; BOT (and
@@ -1080,6 +1100,7 @@ class TestPartLocationPipeline:
 
     @pytest.mark.asyncio
     async def test_top_finishing_in_order_then_wip(self, db_session, printer_factory, archive_factory):
+        await _knb_and_but_on_line(db_session, printer_factory, archive_factory)
         part = await _enroll_qc_linked_part(db_session, printer_factory, archive_factory, "TOP")
 
         for slug in (
@@ -1096,6 +1117,8 @@ class TestPartLocationPipeline:
 
         assert wip.result is LocationScanResult.RECORDED
         events = [e.action for e in await list_part_events(db_session, part.id)]
+        # The TOP → WIP commit also assigns a kit (Wave 1): the ``kit_assigned``
+        # event is written alongside the ``wip`` event on this same scan.
         assert events == [
             "enrolled",
             "fit_checked",
@@ -1103,6 +1126,7 @@ class TestPartLocationPipeline:
             "overhang_removed",
             "hot_air_removed",
             "wip",
+            "kit_assigned",
         ]
 
     @pytest.mark.asyncio
@@ -1167,6 +1191,7 @@ class TestPartLocationPipeline:
 
     @pytest.mark.asyncio
     async def test_finishing_after_wip_is_still_refused(self, db_session, printer_factory, archive_factory):
+        await _knb_and_but_on_line(db_session, printer_factory, archive_factory)
         part = await _enroll_qc_linked_part(db_session, printer_factory, archive_factory, "TOP")
         for slug in (
             SUPPORT_REMOVAL_LOCATION_SLUG,

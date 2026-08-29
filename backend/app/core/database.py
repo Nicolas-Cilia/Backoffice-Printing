@@ -1218,6 +1218,53 @@ async def run_migrations(conn):
         "CREATE INDEX IF NOT EXISTS ix_floor_labeled_parts_section_part_id ON floor_labeled_parts(section_part_id)",
     )
 
+    # Part Assembly Linking (Wave 1): the KNB/BUT bin fills a TOP part consumed
+    # a kit unit from when it entered Production WIP, plus when that happened.
+    # ON DELETE SET NULL mirrors the other floor FKs — a deleted bin fill
+    # degrades the link to "no kit recorded" rather than dropping part history.
+    await _safe_execute(
+        conn,
+        "ALTER TABLE floor_labeled_parts ADD COLUMN kit_knob_batch_id INTEGER REFERENCES floor_bin_batches(id) ON DELETE SET NULL",
+    )
+    await _safe_execute(
+        conn,
+        "ALTER TABLE floor_labeled_parts ADD COLUMN kit_button_batch_id INTEGER REFERENCES floor_bin_batches(id) ON DELETE SET NULL",
+    )
+    await _safe_execute(conn, "ALTER TABLE floor_labeled_parts ADD COLUMN kit_assigned_at DATETIME")
+
+    # Bin Part history: archive a fill without deleting it. Archived rows are
+    # skipped by the "current fill" lookup so the physical tote can be reused.
+    await _safe_execute(conn, "ALTER TABLE floor_bin_batches ADD COLUMN archived_at DATETIME")
+
+    # Part Assembly Linking (Wave 2): the product-unit table binding one scanned
+    # product serial to a TOP + BOT housing pair. Brand-new table, so create_all
+    # already builds it on a fresh DB; this CREATE TABLE IF NOT EXISTS covers
+    # existing installs. serial_code / top_part_id / bottom_part_id are each
+    # unique — the "no double-link" and "one serial = one unit" guards at the
+    # schema level. RESTRICT on the part FKs mirrors floor_part_events: a part
+    # on a unit cannot be deleted; unlink is the sanctioned removal.
+    await _safe_execute(
+        conn,
+        """
+        CREATE TABLE IF NOT EXISTS floor_product_units (
+            id INTEGER PRIMARY KEY,
+            serial_code VARCHAR(32) NOT NULL UNIQUE,
+            top_part_id INTEGER NOT NULL UNIQUE REFERENCES floor_labeled_parts(id) ON DELETE RESTRICT,
+            bottom_part_id INTEGER NOT NULL UNIQUE REFERENCES floor_labeled_parts(id) ON DELETE RESTRICT,
+            linked_at DATETIME DEFAULT CURRENT_TIMESTAMP
+        )
+        """,
+    )
+    await _safe_execute(
+        conn, "CREATE INDEX IF NOT EXISTS ix_floor_product_units_serial_code ON floor_product_units(serial_code)"
+    )
+    await _safe_execute(
+        conn, "CREATE INDEX IF NOT EXISTS ix_floor_product_units_top_part_id ON floor_product_units(top_part_id)"
+    )
+    await _safe_execute(
+        conn, "CREATE INDEX IF NOT EXISTS ix_floor_product_units_bottom_part_id ON floor_product_units(bottom_part_id)"
+    )
+
     # Migration: Add parent_run_id column to pipeline_runs (#1425 PR C).
     # Links a retry-failed run back to its parent so the dashboard can show
     # "Retry of run #N" inline. Idempotent on both SQLite and Postgres.

@@ -7,10 +7,11 @@ from dataclasses import dataclass
 from datetime import datetime
 from enum import StrEnum
 
-from sqlalchemy import select
+from sqlalchemy import delete, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from backend.app.models.floor_bin import FloorBinBatch, FloorBinBatchEvent
+from backend.app.models.floor_part import FloorLabeledPart, FloorPartEvent
 from backend.app.models.floor_session import FloorStationSession
 from backend.app.models.printer import Printer
 from backend.app.services.floor_codes import station_for_slug
@@ -39,7 +40,15 @@ BIN_LOCATION_SLUGS = frozenset(
 )
 BIN_COUNT = 3
 BIN_FREE_STATUSES = frozenset(("empty", "empty_override", "unlinked"))
-BIN_NON_STATUS_EVENTS = frozenset(("quantity_override",))
+# Events that describe a fill's remaining count rather than its workflow
+# status. ``consumed`` (a kit unit pulled at TOP → WIP) and ``floor_adjust``
+# (a manual floor subtract) join ``quantity_override`` here so a bin's derived
+# status stays ``wip`` while these are appended, and so ``_remaining_quantity``
+# reads their authoritative ``remaining_quantity`` like an override.
+BIN_NON_STATUS_EVENTS = frozenset(("quantity_override", "consumed", "floor_adjust"))
+# The subset of non-status events that carry an authoritative
+# ``remaining_quantity`` in their details (newest wins).
+BIN_REMAINING_QUANTITY_EVENTS = frozenset(("quantity_override", "consumed", "floor_adjust"))
 _BIN_PATTERN = re.compile(r"^BBN-(KNB|BUT)-([1-3])$")
 
 
@@ -84,6 +93,13 @@ class BinScanResult(StrEnum):
     QUANTITY_OVERRIDDEN = "quantity_overridden"
     UNLINKED = "unlinked"
     DISCARDED = "discarded"
+    # Part Assembly Linking (Wave 1).
+    # A second fill of a type refused because one is already on the line.
+    WIP_TYPE_OCCUPIED = "wip_type_occupied"
+    # A floor remaining subtract succeeded / was refused because the fill is
+    # not In WIP with remaining left.
+    ADJUSTED = "adjusted"
+    ADJUST_REQUIRES_WIP = "adjust_requires_wip"
 
 
 @dataclass(frozen=True)
@@ -107,6 +123,7 @@ class BinBatchInfo:
     remaining_quantity: int
     status: str
     harvested_at: datetime
+    archived_at: datetime | None = None
 
 
 @dataclass(frozen=True)
@@ -133,6 +150,9 @@ class BinScanOutcome:
     session: FloorStationSession | None = None
     blocking: FloorStationSession | None = None
     archive: LastPrint | None = None
+    # True when this action left the fill at 0 remaining. The screen shows an
+    # empty-bin prompt to scan it off the line — no 5→1 countdown (Wave 1).
+    empty_bin_warning: bool = False
 
 
 @dataclass(frozen=True)
@@ -205,7 +225,7 @@ async def _remaining_quantity(db: AsyncSession, batch: FloorBinBatch) -> int:
             return 0
         if action in ("unlinked", "relinked"):
             continue
-        if action == "quantity_override" and isinstance(details, dict):
+        if action in BIN_REMAINING_QUANTITY_EVENTS and isinstance(details, dict):
             value = details.get("remaining_quantity")
             if isinstance(value, int):
                 return max(0, value)
@@ -233,9 +253,16 @@ async def _qc_passed_quantity(db: AsyncSession, batch_id: int) -> int | None:
 
 
 async def _latest_batch(db: AsyncSession, payload: str) -> FloorBinBatch | None:
+    """Newest non-archived fill for a physical bin QR.
+
+    Archived fills stay in Part history but no longer block reuse of the tote.
+    """
     result = await db.execute(
         select(FloorBinBatch)
-        .where(FloorBinBatch.bin_payload == payload.strip().upper())
+        .where(
+            FloorBinBatch.bin_payload == payload.strip().upper(),
+            FloorBinBatch.archived_at.is_(None),
+        )
         .order_by(FloorBinBatch.harvested_at.desc(), FloorBinBatch.id.desc())
         .limit(1)
     )
@@ -259,6 +286,7 @@ async def _batch_info(db: AsyncSession, batch: FloorBinBatch, info: BinInfo | No
         remaining_quantity=await _remaining_quantity(db, batch),
         status=status,
         harvested_at=batch.harvested_at,
+        archived_at=batch.archived_at,
     )
 
 
@@ -479,6 +507,13 @@ async def scan_bin_wip(db: AsyncSession, payload: str) -> BinScanOutcome:
         return BinScanOutcome(result=BinScanResult.ALREADY_WIP, bin=outcome.bin, batch=outcome.batch)
     if outcome.batch.status not in ("visual_qc_passed", "ready_for_production"):
         return BinScanOutcome(result=BinScanResult.QC_REQUIRED, bin=outcome.bin, batch=outcome.batch)
+    # One bin on the line per type (§ Part Assembly Linking, Wave 1): at most
+    # one KNB and one BUT fill may be In WIP at a time — including one sitting
+    # at 0 remaining until it is emptied off the line. A second fill of the
+    # same type is refused until the first is emptied.
+    occupied = await find_wip_batch(db, outcome.batch.part_code, exclude_batch_id=outcome.batch.id)
+    if occupied is not None:
+        return BinScanOutcome(result=BinScanResult.WIP_TYPE_OCCUPIED, bin=outcome.bin, batch=outcome.batch)
     db.add(FloorBinBatchEvent(batch_id=outcome.batch.id, action="wip", details={"source": "floor_scan"}))
     await db.flush()
     batch = await db.get(FloorBinBatch, outcome.batch.id)
@@ -562,7 +597,177 @@ async def list_bin_batch_events(db: AsyncSession, batch_id: int) -> list[BinBatc
         .where(FloorBinBatchEvent.batch_id == batch_id)
         .order_by(FloorBinBatchEvent.occurred_at.asc(), FloorBinBatchEvent.id.asc())
     )
-    return [BinBatchEventInfo(event.id, event.action, event.details, event.occurred_at) for event in result.scalars()]
+    events = [BinBatchEventInfo(event.id, event.action, event.details, event.occurred_at) for event in result.scalars()]
+    return await _attribute_consumed_events(db, batch_id, events)
+
+
+async def _attribute_consumed_events(
+    db: AsyncSession,
+    batch_id: int,
+    events: list[BinBatchEventInfo],
+) -> list[BinBatchEventInfo]:
+    """Fill in part_sticker on older ``consumed`` events that predate attribution.
+
+    New kit assign/reassign writes write ``part_sticker`` onto the bin event.
+    Older rows only have remaining_quantity — correlate them with the part's
+    ``kit_assigned`` / ``kit_reassigned`` events that mention this batch so the
+    history line can still say "Consumed by BBD-…".
+    """
+    needs = [event for event in events if event.action == "consumed" and not (event.details or {}).get("part_sticker")]
+    if not needs:
+        return events
+
+    rows = (
+        await db.execute(
+            select(FloorPartEvent, FloorLabeledPart.sticker_code)
+            .join(FloorLabeledPart, FloorLabeledPart.id == FloorPartEvent.part_id)
+            .where(FloorPartEvent.action.in_(("kit_assigned", "kit_reassigned")))
+            .order_by(FloorPartEvent.occurred_at.asc(), FloorPartEvent.id.asc())
+        )
+    ).all()
+
+    candidates: list[tuple[datetime, int, str]] = []
+    for part_event, sticker in rows:
+        details = part_event.details if isinstance(part_event.details, dict) else {}
+        mentions = False
+        if part_event.action == "kit_assigned":
+            mentions = details.get("kit_knob_batch_id") == batch_id or details.get("kit_button_batch_id") == batch_id
+        elif part_event.action == "kit_reassigned":
+            mentions = details.get("new_batch_id") == batch_id
+        if mentions and isinstance(sticker, str) and sticker.strip():
+            candidates.append((part_event.occurred_at, part_event.part_id, sticker.strip()))
+
+    if not candidates:
+        # Fallback: a part that still points at this fill as its kit.
+        part_rows = (
+            (
+                await db.execute(
+                    select(FloorLabeledPart).where(
+                        (FloorLabeledPart.kit_knob_batch_id == batch_id)
+                        | (FloorLabeledPart.kit_button_batch_id == batch_id)
+                    )
+                )
+            )
+            .scalars()
+            .all()
+        )
+        if len(part_rows) == 1:
+            only = part_rows[0]
+            return [
+                BinBatchEventInfo(
+                    event.id,
+                    event.action,
+                    {
+                        **(event.details or {}),
+                        "part_id": only.id,
+                        "part_sticker": only.sticker_code,
+                    }
+                    if event.action == "consumed" and not (event.details or {}).get("part_sticker")
+                    else event.details,
+                    event.occurred_at,
+                )
+                for event in events
+            ]
+        return events
+
+    used: set[int] = set()
+    enriched: list[BinBatchEventInfo] = []
+    for event in events:
+        if event.action != "consumed" or (event.details or {}).get("part_sticker"):
+            enriched.append(event)
+            continue
+        best_i: int | None = None
+        best_delta: float | None = None
+        for index, (occurred_at, _part_id, _sticker) in enumerate(candidates):
+            if index in used:
+                continue
+            delta = abs((occurred_at - event.occurred_at).total_seconds())
+            if best_delta is None or delta < best_delta:
+                best_delta = delta
+                best_i = index
+        if best_i is None:
+            enriched.append(event)
+            continue
+        used.add(best_i)
+        _occurred, part_id, sticker = candidates[best_i]
+        details = dict(event.details or {})
+        details["part_id"] = part_id
+        details["part_sticker"] = sticker
+        enriched.append(BinBatchEventInfo(event.id, event.action, details, event.occurred_at))
+    return enriched
+
+
+def _bin_fill_is_active(status: str | None, archived_at: datetime | None) -> bool:
+    """True when the fill still occupies the physical tote (not free, not archived)."""
+    if archived_at is not None:
+        return False
+    return (status or "harvested") not in BIN_FREE_STATUSES
+
+
+def _bin_fill_blocks_archive(
+    *,
+    status: str | None,
+    remaining_quantity: int,
+    archive_id: int | None,
+    archived_at: datetime | None,
+) -> bool:
+    """Refuse archive while the fill still has stock and is linked to a print.
+
+    Deplete (remaining 0) or unlink first; restore is always allowed.
+    """
+    if archived_at is not None:
+        return False
+    if remaining_quantity <= 0:
+        return False
+    return archive_id is not None and (status or "harvested") != "unlinked"
+
+
+async def archive_bin_batch(db: AsyncSession, batch_id: int, *, archived: bool) -> str:
+    """Archive or restore a harvested fill.
+
+    Returns ``"ok"``, ``"not_found"``, or ``"in_use"`` (still stocked + print-linked).
+    Archiving frees the physical tote for reuse.
+    """
+    batch = await db.get(FloorBinBatch, batch_id)
+    if batch is None:
+        return "not_found"
+    if archived:
+        status = await _latest_bin_event(db, batch.id) or "harvested"
+        remaining = await _remaining_quantity(db, batch)
+        if _bin_fill_blocks_archive(
+            status=status,
+            remaining_quantity=remaining,
+            archive_id=batch.archive_id,
+            archived_at=batch.archived_at,
+        ):
+            return "in_use"
+        batch.archived_at = datetime.now()
+    else:
+        batch.archived_at = None
+    await db.flush()
+    return "ok"
+
+
+async def delete_bin_batch(db: AsyncSession, batch_id: int) -> str:
+    """Permanently remove one harvested fill and its audit history.
+
+    Active (still-linked) fills must be archived first — refuse with
+    ``"active"``. Returns ``"deleted"``, ``"not_found"``, or ``"active"``.
+
+    Kit references on TOP parts (``kit_knob_batch_id`` / ``kit_button_batch_id``)
+    are ``ON DELETE SET NULL`` at the DB, so deleting a fill clears those
+    pointers rather than cascading into part history.
+    """
+    batch = await db.get(FloorBinBatch, batch_id)
+    if batch is None:
+        return "not_found"
+    status = await _latest_bin_event(db, batch.id) or "harvested"
+    if _bin_fill_is_active(status, batch.archived_at):
+        return "active"
+    await db.execute(delete(FloorBinBatchEvent).where(FloorBinBatchEvent.batch_id == batch_id))
+    await db.delete(batch)
+    await db.flush()
+    return "deleted"
 
 
 async def override_bin_quantity(db: AsyncSession, payload: str, remaining_quantity: int) -> BinScanOutcome:
@@ -739,6 +944,179 @@ async def relink_bin(db: AsyncSession, batch_id: int, archive_id: int) -> BinSca
     return BinScanOutcome(result=BinScanResult.RECORDED, bin=info, batch=await _batch_info(db, batch, info))
 
 
+# ── Part Assembly Linking (Wave 1): kit consume / restore / floor adjust ──
+
+
+async def find_wip_batch(
+    db: AsyncSession,
+    part_code: str,
+    *,
+    exclude_batch_id: int | None = None,
+    require_remaining: bool = False,
+) -> FloorBinBatch | None:
+    """The single bin fill of ``part_code`` currently In WIP, if any.
+
+    Scans the (few) physical bins of that type and returns the latest fill
+    whose derived status is ``wip``. ``require_remaining`` narrows that to a
+    fill with remaining > 0 — used by kit consume, which must refuse rather
+    than consume from an already-empty line. ``exclude_batch_id`` skips a
+    specific fill, used by the one-bin-per-type guard so a fill does not treat
+    itself as the blocker.
+    """
+    normalized = part_code.strip().upper()
+    if normalized not in BIN_PART_CODES:
+        return None
+    for bin_number in range(1, BIN_COUNT + 1):
+        payload = bin_payload(normalized, bin_number)
+        batch = await _latest_batch(db, payload)
+        if batch is None or (exclude_batch_id is not None and batch.id == exclude_batch_id):
+            continue
+        status = await _latest_bin_event(db, batch.id)
+        if status != "wip":
+            continue
+        if require_remaining and await _remaining_quantity(db, batch) <= 0:
+            continue
+        return batch
+    return None
+
+
+async def consume_from_batch(
+    db: AsyncSession,
+    batch: FloorBinBatch,
+    *,
+    source: str,
+    amount: int = 1,
+    part_id: int | None = None,
+    part_sticker: str | None = None,
+) -> int:
+    """Pull ``amount`` from a fill by appending a ``consumed`` event.
+
+    Append-only: never mutates ``batch.quantity``. Returns the new remaining
+    (floored at 0). The ``consumed`` event carries the authoritative
+    ``remaining_quantity`` so ``_remaining_quantity`` reads it back like an
+    override, and is a non-status event so the fill stays In WIP.
+
+    ``part_id`` / ``part_sticker`` record the consuming TOP identity so bin
+    history can attribute a fill's ``consumed`` events to the part that pulled
+    them (e.g. "Consumed · BBD-000000"). Both are optional — old events without
+    them stay a bare "Consumed".
+    """
+    remaining = await _remaining_quantity(db, batch)
+    new_remaining = max(0, remaining - amount)
+    details: dict = {"source": source, "consumed": amount, "remaining_quantity": new_remaining}
+    if part_id is not None:
+        details["part_id"] = part_id
+    if part_sticker is not None:
+        details["part_sticker"] = part_sticker
+    db.add(FloorBinBatchEvent(batch_id=batch.id, action="consumed", details=details))
+    await db.flush()
+    return new_remaining
+
+
+async def restore_to_batch(db: AsyncSession, batch: FloorBinBatch, *, source: str, amount: int = 1) -> int:
+    """Return ``amount`` to a fill (the inverse of :func:`consume_from_batch`).
+
+    Recorded as a ``floor_adjust`` event carrying the new remaining, so it wins
+    in ``_remaining_quantity`` and keeps the fill's status unchanged.
+    """
+    remaining = await _remaining_quantity(db, batch)
+    new_remaining = remaining + amount
+    db.add(
+        FloorBinBatchEvent(
+            batch_id=batch.id,
+            action="floor_adjust",
+            details={"source": source, "restored": amount, "remaining_quantity": new_remaining},
+        )
+    )
+    await db.flush()
+    return new_remaining
+
+
+async def _batch_eligible_for_reassign(db: AsyncSession, batch: FloorBinBatch) -> bool:
+    """Eligible = not archived, status In WIP or Ready-for-Production, remaining > 0."""
+    if batch.archived_at is not None:
+        return False
+    status = await _latest_bin_event(db, batch.id)
+    if status not in ("wip", "ready_for_production"):
+        return False
+    return await _remaining_quantity(db, batch) > 0
+
+
+async def find_reassign_target(db: AsyncSession, payload: str) -> FloorBinBatch | None:
+    """The latest fill on ``payload`` eligible to receive a reassigned kit.
+
+    Eligible = status In WIP or Ready-for-Production, with remaining > 0.
+    """
+    parsed = parse_bin_payload(payload)
+    if parsed is None:
+        return None
+    batch = await _latest_batch(db, bin_payload(*parsed))
+    if batch is None:
+        return None
+    if not await _batch_eligible_for_reassign(db, batch):
+        return None
+    return batch
+
+
+async def find_reassign_target_by_id(db: AsyncSession, batch_id: int, *, part_code: str) -> FloorBinBatch | None:
+    """A specific harvest fill eligible to receive a reassigned kit slot.
+
+    Same eligibility as :func:`find_reassign_target`, but keyed by batch id so
+    the office Serials UI can pick any past or current fill of that type — not
+    only the latest fill on a scanned bin payload.
+    """
+    normalized = part_code.strip().upper()
+    if normalized not in BIN_PART_CODES:
+        return None
+    batch = await db.get(FloorBinBatch, batch_id)
+    if batch is None or batch.part_code != normalized:
+        return None
+    if not await _batch_eligible_for_reassign(db, batch):
+        return None
+    return batch
+
+
+async def adjust_bin_remaining(db: AsyncSession, payload: str, subtract: int) -> BinScanOutcome:
+    """Subtract N from an In-WIP fill's remaining (floor floor-adjust flow).
+
+    ``remaining = max(0, current - N)``. Requires the fill to be In WIP with
+    remaining > 0 (the office set-to-N override keeps its own
+    ``override_bin_quantity`` path). Recorded as a ``floor_adjust`` event; if
+    it lands on 0 the outcome carries an empty-bin warning so the screen can
+    prompt to scan the bin off the line — no countdown.
+    """
+    info = await _resolve_bin(db, payload)
+    if info is None:
+        return BinScanOutcome(result=BinScanResult.INVALID_CODE)
+    batch, status = await _latest_batch_with_status(db, info)
+    if batch is None or status in BIN_FREE_STATUSES:
+        return BinScanOutcome(result=BinScanResult.NO_BATCH, bin=info)
+    if status != "wip":
+        return BinScanOutcome(
+            result=BinScanResult.ADJUST_REQUIRES_WIP, bin=info, batch=await _batch_info(db, batch, info)
+        )
+    remaining = await _remaining_quantity(db, batch)
+    if remaining <= 0:
+        return BinScanOutcome(
+            result=BinScanResult.ADJUST_REQUIRES_WIP, bin=info, batch=await _batch_info(db, batch, info)
+        )
+    new_remaining = max(0, remaining - max(1, subtract))
+    db.add(
+        FloorBinBatchEvent(
+            batch_id=batch.id,
+            action="floor_adjust",
+            details={"source": "floor_adjust", "subtracted": max(1, subtract), "remaining_quantity": new_remaining},
+        )
+    )
+    await db.flush()
+    return BinScanOutcome(
+        result=BinScanResult.ADJUSTED,
+        bin=info,
+        batch=await _batch_info(db, batch, info),
+        empty_bin_warning=new_remaining == 0,
+    )
+
+
 __all__ = [
     "BIN_PREFIX",
     "BIN_PART_CODES",
@@ -768,8 +1146,16 @@ __all__ = [
     "list_floor_bin_history",
     "list_bin_batch_events",
     "list_bin_job_candidates",
+    "delete_bin_batch",
+    "archive_bin_batch",
     "relink_bin",
     "override_bin_quantity",
     "unlink_bin",
     "discard_bin",
+    "find_wip_batch",
+    "consume_from_batch",
+    "restore_to_batch",
+    "find_reassign_target",
+    "find_reassign_target_by_id",
+    "adjust_bin_remaining",
 ]

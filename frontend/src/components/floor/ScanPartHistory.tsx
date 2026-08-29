@@ -3,24 +3,26 @@ import { useTranslation } from 'react-i18next';
 import { useQuery } from '@tanstack/react-query';
 import { Clock3, Loader2 } from 'lucide-react';
 import { api } from '../../api/client';
-import { formatFloorDate } from '../../utils/floorScan';
-import { buildPartTimeline, partEventDotClass, partEventLabel } from '../../utils/floorPartHistory';
+import { buildPartTimeline } from '../../utils/floorPartHistory';
+import { PartHistoryTimeline } from './PartHistoryTimeline';
 
-type ScanPartHistoryProps = {
+export function ScanPartHistory({
+  partId,
+  partCode,
+  labeledAt,
+  archiveId,
+}: {
   partId: number;
   partCode: string | null;
   labeledAt: string;
   archiveId: number | null;
-};
-
-/** Read-only part timeline for the floor scan kiosk — no edit controls. */
-export function ScanPartHistory({ partId, partCode, labeledAt, archiveId }: ScanPartHistoryProps) {
+}) {
   const { t } = useTranslation();
   const scrollRef = useRef<HTMLDivElement>(null);
   const eventsQuery = useQuery({
     queryKey: ['floor-inventory-part-events', partId],
     queryFn: () => api.getFloorInventoryPartEvents(partId),
-    staleTime: 30_000,
+    staleTime: 15_000,
   });
 
   const timeline = useMemo(
@@ -34,18 +36,15 @@ export function ScanPartHistory({ partId, partCode, labeledAt, archiveId }: Scan
 
   useEffect(() => {
     const element = scrollRef.current;
-    if (!element || timeline.length === 0) return;
+    if (!element) return;
     element.scrollTop = element.scrollHeight;
   }, [timeline.length, partId]);
 
   return (
-    <section
-      className="mt-8 w-full max-w-lg text-left"
-      aria-label={t('floor.scanPartHistoryLabel', 'Part history')}
-    >
-      <div className="flex items-center justify-center gap-2">
-        <Clock3 className="h-5 w-5 text-bambu-gray" aria-hidden="true" />
-        <h3 className="text-lg font-medium text-white">
+    <section className="mt-4 w-full max-w-md text-left" aria-label={t('floor.scanPartHistoryLabel', 'Part history')}>
+      <div className="mb-2 flex items-center gap-2">
+        <Clock3 className="h-4 w-4 text-bambu-gray" aria-hidden="true" />
+        <h3 className="text-sm font-medium text-white">
           {t('floor.scanPartHistoryHeading', 'History')}
         </h3>
       </div>
@@ -66,22 +65,7 @@ export function ScanPartHistory({ partId, partCode, labeledAt, archiveId }: Scan
                 aria-hidden="true"
                 className="absolute bottom-2 left-[3px] top-2 w-0.5 bg-bambu-dark-tertiary"
               />
-              <ol className="space-y-3">
-                {timeline.map((event) => (
-                  <li key={event.id} className="relative pl-7">
-                    <span
-                      className={`absolute left-1 top-2 z-10 h-2 w-2 -translate-x-1/2 rounded-full ${partEventDotClass(event.action)}`}
-                    />
-                    <p className="text-base text-white">{partEventLabel(event, partCode, t)}</p>
-                    <p className="text-sm text-bambu-gray">
-                      {formatFloorDate(event.occurred_at, {
-                        dateStyle: 'medium',
-                        timeStyle: 'short',
-                      })}
-                    </p>
-                  </li>
-                ))}
-              </ol>
+              <PartHistoryTimeline events={timeline} partCode={partCode} />
             </div>
           </div>
         )}

@@ -1147,7 +1147,7 @@ describe('FloorScanPage (Phase 1b sessions)', () => {
         expect(screen.queryByText('Scan this bin again for visual QC')).not.toBeInTheDocument();
       });
 
-      it('does not re-open the QC quantity form for a bin already past QC', async () => {
+      it('does not re-open the QC quantity form for a bin already past QC — it closes to idle', async () => {
         mockNoSession();
         server.use(
           http.post('/api/v1/floor/bins/resolve', () =>
@@ -1181,10 +1181,13 @@ describe('FloorScanPage (Phase 1b sessions)', () => {
         await scan('BBN-BUT-1');
         await screen.findByText('In WIP');
 
+        // Re-scanning the same In-WIP bin dismisses its lookup back to idle
+        // (scan-page auto-dismiss) rather than re-resolving it or, crucially,
+        // re-opening the QC quantity form — only a not-yet-QC'd bin advances.
         await scan('BBN-BUT-1');
 
         expect(screen.queryByText('How many parts passed visual QC?')).not.toBeInTheDocument();
-        expect(await screen.findByText('In WIP')).toBeInTheDocument();
+        expect(await screen.findByText('Scan a code')).toBeInTheDocument();
       });
 
       it('names Rework specifically as unsupported for a bin, rather than a generic redirect', async () => {
@@ -1853,6 +1856,140 @@ describe('FloorScanPage (Phase 1b sessions)', () => {
       });
     });
 
+    describe('bin scans from the printer info page (§5.6 entry #2)', () => {
+      const HARVEST_INFO = {
+        id: 12,
+        payload: 'BBP-12',
+        name: 'Bench A',
+        model: 'X1C',
+        location: 'Line 1',
+        serial_number: '00M09A000000001',
+        is_active: true,
+        awaiting_plate_clear: true,
+        total_print_hours: 100,
+        last_print: {
+          archive_id: 88,
+          print_name: 'knob_plate',
+          completed_at: '2026-08-24T14:00:00',
+          quantity: 24,
+          part_code: 'KNB',
+          has_labeled_parts: false,
+        },
+        maintenance_due_count: 0,
+        maintenance_warning_count: 0,
+        live: null,
+      };
+
+      const BIN_BATCH = {
+        id: 7,
+        payload: 'BBN-KNB-1',
+        bin_number: 1,
+        printer_id: 12,
+        printer_name: 'Bench A',
+        archive_id: 88,
+        print_name: 'knob_plate',
+        part_code: 'KNB' as const,
+        quantity: 24,
+        qc_passed_quantity: null,
+        remaining_quantity: 24,
+        status: 'harvested',
+        harvested_at: '2026-08-24T15:00:00',
+      };
+
+      function mockHarvestInfo() {
+        server.use(
+          http.get('/api/v1/floor/printers/:payload/info', () => HttpResponse.json(HARVEST_INFO)),
+        );
+      }
+
+      it('returns to the printer info page with a Linked line after quantity', async () => {
+        mockNoSession();
+        mockHarvestInfo();
+        const user = userEvent.setup();
+        render(<FloorScanPage />);
+        await screen.findByText('Scan a code');
+        await scan('BBP-12');
+        await screen.findByText('Bench A');
+
+        mockHarvestBinScan({
+          result: 'ready_for_quantity',
+          bin: { payload: 'BBN-KNB-1', bin_number: 1, part_code: 'KNB', part_name: 'Knob bin' },
+          batch: null,
+          printer: { id: 12, name: 'Bench A' },
+          archive: { id: 88, print_name: 'knob_plate', completed_at: null, quantity: 24, part_code: 'KNB' },
+          session: HARVEST_SESSION,
+          blocking: null,
+        });
+        await scan('BBN-KNB-1');
+        expect(await screen.findByText('How many parts were harvested?')).toBeInTheDocument();
+
+        mockHarvestBinScan({
+          result: 'recorded',
+          bin: { payload: 'BBN-KNB-1', bin_number: 1, part_code: 'KNB', part_name: 'Knob bin' },
+          batch: BIN_BATCH,
+          printer: { id: 12, name: 'Bench A' },
+          archive: { id: 88, print_name: 'knob_plate', completed_at: null, quantity: 24, part_code: 'KNB' },
+          session: HARVEST_SESSION,
+          blocking: null,
+        });
+        await user.type(screen.getByLabelText('How many parts were harvested?'), '24');
+        await user.click(screen.getByRole('button', { name: 'Save quantity' }));
+
+        // Stays on the info page like a part link — not the Harvest station
+        // screen that would force a separate close-out.
+        expect(await screen.findByText('Linked · 24 parts · knob_plate')).toBeInTheDocument();
+        expect(screen.getByText('Bench A')).toBeInTheDocument();
+        expect(screen.getByRole('button', { name: 'Done' })).toBeInTheDocument();
+        expect(screen.queryByText('Harvest')).not.toBeInTheDocument();
+        expect(screen.queryByRole('button', { name: 'Close station' })).not.toBeInTheDocument();
+      });
+
+      it('returns to idle scan after Done when a bin opened harvest', async () => {
+        mockNoSession();
+        mockHarvestInfo();
+        server.use(
+          http.delete('/api/v1/floor/session', () => HttpResponse.json(HARVEST_SESSION)),
+        );
+        const user = userEvent.setup();
+        render(<FloorScanPage />);
+        await screen.findByText('Scan a code');
+        await scan('BBP-12');
+        await screen.findByText('Bench A');
+
+        mockHarvestBinScan({
+          result: 'ready_for_quantity',
+          bin: { payload: 'BBN-KNB-1', bin_number: 1, part_code: 'KNB', part_name: 'Knob bin' },
+          batch: null,
+          printer: { id: 12, name: 'Bench A' },
+          archive: { id: 88, print_name: 'knob_plate', completed_at: null, quantity: 24, part_code: 'KNB' },
+          session: HARVEST_SESSION,
+          blocking: null,
+        });
+        await scan('BBN-KNB-1');
+        await screen.findByText('How many parts were harvested?');
+
+        mockHarvestBinScan({
+          result: 'recorded',
+          bin: { payload: 'BBN-KNB-1', bin_number: 1, part_code: 'KNB', part_name: 'Knob bin' },
+          batch: BIN_BATCH,
+          printer: { id: 12, name: 'Bench A' },
+          archive: { id: 88, print_name: 'knob_plate', completed_at: null, quantity: 24, part_code: 'KNB' },
+          session: HARVEST_SESSION,
+          blocking: null,
+        });
+        await user.type(screen.getByLabelText('How many parts were harvested?'), '24');
+        await user.click(screen.getByRole('button', { name: 'Save quantity' }));
+        await screen.findByText('Linked · 24 parts · knob_plate');
+
+        await user.click(await screen.findByRole('button', { name: 'Done' }));
+
+        expect(await screen.findByText('Scan a code')).toBeInTheDocument();
+        expect(screen.queryByText('Harvest')).not.toBeInTheDocument();
+        expect(screen.queryByRole('button', { name: 'Close station' })).not.toBeInTheDocument();
+        expect(screen.getByLabelText('Scan field')).toHaveFocus();
+      });
+    });
+
     describe('closing harvest reports a summary', () => {
       it('reports bins collected instead of zero parts for a bin-only harvest', async () => {
         // KNB/BUT bins are tracked separately from stickered parts — a
@@ -2129,19 +2266,24 @@ describe('FloorScanPage (Phase 1b sessions)', () => {
       mockNoSession();
       mockFitCheckScan({ result: 'recorded', part: RECORDED_PART, printer: RECORDED_PRINTER, archive: RECORDED_ARCHIVE });
       vi.useFakeTimers({ shouldAdvanceTime: true });
-      render(<FloorScanPage />);
-      await screen.findByText('Scan a code');
-      await scan('BBD-000042');
-      await screen.findByText('Scan a location');
-      await scan('BBS-initial-qc-pass');
-      await screen.findByText('Fit Check Pass');
+      try {
+        render(<FloorScanPage />);
+        await screen.findByText('Scan a code');
+        await scan('BBD-000042');
+        await screen.findByText('Scan a location');
+        await scan('BBS-initial-qc-pass');
+        await screen.findByText('Fit Check Pass');
 
-      await act(async () => {
-        vi.advanceTimersByTime(3100);
-      });
+        act(() => {
+          vi.advanceTimersByTime(3100);
+        });
 
-      expect(await screen.findByText('Scan a code')).toBeInTheDocument();
-      vi.useRealTimers();
+        // Synchronous assert after the flash timer — findByText + fake timers
+        // race under parallel load and flake (see harvest plate-closed flash test).
+        expect(screen.getByText('Scan a code')).toBeInTheDocument();
+      } finally {
+        vi.useRealTimers();
+      }
     });
 
     it('rejects a location scan with no part pending, specifically rather than as an unknown code', async () => {
@@ -2431,6 +2573,23 @@ describe('FloorScanPage (Phase 1b sessions)', () => {
       expect(await screen.findByText('Finish Support, Overhang and Hot Air removal first')).toBeInTheDocument();
     });
 
+    it('refuses a shipped housing at a location until its serial is unlinked', async () => {
+      mockNoSession();
+      mockInventoryPart('TOP');
+      mockPartLocation({ result: 'shipped', part: null, printer: null, archive: null });
+      render(<FloorScanPage />);
+      await screen.findByText('Scan a code');
+      await scan('BBD-000042');
+      await screen.findByText('Scan a location');
+
+      await scan('BBS-production-wip');
+
+      expect(
+        await screen.findByText('Part is shipped on a product serial — unlink it first'),
+      ).toBeInTheDocument();
+      expect(floorSound.playScanErrorTone).toHaveBeenCalled();
+    });
+
     it('refuses the Empty Bin location for a pending part without calling the API', async () => {
       mockNoSession();
       mockInventoryPart('BOT');
@@ -2536,6 +2695,520 @@ describe('FloorScanPage (Phase 1b sessions)', () => {
 
       expect(await screen.findByText("This location isn't available for bins")).toBeInTheDocument();
       expect(captured.body).toBeNull();
+    });
+  });
+
+  describe('kit reassign on a TOP lookup (Part Assembly Linking, Wave 1)', () => {
+    const KIT_PART = {
+      id: 42,
+      sticker_code: 'BBD-000042',
+      printer_id: 12,
+      printer_name: 'P1S-3',
+      archive_id: 88,
+      part_code: 'TOP',
+      section_part_id: null,
+      part_name: 'Top Housing',
+      part_source: 'Production',
+      print_name: 'bracket_v4',
+      labeled_at: '2026-08-24T10:00:00',
+      archived_at: null,
+      released_at: null,
+      latest_event_action: 'wip',
+      latest_event_reason: null,
+      kit_knob_batch_id: 91,
+      kit_button_batch_id: 92,
+    };
+
+    function mockPartLookup(overrides: Record<string, unknown> = {}) {
+      server.use(
+        http.get('/api/v1/floor/inventory/parts/by-sticker/:stickerCode', ({ params }) =>
+          HttpResponse.json({ ...KIT_PART, sticker_code: params.stickerCode, ...overrides }),
+        ),
+        http.get('/api/v1/floor/inventory/parts/:partId/events', () => HttpResponse.json([])),
+      );
+    }
+
+    function mockReassign(response: unknown, status = 200) {
+      const captured: { body: Record<string, unknown> | null } = { body: null };
+      server.use(
+        http.post('/api/v1/floor/parts/kit/reassign', async ({ request }) => {
+          captured.body = (await request.json()) as Record<string, unknown>;
+          return HttpResponse.json(response, { status });
+        }),
+      );
+      return captured;
+    }
+
+    it('offers per-slot reassign controls for a TOP part that already has a kit', async () => {
+      mockNoSession();
+      mockPartLookup();
+      render(<FloorScanPage />);
+      await screen.findByText('Scan a code');
+
+      await scan('BBD-000042');
+
+      expect(await screen.findByRole('button', { name: 'Reassign knob' })).toBeInTheDocument();
+      expect(screen.getByRole('button', { name: 'Reassign button' })).toBeInTheDocument();
+    });
+
+    it('shows no reassign controls for a BOT part with no kit', async () => {
+      mockNoSession();
+      mockPartLookup({ part_code: 'BOT', kit_knob_batch_id: null, kit_button_batch_id: null });
+      render(<FloorScanPage />);
+      await screen.findByText('Scan a code');
+
+      await scan('BBD-000042');
+      await screen.findByText('Scan a location');
+
+      expect(screen.queryByRole('button', { name: 'Reassign knob' })).not.toBeInTheDocument();
+      expect(screen.queryByRole('button', { name: 'Reassign button' })).not.toBeInTheDocument();
+    });
+
+    it('does not start reassign on a bare bin scan — the on-screen tap is required first', async () => {
+      mockNoSession();
+      mockPartLookup();
+      const reassign = mockReassign({ result: 'reassigned' });
+      render(<FloorScanPage />);
+      await screen.findByText('Scan a code');
+      await scan('BBD-000042');
+      await screen.findByRole('button', { name: 'Reassign knob' });
+
+      await scan('BBN-KNB-1');
+
+      expect(
+        await screen.findByText('A part is still pending — scan its location, not a bin'),
+      ).toBeInTheDocument();
+      expect(reassign.body).toBeNull();
+    });
+
+    it('reassigns the knob slot to the next matching bin after tapping Reassign knob', async () => {
+      mockNoSession();
+      mockPartLookup();
+      const reassign = mockReassign({
+        result: 'reassigned',
+        part: { ...KIT_PART, kit_knob_batch_id: 93 },
+        slot: 'KNB',
+        previous_batch_id: 91,
+        new_batch_id: 93,
+        previous_remaining: 10,
+        new_remaining: 4,
+      });
+      const user = userEvent.setup();
+      render(<FloorScanPage />);
+      await screen.findByText('Scan a code');
+      await scan('BBD-000042');
+
+      await user.click(await screen.findByRole('button', { name: 'Reassign knob' }));
+      expect(await screen.findByText('Scan a KNB bin to reassign')).toBeInTheDocument();
+
+      await scan('BBN-KNB-2');
+
+      await waitFor(() => expect(reassign.body).not.toBeNull());
+      expect(reassign.body).toEqual({ payload: 'BBD-000042', bin_payload: 'BBN-KNB-2' });
+      // The note carries the new fill's remaining count so the operator sees
+      // the reassign took without leaving the still-useful part lookup.
+      expect(await screen.findByText('Kit reassigned · 4 left')).toBeInTheDocument();
+    });
+
+    it('rings the error tone and stays pending when the wrong bin type is scanned', async () => {
+      mockNoSession();
+      mockPartLookup();
+      const reassign = mockReassign({ result: 'reassigned' });
+      const user = userEvent.setup();
+      render(<FloorScanPage />);
+      await screen.findByText('Scan a code');
+      await scan('BBD-000042');
+      await user.click(await screen.findByRole('button', { name: 'Reassign knob' }));
+      await screen.findByText('Scan a KNB bin to reassign');
+
+      await scan('BBN-BUT-1');
+
+      await waitFor(() => expect(floorSound.playScanErrorTone).toHaveBeenCalled());
+      expect(reassign.body).toBeNull();
+      // Still pending on the same slot — a wrong bin does not abort reassign.
+      expect(screen.getByText('Scan a KNB bin to reassign')).toBeInTheDocument();
+    });
+
+    it('cancels reassign mode from the on-screen control', async () => {
+      mockNoSession();
+      mockPartLookup();
+      const reassign = mockReassign({ result: 'reassigned' });
+      const user = userEvent.setup();
+      render(<FloorScanPage />);
+      await screen.findByText('Scan a code');
+      await scan('BBD-000042');
+      await user.click(await screen.findByRole('button', { name: 'Reassign knob' }));
+      await screen.findByText('Scan a KNB bin to reassign');
+
+      await user.click(screen.getByRole('button', { name: 'Cancel' }));
+
+      expect(await screen.findByText('Scan a location')).toBeInTheDocument();
+      expect(screen.getByRole('button', { name: 'Reassign knob' })).toBeInTheDocument();
+      expect(reassign.body).toBeNull();
+    });
+
+    it('refuses a location QR while reassign is armed and stays pending', async () => {
+      mockNoSession();
+      mockPartLookup();
+      const reassign = mockReassign({ result: 'reassigned' });
+      const locationBody: { body: Record<string, unknown> | null } = { body: null };
+      server.use(
+        http.post('/api/v1/floor/locations/part', async ({ request }) => {
+          locationBody.body = (await request.json()) as Record<string, unknown>;
+          return HttpResponse.json({ result: 'recorded' });
+        }),
+      );
+      const user = userEvent.setup();
+      render(<FloorScanPage />);
+      await screen.findByText('Scan a code');
+      await scan('BBD-000042');
+      await user.click(await screen.findByRole('button', { name: 'Reassign knob' }));
+      await screen.findByText('Scan a KNB bin to reassign');
+
+      await scan('BBS-production-wip');
+
+      await waitFor(() => expect(floorSound.playScanErrorTone).toHaveBeenCalled());
+      expect(locationBody.body).toBeNull();
+      expect(reassign.body).toBeNull();
+      expect(screen.getByText('Scan a KNB bin to reassign')).toBeInTheDocument();
+    });
+  });
+
+  describe('product-serial assembly linking ceremony (Part Assembly Linking, Wave 2)', () => {
+    const UNIT = {
+      id: 7,
+      serial_code: 'XG2SNP',
+      top_part_id: 100,
+      bottom_part_id: 200,
+      top_sticker: 'BBD-000100',
+      bottom_sticker: 'BBD-000200',
+      top_part_code: 'TOP',
+      bottom_part_code: 'BOT',
+      knob_batch_id: 91,
+      button_batch_id: 92,
+      knob_bin_payload: 'BBN-KNB-1',
+      button_bin_payload: 'BBN-BUT-1',
+      linked_at: '2026-08-28T12:00:00',
+    };
+
+    /** by-serial: 404 = free (start ceremony); a unit = already linked. */
+    function mockBySerial(unit: unknown | null) {
+      server.use(
+        http.get('/api/v1/floor/units/by-serial/:code', () =>
+          unit === null ? new HttpResponse(null, { status: 404 }) : HttpResponse.json(unit),
+        ),
+      );
+    }
+
+    /** by-sticker part lookup keyed on the sticker → its TOP/BOT code. */
+    function mockParts(codesBySticker: Record<string, string>) {
+      server.use(
+        http.get('/api/v1/floor/inventory/parts/by-sticker/:stickerCode', ({ params }) => {
+          const sticker = String(params.stickerCode);
+          const code = codesBySticker[sticker];
+          if (code === undefined) return new HttpResponse(null, { status: 404 });
+          return HttpResponse.json({
+            id: sticker === 'BBD-000100' ? 100 : 200,
+            sticker_code: sticker,
+            printer_id: 12,
+            printer_name: 'P1S-3',
+            archive_id: 88,
+            part_code: code,
+            section_part_id: null,
+            part_name: code === 'TOP' ? 'Top Housing' : 'Bottom Housing',
+            part_source: 'Production',
+            print_name: 'bracket_v4',
+            labeled_at: '2026-08-24T10:00:00',
+            archived_at: null,
+            released_at: null,
+            latest_event_action: 'wip',
+            latest_event_reason: null,
+            kit_knob_batch_id: code === 'TOP' ? 91 : null,
+            kit_button_batch_id: code === 'TOP' ? 92 : null,
+          });
+        }),
+      );
+    }
+
+    function mockLink(response: unknown, status = 200) {
+      const captured: { body: Record<string, unknown> | null } = { body: null };
+      server.use(
+        http.post('/api/v1/floor/units/link', async ({ request }) => {
+          captured.body = (await request.json()) as Record<string, unknown>;
+          return HttpResponse.json(response, { status });
+        }),
+      );
+      return captured;
+    }
+
+    function mockUnlink(response: unknown, status = 200) {
+      const captured: { calls: number } = { calls: 0 };
+      server.use(
+        http.post('/api/v1/floor/units/:id/unlink', () => {
+          captured.calls += 1;
+          return HttpResponse.json(response, { status });
+        }),
+      );
+      return captured;
+    }
+
+    it('starts the ceremony for an unlinked serial', async () => {
+      mockNoSession();
+      mockBySerial(null);
+      render(<FloorScanPage />);
+      await screen.findByText('Scan a code');
+
+      await scan('XG2SNP');
+
+      expect(await screen.findByText('Scan a top or a bottom')).toBeInTheDocument();
+    });
+
+    it('links a top and a bottom, posting the serial and both stickers', async () => {
+      mockNoSession();
+      mockBySerial(null);
+      mockParts({ 'BBD-000100': 'TOP', 'BBD-000200': 'BOT' });
+      const link = mockLink({ result: 'linked', unit: UNIT });
+      render(<FloorScanPage />);
+      await screen.findByText('Scan a code');
+
+      await scan('XG2SNP');
+      await screen.findByText('Scan a top or a bottom');
+      await scan('BBD-000100');
+      expect(await screen.findByText('Scan the other housing')).toBeInTheDocument();
+      await scan('BBD-000200');
+
+      await waitFor(() => expect(link.body).not.toBeNull());
+      expect(link.body).toEqual({
+        serial: 'XG2SNP',
+        top_sticker: 'BBD-000100',
+        bottom_sticker: 'BBD-000200',
+      });
+    });
+
+    it('links regardless of housing scan order (bottom first, then top)', async () => {
+      mockNoSession();
+      mockBySerial(null);
+      mockParts({ 'BBD-000100': 'TOP', 'BBD-000200': 'BOT' });
+      const link = mockLink({ result: 'linked', unit: UNIT });
+      render(<FloorScanPage />);
+      await screen.findByText('Scan a code');
+
+      await scan('XG2SNP');
+      await screen.findByText('Scan a top or a bottom');
+      await scan('BBD-000200');
+      await screen.findByText('Scan the other housing');
+      await scan('BBD-000100');
+
+      await waitFor(() => expect(link.body).not.toBeNull());
+      expect(link.body).toEqual({
+        serial: 'XG2SNP',
+        top_sticker: 'BBD-000100',
+        bottom_sticker: 'BBD-000200',
+      });
+    });
+
+    it('refuses two tops (TOP+TOP) and keeps the serial pending, no write', async () => {
+      mockNoSession();
+      mockBySerial(null);
+      mockParts({ 'BBD-000100': 'TOP', 'BBD-000101': 'TOP' });
+      const link = mockLink({ result: 'linked', unit: UNIT });
+      render(<FloorScanPage />);
+      await screen.findByText('Scan a code');
+
+      await scan('XG2SNP');
+      await screen.findByText('Scan a top or a bottom');
+      await scan('BBD-000100');
+      await screen.findByText('Scan the other housing');
+      await scan('BBD-000101');
+
+      await waitFor(() => expect(floorSound.playScanErrorTone).toHaveBeenCalled());
+      expect(link.body).toBeNull();
+      // Still pending — the ceremony is not aborted by the mismatch.
+      expect(screen.getByText('Scan the other housing')).toBeInTheDocument();
+    });
+
+    it('keeps the ceremony pending when an unregistered housing is scanned', async () => {
+      mockNoSession();
+      mockBySerial(null);
+      server.use(
+        http.get('/api/v1/floor/inventory/parts/by-sticker/:stickerCode', () =>
+          HttpResponse.json({ detail: 'Not found' }, { status: 404 }),
+        ),
+      );
+      const link = mockLink({ result: 'linked', unit: UNIT });
+      render(<FloorScanPage />);
+      await screen.findByText('Scan a code');
+
+      await scan('XG2SNP');
+      await screen.findByText('Scan a top or a bottom');
+      await scan('BBD-000999');
+
+      await waitFor(() => expect(floorSound.playScanErrorTone).toHaveBeenCalled());
+      expect(link.body).toBeNull();
+      expect(screen.getByText('Scan a top or a bottom')).toBeInTheDocument();
+    });
+
+    it('shows a read-only card for an already-linked serial and never starts a ceremony', async () => {
+      mockNoSession();
+      mockBySerial(UNIT);
+      render(<FloorScanPage />);
+      await screen.findByText('Scan a code');
+
+      await scan('XG2SNP');
+
+      expect(await screen.findByText('BBD-000100')).toBeInTheDocument();
+      expect(screen.getByText('BBD-000200')).toBeInTheDocument();
+      expect(screen.queryByText('Scan a top or a bottom')).not.toBeInTheDocument();
+    });
+
+    it('unlinks from the already-linked card after confirming', async () => {
+      mockNoSession();
+      mockBySerial(UNIT);
+      const unlink = mockUnlink({ result: 'unlinked', unit_id: 7, serial_code: 'XG2SNP' });
+      const user = userEvent.setup();
+      render(<FloorScanPage />);
+      await screen.findByText('Scan a code');
+      await scan('XG2SNP');
+      await screen.findByText('BBD-000100');
+
+      await user.click(await screen.findByRole('button', { name: 'Unlink' }));
+      await user.click(await screen.findByRole('button', { name: 'Confirm unlink' }));
+
+      await waitFor(() => expect(unlink.calls).toBe(1));
+    });
+  });
+
+  describe('bin remaining subtract pad (Part Assembly Linking, Wave 1)', () => {
+    const WIP_BATCH = {
+      id: 91,
+      payload: 'BBN-KNB-1',
+      bin_number: 1,
+      printer_id: 12,
+      printer_name: 'P1S-3',
+      archive_id: 88,
+      print_name: 'knob_plate',
+      part_code: 'KNB',
+      quantity: 25,
+      qc_passed_quantity: 25,
+      remaining_quantity: 5,
+      status: 'wip',
+      harvested_at: '2026-08-26T14:35:00',
+    };
+
+    function mockResolve(batch: Record<string, unknown>) {
+      server.use(
+        http.post('/api/v1/floor/bins/resolve', () =>
+          HttpResponse.json({
+            result: 'ready_for_qc',
+            bin: { payload: 'BBN-KNB-1', bin_number: 1, part_code: 'KNB', part_name: 'Knob bin' },
+            batch,
+            printer: null,
+            session: null,
+            blocking: null,
+            archive: null,
+          }),
+        ),
+      );
+    }
+
+    function mockAdjust(response: unknown, status = 200) {
+      const captured: { body: Record<string, unknown> | null } = { body: null };
+      server.use(
+        http.post('/api/v1/floor/bins/adjust', async ({ request }) => {
+          captured.body = (await request.json()) as Record<string, unknown>;
+          return HttpResponse.json(response, { status });
+        }),
+      );
+      return captured;
+    }
+
+    it('shows remaining and a subtract pad for an In-WIP bin with remaining left', async () => {
+      mockNoSession();
+      mockResolve(WIP_BATCH);
+      render(<FloorScanPage />);
+      await screen.findByText('Scan a code');
+
+      await scan('BBN-KNB-1');
+
+      expect(await screen.findByText('In WIP')).toBeInTheDocument();
+      expect(screen.getByRole('button', { name: 'Subtract' })).toBeInTheDocument();
+    });
+
+    it('does not show a subtract pad for a bin still awaiting visual QC', async () => {
+      mockNoSession();
+      mockResolve({ ...WIP_BATCH, status: 'harvested', qc_passed_quantity: null });
+      render(<FloorScanPage />);
+      await screen.findByText('Scan a code');
+
+      await scan('BBN-KNB-1');
+      await screen.findByText('Scan this bin again for visual QC');
+
+      expect(screen.queryByRole('button', { name: 'Subtract' })).not.toBeInTheDocument();
+    });
+
+    it('does not show a subtract pad for a QC-passed bin not yet in WIP', async () => {
+      mockNoSession();
+      mockResolve({ ...WIP_BATCH, status: 'visual_qc_passed' });
+      render(<FloorScanPage />);
+      await screen.findByText('Scan a code');
+
+      await scan('BBN-KNB-1');
+      await screen.findByText('Scan WIP when this bin goes into use');
+
+      expect(screen.queryByRole('button', { name: 'Subtract' })).not.toBeInTheDocument();
+    });
+
+    it('subtracts the chosen amount and refreshes the remaining count', async () => {
+      mockNoSession();
+      mockResolve(WIP_BATCH);
+      const adjust = mockAdjust({
+        result: 'adjusted',
+        bin: null,
+        batch: { ...WIP_BATCH, remaining_quantity: 2 },
+        printer: null,
+        session: null,
+        blocking: null,
+        archive: null,
+        empty_bin_warning: false,
+      });
+      const user = userEvent.setup();
+      render(<FloorScanPage />);
+      await screen.findByText('Scan a code');
+      await scan('BBN-KNB-1');
+      await screen.findByRole('button', { name: 'Subtract' });
+
+      await user.click(screen.getByRole('button', { name: 'Increase' }));
+      await user.click(screen.getByRole('button', { name: 'Increase' }));
+      await user.click(screen.getByRole('button', { name: 'Subtract' }));
+
+      await waitFor(() => expect(adjust.body).not.toBeNull());
+      expect(adjust.body).toEqual({ payload: 'BBN-KNB-1', subtract: 3 });
+      expect(await screen.findByText('2')).toBeInTheDocument();
+    });
+
+    it('surfaces the empty-bin warning when the fill is taken to zero', async () => {
+      mockNoSession();
+      mockResolve({ ...WIP_BATCH, remaining_quantity: 1 });
+      mockAdjust({
+        result: 'adjusted',
+        bin: null,
+        batch: { ...WIP_BATCH, remaining_quantity: 0 },
+        printer: null,
+        session: null,
+        blocking: null,
+        archive: null,
+        empty_bin_warning: true,
+      });
+      const user = userEvent.setup();
+      render(<FloorScanPage />);
+      await screen.findByText('Scan a code');
+      await scan('BBN-KNB-1');
+      await screen.findByRole('button', { name: 'Subtract' });
+
+      await user.click(screen.getByRole('button', { name: 'Subtract' }));
+
+      expect(await screen.findByText('Bin now empty — scan it off the line')).toBeInTheDocument();
+      expect(screen.queryByRole('button', { name: 'Subtract' })).not.toBeInTheDocument();
     });
   });
 
@@ -2734,6 +3407,286 @@ describe('FloorScanPage (Phase 1b sessions)', () => {
       });
 
       expect(screen.getByText('Harvest is open elsewhere')).toBeInTheDocument();
+    });
+  });
+
+  describe('scan-page auto-dismiss (idle timeout + re-scan)', () => {
+    // A TOP that has entered WIP with a kit assigned — the lookup that carries
+    // the Reassign knob/button controls (Part Assembly Linking, Wave 1).
+    const KIT_TOP = {
+      id: 42,
+      sticker_code: 'BBD-000042',
+      printer_id: 12,
+      printer_name: 'P1S-3',
+      archive_id: 88,
+      part_code: 'TOP',
+      section_part_id: null,
+      part_name: 'Top Housing',
+      part_source: 'Production',
+      print_name: 'bracket_v4',
+      labeled_at: '2026-08-24T10:00:00',
+      archived_at: null,
+      released_at: null,
+      latest_event_action: 'wip',
+      latest_event_reason: null,
+      kit_knob_batch_id: 91,
+      kit_button_batch_id: 92,
+    };
+
+    function mockPartLookup(overrides: Record<string, unknown> = {}) {
+      server.use(
+        http.get('/api/v1/floor/inventory/parts/by-sticker/:stickerCode', ({ params }) =>
+          HttpResponse.json({ ...KIT_TOP, sticker_code: params.stickerCode, ...overrides }),
+        ),
+        http.get('/api/v1/floor/inventory/parts/:partId/events', () => HttpResponse.json([])),
+      );
+    }
+
+    function mockReassign(response: unknown, status = 200) {
+      const captured: { body: Record<string, unknown> | null } = { body: null };
+      server.use(
+        http.post('/api/v1/floor/parts/kit/reassign', async ({ request }) => {
+          captured.body = (await request.json()) as Record<string, unknown>;
+          return HttpResponse.json(response, { status });
+        }),
+      );
+      return captured;
+    }
+
+    const WIP_BATCH = {
+      id: 91,
+      payload: 'BBN-KNB-1',
+      bin_number: 1,
+      printer_id: 12,
+      printer_name: 'P1S-3',
+      archive_id: 88,
+      print_name: 'knob_plate',
+      part_code: 'KNB',
+      quantity: 25,
+      qc_passed_quantity: 25,
+      remaining_quantity: 5,
+      status: 'wip',
+      harvested_at: '2026-08-26T14:35:00',
+    };
+
+    function mockResolve(batch: Record<string, unknown>) {
+      server.use(
+        http.post('/api/v1/floor/bins/resolve', () =>
+          HttpResponse.json({
+            result: 'ready_for_qc',
+            bin: { payload: 'BBN-KNB-1', bin_number: 1, part_code: 'KNB', part_name: 'Knob bin' },
+            batch,
+            printer: null,
+            session: null,
+            blocking: null,
+            archive: null,
+          }),
+        ),
+      );
+    }
+
+    it('dismisses a TOP-with-kit lookup back to idle after the 10s timeout', async () => {
+      mockNoSession();
+      mockPartLookup();
+      vi.useFakeTimers({ shouldAdvanceTime: true });
+      try {
+        render(<FloorScanPage />);
+        await screen.findByText('Scan a code');
+        await scan('BBD-000042');
+        await screen.findByRole('button', { name: 'Reassign knob' });
+
+        await act(async () => {
+          await vi.advanceTimersByTimeAsync(10_050);
+        });
+
+        expect(screen.getByText('Scan a code')).toBeInTheDocument();
+        expect(screen.queryByRole('button', { name: 'Reassign knob' })).not.toBeInTheDocument();
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+
+    it('does not dismiss a TOP-with-kit lookup before the 10s timeout', async () => {
+      mockNoSession();
+      mockPartLookup();
+      vi.useFakeTimers({ shouldAdvanceTime: true });
+      try {
+        render(<FloorScanPage />);
+        await screen.findByText('Scan a code');
+        await scan('BBD-000042');
+        await screen.findByRole('button', { name: 'Reassign knob' });
+
+        await act(async () => {
+          await vi.advanceTimersByTimeAsync(9_000);
+        });
+
+        expect(screen.getByRole('button', { name: 'Reassign knob' })).toBeInTheDocument();
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+
+    it('re-scanning the same sticker closes the TOP-with-kit lookup to idle without failing', async () => {
+      mockNoSession();
+      mockPartLookup();
+      render(<FloorScanPage />);
+      await screen.findByText('Scan a code');
+      await scan('BBD-000042');
+      await screen.findByRole('button', { name: 'Reassign knob' });
+
+      await scan('BBD-000042');
+
+      expect(await screen.findByText('Scan a code')).toBeInTheDocument();
+      expect(screen.queryByRole('button', { name: 'Reassign knob' })).not.toBeInTheDocument();
+      // Closing to idle is not an error — no tone, no rejection message.
+      expect(floorSound.playScanErrorTone).not.toHaveBeenCalled();
+    });
+
+    it('does not auto-dismiss a plain part lookup with no kit assigned', async () => {
+      mockNoSession();
+      mockPartLookup({ part_code: 'BOT', kit_knob_batch_id: null, kit_button_batch_id: null });
+      vi.useFakeTimers({ shouldAdvanceTime: true });
+      try {
+        render(<FloorScanPage />);
+        await screen.findByText('Scan a code');
+        await scan('BBD-000042');
+        await screen.findByText('Scan a location');
+
+        await act(async () => {
+          await vi.advanceTimersByTimeAsync(10_050);
+        });
+
+        expect(screen.getByText('Scan a location')).toBeInTheDocument();
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+
+    it('pauses the dismiss timeout while a kit reassign is armed', async () => {
+      mockNoSession();
+      mockPartLookup();
+      mockReassign({ result: 'reassigned' });
+      vi.useFakeTimers({ shouldAdvanceTime: true });
+      try {
+        render(<FloorScanPage />);
+        await screen.findByText('Scan a code');
+        await scan('BBD-000042');
+        fireEvent.click(await screen.findByRole('button', { name: 'Reassign knob' }));
+        await screen.findByText('Scan a KNB bin to reassign');
+
+        await act(async () => {
+          await vi.advanceTimersByTimeAsync(10_050);
+        });
+
+        // Armed and waiting for a bin — must not silently drop to idle.
+        expect(screen.getByText('Scan a KNB bin to reassign')).toBeInTheDocument();
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+
+    it('resumes the dismiss timeout after a reassign is cancelled', async () => {
+      mockNoSession();
+      mockPartLookup();
+      mockReassign({ result: 'reassigned' });
+      vi.useFakeTimers({ shouldAdvanceTime: true });
+      try {
+        render(<FloorScanPage />);
+        await screen.findByText('Scan a code');
+        await scan('BBD-000042');
+        fireEvent.click(await screen.findByRole('button', { name: 'Reassign knob' }));
+        await screen.findByText('Scan a KNB bin to reassign');
+        fireEvent.click(screen.getByRole('button', { name: 'Cancel' }));
+        await screen.findByText('Scan a location');
+
+        await act(async () => {
+          await vi.advanceTimersByTimeAsync(10_050);
+        });
+
+        expect(screen.getByText('Scan a code')).toBeInTheDocument();
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+
+    it('dismisses an In-WIP bin lookup back to idle after the 10s timeout', async () => {
+      mockNoSession();
+      mockResolve(WIP_BATCH);
+      vi.useFakeTimers({ shouldAdvanceTime: true });
+      try {
+        render(<FloorScanPage />);
+        await screen.findByText('Scan a code');
+        await scan('BBN-KNB-1');
+        await screen.findByRole('button', { name: 'Subtract' });
+
+        await act(async () => {
+          await vi.advanceTimersByTimeAsync(10_050);
+        });
+
+        expect(screen.getByText('Scan a code')).toBeInTheDocument();
+        expect(screen.queryByRole('button', { name: 'Subtract' })).not.toBeInTheDocument();
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+
+    it('re-scanning the same bin closes the In-WIP lookup to idle', async () => {
+      mockNoSession();
+      mockResolve(WIP_BATCH);
+      render(<FloorScanPage />);
+      await screen.findByText('Scan a code');
+      await scan('BBN-KNB-1');
+      await screen.findByRole('button', { name: 'Subtract' });
+
+      await scan('BBN-KNB-1');
+
+      expect(await screen.findByText('Scan a code')).toBeInTheDocument();
+      expect(screen.queryByRole('button', { name: 'Subtract' })).not.toBeInTheDocument();
+    });
+
+    it('does not auto-dismiss a bin still awaiting visual QC', async () => {
+      mockNoSession();
+      mockResolve({ ...WIP_BATCH, status: 'harvested', qc_passed_quantity: null });
+      vi.useFakeTimers({ shouldAdvanceTime: true });
+      try {
+        render(<FloorScanPage />);
+        await screen.findByText('Scan a code');
+        await scan('BBN-KNB-1');
+        await screen.findByText('Scan this bin again for visual QC');
+
+        await act(async () => {
+          await vi.advanceTimersByTimeAsync(10_050);
+        });
+
+        expect(screen.getByText('Scan this bin again for visual QC')).toBeInTheDocument();
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+
+    it('resets the dismiss timeout while adjusting the subtract amount', async () => {
+      mockNoSession();
+      mockResolve(WIP_BATCH);
+      vi.useFakeTimers({ shouldAdvanceTime: true });
+      try {
+        render(<FloorScanPage />);
+        await screen.findByText('Scan a code');
+        await scan('BBN-KNB-1');
+        await screen.findByRole('button', { name: 'Subtract' });
+
+        await act(async () => {
+          await vi.advanceTimersByTimeAsync(7_000);
+        });
+        fireEvent.click(screen.getByRole('button', { name: 'Increase' }));
+        await act(async () => {
+          await vi.advanceTimersByTimeAsync(7_000);
+        });
+
+        // 14s total elapsed, but only 7s since the last interaction — still up.
+        expect(screen.getByRole('button', { name: 'Subtract' })).toBeInTheDocument();
+      } finally {
+        vi.useRealTimers();
+      }
     });
   });
 });

@@ -39,6 +39,41 @@ describe('classifyScan', () => {
   it('does not mistake a prefix appearing mid-payload for a station', () => {
     expect(classifyScan('XBBS-wip').kind).toBe('sku');
   });
+
+  describe('product serials (Part Assembly Linking, Wave 2)', () => {
+    // Exactly six alphanumeric characters, no hyphen, with at least one
+    // letter — `^[A-Z0-9]{6}$` after trim+upper plus `/[A-Z]/`. These start
+    // the assembly-linking ceremony (§4/§5), so they must be pulled out of
+    // the `sku` catch-all before it.
+    it.each(['XG2SNP', '8TBDT9', 'IX72HD', 'XAKZM2', 'GMUOQL', 'OEQ0AC', 'ME2O6N'])(
+      'classifies %s as a product serial',
+      (serial) => {
+        expect(classifyScan(serial)).toEqual({ kind: 'product-serial', value: serial });
+      },
+    );
+
+    it('trims and uppercases a serial before classifying it', () => {
+      expect(classifyScan('  xg2snp \n')).toEqual({ kind: 'product-serial', value: 'XG2SNP' });
+    });
+
+    it('leaves all-numeric six-character barcodes as sku (no letter)', () => {
+      // Filament SKUs are all numeric; the `/[A-Z]/` guard keeps them out of
+      // the serial shape even though the length matches.
+      expect(classifyScan('123456')).toEqual({ kind: 'sku', value: '123456' });
+    });
+
+    it('does not treat a hyphenated floor code as a serial', () => {
+      // Floor codes always carry a `BB*-` prefix with a hyphen, so they can
+      // never collide with the no-hyphen serial shape.
+      expect(classifyScan('BBD-000123')).toEqual({ kind: 'part', value: 'BBD-000123' });
+      expect(classifyScan('ABC-12').kind).toBe('sku');
+    });
+
+    it('rejects lengths other than six', () => {
+      expect(classifyScan('XG2SN').kind).toBe('sku');
+      expect(classifyScan('XG2SNPQ').kind).toBe('sku');
+    });
+  });
 });
 
 describe('routeScan', () => {
@@ -267,6 +302,19 @@ describe('routeScan', () => {
         slug: 'production-wip',
         payload: 'BBS-production-wip',
       });
+    });
+  });
+
+  describe('product serials (Part Assembly Linking, Wave 2)', () => {
+    it('routes a product serial to its own action, regardless of station', () => {
+      expect(routeScan('XG2SNP', null)).toEqual({ action: 'product-serial', value: 'XG2SNP' });
+      // The ceremony is an idle flow, but the router only classifies — whether
+      // it is usable right now is the page's call, same as location codes.
+      expect(routeScan('8tbdt9', 'harvest')).toEqual({ action: 'product-serial', value: '8TBDT9' });
+    });
+
+    it('still reports an all-numeric barcode as a not-yet-handled sku', () => {
+      expect(routeScan('123456', null)).toMatchObject({ action: 'not-implemented', kind: 'sku' });
     });
   });
 

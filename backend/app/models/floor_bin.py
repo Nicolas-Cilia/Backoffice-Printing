@@ -29,6 +29,10 @@ class FloorBinBatch(Base):
         ForeignKey("floor_station_sessions.id", ondelete="SET NULL"), nullable=True
     )
     harvested_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
+    # Hidden from the active Part history filters, never deleted by archive.
+    # An archived fill is skipped by `_latest_batch`, so the physical bin QR
+    # is free to harvest again without destroying the record.
+    archived_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
 
 
 class FloorBinBatchEvent(Base):

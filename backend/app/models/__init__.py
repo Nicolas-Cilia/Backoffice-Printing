@@ -19,6 +19,7 @@ from backend.app.models.floor_part import (
     FloorPrintStopReason,
 )
 from backend.app.models.floor_session import FloorStationSession
+from backend.app.models.floor_unit import FloorProductUnit
 from backend.app.models.github_backup import GitHubBackupConfig, GitHubBackupLog
 from backend.app.models.group import Group, user_groups
 from backend.app.models.kprofile_note import KProfileNote
@@ -77,6 +78,7 @@ __all__ = [
     "FloorPartEvent",
     "FloorErrorLabel",
     "FloorDismissedBuildPlate",
+    "FloorProductUnit",
     "Settings",
     "SmartPlug",
     "SmartPlugEnergySnapshot",

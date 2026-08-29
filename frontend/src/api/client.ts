@@ -1457,6 +1457,12 @@ export interface FloorLabeledPart {
   part_name: string | null;
   part_source: string | null;
   labeled_at: string;
+  /** Part Assembly Linking (Wave 1): the KNB/BUT bin fills this TOP part's
+   *  kit was drawn from when it entered Production WIP, and when — null for a
+   *  part that has not entered WIP (or a non-TOP part). */
+  kit_knob_batch_id?: number | null;
+  kit_button_batch_id?: number | null;
+  kit_assigned_at?: string | null;
 }
 
 /** What a `BBP-` scan did while this device holds an open harvest session
@@ -1533,7 +1539,11 @@ export type BinScanResult =
   | 'empty_requires_wip'
   | 'quantity_overridden'
   | 'unlinked'
-  | 'discarded';
+  | 'discarded'
+  // Part Assembly Linking (Wave 1).
+  | 'wip_type_occupied'
+  | 'adjusted'
+  | 'adjust_requires_wip';
 
 export interface FloorBinBatch {
   id: number;
@@ -1549,6 +1559,7 @@ export interface FloorBinBatch {
   remaining_quantity: number;
   status: string;
   harvested_at: string;
+  archived_at?: string | null;
 }
 
 export interface FloorBinBatchEvent {
@@ -1581,6 +1592,10 @@ export interface BinScanResponse {
   session: FloorSession | null;
   blocking: FloorSession | null;
   archive: FloorPlateArchive | null;
+  /** Part Assembly Linking (Wave 1): a `consumed`/`floor_adjust` that took an
+   *  In-WIP fill to 0 remaining. The kiosk should prompt to scan the bin off
+   *  the line — there is no 5→1 countdown. */
+  empty_bin_warning?: boolean;
 }
 
 // ── Fit Check and Rework (docs/floor-plan.md §5.4a/§5.4b) — phase 9a/9b ──
@@ -1604,7 +1619,16 @@ export type LocationScanResult =
   | 'finishing_required'
   | 'qc_required'
   | 'already_wip'
-  | 'part_code_required';
+  | 'part_code_required'
+  // Part Assembly Linking (Wave 1): a TOP's WIP commit needs one KNB and one
+  // BUT kit unit from the fills on the line; refused (no partial consume) when
+  // either type has no In-WIP fill with remaining left.
+  | 'kit_knob_unavailable'
+  | 'kit_button_unavailable'
+  // Part Assembly Linking (Wave 2): the part is shipped (on a linked product
+  // unit). Item→location scans are refused (lookup only) until the unit is
+  // unlinked, which restores the part to WIP.
+  | 'shipped';
 
 /** The item→location destinations a part can be committed to via
  *  `scanPartLocation` (Fit Check and Rework keep their own endpoints).
@@ -1627,12 +1651,130 @@ export interface LocationScanResponse {
   printer: FloorPlatePrinter | null;
   archive: FloorPlateArchive | null;
   reason: string | null;
+  /** Populated only when a TOP part's WIP commit assigned a kit (Wave 1):
+   *  which fills the knob/button were drawn from, their remaining counts
+   *  after the −1, and whether either landed on 0 (empty-bin warning). */
+  kit_knob_batch_id?: number | null;
+  kit_button_batch_id?: number | null;
+  kit_knob_remaining?: number | null;
+  kit_button_remaining?: number | null;
+  kit_knob_emptied?: boolean;
+  kit_button_emptied?: boolean;
+}
+
+/** What a kit-reassign request did (Wave 1). Mirrors
+ *  `backend.app.services.floor_parts.KitReassignResult`. */
+export type KitReassignResult =
+  | 'reassigned'
+  | 'part_not_found'
+  | 'no_kit'
+  | 'invalid_bin'
+  | 'no_target'
+  | 'shipped';
+
+export interface KitReassignResponse {
+  result: KitReassignResult;
+  part: FloorLabeledPart | null;
+  /** "KNB" or "BUT" — which kit slot the scanned bin type moved. */
+  slot: string | null;
+  previous_batch_id: number | null;
+  new_batch_id: number | null;
+  previous_remaining: number | null;
+  new_remaining: number | null;
 }
 
 /** Fixed, seeded reasons for Rework (§5.4b) — not a user-editable registry,
  *  the same shape as the office-side unlink/replace-sticker reason codes.
  *  Mirrors `backend.app.services.floor_parts.ReworkReasonCode`. */
 export type ReworkReasonCode = 'doesnt_fit' | 'rough_surface' | 'layer_lines' | 'other';
+
+/** Part Assembly Linking (Wave 2): a linked product unit — one scanned serial
+ *  bound to a TOP + BOT housing pair, with the knob/button kit read back from
+ *  the TOP. Mirrors `floor.py`'s `UnitDetailResponse`. */
+export interface FloorProductUnit {
+  id: number;
+  serial_code: string;
+  top_part_id: number;
+  bottom_part_id: number;
+  top_sticker: string;
+  bottom_sticker: string;
+  top_part_code: string | null;
+  bottom_part_code: string | null;
+  knob_batch_id: number | null;
+  button_batch_id: number | null;
+  knob_bin_payload: string | null;
+  button_bin_payload: string | null;
+  linked_at: string;
+}
+
+/** What a `linkUnit` request did. Mirrors
+ *  `backend.app.services.floor_units.LinkUnitResult`. `top_not_eligible`
+ *  covers a BOT in the top slot (BOT+BOT); `bottom_not_eligible` covers a TOP
+ *  in the bottom slot (TOP+TOP). */
+export type LinkUnitResult =
+  | 'linked'
+  | 'invalid_serial'
+  | 'serial_in_use'
+  | 'top_not_found'
+  | 'bottom_not_found'
+  | 'same_part'
+  | 'top_not_eligible'
+  | 'bottom_not_eligible'
+  | 'top_already_linked'
+  | 'bottom_already_linked';
+
+export interface LinkUnitResponse {
+  result: LinkUnitResult;
+  unit: FloorProductUnit | null;
+}
+
+/** What an `unlinkUnit` request did. Mirrors
+ *  `backend.app.services.floor_units.UnlinkUnitResult`. */
+export type UnlinkUnitResult = 'unlinked' | 'not_found';
+
+export interface UnlinkUnitResponse {
+  result: UnlinkUnitResult;
+  unit_id: number | null;
+  serial_code: string | null;
+}
+
+/** What a `replaceUnitHousing` request did (Wave 3). Mirrors
+ *  `backend.app.services.floor_units.ReplaceUnitResult`. */
+export type ReplaceUnitResult =
+  | 'replaced'
+  | 'not_found'
+  | 'no_change'
+  | 'top_not_found'
+  | 'bottom_not_found'
+  | 'same_part'
+  | 'top_not_eligible'
+  | 'bottom_not_eligible'
+  | 'top_already_linked'
+  | 'bottom_already_linked';
+
+export interface ReplaceUnitResponse {
+  result: ReplaceUnitResult;
+  unit: FloorProductUnit | null;
+}
+
+/** What a `replaceUnitKit` request did. Mirrors
+ *  `backend.app.services.floor_units.ReplaceUnitKitResult`. */
+export type ReplaceUnitKitResult =
+  | 'replaced'
+  | 'not_found'
+  | 'no_kit'
+  | 'invalid_slot'
+  | 'no_target';
+
+export interface ReplaceUnitKitResponse {
+  result: ReplaceUnitKitResult;
+  unit: FloorProductUnit | null;
+  slot: string | null;
+  previous_batch_id: number | null;
+  new_batch_id: number | null;
+  previous_remaining: number | null;
+  new_remaining: number | null;
+}
 
 /** One row of the `/floor` landing page's needs-attention panel (§7.2): a
  *  labeled part with no resolved job, waiting to be matched by hand. */
@@ -1673,6 +1815,11 @@ export interface FloorInventoryPart {
   latest_event_action?: string | null;
   /** Concise reason attached to the current Rework event, if there is one. */
   latest_event_reason?: string | null;
+  /** Part Assembly Linking (Wave 1): the KNB/BUT bin fills a TOP part's kit
+   *  was drawn from on WIP entry — null for a BOT or a TOP not yet in WIP.
+   *  Surfaced on the idle sticker lookup so the kiosk can offer kit reassign. */
+  kit_knob_batch_id?: number | null;
+  kit_button_batch_id?: number | null;
 }
 
 export interface FloorInventoryPartEvent {
@@ -6073,6 +6220,61 @@ export const api = {
       method: 'POST',
       body: JSON.stringify(data),
     }),
+  /** Part Assembly Linking (Wave 1): subtract N from an In-WIP bin fill's
+   *  remaining count from the kiosk (never a set-to-N — that stays the office
+   *  quantity-override). Landing on 0 flags `empty_bin_warning`. */
+  adjustFloorBin: (data: { payload: string; subtract: number }) =>
+    request<BinScanResponse>('/floor/bins/adjust', {
+      method: 'POST',
+      body: JSON.stringify(data),
+    }),
+  /** Part Assembly Linking (Wave 1): move a pending TOP part's knob or button
+   *  kit slot to a freshly-scanned bin (the bin type picks the slot). Restores
+   *  +1 on the previous fill and consumes −1 on the new one. */
+  reassignKit: (data: { payload: string; bin_payload: string }) =>
+    request<KitReassignResponse>('/floor/parts/kit/reassign', {
+      method: 'POST',
+      body: JSON.stringify(data),
+    }),
+  /** Part Assembly Linking (Wave 2): bind a scanned product serial to a TOP +
+   *  BOT housing pair, shipping both. The commit end of the kiosk ceremony;
+   *  refuses on a bad/used serial, an ineligible/already-linked housing, or a
+   *  TOP+TOP / BOT+BOT mismatch (see `LinkUnitResult`). */
+  linkUnit: (data: { serial: string; top_sticker: string; bottom_sticker: string }) =>
+    request<LinkUnitResponse>('/floor/units/link', {
+      method: 'POST',
+      body: JSON.stringify(data),
+    }),
+  /** Look up a linked unit by product serial — the already-linked idle scan.
+   *  Rejects (404) when the serial is free, so the kiosk can tell an unlinked
+   *  serial (start the ceremony) from a linked one (read-only card). */
+  getUnitBySerial: (code: string) =>
+    request<FloorProductUnit>(`/floor/units/by-serial/${encodeURIComponent(code)}`),
+  /** Look up the unit a TOP/BOT sticker belongs to (idle part scan), or 404. */
+  getUnitByPart: (sticker: string) =>
+    request<FloorProductUnit>(`/floor/units/by-part/${encodeURIComponent(sticker)}`),
+  /** Reverse a link: free the serial + both stickers and restore both housings
+   *  to WIP so the pair can be corrected and linked again. */
+  unlinkUnit: (unitId: number) =>
+    request<UnlinkUnitResponse>(`/floor/units/${unitId}/unlink`, { method: 'POST' }),
+  /** Wave 3: swap a linked unit's TOP and/or BOT housing for another eligible
+   *  housing, keeping the serial. The old housing is freed back to WIP; the new
+   *  one is re-shipped. Refuses on an ineligible/unknown/already-linked housing. */
+  replaceUnitHousing: (unitId: number, data: { top_sticker?: string; bottom_sticker?: string }) =>
+    request<ReplaceUnitResponse>(`/floor/units/${unitId}/replace`, {
+      method: 'POST',
+      body: JSON.stringify(data),
+    }),
+  /** Serials: move a linked unit's knob or button onto a specific harvest fill
+   *  (any past/current eligible batch id). Restores +1 / consumes −1 like floor
+   *  kit reassign. */
+  replaceUnitKit: (unitId: number, data: { slot: 'KNB' | 'BUT'; batch_id: number }) =>
+    request<ReplaceUnitKitResponse>(`/floor/units/${unitId}/replace-kit`, {
+      method: 'POST',
+      body: JSON.stringify(data),
+    }),
+  /** Every linked unit, newest first — the minimum the Wave 3 Serials tab needs. */
+  listUnits: () => request<FloorProductUnit[]>('/floor/inventory/units'),
   /** Item→location pipeline: commit a scanned bin into Ready-for-Production
    *  Inventory, Production WIP, or Empty Bin. Replaces the old
    *  open-WIP-session bin path. */
@@ -6100,6 +6302,12 @@ export const api = {
     request<BinScanResponse>(`/floor/inventory/bins/batches/${batchId}/relink`, {
       method: 'POST',
       body: JSON.stringify({ archive_id: archiveId }),
+    }),
+  deleteFloorBinBatch: (batchId: number) =>
+    request<{ deleted: boolean }>(`/floor/inventory/bins/batches/${batchId}`, { method: 'DELETE' }),
+  archiveFloorBinBatch: (batchId: number, archived = true) =>
+    request<FloorBinManagement>(`/floor/inventory/bins/batches/${batchId}/archive?archived=${archived}`, {
+      method: 'POST',
     }),
   overrideFloorBinQuantity: (data: { payload: string; remaining_quantity: number }) =>
     request<BinScanResponse>('/floor/inventory/bins/quantity-override', {

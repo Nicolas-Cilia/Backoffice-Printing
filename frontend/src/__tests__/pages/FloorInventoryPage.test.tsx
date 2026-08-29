@@ -186,15 +186,15 @@ describe("FloorInventoryPage", () => {
     );
     render(<FloorInventoryPage />);
 
-    expect(await screen.findByText("BBN-KNB-1")).toBeInTheDocument();
-    expect(screen.getByText("BBN-BUT-2")).toBeInTheDocument();
+    expect(await screen.findByText("BBN-KNB-1 #101")).toBeInTheDocument();
+    expect(screen.getByText("BBN-BUT-2 #102")).toBeInTheDocument();
     expect(screen.getByText("Visual QC pass")).toBeInTheDocument();
     expect(screen.getByText("In WIP")).toBeInTheDocument();
     expect(screen.getByText("(8/12)")).toBeInTheDocument();
 
-    await user.click(screen.getByText("BBN-KNB-1"));
+    await user.click(screen.getByText("BBN-KNB-1 #101"));
 
-    expect(await screen.findByRole("heading", { name: "BBN-KNB-1" })).toBeInTheDocument();
+    expect(await screen.findByRole("heading", { name: "BBN-KNB-1 #101" })).toBeInTheDocument();
     expect(screen.getByText("Bin record")).toBeInTheDocument();
     expect(screen.getByText("Harvested 20 parts into bin")).toBeInTheDocument();
     const qcEvent = screen.getByText("18 of 20 passed visual QC");
@@ -257,8 +257,8 @@ describe("FloorInventoryPage", () => {
     );
     render(<FloorInventoryPage />);
 
-    await user.click(await screen.findByText("BBN-KNB-1"));
-    expect(await screen.findByRole("heading", { name: "BBN-KNB-1" })).toBeInTheDocument();
+    await user.click(await screen.findByText("BBN-KNB-1 #101"));
+    expect(await screen.findByRole("heading", { name: "BBN-KNB-1 #101" })).toBeInTheDocument();
 
     const quantityInput = screen.getByLabelText("Knob bin 1 remaining quantity");
     await user.clear(quantityInput);
@@ -283,6 +283,269 @@ describe("FloorInventoryPage", () => {
     await user.click(screen.getByRole("button", { name: "Unlink" }));
     await user.click(screen.getByRole("button", { name: "Unlink bin" }));
     await waitFor(() => expect(unlinkBody).toEqual({ payload: "BBN-KNB-1" }));
+  });
+
+  it("hides archive and delete for a stocked print-linked bin fill", async () => {
+    const user = userEvent.setup();
+    mockPartHistory();
+    server.use(
+      http.get("/api/v1/floor/inventory/bins", () =>
+        HttpResponse.json([
+          {
+            payload: "BBN-KNB-1",
+            bin_number: 1,
+            part_code: "KNB",
+            part_name: "Knob bin",
+            status: "visual_qc_passed",
+            batch: {
+              id: 101,
+              payload: "BBN-KNB-1",
+              bin_number: 1,
+              printer_id: 4,
+              printer_name: "X1 Carbon 04",
+              archive_id: 31,
+              print_name: "Knob plate",
+              part_code: "KNB",
+              quantity: 20,
+              qc_passed_quantity: 18,
+              remaining_quantity: 18,
+              status: "visual_qc_passed",
+              harvested_at: "2026-08-26T14:35:00",
+              archived_at: null,
+            },
+          },
+        ]),
+      ),
+      http.get("/api/v1/floor/inventory/bins/batches/:batchId/events", () =>
+        HttpResponse.json([
+          {
+            id: 201,
+            action: "harvested",
+            details: { quantity: 20 },
+            occurred_at: "2026-08-26T14:35:00",
+          },
+        ]),
+      ),
+    );
+    render(<FloorInventoryPage />);
+
+    await user.click(await screen.findByText("BBN-KNB-1 #101"));
+    expect(await screen.findByRole("heading", { name: "BBN-KNB-1 #101" })).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Archive record" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Delete bin record" })).not.toBeInTheDocument();
+  });
+
+  it("archives a depleted bin fill from Part history", async () => {
+    const user = userEvent.setup();
+    mockPartHistory();
+    let archivedAt: string | null = null;
+    const depletedBatch = {
+      id: 101,
+      payload: "BBN-KNB-1",
+      bin_number: 1,
+      printer_id: 4,
+      printer_name: "X1 Carbon 04",
+      archive_id: 31,
+      print_name: "Knob plate",
+      part_code: "KNB",
+      quantity: 20,
+      qc_passed_quantity: 18,
+      remaining_quantity: 0,
+      status: "empty",
+      harvested_at: "2026-08-26T14:35:00",
+      archived_at: null as string | null,
+    };
+    server.use(
+      http.get("/api/v1/floor/inventory/bins", () =>
+        HttpResponse.json([
+          {
+            payload: "BBN-KNB-1",
+            bin_number: 1,
+            part_code: "KNB",
+            part_name: "Knob bin",
+            status: "empty",
+            batch: { ...depletedBatch, archived_at: archivedAt },
+          },
+        ]),
+      ),
+      http.get("/api/v1/floor/inventory/bins/batches/:batchId/events", () =>
+        HttpResponse.json([
+          {
+            id: 201,
+            action: "harvested",
+            details: { quantity: 20 },
+            occurred_at: "2026-08-26T14:35:00",
+          },
+          {
+            id: 202,
+            action: "empty",
+            details: { remaining_quantity: 0 },
+            occurred_at: "2026-08-26T18:00:00",
+          },
+        ]),
+      ),
+      http.post("/api/v1/floor/inventory/bins/batches/:batchId/archive", ({ request }) => {
+        const url = new URL(request.url);
+        archivedAt = url.searchParams.get("archived") === "true" ? "2026-08-28T16:00:00" : null;
+        return HttpResponse.json({
+          payload: "BBN-KNB-1",
+          bin_number: 1,
+          part_code: "KNB",
+          part_name: "Knob bin",
+          status: "empty",
+          batch: { ...depletedBatch, archived_at: archivedAt },
+        });
+      }),
+    );
+    render(<FloorInventoryPage />);
+
+    await user.click(await screen.findByRole("button", { name: "Fulfilled" }));
+    await user.click(await screen.findByText("BBN-KNB-1 #101"));
+    expect(await screen.findByRole("heading", { name: "BBN-KNB-1 #101" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Archive record" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Delete bin record" })).toBeInTheDocument();
+
+    await user.click(screen.getByRole("button", { name: "Archive record" }));
+    await waitFor(() => expect(archivedAt).toBe("2026-08-28T16:00:00"));
+    await waitFor(() =>
+      expect(screen.getByRole("button", { name: "Restore record" })).toBeInTheDocument(),
+    );
+  });
+
+  it("deletes an inactive bin record permanently from Part history", async () => {
+    const user = userEvent.setup();
+    mockPartHistory();
+    let deletedId: number | null = null;
+    server.use(
+      http.get("/api/v1/floor/inventory/bins", () =>
+        HttpResponse.json(
+          deletedId === 101
+            ? []
+            : [
+                {
+                  payload: "BBN-KNB-1",
+                  bin_number: 1,
+                  part_code: "KNB",
+                  part_name: "Knob bin",
+                  status: "empty",
+                  batch: {
+                    id: 101,
+                    payload: "BBN-KNB-1",
+                    bin_number: 1,
+                    printer_id: 4,
+                    printer_name: "X1 Carbon 04",
+                    archive_id: 31,
+                    print_name: "Knob plate",
+                    part_code: "KNB",
+                    quantity: 20,
+                    qc_passed_quantity: 18,
+                    remaining_quantity: 0,
+                    status: "empty",
+                    harvested_at: "2026-08-26T14:35:00",
+                    archived_at: null,
+                  },
+                },
+              ],
+        ),
+      ),
+      http.get("/api/v1/floor/inventory/bins/batches/:batchId/events", () =>
+        HttpResponse.json([
+          {
+            id: 201,
+            action: "harvested",
+            details: { quantity: 20 },
+            occurred_at: "2026-08-26T14:35:00",
+          },
+          {
+            id: 202,
+            action: "empty",
+            details: { remaining_quantity: 0 },
+            occurred_at: "2026-08-26T18:00:00",
+          },
+        ]),
+      ),
+      http.delete("/api/v1/floor/inventory/bins/batches/:batchId", ({ params }) => {
+        deletedId = Number(params.batchId);
+        return HttpResponse.json({ deleted: true });
+      }),
+    );
+    render(<FloorInventoryPage />);
+
+    await user.click(await screen.findByRole("button", { name: "Fulfilled" }));
+    await user.click(await screen.findByText("BBN-KNB-1 #101"));
+    expect(await screen.findByRole("heading", { name: "BBN-KNB-1 #101" })).toBeInTheDocument();
+    expect(screen.getByText("#101")).toBeInTheDocument();
+
+    await user.click(screen.getByRole("button", { name: "Delete bin record" }));
+    expect(screen.getByText("Delete bin record?")).toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: "Delete permanently" }));
+
+    await waitFor(() => expect(deletedId).toBe(101));
+    await waitFor(() =>
+      expect(screen.queryByRole("heading", { name: "BBN-KNB-1 #101" })).not.toBeInTheDocument(),
+    );
+  });
+
+  it("finds a bin fill by its batch number in Part history search", async () => {
+    const user = userEvent.setup();
+    mockPartHistory();
+    server.use(
+      http.get("/api/v1/floor/inventory/bins", () =>
+        HttpResponse.json([
+          {
+            payload: "BBN-BUT-1",
+            bin_number: 1,
+            part_code: "BUT",
+            part_name: "Button bin",
+            status: "wip",
+            batch: {
+              id: 77,
+              payload: "BBN-BUT-1",
+              bin_number: 1,
+              printer_id: 2,
+              printer_name: "El Jefe",
+              archive_id: 40,
+              print_name: "BUT H2D Test Print",
+              part_code: "BUT",
+              quantity: 25,
+              remaining_quantity: 19,
+              status: "wip",
+              harvested_at: "2026-08-26T17:14:00",
+            },
+          },
+          {
+            payload: "BBN-BUT-1",
+            bin_number: 1,
+            part_code: "BUT",
+            part_name: "Button bin",
+            status: "empty",
+            batch: {
+              id: 76,
+              payload: "BBN-BUT-1",
+              bin_number: 1,
+              printer_id: 2,
+              printer_name: "El Jefe",
+              archive_id: 39,
+              print_name: "Older fill",
+              part_code: "BUT",
+              quantity: 25,
+              remaining_quantity: 0,
+              status: "empty",
+              harvested_at: "2026-08-25T12:00:00",
+            },
+          },
+        ]),
+      ),
+    );
+    render(<FloorInventoryPage />);
+
+    await user.click(await screen.findByRole("button", { name: "All parts" }));
+    expect(await screen.findByText("BBN-BUT-1 #77")).toBeInTheDocument();
+    expect(screen.getByText("BBN-BUT-1 #76")).toBeInTheDocument();
+
+    await user.type(screen.getByPlaceholderText(/Search/i), "BBN-BUT-1 #77");
+    expect(screen.getByText("BBN-BUT-1 #77")).toBeInTheDocument();
+    expect(screen.queryByText("BBN-BUT-1 #76")).not.toBeInTheDocument();
   });
 
   it("keeps the bin history linear when every part passes visual QC", async () => {
@@ -339,7 +602,7 @@ describe("FloorInventoryPage", () => {
     );
     render(<FloorInventoryPage />);
 
-    await user.click(await screen.findByText("BBN-KNB-1"));
+    await user.click(await screen.findByText("BBN-KNB-1 #103"));
 
     expect(await screen.findByText("20 of 20 passed visual QC")).toBeInTheDocument();
     expect(screen.queryByText("0 parts failed visual QC")).not.toBeInTheDocument();
@@ -395,11 +658,11 @@ describe("FloorInventoryPage", () => {
     render(<FloorInventoryPage />);
 
     await user.click(screen.getByRole("button", { name: "Fulfilled" }));
-    expect(await screen.findByText("BBN-BUT-2")).toBeInTheDocument();
+    expect(await screen.findByText("BBN-BUT-2 #104")).toBeInTheDocument();
     expect(screen.getByText("Depleted (manually cleared)")).toBeInTheDocument();
     expect(screen.getByText("(0/12)")).toBeInTheDocument();
 
-    await user.click(screen.getByText("BBN-BUT-2"));
+    await user.click(screen.getByText("BBN-BUT-2 #104"));
     expect(await screen.findByText("Bin manually cleared and marked depleted")).toBeInTheDocument();
   });
 
@@ -1212,5 +1475,587 @@ describe("FloorInventoryPage", () => {
 
     expect(await screen.findByText("Status overridden to Shipped")).toBeInTheDocument();
     expect(screen.getAllByText("Shipped")).toHaveLength(1);
+  });
+});
+
+const UNITS = [
+  {
+    id: 900,
+    serial_code: "XG2SNP",
+    top_part_id: 1,
+    bottom_part_id: 201,
+    top_sticker: "BBD-000101",
+    bottom_sticker: "BBD-000201",
+    top_part_code: "TOP",
+    bottom_part_code: "BOT",
+    knob_batch_id: 11,
+    button_batch_id: 12,
+    knob_bin_payload: "BBN-KNB-1",
+    button_bin_payload: "BBN-BUT-1",
+    linked_at: "2026-08-27T10:00:00",
+  },
+  {
+    id: 901,
+    serial_code: "8TBDT9",
+    top_part_id: 3,
+    bottom_part_id: 203,
+    top_sticker: "BBD-000303",
+    bottom_sticker: "BBD-000403",
+    top_part_code: "TOP",
+    bottom_part_code: "BOT",
+    knob_batch_id: 21,
+    button_batch_id: 22,
+    knob_bin_payload: "BBN-KNB-2",
+    button_bin_payload: "BBN-BUT-2",
+    linked_at: "2026-08-26T09:00:00",
+  },
+];
+
+function mockUnits(units = UNITS) {
+  server.use(
+    http.get("/api/v1/floor/inventory/units", () => HttpResponse.json(units)),
+  );
+}
+
+describe("FloorInventoryPage — Serials tab", () => {
+  afterEach(() => {
+    window.history.replaceState({}, "", "/");
+  });
+
+  it("lists linked product units under a Serials tab", async () => {
+    const user = userEvent.setup();
+    mockPartHistory();
+    mockUnits();
+    render(<FloorInventoryPage />);
+
+    await user.click(screen.getByRole("button", { name: "Serials" }));
+
+    expect(await screen.findByText("XG2SNP")).toBeInTheDocument();
+    expect(screen.getByText("8TBDT9")).toBeInTheDocument();
+    expect(screen.getByText("BBD-000201")).toBeInTheDocument();
+    expect(screen.getAllByText("BBN-KNB-1").length).toBeGreaterThan(0);
+    expect(screen.getAllByText("BBN-BUT-1").length).toBeGreaterThan(0);
+  });
+
+  it("filters serials by serial or either sticker", async () => {
+    const user = userEvent.setup();
+    mockPartHistory();
+    mockUnits();
+    render(<FloorInventoryPage />);
+
+    await user.click(screen.getByRole("button", { name: "Serials" }));
+    await screen.findByText("XG2SNP");
+
+    const search = screen.getByPlaceholderText("Search serial or sticker");
+    await user.type(search, "000201");
+
+    expect(screen.getByText("XG2SNP")).toBeInTheDocument();
+    expect(screen.queryByText("8TBDT9")).not.toBeInTheDocument();
+  });
+
+  it("opens the assembly card and unlinks a unit", async () => {
+    const user = userEvent.setup();
+    mockPartHistory();
+    mockUnits();
+    let unlinkedId: string | null = null;
+    server.use(
+      http.post("/api/v1/floor/units/:id/unlink", ({ params }) => {
+        unlinkedId = String(params.id);
+        return HttpResponse.json({ result: "unlinked", unit_id: 900, serial_code: "XG2SNP" });
+      }),
+    );
+    render(<FloorInventoryPage />);
+
+    await user.click(screen.getByRole("button", { name: "Serials" }));
+    await user.click(await screen.findByText("XG2SNP"));
+
+    // Assembly card shows the four identities.
+    expect(await screen.findByRole("heading", { name: "XG2SNP" })).toBeInTheDocument();
+
+    await user.click(screen.getByRole("button", { name: "Unlink" }));
+    await user.click(screen.getByRole("button", { name: "Unlink unit" }));
+
+    await waitFor(() => expect(unlinkedId).toBe("900"));
+  });
+
+  it("replaces the top housing from the assembly card", async () => {
+    const user = userEvent.setup();
+    mockPartHistory();
+    mockUnits();
+    let replaceBody: unknown = null;
+    let replacedUnitId: string | null = null;
+    server.use(
+      http.post("/api/v1/floor/units/:id/replace", async ({ request, params }) => {
+        replaceBody = await request.json();
+        replacedUnitId = String(params.id);
+        return HttpResponse.json({ result: "replaced", unit: { ...UNITS[0], top_sticker: "BBD-000999" } });
+      }),
+    );
+    render(<FloorInventoryPage />);
+
+    await user.click(screen.getByRole("button", { name: "Serials" }));
+    await user.click(await screen.findByText("XG2SNP"));
+
+    await user.click(screen.getByRole("button", { name: "Replace top" }));
+    const input = await screen.findByLabelText("New top sticker");
+    await user.type(input, "BBD-000999");
+    await user.click(screen.getByRole("button", { name: "Replace housing" }));
+
+    await waitFor(() => expect(replaceBody).toEqual({ top_sticker: "BBD-000999" }));
+    expect(replacedUnitId).toBe("900");
+  });
+
+  it("collapses a linked housing into a serial row that expands and can open Serials", async () => {
+    const user = userEvent.setup();
+    mockPartHistory();
+    mockUnits();
+    render(<FloorInventoryPage />);
+
+    // Part BBD-000101 (id 1) is the TOP of unit XG2SNP → it collapses into a
+    // single serial row keyed by the product serial, so the raw sticker no
+    // longer appears as its own standalone part row.
+    const serialRow = (await screen.findByText("XG2SNP")).closest("tr");
+    expect(serialRow).not.toBeNull();
+    expect(within(serialRow as HTMLElement).getByText("BBD-000101")).toBeInTheDocument();
+
+    await user.click(serialRow as HTMLElement);
+    expect(serialRow).toHaveAttribute("aria-expanded", "true");
+    expect(screen.getAllByText("BBD-000201").length).toBeGreaterThan(0);
+
+    await user.click(
+      within(serialRow as HTMLElement).getByRole("button", { name: "Open in Serials" }),
+    );
+    expect(await screen.findByRole("heading", { name: "XG2SNP" })).toBeInTheDocument();
+    expect(screen.getByLabelText("Assembly detail")).toBeInTheDocument();
+  });
+
+  it("links the top and bottom stickers from the assembly card to the Parts tab", async () => {
+    const user = userEvent.setup();
+    mockPartHistory();
+    mockUnits();
+    server.use(
+      http.get("/api/v1/floor/inventory/bins", () => HttpResponse.json([])),
+    );
+    render(<FloorInventoryPage />);
+
+    await user.click(screen.getByRole("button", { name: "Serials" }));
+    await user.click(await screen.findByText("XG2SNP"));
+    await screen.findByRole("heading", { name: "XG2SNP" });
+
+    await user.click(await screen.findByRole("button", { name: "Open part BBD-000101" }));
+
+    expect(await screen.findByRole("heading", { name: "Part history" })).toBeInTheDocument();
+    const search = await screen.findByRole("textbox", { name: "Search part history" });
+    expect(search).toHaveValue("XG2SNP");
+
+    const serialRow = (await screen.findByText("XG2SNP")).closest("tr");
+    expect(serialRow).not.toBeNull();
+    expect(serialRow).toHaveAttribute("aria-expanded", "true");
+    expect(await screen.findByRole("heading", { name: "BBD-000101" })).toBeInTheDocument();
+    expect(screen.getByLabelText("Part detail")).toBeInTheDocument();
+  });
+
+  it("links the knob and button batches from the assembly card to Part history", async () => {
+    const user = userEvent.setup();
+    mockPartHistory();
+    mockUnits();
+    server.use(
+      http.get("/api/v1/floor/inventory/bins", () =>
+        HttpResponse.json([
+          {
+            payload: "BBN-KNB-1",
+            bin_number: 1,
+            part_code: "KNB",
+            part_name: "Knob bin",
+            status: "wip",
+            batch: {
+              id: 11,
+              payload: "BBN-KNB-1",
+              bin_number: 1,
+              printer_id: 4,
+              printer_name: "X1 Carbon 04",
+              archive_id: 31,
+              print_name: "Knob plate",
+              part_code: "KNB",
+              quantity: 20,
+              qc_passed_quantity: 18,
+              remaining_quantity: 9,
+              status: "wip",
+              harvested_at: "2026-08-26T14:35:00",
+            },
+          },
+        ]),
+      ),
+      http.get("/api/v1/floor/inventory/bins/batches/:batchId/events", () =>
+        HttpResponse.json([
+          {
+            id: 201,
+            action: "harvested",
+            details: { quantity: 20 },
+            occurred_at: "2026-08-26T14:35:00",
+          },
+        ]),
+      ),
+    );
+    render(<FloorInventoryPage />);
+
+    await user.click(screen.getByRole("button", { name: "Serials" }));
+    await user.click(await screen.findByText("XG2SNP"));
+
+    await user.click(await screen.findByRole("button", { name: /Open bin batch BBN-KNB-1 · #11/i }));
+
+    expect(await screen.findByRole("heading", { name: "Part history" })).toBeInTheDocument();
+    const search = await screen.findByRole("textbox", { name: "Search part history" });
+    expect(search).toHaveValue("XG2SNP");
+
+    const serialRow = (await screen.findByText("XG2SNP")).closest("tr");
+    expect(serialRow).not.toBeNull();
+    expect(serialRow).toHaveAttribute("aria-expanded", "true");
+    expect(await screen.findByRole("heading", { name: "BBN-KNB-1 #11" })).toBeInTheDocument();
+    expect(screen.getByLabelText("Bin detail")).toBeInTheDocument();
+    expect(screen.getByRole("row", { name: /KNB BBN-KNB-1 #11/i })).toBeInTheDocument();
+  });
+
+  it("replaces the knob harvest from a past or current fill on the assembly card", async () => {
+    const user = userEvent.setup();
+    mockPartHistory();
+    mockUnits();
+    let replaceBody: unknown = null;
+    server.use(
+      http.get("/api/v1/floor/inventory/bins", () =>
+        HttpResponse.json([
+          {
+            payload: "BBN-KNB-1",
+            bin_number: 1,
+            part_code: "KNB",
+            part_name: "Knob bin",
+            status: "wip",
+            batch: {
+              id: 11,
+              payload: "BBN-KNB-1",
+              bin_number: 1,
+              printer_id: 4,
+              printer_name: "X1",
+              archive_id: 31,
+              print_name: "Knob plate",
+              part_code: "KNB",
+              quantity: 20,
+              remaining_quantity: 9,
+              status: "wip",
+              harvested_at: "2026-08-26T14:35:00",
+            },
+          },
+          {
+            payload: "BBN-KNB-2",
+            bin_number: 2,
+            part_code: "KNB",
+            part_name: "Knob bin",
+            status: "ready_for_production",
+            batch: {
+              id: 13,
+              payload: "BBN-KNB-2",
+              bin_number: 2,
+              printer_id: 5,
+              printer_name: "P1S",
+              archive_id: 32,
+              print_name: "Knob plate",
+              part_code: "KNB",
+              quantity: 5,
+              remaining_quantity: 5,
+              status: "ready_for_production",
+              harvested_at: "2026-08-27T10:00:00",
+            },
+          },
+        ]),
+      ),
+      http.post("/api/v1/floor/units/:id/replace-kit", async ({ request, params }) => {
+        replaceBody = { id: params.id, ...(await request.json()) };
+        return HttpResponse.json({
+          result: "replaced",
+          unit: { ...UNITS[0], knob_batch_id: 13, knob_bin_payload: "BBN-KNB-2" },
+          slot: "KNB",
+          previous_batch_id: 11,
+          new_batch_id: 13,
+          previous_remaining: 10,
+          new_remaining: 4,
+        });
+      }),
+    );
+    render(<FloorInventoryPage />);
+
+    await user.click(screen.getByRole("button", { name: "Serials" }));
+    await user.click(await screen.findByText("XG2SNP"));
+    await user.click(screen.getByRole("button", { name: "Replace knob" }));
+
+    expect(await screen.findByText("BBN-KNB-2 · #13")).toBeInTheDocument();
+    await user.click(screen.getByRole("option", { name: /BBN-KNB-2 · #13/i }));
+    await user.click(screen.getByRole("button", { name: "Replace harvest" }));
+
+    await waitFor(() =>
+      expect(replaceBody).toEqual({ id: "900", slot: "KNB", batch_id: 13 }),
+    );
+  });
+
+  it("deep-links an unknown unit id with a not-found prompt", async () => {
+    mockPartHistory();
+    mockUnits();
+    window.history.pushState({}, "", "/inventory?tab=serials&unit=99999");
+    render(<FloorInventoryPage />);
+
+    expect(
+      await screen.findByText(/That serial is not in the list/i),
+    ).toBeInTheDocument();
+  });
+});
+
+// Part Assembly Linking: linked TOP + BOT housings that share a product unit
+// collapse into a single serial row on the Part history (Parts) tab, keyed by
+// the product serial, instead of appearing as two separate sticker rows.
+const COLLAPSE_PARTS = [
+  {
+    id: 10,
+    sticker_code: "BBD-000501",
+    printer_id: 4,
+    printer_name: "X1 Carbon 04",
+    archive_id: 51,
+    part_code: "TOP",
+    print_name: "Top plate",
+    labeled_at: "2026-08-27T09:00:00",
+    archived_at: null,
+    released_at: null,
+  },
+  {
+    id: 11,
+    sticker_code: "BBD-000601",
+    printer_id: 4,
+    printer_name: "X1 Carbon 04",
+    archive_id: 52,
+    part_code: "BOT",
+    print_name: "Bottom plate",
+    labeled_at: "2026-08-27T09:01:00",
+    archived_at: null,
+    released_at: null,
+  },
+  {
+    id: 12,
+    sticker_code: "BBD-000701",
+    printer_id: 5,
+    printer_name: "P1S 02",
+    archive_id: 53,
+    part_code: "TOP",
+    print_name: "Loose top plate",
+    labeled_at: "2026-08-27T09:02:00",
+    archived_at: null,
+    released_at: null,
+  },
+];
+
+const COLLAPSE_UNIT = {
+  id: 950,
+  serial_code: "ZK5KFG",
+  top_part_id: 10,
+  bottom_part_id: 11,
+  top_sticker: "BBD-000501",
+  bottom_sticker: "BBD-000601",
+  top_part_code: "TOP",
+  bottom_part_code: "BOT",
+  knob_batch_id: 31,
+  button_batch_id: 32,
+  knob_bin_payload: "BBN-KNB-9",
+  button_bin_payload: "BBN-BUT-9",
+  linked_at: "2026-08-27T10:30:00",
+};
+
+const COLLAPSE_KIT_BINS = [
+  {
+    payload: "BBN-KNB-9",
+    bin_number: 9,
+    part_code: "KNB",
+    part_name: "Knob bin",
+    status: "wip",
+    batch: {
+      id: 31,
+      payload: "BBN-KNB-9",
+      bin_number: 9,
+      printer_id: 4,
+      printer_name: "X1 Carbon 04",
+      archive_id: 61,
+      print_name: "Knob plate",
+      part_code: "KNB",
+      quantity: 20,
+      qc_passed_quantity: 18,
+      remaining_quantity: 17,
+      status: "wip",
+      harvested_at: "2026-08-27T08:00:00",
+      archived_at: null,
+    },
+  },
+  {
+    payload: "BBN-BUT-9",
+    bin_number: 9,
+    part_code: "BUT",
+    part_name: "Button bin",
+    status: "wip",
+    batch: {
+      id: 32,
+      payload: "BBN-BUT-9",
+      bin_number: 9,
+      printer_id: 4,
+      printer_name: "X1 Carbon 04",
+      archive_id: 62,
+      print_name: "Button plate",
+      part_code: "BUT",
+      quantity: 25,
+      qc_passed_quantity: 25,
+      remaining_quantity: 24,
+      status: "wip",
+      harvested_at: "2026-08-27T08:05:00",
+      archived_at: null,
+    },
+  },
+];
+
+function mockCollapse() {
+  server.use(
+    http.get("/api/v1/floor/inventory/parts", () => HttpResponse.json(COLLAPSE_PARTS)),
+    http.get("/api/v1/floor/inventory/print-failures", () => HttpResponse.json([])),
+    http.get("/api/v1/floor/inventory/bins", () => HttpResponse.json(COLLAPSE_KIT_BINS)),
+    http.get("/api/v1/floor/inventory/parts/:id/events", ({ params }) =>
+      HttpResponse.json([
+        {
+          id: Number(params.id) * 10,
+          action: "enrolled",
+          details: { archive_id: 51 },
+          occurred_at: "2026-08-27T09:00:00",
+        },
+        {
+          id: Number(params.id) * 10 + 1,
+          action: "wip",
+          details: null,
+          occurred_at: "2026-08-27T09:10:00",
+        },
+      ]),
+    ),
+    http.get("/api/v1/floor/inventory/bins/batches/:batchId/events", () =>
+      HttpResponse.json([
+        {
+          id: 301,
+          action: "harvested",
+          details: { quantity: 20 },
+          occurred_at: "2026-08-27T08:00:00",
+        },
+      ]),
+    ),
+    http.get("/api/v1/floor/inventory/parts/:id/job-candidates", () => HttpResponse.json([])),
+    http.get("/api/v1/floor/inventory/units", () => HttpResponse.json([COLLAPSE_UNIT])),
+  );
+}
+
+describe("FloorInventoryPage — Part history serial collapse", () => {
+  afterEach(() => {
+    window.history.replaceState({}, "", "/");
+  });
+
+  it("collapses a linked TOP and BOT into one serial row, not two sticker rows", async () => {
+    mockCollapse();
+    render(<FloorInventoryPage />);
+
+    // The serial row shows once for the product serial.
+    const serial = await screen.findByText("ZK5KFG");
+    const serialRow = serial.closest("tr");
+    expect(serialRow).not.toBeNull();
+
+    // Both housing stickers live inside that single serial row — there is no
+    // separate standalone part row for either housing.
+    expect(within(serialRow as HTMLElement).getByText("BBD-000501")).toBeInTheDocument();
+    expect(within(serialRow as HTMLElement).getByText("BBD-000601")).toBeInTheDocument();
+    expect(screen.getAllByText("BBD-000501")).toHaveLength(1);
+    expect(screen.getAllByText("BBD-000601")).toHaveLength(1);
+
+    // The unlinked, standalone housing still appears as its own part row.
+    expect(screen.getByText("BBD-000701")).toBeInTheDocument();
+  });
+
+  it("expands the serial row into TOP, BOT, knob, and button slots without leaving Part history", async () => {
+    const user = userEvent.setup();
+    mockCollapse();
+    render(<FloorInventoryPage />);
+
+    const serialRow = (await screen.findByText("ZK5KFG")).closest("tr");
+    await user.click(serialRow as HTMLElement);
+
+    expect(screen.queryByLabelText("Assembly detail")).not.toBeInTheDocument();
+    expect(screen.getByRole("row", { name: "TOP BBD-000501" })).toBeInTheDocument();
+    expect(screen.getByRole("row", { name: "BOT BBD-000601" })).toBeInTheDocument();
+    expect(screen.getByRole("row", { name: "KNB BBN-KNB-9 #31" })).toBeInTheDocument();
+    expect(screen.getByRole("row", { name: "BUT BBN-BUT-9 #32" })).toBeInTheDocument();
+  });
+
+  it("opens part history on the right when a housing slot is clicked", async () => {
+    const user = userEvent.setup();
+    mockCollapse();
+    render(<FloorInventoryPage />);
+
+    const serialRow = (await screen.findByText("ZK5KFG")).closest("tr");
+    await user.click(serialRow as HTMLElement);
+    await user.click(screen.getByRole("row", { name: "TOP BBD-000501" }));
+
+    expect(await screen.findByRole("heading", { name: "BBD-000501" })).toBeInTheDocument();
+    expect(screen.queryByLabelText("Assembly detail")).not.toBeInTheDocument();
+    expect(screen.getByText("ZK5KFG")).toBeInTheDocument();
+  });
+
+  it("opens bin history on the right when a kit slot is clicked", async () => {
+    const user = userEvent.setup();
+    mockCollapse();
+    render(<FloorInventoryPage />);
+
+    const serialRow = (await screen.findByText("ZK5KFG")).closest("tr");
+    await user.click(serialRow as HTMLElement);
+    await user.click(screen.getByRole("row", { name: "BUT BBN-BUT-9 #32" }));
+
+    expect(await screen.findByRole("heading", { name: "BBN-BUT-9 #32" })).toBeInTheDocument();
+    expect(screen.getByLabelText("Bin detail")).toBeInTheDocument();
+    expect(screen.getByText("ZK5KFG")).toBeInTheDocument();
+  });
+
+  it("keeps a link to open the unit on the Serials tab", async () => {
+    const user = userEvent.setup();
+    mockCollapse();
+    render(<FloorInventoryPage />);
+
+    const serialRow = (await screen.findByText("ZK5KFG")).closest("tr");
+    await user.click(within(serialRow as HTMLElement).getByRole("button", { name: "Open in Serials" }));
+
+    expect(await screen.findByRole("heading", { name: "ZK5KFG" })).toBeInTheDocument();
+    expect(screen.getByLabelText("Assembly detail")).toBeInTheDocument();
+  });
+
+  it("keeps unlinked stickers as their own individual part rows", async () => {
+    const user = userEvent.setup();
+    mockCollapse();
+    render(<FloorInventoryPage />);
+
+    const loose = await screen.findByText("BBD-000701");
+    await user.click(loose);
+
+    // A standalone part opens the ordinary part detail, not the assembly card.
+    expect(await screen.findByRole("heading", { name: "BBD-000701" })).toBeInTheDocument();
+    expect(screen.queryByLabelText("Assembly detail")).not.toBeInTheDocument();
+  });
+
+  it("finds the serial row when searching by either housing sticker", async () => {
+    const user = userEvent.setup();
+    mockCollapse();
+    render(<FloorInventoryPage />);
+
+    await screen.findByText("ZK5KFG");
+    await user.type(
+      screen.getByRole("textbox", { name: "Search part history" }),
+      "000601",
+    );
+
+    expect(screen.getByText("ZK5KFG")).toBeInTheDocument();
+    expect(screen.queryByText("BBD-000701")).not.toBeInTheDocument();
   });
 });
