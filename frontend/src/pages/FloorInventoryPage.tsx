@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
+import { Fragment, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { useTranslation } from "react-i18next";
 import { useSearchParams } from "react-router-dom";
 import { useMutation, useQueries, useQuery, useQueryClient } from "@tanstack/react-query";
@@ -32,22 +32,25 @@ import {
   type FloorInventoryPart,
   type FloorInventoryPartEvent,
   type FloorPrintFailureReason,
+  type FloorProductUnit,
+  type ReplaceUnitKitResult,
+  type ReplaceUnitResult,
   type FloorStopReasonCode,
   type FloorPartCodeOption,
   type FloorPartJobCandidate,
   type JobSearchResult,
 } from "../api/client";
 import { useToast } from "../contexts/ToastContext";
+import { PartHistoryTimeline } from "../components/floor/PartHistoryTimeline";
 import { formatFloorDate } from "../utils/floorScan";
 import {
   buildPartTimeline,
+  consumedBySticker,
   FLOOR_PASS_BADGE_CLASS,
   FLOOR_PASS_EVENT_DOT_CLASS,
   formatCustomStatus,
   isFloorPassBinStatus,
   isFloorPassPartAction,
-  partEventDotClass,
-  partEventLabel,
 } from "../utils/floorPartHistory";
 import { FloorBinManagementPage } from "./FloorBinManagementPage";
 
@@ -62,6 +65,9 @@ const NON_STATUS_EVENT_ACTIONS = new Set([
   "part_code_removed",
   // Sticker replacement is audit-only — keep the last workflow status.
   "sticker_replaced",
+  // Kit bookkeeping is which fills were drawn — not a workflow status.
+  "kit_assigned",
+  "kit_reassigned",
 ]);
 const FAILURE_REASON_OPTIONS: Array<{ value: FloorStopReasonCode; label: string }> = [
   { value: "first_layer_issue", label: "First layer issue" },
@@ -116,9 +122,12 @@ const INVENTORY_TABLE_CLASS = "w-full text-left text-sm md:min-w-[680px]";
 const INVENTORY_THEAD_CLASS =
   "hidden border-b border-bambu-dark-tertiary text-xs uppercase tracking-wide text-bambu-gray md:table-header-group";
 const INVENTORY_ROW_CLASS = "block border-b border-bambu-dark-tertiary last:border-0 md:table-row";
+// Serials assembly card identities render as inline links into Parts/Bins.
+const ASSEMBLY_LINK_CLASS =
+  "break-all rounded font-mono text-left text-bambu-green underline decoration-dotted underline-offset-2 transition-colors hover:text-bambu-green/80 focus:outline-none focus-visible:ring-2 focus-visible:ring-bambu-green";
 const INVENTORY_CELL_CLASS = "block min-w-0 px-4 py-1.5 first:pt-3 last:pb-3 md:table-cell md:py-3";
 
-type FloorInventoryTab = "parts" | "bins";
+type FloorInventoryTab = "parts" | "bins" | "serials";
 
 function FloorInventoryTabs({
   tab,
@@ -143,6 +152,13 @@ function FloorInventoryTabs({
         className={`whitespace-nowrap rounded-md px-3 py-1.5 text-sm transition-colors ${tab === "bins" ? "bg-bambu-green text-white" : "text-bambu-gray hover:text-white"}`}
       >
         {t("floor.binsTab", "Bins")}
+      </button>
+      <button
+        type="button"
+        onClick={() => onChange("serials")}
+        className={`whitespace-nowrap rounded-md px-3 py-1.5 text-sm transition-colors ${tab === "serials" ? "bg-bambu-green text-white" : "text-bambu-gray hover:text-white"}`}
+      >
+        {t("floor.serialsTab", "Serials")}
       </button>
     </div>
   );
@@ -186,17 +202,110 @@ function isFulfilledBin(bin: FloorBinManagement) {
   return bin.batch?.status === "empty" || bin.batch?.status === "empty_override";
 }
 
+function isArchivedBin(bin: FloorBinManagement) {
+  return Boolean(bin.batch?.archived_at);
+}
+
+/** Still occupying the tote — archive only, not delete. */
+function isActiveBin(bin: FloorBinManagement) {
+  if (!bin.batch || isArchivedBin(bin)) return false;
+  const status = bin.batch.status;
+  return status !== "empty" && status !== "empty_override" && status !== "unlinked";
+}
+
+// Part Assembly Linking — Part history serial collapse.
+//
+// A product unit ties a TOP + BOT housing together under one product serial.
+// On the Parts tab those two stickers collapse into a single serial row keyed
+// by the serial, so a linked pair is one clickable row (→ Serials assembly
+// card) rather than two separate sticker rows.
+type UnitRow = { unit: FloorProductUnit; parts: FloorInventoryPart[] };
+
+// Both housings shipped ⇒ the unit is fulfilled/shipped; otherwise it is still
+// a registered (linked) product serial.
+function unitAllShipped(
+  parts: FloorInventoryPart[],
+  latestEventActions: Map<number, string>,
+) {
+  return (
+    parts.length > 0 &&
+    parts.every((part) => isFulfilledPart(part, latestEventActions.get(part.id)))
+  );
+}
+
+function unitMatchesFilter(
+  parts: FloorInventoryPart[],
+  filter: PartFilter,
+  latestEventActions: Map<number, string>,
+) {
+  const action = (part: FloorInventoryPart) => latestEventActions.get(part.id);
+  switch (filter) {
+    case "all":
+      return parts.some((part) => !part.archived_at);
+    case "attention":
+      return parts.some(
+        (part) =>
+          isAttention(part, action(part)) && !isFulfilledPart(part, action(part)),
+      );
+    case "linked":
+      return parts.some(
+        (part) =>
+          isLinked(part, action(part)) && !isFulfilledPart(part, action(part)),
+      );
+    case "fulfilled":
+      return unitAllShipped(parts, latestEventActions);
+    case "archived":
+      return parts.some((part) => Boolean(part.archived_at));
+    default:
+      return false;
+  }
+}
+
+function unitSearchValues(
+  unit: FloorProductUnit,
+  parts: FloorInventoryPart[],
+  latestEventActions: Map<number, string>,
+) {
+  return [
+    unit.serial_code,
+    unit.top_sticker,
+    unit.bottom_sticker,
+    unit.top_part_code,
+    unit.bottom_part_code,
+    unit.knob_bin_payload,
+    unit.button_bin_payload,
+    unit.knob_batch_id != null ? String(unit.knob_batch_id) : null,
+    unit.button_batch_id != null ? String(unit.button_batch_id) : null,
+    unit.knob_batch_id != null ? `#${unit.knob_batch_id}` : null,
+    unit.button_batch_id != null ? `#${unit.button_batch_id}` : null,
+    ...parts.flatMap((part) =>
+      partSearchValues(part, latestEventActions.get(part.id)),
+    ),
+  ]
+    .filter((value): value is string => Boolean(value))
+    .map((value) => value.toLowerCase());
+}
+
 export function FloorInventoryPage() {
   const { t } = useTranslation();
   const { showToast } = useToast();
   const queryClient = useQueryClient();
   const [searchParams, setSearchParams] = useSearchParams();
-  const pageTab: FloorInventoryTab = searchParams.get("tab") === "bins" ? "bins" : "parts";
+  const tabParam = searchParams.get("tab");
+  const pageTab: FloorInventoryTab =
+    tabParam === "bins" ? "bins" : tabParam === "serials" ? "serials" : "parts";
   const setPageTab = (tab: FloorInventoryTab) => {
     setSearchParams((previous) => {
       const next = new URLSearchParams(previous);
-      if (tab === "parts") next.delete("tab");
-      else next.set("tab", "bins");
+      // A manual tab switch clears any deep-link bin focus so a stale
+      // highlight does not linger when the Bins tab is reopened by hand.
+      next.delete("bin");
+      if (tab === "parts") {
+        next.delete("tab");
+        next.delete("unit");
+      } else {
+        next.set("tab", tab);
+      }
       return next;
     }, { replace: true });
   };
@@ -206,6 +315,12 @@ export function FloorInventoryPage() {
   const [selectedId, setSelectedId] = useState<number | null>(null);
   const [selectedBinId, setSelectedBinId] = useState<number | null>(null);
   const [selectedFailure, setSelectedFailure] = useState<FloorPrintFailureReason | null>(null);
+  /** Serial caret open on Part history (lifted so Serials → part can expand it). */
+  const [expandedUnitId, setExpandedUnitId] = useState<number | null>(null);
+  /** Sticker to select once part records are available after a cross-tab jump. */
+  const [pendingOpenSticker, setPendingOpenSticker] = useState<string | null>(null);
+  /** Kit batch to expand under its serial once units are available. */
+  const [pendingOpenBatchId, setPendingOpenBatchId] = useState<number | null>(null);
   const handleSearchChange = (value: string) => {
     setSearch(value);
     if (value.trim()) {
@@ -231,6 +346,80 @@ export function FloorInventoryPage() {
     enabled: pageTab === "parts",
     refetchOnMount: "always",
   });
+  // Part Assembly Linking (Wave 3): the linked units, so a TOP/BOT row can show
+  // the product serial it belongs to and click through to the Serials card.
+  const partUnitsQuery = useQuery({
+    queryKey: ["floor-units"],
+    queryFn: () => api.listUnits(),
+    enabled: pageTab === "parts",
+    staleTime: 30_000,
+  });
+  const unitByPartId = useMemo(() => {
+    const map = new Map<number, FloorProductUnit>();
+    for (const unit of partUnitsQuery.data ?? []) {
+      map.set(unit.top_part_id, unit);
+      map.set(unit.bottom_part_id, unit);
+    }
+    return map;
+  }, [partUnitsQuery.data]);
+  // Linked housings collapse into their product-serial row, so they are pulled
+  // out of the standalone parts list below.
+  const unitMemberPartIds = useMemo(() => {
+    const ids = new Set<number>();
+    for (const unit of partUnitsQuery.data ?? []) {
+      ids.add(unit.top_part_id);
+      ids.add(unit.bottom_part_id);
+    }
+    return ids;
+  }, [partUnitsQuery.data]);
+  const openSerial = (unit: FloorProductUnit) => {
+    setSearchParams((previous) => {
+      const next = new URLSearchParams(previous);
+      next.set("tab", "serials");
+      next.set("unit", String(unit.id));
+      return next;
+    }, { replace: true });
+  };
+  // Serials assembly card → Part history: search the serial (or sticker), expand
+  // the unit caret, and select that housing once parts have loaded.
+  const openPartBySticker = (sticker: string, unit?: FloorProductUnit | null) => {
+    const trimmed = sticker.trim();
+    if (!trimmed) return;
+    setSearch(unit?.serial_code?.trim() || trimmed);
+    setFilter("all");
+    setSelectedFailure(null);
+    setSelectedBinId(null);
+    if (unit) setExpandedUnitId(unit.id);
+    setPendingOpenSticker(trimmed);
+    setPageTab("parts");
+  };
+  // Serials assembly / part timeline → Part history kit fill under its serial.
+  const openBinByBatchId = (
+    batchId: number,
+    payload: string | null,
+    unit?: FloorProductUnit | null,
+  ) => {
+    const knownUnit =
+      unit ??
+      (partUnitsQuery.data ?? []).find(
+        (candidate) =>
+          candidate.knob_batch_id === batchId || candidate.button_batch_id === batchId,
+      ) ??
+      null;
+    setFilter("all");
+    setSelectedId(null);
+    setSelectedFailure(null);
+    setSelectedBinId(batchId);
+    if (knownUnit) {
+      setSearch(knownUnit.serial_code.trim());
+      setExpandedUnitId(knownUnit.id);
+      setPendingOpenBatchId(null);
+    } else {
+      setSearch(payload?.trim() || "");
+      setPendingOpenBatchId(batchId);
+    }
+    setPageTab("parts");
+  };
   const failureReasonsQuery = useQuery({
     queryKey: ["floor-print-failure-reasons"],
     queryFn: () => api.getFloorPrintFailureReasons(12),
@@ -296,6 +485,40 @@ export function FloorInventoryPage() {
   );
   const selectedPart = records.find((part) => part.id === selectedId) ?? null;
   const selectedBin = historyBins.find((bin) => bin.batch?.id === selectedBinId) ?? null;
+
+  // Resolve Serials → Part history focus once parts (and units) are available.
+  useEffect(() => {
+    if (!pendingOpenSticker) return;
+    const needle = pendingOpenSticker.trim().toUpperCase();
+    const part = records.find(
+      (candidate) => candidate.sticker_code.trim().toUpperCase() === needle,
+    );
+    if (!part) return;
+    setSelectedId(part.id);
+    setSelectedFailure(null);
+    setSelectedBinId(null);
+    const unit = unitByPartId.get(part.id);
+    if (unit) setExpandedUnitId(unit.id);
+    setPendingOpenSticker(null);
+  }, [pendingOpenSticker, records, unitByPartId]);
+
+  // Expand the serial that owns a kit fill after units load (timeline / deep link).
+  useEffect(() => {
+    if (pendingOpenBatchId == null) return;
+    const unit = (partUnitsQuery.data ?? []).find(
+      (candidate) =>
+        candidate.knob_batch_id === pendingOpenBatchId ||
+        candidate.button_batch_id === pendingOpenBatchId,
+    );
+    if (!unit) {
+      if (partUnitsQuery.isSuccess) setPendingOpenBatchId(null);
+      return;
+    }
+    setSearch(unit.serial_code.trim());
+    setExpandedUnitId(unit.id);
+    setPendingOpenBatchId(null);
+  }, [pendingOpenBatchId, partUnitsQuery.data, partUnitsQuery.isSuccess]);
+
   const selectedBinEventsQuery = useQuery({
     queryKey: ["floor-bin-batch-events", selectedBinId],
     queryFn: () => api.getFloorBinBatchEvents(selectedBinId!),
@@ -569,12 +792,23 @@ export function FloorInventoryPage() {
         records.filter((part) =>
           isLinked(part, latestEventActions.get(part.id)) &&
           !isFulfilledPart(part, latestEventActions.get(part.id)),
-        ).length + historyBins.filter((bin) => bin.batch?.archive_id !== null && !isFulfilledBin(bin)).length,
-      attention: records.filter((part) =>
-        isAttention(part, latestEventActions.get(part.id)) &&
-        !isFulfilledPart(part, latestEventActions.get(part.id)),
-      ).length + historyBins.filter((bin) => bin.batch?.archive_id === null && !isFulfilledBin(bin)).length,
-      archived: records.filter((part) => part.archived_at).length,
+        ).length +
+        historyBins.filter(
+          (bin) =>
+            bin.batch?.archive_id !== null && !isFulfilledBin(bin) && !isArchivedBin(bin),
+        ).length,
+      attention:
+        records.filter((part) =>
+          isAttention(part, latestEventActions.get(part.id)) &&
+          !isFulfilledPart(part, latestEventActions.get(part.id)),
+        ).length +
+        historyBins.filter(
+          (bin) =>
+            bin.batch?.archive_id === null && !isFulfilledBin(bin) && !isArchivedBin(bin),
+        ).length,
+      archived:
+        records.filter((part) => part.archived_at).length +
+        historyBins.filter((bin) => isArchivedBin(bin)).length,
     }),
     [historyBins, latestEventActions, records],
   );
@@ -588,6 +822,8 @@ export function FloorInventoryPage() {
   const visibleParts = useMemo(() => {
     const term = search.trim().toLowerCase();
     return records.filter((part) => {
+      // Housings on a product unit are represented by their serial row.
+      if (unitMemberPartIds.has(part.id)) return false;
       const included =
         filter === "all"
           ? !part.archived_at
@@ -608,7 +844,28 @@ export function FloorInventoryPage() {
           ))
       );
     });
-  }, [filter, latestEventActions, records, search]);
+  }, [filter, latestEventActions, records, search, unitMemberPartIds]);
+  // Collapsed product-serial rows: linked TOP + BOT housings shown as one row.
+  const visibleUnitRows = useMemo<UnitRow[]>(() => {
+    const term = search.trim().toLowerCase();
+    return (partUnitsQuery.data ?? [])
+      .map((unit) => ({
+        unit,
+        parts: records.filter(
+          (part) => part.id === unit.top_part_id || part.id === unit.bottom_part_id,
+        ),
+      }))
+      .filter(({ unit, parts }) => {
+        if (parts.length === 0) return false;
+        if (!unitMatchesFilter(parts, filter, latestEventActions)) return false;
+        return (
+          !term ||
+          unitSearchValues(unit, parts, latestEventActions).some((value) =>
+            value.includes(term),
+          )
+        );
+      });
+  }, [partUnitsQuery.data, records, filter, search, latestEventActions]);
   const visibleBins = useMemo(() => {
     const term = search.trim().toLowerCase();
     return historyBins.filter((bin) => {
@@ -616,14 +873,16 @@ export function FloorInventoryPage() {
       if (!batch) return false;
       const included =
         filter === "all"
-          ? true
+          ? !isArchivedBin(bin)
           : filter === "attention"
-            ? batch.archive_id === null && !isFulfilledBin(bin)
+            ? batch.archive_id === null && !isFulfilledBin(bin) && !isArchivedBin(bin)
             : filter === "linked"
-              ? batch.archive_id !== null && !isFulfilledBin(bin)
+              ? batch.archive_id !== null && !isFulfilledBin(bin) && !isArchivedBin(bin)
               : filter === "fulfilled"
-                ? isFulfilledBin(bin)
-              : false;
+                ? isFulfilledBin(bin) && !isArchivedBin(bin)
+                : filter === "archived"
+                  ? isArchivedBin(bin)
+                  : false;
       return (
         included &&
         (!term ||
@@ -649,7 +908,10 @@ export function FloorInventoryPage() {
     );
   }, [failureReasonsQuery.data, filter, search, t]);
   const visibleRecordCount =
-    visibleParts.length + visibleBins.length + visibleFailureRecords.length;
+    visibleParts.length +
+    visibleUnitRows.length +
+    visibleBins.length +
+    visibleFailureRecords.length;
   const displayedRecordCount = visibleRecordCount;
   const failureLogCount =
     (failureReasonsQuery.data?.length ?? 0) + discardedParts.length;
@@ -675,6 +937,15 @@ export function FloorInventoryPage() {
       <div className="space-y-6 p-4 md:p-8">
         <FloorInventoryTabs tab={pageTab} onChange={setPageTab} />
         <FloorBinManagementPage />
+      </div>
+    );
+  }
+
+  if (pageTab === "serials") {
+    return (
+      <div className="space-y-6 p-4 md:p-8">
+        <FloorInventoryTabs tab={pageTab} onChange={setPageTab} />
+        <FloorSerialsSection onOpenPart={openPartBySticker} onOpenBin={openBinByBatchId} />
       </div>
     );
   }
@@ -931,12 +1202,18 @@ export function FloorInventoryPage() {
               ) : (
                 <InventoryHistoryTable
                   parts={visibleParts}
+                  unitRows={visibleUnitRows}
                   bins={visibleBins}
+                  allBins={historyBins}
                   failures={visibleFailureRecords}
                   latestEventActions={latestEventActions}
+                  unitByPartId={unitByPartId}
+                  onOpenSerial={openSerial}
                   selectedId={selectedId}
                   selectedBinId={selectedBinId}
                   selectedFailure={selectedFailure}
+                  expandedUnitId={expandedUnitId}
+                  onExpandedUnitIdChange={setExpandedUnitId}
                   onSelectPart={(part) => {
                     setSelectedFailure(null);
                     setSelectedBinId(null);
@@ -998,6 +1275,21 @@ export function FloorInventoryPage() {
           statusPending={setStatusMutation.isPending}
           saveError={saveError}
           onClose={() => setSelectedId(null)}
+          onOpenSticker={openPartBySticker}
+          onOpenBinBatch={openBinByBatchId}
+          onOpenSerial={(serial, unitId) => {
+            if (unitId != null) {
+              setSearchParams((previous) => {
+                const next = new URLSearchParams(previous);
+                next.set("tab", "serials");
+                next.set("unit", String(unitId));
+                return next;
+              }, { replace: true });
+              return;
+            }
+            setSearch(serial);
+            setPageTab("serials");
+          }}
           onRelink={(archiveId) =>
             selectedPart &&
             relinkMutation.mutate({ partId: selectedPart.id, archiveId })
@@ -1036,29 +1328,63 @@ export function FloorInventoryPage() {
 
 function InventoryHistoryTable({
   parts,
+  unitRows = [],
   bins,
+  allBins = [],
   failures,
   latestEventActions,
+  unitByPartId,
+  onOpenSerial,
   selectedId,
   selectedBinId,
   selectedFailure,
+  expandedUnitId,
+  onExpandedUnitIdChange,
   onSelectPart,
   onSelectBin,
   onSelectFailure,
   t,
 }: {
   parts: FloorInventoryPart[];
+  unitRows?: UnitRow[];
   bins: FloorBinManagement[];
+  /** Full bin history (not filter-clipped) so kit slots can open depleted fills. */
+  allBins?: FloorBinManagement[];
   failures: FloorPrintFailureReason[];
   latestEventActions: Map<number, string>;
+  unitByPartId?: Map<number, FloorProductUnit>;
+  onOpenSerial?: (unit: FloorProductUnit) => void;
   selectedId: number | null;
   selectedBinId: number | null;
   selectedFailure: FloorPrintFailureReason | null;
+  expandedUnitId: number | null;
+  onExpandedUnitIdChange: (unitId: number | null) => void;
   onSelectPart: (part: FloorInventoryPart) => void;
   onSelectBin: (bin: FloorBinManagement) => void;
   onSelectFailure: (record: FloorPrintFailureReason) => void;
   t: ReturnType<typeof useTranslation>["t"];
 }) {
+  const findBinByBatchId = (batchId: number | null | undefined) =>
+    batchId == null
+      ? null
+      : (allBins.find((bin) => bin.batch?.id === batchId) ??
+        bins.find((bin) => bin.batch?.id === batchId) ??
+        null);
+
+  const kitSlotLabel = (
+    unit: FloorProductUnit,
+    slot: "KNB" | "BUT",
+  ): string => {
+    const batchId = slot === "KNB" ? unit.knob_batch_id : unit.button_batch_id;
+    const payload = slot === "KNB" ? unit.knob_bin_payload : unit.button_bin_payload;
+    if (batchId == null) {
+      return t("floor.inventoryUnitKitMissing", "Not assigned");
+    }
+    const bin = findBinByBatchId(batchId);
+    if (bin) return binBatchLabel(bin);
+    return payload?.trim() ? `${payload.trim()} #${batchId}` : `#${batchId}`;
+  };
+
   return (
     <div className="min-w-0 overflow-x-auto">
       <table className={INVENTORY_TABLE_CLASS}>
@@ -1115,6 +1441,222 @@ function InventoryHistoryTable({
               </td>
             </tr>
           ))}
+          {unitRows.map(({ unit, parts: unitParts }) => {
+            const allShipped = unitAllShipped(unitParts, latestEventActions);
+            const statusPillClass = allShipped
+              ? "border border-sky-600 bg-sky-100 text-sky-800 shadow-sm shadow-sky-500/20 dark:border-sky-400/50 dark:bg-sky-500/20 dark:text-sky-300"
+              : "border border-cyan-600 bg-cyan-100 text-cyan-800 dark:border-bambu-green/25 dark:bg-bambu-green/15 dark:text-bambu-green-light";
+            const statusText = allShipped
+              ? t("floor.inventoryStatusShipped", "Shipped")
+              : t("floor.inventoryStatusLinked", "Linked");
+            const partCodeSummary = [
+              unit.top_part_code ?? "TOP",
+              unit.bottom_part_code ?? "BOT",
+            ].join(" + ");
+            const jobName =
+              [...new Set(unitParts.map((part) => part.print_name).filter(Boolean))].join(
+                " · ",
+              ) || null;
+            const printerName =
+              [
+                ...new Set(unitParts.map((part) => part.printer_name).filter(Boolean)),
+              ].join(", ") || t("floor.inventoryDeletedPrinter", "Deleted printer");
+            const expanded = expandedUnitId === unit.id;
+            const topPart = unitParts.find((part) => part.id === unit.top_part_id) ?? null;
+            const bottomPart = unitParts.find((part) => part.id === unit.bottom_part_id) ?? null;
+            const knobBin = findBinByBatchId(unit.knob_batch_id);
+            const buttonBin = findBinByBatchId(unit.button_batch_id);
+            const childSelected =
+              (topPart != null && selectedId === topPart.id) ||
+              (bottomPart != null && selectedId === bottomPart.id) ||
+              (unit.knob_batch_id != null && selectedBinId === unit.knob_batch_id) ||
+              (unit.button_batch_id != null && selectedBinId === unit.button_batch_id);
+
+            const toggleExpanded = () =>
+              onExpandedUnitIdChange(expandedUnitId === unit.id ? null : unit.id);
+
+            return (
+              <Fragment key={`unit-${unit.id}`}>
+                <tr
+                  tabIndex={0}
+                  aria-expanded={expanded}
+                  onClick={toggleExpanded}
+                  onKeyDown={(event) => {
+                    if (event.key === "Enter" || event.key === " ") {
+                      event.preventDefault();
+                      toggleExpanded();
+                    }
+                  }}
+                  className={`cursor-pointer ${INVENTORY_ROW_CLASS} transition-colors hover:bg-bambu-dark-tertiary/60 focus:bg-bambu-dark-tertiary/60 focus:outline-none ${expanded || childSelected ? "bg-bambu-dark-tertiary/40" : ""}`}
+                >
+                  <td className={`${INVENTORY_CELL_CLASS} break-all font-mono font-medium text-white`}>
+                    <span className="inline-flex items-center gap-1.5">
+                      <ChevronDown
+                        className={`h-3.5 w-3.5 shrink-0 text-bambu-gray transition-transform ${expanded ? "rotate-0" : "-rotate-90"}`}
+                        aria-hidden="true"
+                      />
+                      <Link2 className="h-3.5 w-3.5 shrink-0 text-bambu-green" aria-hidden="true" />
+                      {unit.serial_code}
+                    </span>
+                    <span className="mt-0.5 block break-all text-xs text-bambu-gray">
+                      <span>{unit.top_sticker}</span>
+                      <span aria-hidden="true"> · </span>
+                      <span>{unit.bottom_sticker}</span>
+                    </span>
+                  </td>
+                  <td className={`${INVENTORY_CELL_CLASS} md:whitespace-nowrap`}>
+                    <span className={`${STATUS_PILL_CLASS} ${statusPillClass}`}>{statusText}</span>
+                  </td>
+                  <td className={`${INVENTORY_CELL_CLASS} break-words text-white`}>
+                    <span className="mb-0.5 mr-2 block font-mono text-bambu-green-light md:mb-0 md:inline">
+                      {partCodeSummary}
+                    </span>
+                    {jobName ?? (
+                      <span className="text-bambu-gray">{t("floor.inventoryNoJob", "No completed job")}</span>
+                    )}
+                    {onOpenSerial && (
+                      <button
+                        type="button"
+                        className="mt-1 block text-xs text-bambu-green-light underline-offset-2 hover:underline md:mt-0 md:ml-2 md:inline"
+                        onClick={(event) => {
+                          event.stopPropagation();
+                          onOpenSerial(unit);
+                        }}
+                      >
+                        {t("floor.inventoryOpenInSerials", "Open in Serials")}
+                      </button>
+                    )}
+                  </td>
+                  <td className={`${INVENTORY_CELL_CLASS} text-bambu-gray-light`}>{printerName}</td>
+                  <td className={`${INVENTORY_CELL_CLASS} text-bambu-gray md:whitespace-nowrap`}>
+                    {formatFloorDate(unit.linked_at, { dateStyle: "medium", timeStyle: "short" })}
+                  </td>
+                </tr>
+                {expanded && (
+                  <>
+                    <UnitComponentRow
+                      slotLabel={unit.top_part_code ?? "TOP"}
+                      identity={unit.top_sticker}
+                      selected={topPart != null && selectedId === topPart.id}
+                      disabled={topPart == null}
+                      status={
+                        topPart
+                          ? statusLabel(
+                              topPart,
+                              t,
+                              latestEventActions.get(topPart.id) ?? topPart.latest_event_action,
+                            )
+                          : "—"
+                      }
+                      statusClassName={
+                        topPart
+                          ? statusClass(
+                              topPart,
+                              latestEventActions.get(topPart.id) ?? topPart.latest_event_action,
+                            )
+                          : "bg-bambu-dark-tertiary text-bambu-gray-light"
+                      }
+                      job={topPart?.print_name ?? null}
+                      printer={topPart?.printer_name ?? null}
+                      labeledAt={topPart?.labeled_at ?? null}
+                      onSelect={() => topPart && onSelectPart(topPart)}
+                      t={t}
+                    />
+                    <UnitComponentRow
+                      slotLabel={unit.bottom_part_code ?? "BOT"}
+                      identity={unit.bottom_sticker}
+                      selected={bottomPart != null && selectedId === bottomPart.id}
+                      disabled={bottomPart == null}
+                      status={
+                        bottomPart
+                          ? statusLabel(
+                              bottomPart,
+                              t,
+                              latestEventActions.get(bottomPart.id) ??
+                                bottomPart.latest_event_action,
+                            )
+                          : "—"
+                      }
+                      statusClassName={
+                        bottomPart
+                          ? statusClass(
+                              bottomPart,
+                              latestEventActions.get(bottomPart.id) ??
+                                bottomPart.latest_event_action,
+                            )
+                          : "bg-bambu-dark-tertiary text-bambu-gray-light"
+                      }
+                      job={bottomPart?.print_name ?? null}
+                      printer={bottomPart?.printer_name ?? null}
+                      labeledAt={bottomPart?.labeled_at ?? null}
+                      onSelect={() => bottomPart && onSelectPart(bottomPart)}
+                      t={t}
+                    />
+                    <UnitComponentRow
+                      slotLabel="KNB"
+                      identity={kitSlotLabel(unit, "KNB")}
+                      selected={
+                        unit.knob_batch_id != null && selectedBinId === unit.knob_batch_id
+                      }
+                      disabled={knobBin == null}
+                      status={
+                        knobBin?.batch
+                          ? binStatusLabel(
+                              knobBin.batch.status,
+                              t,
+                              Boolean(knobBin.batch.archived_at),
+                            )
+                          : "—"
+                      }
+                      statusClassName={
+                        knobBin?.batch
+                          ? binStatusClass(
+                              knobBin.batch.status,
+                              Boolean(knobBin.batch.archived_at),
+                            )
+                          : "bg-bambu-dark-tertiary text-bambu-gray-light"
+                      }
+                      job={knobBin?.batch?.print_name ?? null}
+                      printer={knobBin?.batch?.printer_name ?? null}
+                      labeledAt={knobBin?.batch?.harvested_at ?? null}
+                      onSelect={() => knobBin && onSelectBin(knobBin)}
+                      t={t}
+                    />
+                    <UnitComponentRow
+                      slotLabel="BUT"
+                      identity={kitSlotLabel(unit, "BUT")}
+                      selected={
+                        unit.button_batch_id != null && selectedBinId === unit.button_batch_id
+                      }
+                      disabled={buttonBin == null}
+                      status={
+                        buttonBin?.batch
+                          ? binStatusLabel(
+                              buttonBin.batch.status,
+                              t,
+                              Boolean(buttonBin.batch.archived_at),
+                            )
+                          : "—"
+                      }
+                      statusClassName={
+                        buttonBin?.batch
+                          ? binStatusClass(
+                              buttonBin.batch.status,
+                              Boolean(buttonBin.batch.archived_at),
+                            )
+                          : "bg-bambu-dark-tertiary text-bambu-gray-light"
+                      }
+                      job={buttonBin?.batch?.print_name ?? null}
+                      printer={buttonBin?.batch?.printer_name ?? null}
+                      labeledAt={buttonBin?.batch?.harvested_at ?? null}
+                      onSelect={() => buttonBin && onSelectBin(buttonBin)}
+                      t={t}
+                    />
+                  </>
+                )}
+              </Fragment>
+            );
+          })}
           {parts.map((part) => {
             const latestEventAction = latestEventActions.get(part.id) ?? part.latest_event_action ?? null;
             return (
@@ -1127,7 +1669,27 @@ function InventoryHistoryTable({
                 }}
                 className={`cursor-pointer ${INVENTORY_ROW_CLASS} transition-colors hover:bg-bambu-dark-tertiary/60 focus:bg-bambu-dark-tertiary/60 focus:outline-none ${selectedId === part.id ? "bg-bambu-dark-tertiary/60" : ""}`}
               >
-                <td className={`${INVENTORY_CELL_CLASS} break-all font-mono font-medium text-white`}>{part.sticker_code}</td>
+                <td className={`${INVENTORY_CELL_CLASS} break-all font-mono font-medium text-white`}>
+                  {part.sticker_code}
+                  {(() => {
+                    const unit = unitByPartId?.get(part.id);
+                    if (!unit) return null;
+                    return (
+                      <button
+                        type="button"
+                        onClick={(event) => {
+                          event.stopPropagation();
+                          onOpenSerial?.(unit);
+                        }}
+                        title={t("floor.serialChipTooltip", "Open product serial {{serial}}", { serial: unit.serial_code })}
+                        className="ml-2 inline-flex items-center gap-1 rounded-full border border-bambu-green/40 bg-bambu-green/10 px-2 py-0.5 align-middle text-xs font-medium text-bambu-green-light transition-colors hover:bg-bambu-green/20"
+                      >
+                        <Link2 className="h-3 w-3" aria-hidden="true" />
+                        {unit.serial_code}
+                      </button>
+                    );
+                  })()}
+                </td>
                 <td className={`${INVENTORY_CELL_CLASS} md:whitespace-nowrap`}>
                   <span className={`${STATUS_PILL_CLASS} ${statusClass(part, latestEventAction)}`}>
                     {statusLabel(part, t, latestEventAction)}
@@ -1161,10 +1723,10 @@ function InventoryHistoryTable({
                 }}
                 className={`cursor-pointer ${INVENTORY_ROW_CLASS} transition-colors hover:bg-bambu-dark-tertiary/60 focus:bg-bambu-dark-tertiary/60 focus:outline-none ${selectedBinId === batch.id ? "bg-bambu-dark-tertiary/60" : ""}`}
               >
-                <td className={`${INVENTORY_CELL_CLASS} break-all font-mono font-medium text-white`}>{bin.payload}</td>
+                <td className={`${INVENTORY_CELL_CLASS} break-all font-mono font-medium text-white`}>{binBatchLabel(bin)}</td>
                 <td className={`${INVENTORY_CELL_CLASS} md:whitespace-nowrap`}>
-                  <span className={`${STATUS_PILL_CLASS} ${binStatusClass(batch.status)}`}>
-                    {binStatusLabel(batch.status, t)}
+                  <span className={`${STATUS_PILL_CLASS} ${binStatusClass(batch.status, Boolean(batch.archived_at))}`}>
+                    {binStatusLabel(batch.status, t, Boolean(batch.archived_at))}
                   </span>
                 </td>
                 <td className={`${INVENTORY_CELL_CLASS} break-words text-white`}>
@@ -1186,6 +1748,77 @@ function InventoryHistoryTable({
         </tbody>
       </table>
     </div>
+  );
+}
+
+function UnitComponentRow({
+  slotLabel,
+  identity,
+  selected,
+  disabled,
+  status,
+  statusClassName,
+  job,
+  printer,
+  labeledAt,
+  onSelect,
+  t,
+}: {
+  slotLabel: string;
+  identity: string;
+  selected: boolean;
+  disabled: boolean;
+  status: string;
+  statusClassName: string;
+  job: string | null;
+  printer: string | null;
+  labeledAt: string | null;
+  onSelect: () => void;
+  t: ReturnType<typeof useTranslation>["t"];
+}) {
+  return (
+    <tr
+      tabIndex={disabled ? undefined : 0}
+      aria-label={t("floor.inventoryUnitComponentRow", "{{slot}} {{identity}}", {
+        slot: slotLabel,
+        identity,
+      })}
+      aria-disabled={disabled || undefined}
+      onClick={() => {
+        if (!disabled) onSelect();
+      }}
+      onKeyDown={(event) => {
+        if (disabled) return;
+        if (event.key === "Enter" || event.key === " ") {
+          event.preventDefault();
+          onSelect();
+        }
+      }}
+      className={`${INVENTORY_ROW_CLASS} ${disabled ? "opacity-50" : "cursor-pointer hover:bg-bambu-dark-tertiary/60 focus:bg-bambu-dark-tertiary/60 focus:outline-none"} ${selected ? "bg-bambu-dark-tertiary/60" : "bg-bambu-dark/40"}`}
+    >
+      <td className={`${INVENTORY_CELL_CLASS} break-all font-mono font-medium text-white`}>
+        <span className="ml-5 inline-flex flex-col gap-0.5 sm:ml-7">
+          <span className="text-xs uppercase tracking-wide text-bambu-gray">{slotLabel}</span>
+          <span>{identity}</span>
+        </span>
+      </td>
+      <td className={`${INVENTORY_CELL_CLASS} md:whitespace-nowrap`}>
+        <span className={`${STATUS_PILL_CLASS} ${statusClassName}`}>{status}</span>
+      </td>
+      <td className={`${INVENTORY_CELL_CLASS} break-words text-white`}>
+        {job ?? (
+          <span className="text-bambu-gray">{t("floor.inventoryNoJob", "No completed job")}</span>
+        )}
+      </td>
+      <td className={`${INVENTORY_CELL_CLASS} text-bambu-gray-light`}>
+        {printer ?? t("floor.inventoryDeletedPrinter", "Deleted printer")}
+      </td>
+      <td className={`${INVENTORY_CELL_CLASS} text-bambu-gray md:whitespace-nowrap`}>
+        {labeledAt
+          ? formatFloorDate(labeledAt, { dateStyle: "medium", timeStyle: "short" })
+          : "—"}
+      </td>
+    </tr>
   );
 }
 
@@ -1563,6 +2196,13 @@ function partStatusSearchTerms(
   return archiveId === null ? ["needs matching", "matching", "attention", "unmatched"] : [];
 }
 
+function binBatchLabel(bin: FloorBinManagement): string {
+  // Each harvest fill shares the reusable bin QR (BBN-BUT-1) but gets a
+  // durable batch id — the same #N the kit picker already shows — so Part
+  // history and search can tell fills apart.
+  return bin.batch ? `${bin.payload} #${bin.batch.id}` : bin.payload;
+}
+
 function binSearchValues(bin: FloorBinManagement) {
   const batch = bin.batch;
   if (!batch) return [];
@@ -1574,13 +2214,18 @@ function binSearchValues(bin: FloorBinManagement) {
         : batch.status === "wip"
           ? ["wip", "in wip"]
           : [];
+  const label = binBatchLabel(bin);
   return [
     bin.payload,
+    label,
+    `#${batch.id}`,
+    String(batch.id),
     bin.part_code,
     bin.part_name,
     batch.print_name,
     batch.printer_name,
     batch.status,
+    batch.archived_at ? "archived" : null,
     "fulfilled",
     "depleted",
     "manually cleared",
@@ -1674,7 +2319,10 @@ function statusClass(
     : "border border-cyan-600 bg-cyan-100 text-cyan-800 dark:border-bambu-green/25 dark:bg-bambu-green/15 dark:text-bambu-green-light";
 }
 
-function binStatusClass(status: string) {
+function binStatusClass(status: string, archived = false) {
+  if (archived) {
+    return "border border-bambu-dark-tertiary bg-bambu-dark-tertiary text-bambu-gray-light";
+  }
   if (status === "wip") {
     return "border border-amber-600 bg-amber-100 text-amber-800 shadow-sm shadow-amber-500/20 dark:border-amber-400/50 dark:bg-amber-500/20 dark:text-amber-300";
   }
@@ -1687,7 +2335,9 @@ function binStatusClass(status: string) {
 function binStatusLabel(
   status: string,
   t: ReturnType<typeof useTranslation>["t"],
+  archived = false,
 ) {
+  if (archived) return t("floor.inventoryStatusArchived", "Archived");
   switch (status) {
     case "visual_qc_passed":
       return t("floor.inventoryBinVisualQcPassed", "Visual QC pass");
@@ -1758,13 +2408,15 @@ function BinDetail({
   );
   const [clearOpen, setClearOpen] = useState(false);
   const [unlinkOpen, setUnlinkOpen] = useState(false);
+  const [deleteOpen, setDeleteOpen] = useState(false);
 
   useEffect(() => {
     setHistoryAtBottom(true);
     setQuantityDraft(String(batch?.remaining_quantity ?? 0));
     setClearOpen(false);
     setUnlinkOpen(false);
-  }, [batch?.id, batch?.remaining_quantity]);
+    setDeleteOpen(false);
+  }, [batch?.id, batch?.remaining_quantity, batch?.archived_at]);
 
   const refreshBinData = () =>
     Promise.all([
@@ -1810,6 +2462,47 @@ function BinDetail({
       ),
   });
 
+  const deleteMutation = useMutation({
+    mutationFn: () => api.deleteFloorBinBatch(batch!.id),
+    onSuccess: async () => {
+      setDeleteOpen(false);
+      await refreshBinData();
+      showToast(t("floor.inventoryBinDeleted", "Bin record deleted"), "success");
+      onClose();
+    },
+    onError: (error: unknown) => {
+      const message =
+        error instanceof Error && /archiv/i.test(error.message)
+          ? t(
+              "floor.inventoryBinDeleteActive",
+              "Active bin fills must be archived before they can be deleted",
+            )
+          : t("floor.inventoryBinDeleteFailed", "Could not delete bin record");
+      showToast(message, "error");
+    },
+  });
+
+  const archiveMutation = useMutation({
+    mutationFn: (archived: boolean) => api.archiveFloorBinBatch(batch!.id, archived),
+    onSuccess: async (_data, archived) => {
+      await refreshBinData();
+      showToast(
+        archived
+          ? t("floor.inventoryBinArchived", "Bin record archived")
+          : t("floor.inventoryBinRestored", "Bin record restored"),
+        "success",
+      );
+    },
+    onError: () =>
+      showToast(
+        t(
+          "floor.inventoryBinArchiveBlocked",
+          "Clear quantity or unlink the print before archiving this bin fill",
+        ),
+        "error",
+      ),
+  });
+
   if (!batch) {
     return (
       <aside className="rounded-lg border border-dashed border-bambu-dark-tertiary p-6 text-center text-sm text-bambu-gray break-words xl:sticky xl:top-6">
@@ -1834,13 +2527,23 @@ function BinDetail({
   const depleted =
     batch.status === "empty" || batch.status === "empty_override";
   const unlinked = batch.status === "unlinked" || bin.status === "unlinked";
+  const archived = Boolean(batch.archived_at);
+  const active = isActiveBin(bin);
+  const linkedToPrint = Boolean(batch.archive_id) && !unlinked;
+  const canArchive =
+    archived || !(batch.remaining_quantity > 0 && linkedToPrint);
   const parsedQuantity = Number(quantityDraft);
   const quantityValid =
     Number.isInteger(parsedQuantity) &&
     parsedQuantity > 0 &&
     parsedQuantity <= batch.quantity;
-  const busy = overrideMutation.isPending || unlinkMutation.isPending;
-  const canManage = !depleted;
+  const busy =
+    overrideMutation.isPending ||
+    unlinkMutation.isPending ||
+    deleteMutation.isPending ||
+    archiveMutation.isPending;
+  const canManage = !depleted && !archived;
+  const batchLabel = binBatchLabel(bin);
 
   return (
     <aside
@@ -1853,7 +2556,7 @@ function BinDetail({
             {t("floor.inventoryBinDetailEyebrow", "Bin record")}
           </p>
           <h2 className="mt-1 font-mono text-lg font-semibold text-white">
-            {bin.payload}
+            {batchLabel}
           </h2>
         </div>
         <button
@@ -1868,9 +2571,9 @@ function BinDetail({
       <div className="flex min-h-0 flex-none flex-col gap-5 overflow-hidden p-4">
         <div>
           <span
-            className={`${STATUS_PILL_CLASS} ${binStatusClass(batch.status)}`}
+            className={`${STATUS_PILL_CLASS} ${binStatusClass(batch.status, archived)}`}
           >
-            {binStatusLabel(batch.status, t)}
+            {binStatusLabel(batch.status, t, archived)}
           </span>
         </div>
         <dl className="grid grid-cols-2 gap-x-4 gap-y-3 text-sm">
@@ -1881,6 +2584,10 @@ function BinDetail({
           <div>
             <dt className="text-bambu-gray">{t("floor.inventoryBinNumber", "Bin")}</dt>
             <dd className="mt-0.5 text-white">{bin.part_name} {bin.bin_number}</dd>
+          </div>
+          <div>
+            <dt className="text-bambu-gray">{t("floor.inventoryBinBatch", "Batch")}</dt>
+            <dd className="mt-0.5 font-mono text-white">#{batch.id}</dd>
           </div>
           <div>
             <dt className="text-bambu-gray">{t("floor.inventoryColPrinter", "Printer")}</dt>
@@ -1960,6 +2667,37 @@ function BinDetail({
             )}
           </div>
         )}
+
+        <div className="flex flex-wrap gap-2 border-t border-bambu-dark-tertiary pt-4">
+          {canArchive && (
+            <Button
+              size="sm"
+              variant="secondary"
+              disabled={busy}
+              onClick={() => archiveMutation.mutate(!archived)}
+            >
+              {archived ? (
+                <ArchiveRestore className="h-4 w-4" />
+              ) : (
+                <Archive className="h-4 w-4" />
+              )}
+              {archived
+                ? t("floor.inventoryRestore", "Restore record")
+                : t("floor.inventoryArchive", "Archive record")}
+            </Button>
+          )}
+          {!active && (
+            <Button
+              size="sm"
+              variant="danger"
+              disabled={busy}
+              onClick={() => setDeleteOpen(true)}
+            >
+              <Trash2 className="h-4 w-4" />
+              {t("floor.inventoryBinDelete", "Delete bin record")}
+            </Button>
+          )}
+        </div>
 
         <section className="flex min-h-0 flex-none flex-col">
           <div className="flex items-center gap-2">
@@ -2045,6 +2783,21 @@ function BinDetail({
           isLoading={unlinkMutation.isPending}
           onCancel={() => setUnlinkOpen(false)}
           onConfirm={() => unlinkMutation.mutate()}
+        />
+      )}
+      {deleteOpen && (
+        <ConfirmModal
+          title={t("floor.inventoryBinDeleteTitle", "Delete bin record?")}
+          message={t(
+            "floor.inventoryBinDeleteConfirm",
+            "This permanently deletes {{code}}, its quantity history, and every audit event for this fill. Parts that used this kit will keep their part history but lose the kit link. This cannot be undone.",
+            { code: batchLabel },
+          )}
+          confirmText={t("floor.inventoryBinDeleteConfirmButton", "Delete permanently")}
+          variant="danger"
+          isLoading={deleteMutation.isPending}
+          onCancel={() => setDeleteOpen(false)}
+          onConfirm={() => deleteMutation.mutate()}
         />
       )}
     </aside>
@@ -2267,6 +3020,12 @@ function binEventLabel(
         : t("floor.inventoryBinEventQuantityOverrideUnknown", "Quantity overridden");
     case "unlinked":
       return t("floor.inventoryBinEventUnlinked", "Bin fill unlinked");
+    case "consumed": {
+      const sticker = consumedBySticker(event.details);
+      return sticker
+        ? t("floor.inventoryBinEventConsumedBy", "Consumed by {{sticker}}", { sticker })
+        : t("floor.inventoryBinEventConsumed", "Consumed");
+    }
     default:
       return formatCustomStatus(event.action);
   }
@@ -2276,7 +3035,7 @@ function binEventDotClass(action: string) {
   if (action === "harvested") return "bg-bambu-green";
   if (action === "visual_qc_passed" || action === "ready_for_production") return FLOOR_PASS_EVENT_DOT_CLASS;
   if (action === "wip") return "bg-amber-500";
-  if (action === "empty" || action === "empty_override") return "bg-sky-500";
+  if (action === "empty" || action === "empty_override" || action === "consumed") return "bg-sky-500";
   if (action === "relinked") return "bg-bambu-green";
   if (action === "unlinked") return "bg-red-500";
   return "bg-bambu-gray";
@@ -2300,6 +3059,9 @@ function PartDetail({
   statusPending,
   saveError,
   onClose,
+  onOpenSticker,
+  onOpenBinBatch,
+  onOpenSerial,
   onRelink,
   onArchive,
   onUnlink,
@@ -2326,6 +3088,9 @@ function PartDetail({
   statusPending: boolean;
   saveError: string | null;
   onClose: () => void;
+  onOpenSticker?: (sticker: string) => void;
+  onOpenBinBatch?: (batchId: number, payload: string | null) => void;
+  onOpenSerial?: (serial: string, unitId: number | null) => void;
   onRelink: (archiveId: number) => void;
   onArchive: (archived: boolean) => void;
   onUnlink: (reasonCode: string, reasonText: string | null) => void;
@@ -2641,22 +3406,16 @@ function PartDetail({
                   aria-hidden="true"
                   className="absolute bottom-2 left-[3px] top-2 w-0.5 bg-bambu-dark-tertiary"
                 />
-                <ol className="space-y-3">
-                  {timeline.map((event) => (
-                    <li key={event.id} className="relative pl-7 text-sm">
-                      <span
-                        className={`absolute left-1 top-1.5 z-10 h-2 w-2 -translate-x-1/2 rounded-full ${partEventDotClass(event.action)}`}
-                      />
-                      <p className="text-white">{partEventLabel(event, part?.part_code, t)}</p>
-                      <p className="text-xs text-bambu-gray">
-                        {formatFloorDate(event.occurred_at, {
-                          dateStyle: "medium",
-                          timeStyle: "short",
-                        })}
-                      </p>
-                    </li>
-                  ))}
-                </ol>
+                <PartHistoryTimeline
+                  events={timeline}
+                  partCode={part?.part_code}
+                  compact
+                  handlers={{
+                    onOpenSticker,
+                    onOpenBinBatch,
+                    onOpenSerial,
+                  }}
+                />
               </div>
             </div>
             {timeline.length > 4 && !historyAtBottom && (
@@ -3188,5 +3947,684 @@ function ReplaceStickerForm({
         </div>
       </div>
     </section>
+  );
+}
+
+// ── Serials tab (Part Assembly Linking, Wave 3) ───────────────────────────
+//
+// Reads ``GET /floor/inventory/units`` (product serials linked to a TOP + BOT
+// housing pair) and lets the office unlink or replace a housing. This is the
+// product-serial counterpart to the Parts tab — kept deliberately separate
+// from the Parts "Registered Parts" filter, which is harvest job-match.
+
+function replaceResultMessage(
+  result: ReplaceUnitResult,
+  t: ReturnType<typeof useTranslation>["t"],
+): string {
+  switch (result) {
+    case "top_not_found":
+    case "bottom_not_found":
+      return t("floor.serialReplaceNotFound", "That sticker was not found.");
+    case "top_not_eligible":
+      return t("floor.serialReplaceTopNotEligible", "The new top must be a TOP In WIP with a kit assigned.");
+    case "bottom_not_eligible":
+      return t("floor.serialReplaceBottomNotEligible", "The new bottom must be a BOT In WIP.");
+    case "top_already_linked":
+    case "bottom_already_linked":
+      return t("floor.serialReplaceAlreadyLinked", "That housing is already on another unit.");
+    case "same_part":
+      return t("floor.serialReplaceSamePart", "Top and bottom must be different housings.");
+    case "no_change":
+      return t("floor.serialReplaceNoChange", "That housing is already on this unit.");
+    default:
+      return t("floor.serialActionError", "Could not save that change.");
+  }
+}
+
+function replaceKitResultMessage(
+  result: ReplaceUnitKitResult,
+  t: ReturnType<typeof useTranslation>["t"],
+): string {
+  switch (result) {
+    case "no_kit":
+      return t("floor.serialReplaceKitNoKit", "This unit's top has no knob/button kit to move.");
+    case "invalid_slot":
+      return t("floor.serialReplaceKitInvalidSlot", "Pick a knob (KNB) or button (BUT) harvest.");
+    case "no_target":
+      return t(
+        "floor.serialReplaceKitNoTarget",
+        "That harvest is not available (needs remaining parts In WIP or Ready for Production).",
+      );
+    default:
+      return t("floor.serialActionError", "Could not save that change.");
+  }
+}
+
+function kitHarvestEligible(batch: FloorBinBatch): boolean {
+  return (
+    (batch.status === "wip" || batch.status === "ready_for_production") &&
+    batch.remaining_quantity > 0
+  );
+}
+
+function FloorSerialsSection({
+  onOpenPart,
+  onOpenBin,
+}: {
+  onOpenPart: (sticker: string, unit?: FloorProductUnit | null) => void;
+  onOpenBin: (
+    batchId: number,
+    payload: string | null,
+    unit?: FloorProductUnit | null,
+  ) => void;
+}) {
+  const { t } = useTranslation();
+  const { showToast } = useToast();
+  const queryClient = useQueryClient();
+  const [searchParams, setSearchParams] = useSearchParams();
+  const [search, setSearch] = useState("");
+  const selectedUnitIdRaw = searchParams.get("unit");
+  const selectedUnitId =
+    selectedUnitIdRaw != null && selectedUnitIdRaw !== "" && Number.isFinite(Number(selectedUnitIdRaw))
+      ? Number(selectedUnitIdRaw)
+      : null;
+  const setSelectedUnitId = (id: number | null) => {
+    setSearchParams((previous) => {
+      const next = new URLSearchParams(previous);
+      if (id === null) next.delete("unit");
+      else next.set("unit", String(id));
+      return next;
+    }, { replace: true });
+  };
+  const unitsQuery = useQuery({
+    queryKey: ["floor-units"],
+    queryFn: () => api.listUnits(),
+    refetchOnMount: "always",
+  });
+  const units = useMemo(() => unitsQuery.data ?? [], [unitsQuery.data]);
+  const selectedUnit = units.find((unit) => unit.id === selectedUnitId) ?? null;
+  const unitDeepLinkMissing =
+    selectedUnitId != null && unitsQuery.isSuccess && selectedUnit == null;
+  const invalidate = () => queryClient.invalidateQueries({ queryKey: ["floor-units"] });
+
+  const unlinkMutation = useMutation({
+    mutationFn: (unitId: number) => api.unlinkUnit(unitId),
+    onSuccess: async () => {
+      showToast(t("floor.serialUnlinkSuccess", "Serial unlinked; both housings back to WIP"), "success");
+      setSelectedUnitId(null);
+      await invalidate();
+    },
+    onError: () => showToast(t("floor.serialActionError", "Could not save that change."), "error"),
+  });
+  const replaceMutation = useMutation({
+    mutationFn: ({ unitId, data }: { unitId: number; data: { top_sticker?: string; bottom_sticker?: string } }) =>
+      api.replaceUnitHousing(unitId, data),
+    onSuccess: async (response) => {
+      if (response.result === "replaced") {
+        showToast(t("floor.serialReplaceSuccess", "Housing replaced"), "success");
+        await invalidate();
+      } else {
+        showToast(replaceResultMessage(response.result, t), "error");
+      }
+    },
+    onError: () => showToast(t("floor.serialActionError", "Could not save that change."), "error"),
+  });
+  const replaceKitMutation = useMutation({
+    mutationFn: ({
+      unitId,
+      data,
+    }: {
+      unitId: number;
+      data: { slot: "KNB" | "BUT"; batch_id: number };
+    }) => api.replaceUnitKit(unitId, data),
+    onSuccess: async (response) => {
+      if (response.result === "replaced") {
+        showToast(
+          response.new_remaining != null
+            ? t("floor.serialReplaceKitSuccessRemaining", "Kit updated · {{count}} left on harvest", {
+                count: response.new_remaining,
+              })
+            : t("floor.serialReplaceKitSuccess", "Kit harvest updated"),
+          "success",
+        );
+        await Promise.all([
+          invalidate(),
+          queryClient.invalidateQueries({ queryKey: ["floor-bin-history"] }),
+        ]);
+      } else {
+        showToast(replaceKitResultMessage(response.result, t), "error");
+      }
+    },
+    onError: () => showToast(t("floor.serialActionError", "Could not save that change."), "error"),
+  });
+
+  const term = search.trim().toLowerCase();
+  const visibleUnits = useMemo(
+    () =>
+      term
+        ? units.filter((unit) =>
+            [unit.serial_code, unit.top_sticker, unit.bottom_sticker].some((value) =>
+              value.toLowerCase().includes(term),
+            ),
+          )
+        : units,
+    [term, units],
+  );
+
+  return (
+    <div className="space-y-6">
+      <div className="flex flex-col gap-4 lg:flex-row lg:items-end lg:justify-between">
+        <div>
+          <p className="text-xs uppercase tracking-wide text-bambu-gray">
+            {t("floor.landingEyebrow", "Production floor")}
+          </p>
+          <h1 className="mt-1 text-2xl font-bold text-white">
+            {t("floor.serialsTitle", "Product serials")}
+          </h1>
+          <p className="mt-1 max-w-2xl break-words text-bambu-gray">
+            {t(
+              "floor.serialsSubtitle",
+              "Every product serial linked to a TOP + BOT housing pair. Unlink to free a serial, or replace a housing.",
+            )}
+          </p>
+        </div>
+        <div className="relative w-full lg:w-80">
+          <label className="relative block">
+            <span className="sr-only">{t("floor.serialsSearchLabel", "Search serials")}</span>
+            <Search
+              className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-bambu-gray"
+              aria-hidden="true"
+            />
+            <input
+              className="w-full rounded-lg border border-bambu-dark-tertiary bg-bambu-dark-secondary py-2.5 pl-9 pr-9 text-sm text-white placeholder:text-bambu-gray focus:border-bambu-green focus:outline-none"
+              placeholder={t("floor.serialsSearchPlaceholder", "Search serial or sticker")}
+              value={search}
+              onChange={(event) => setSearch(event.target.value)}
+            />
+            {search && (
+              <button
+                type="button"
+                aria-label={t("common.clearSearch", "Clear search")}
+                className="absolute right-2 top-1/2 -translate-y-1/2 rounded p-1 text-bambu-gray transition-colors hover:text-white focus:outline-none focus:ring-2 focus:ring-bambu-green"
+                onClick={() => setSearch("")}
+              >
+                <X className="h-4 w-4" aria-hidden="true" />
+              </button>
+            )}
+          </label>
+        </div>
+      </div>
+      <div className="grid gap-6 xl:grid-cols-[minmax(0,1fr)_24rem] xl:items-start">
+        <section className="min-w-0 overflow-hidden rounded-lg border border-bambu-dark-tertiary bg-bambu-dark-secondary">
+          <div className="flex items-center justify-between border-b border-bambu-dark-tertiary p-4">
+            <h2 className="text-sm font-semibold text-white">
+              {t("floor.serialsListTitle", "Linked units")}
+            </h2>
+            <p className="text-sm text-bambu-gray">
+              {visibleUnits.length === 1
+                ? t("floor.inventoryRecordCountOne", "{{count}} record", { count: visibleUnits.length })
+                : t("floor.inventoryRecordCountMany", "{{count}} records", { count: visibleUnits.length })}
+            </p>
+          </div>
+          {unitsQuery.isLoading ? (
+            <div className="flex items-center justify-center gap-2 px-4 py-16 text-bambu-gray">
+              <Loader2 className="h-5 w-5 animate-spin" />
+              {t("floor.serialsLoading", "Loading product serials…")}
+            </div>
+          ) : unitsQuery.isError ? (
+            <div className="px-4 py-16 text-center">
+              <p className="font-medium text-white">
+                {t("floor.serialsLoadError", "Could not load product serials")}
+              </p>
+              <Button className="mt-3" variant="secondary" onClick={() => unitsQuery.refetch()}>
+                {t("common.retry", "Retry")}
+              </Button>
+            </div>
+          ) : visibleUnits.length === 0 ? (
+            <div className="px-4 py-16 text-center text-bambu-gray">
+              {search
+                ? t("floor.serialsEmptySearch", "No serials match that search.")
+                : t("floor.serialsEmpty", "No product serials linked yet.")}
+            </div>
+          ) : (
+            <div className="min-w-0 overflow-x-auto">
+              <table className={INVENTORY_TABLE_CLASS}>
+                <thead className={INVENTORY_THEAD_CLASS}>
+                  <tr>
+                    <th className="px-4 py-3 font-medium">{t("floor.serialsColSerial", "Serial")}</th>
+                    <th className="px-4 py-3 font-medium">{t("floor.serialsColTop", "Top")}</th>
+                    <th className="px-4 py-3 font-medium">{t("floor.serialsColBottom", "Bottom")}</th>
+                    <th className="px-4 py-3 font-medium">{t("floor.serialsColKnob", "Knob bin")}</th>
+                    <th className="px-4 py-3 font-medium">{t("floor.serialsColButton", "Button bin")}</th>
+                    <th className="px-4 py-3 font-medium">{t("floor.serialsColLinked", "Linked")}</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {visibleUnits.map((unit) => (
+                    <tr
+                      key={unit.id}
+                      tabIndex={0}
+                      onClick={() => setSelectedUnitId(unit.id)}
+                      onKeyDown={(event) => {
+                        if (event.key === "Enter" || event.key === " ") setSelectedUnitId(unit.id);
+                      }}
+                      className={`cursor-pointer ${INVENTORY_ROW_CLASS} transition-colors hover:bg-bambu-dark-tertiary/60 focus:bg-bambu-dark-tertiary/60 focus:outline-none ${selectedUnitId === unit.id ? "bg-bambu-dark-tertiary/60" : ""}`}
+                    >
+                      <td className={`${INVENTORY_CELL_CLASS} break-all font-mono font-medium text-white`}>{unit.serial_code}</td>
+                      <td className={`${INVENTORY_CELL_CLASS} break-all font-mono text-bambu-gray-light`}>{unit.top_sticker}</td>
+                      <td className={`${INVENTORY_CELL_CLASS} break-all font-mono text-bambu-gray-light`}>{unit.bottom_sticker}</td>
+                      <td className={`${INVENTORY_CELL_CLASS} font-mono text-bambu-gray-light`}>
+                        {unit.knob_bin_payload ?? t("floor.serialsNoBin", "—")}
+                      </td>
+                      <td className={`${INVENTORY_CELL_CLASS} font-mono text-bambu-gray-light`}>
+                        {unit.button_bin_payload ?? t("floor.serialsNoBin", "—")}
+                      </td>
+                      <td className={`${INVENTORY_CELL_CLASS} text-bambu-gray md:whitespace-nowrap`}>
+                        {formatFloorDate(unit.linked_at, { dateStyle: "medium", timeStyle: "short" })}
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          )}
+        </section>
+        {selectedUnit ? (
+          <UnitAssemblyCard
+            unit={selectedUnit}
+            unlinkPending={unlinkMutation.isPending}
+            replacePending={replaceMutation.isPending}
+            replaceKitPending={replaceKitMutation.isPending}
+            onOpenPart={onOpenPart}
+            onOpenBin={onOpenBin}
+            onClose={() => setSelectedUnitId(null)}
+            onUnlink={() => unlinkMutation.mutate(selectedUnit.id)}
+            onReplace={(slot, sticker) =>
+              replaceMutation.mutate({
+                unitId: selectedUnit.id,
+                data: slot === "top" ? { top_sticker: sticker } : { bottom_sticker: sticker },
+              })
+            }
+            onReplaceKit={(slot, batchId) =>
+              replaceKitMutation.mutate({
+                unitId: selectedUnit.id,
+                data: { slot, batch_id: batchId },
+              })
+            }
+          />
+        ) : (
+          <aside className="rounded-lg border border-dashed border-bambu-dark-tertiary p-6 text-center text-sm text-bambu-gray break-words xl:sticky xl:top-6">
+            {unitDeepLinkMissing
+              ? t(
+                  "floor.serialsUnitNotFound",
+                  "That serial is not in the list — it may have been unlinked. Pick a row below.",
+                )
+              : t(
+                  "floor.serialsSelectPrompt",
+                  "Select a serial to see its assembly, unlink it, or replace a housing.",
+                )}
+          </aside>
+        )}
+      </div>
+    </div>
+  );
+}
+
+function UnitAssemblyCard({
+  unit,
+  unlinkPending,
+  replacePending,
+  replaceKitPending,
+  onOpenPart,
+  onOpenBin,
+  onClose,
+  onUnlink,
+  onReplace,
+  onReplaceKit,
+}: {
+  unit: FloorProductUnit;
+  unlinkPending: boolean;
+  replacePending: boolean;
+  replaceKitPending: boolean;
+  onOpenPart: (sticker: string, unit?: FloorProductUnit | null) => void;
+  onOpenBin: (
+    batchId: number,
+    payload: string | null,
+    unit?: FloorProductUnit | null,
+  ) => void;
+  onClose: () => void;
+  onUnlink: () => void;
+  onReplace: (slot: "top" | "bottom", sticker: string) => void;
+  onReplaceKit: (slot: "KNB" | "BUT", batchId: number) => void;
+}) {
+  const { t } = useTranslation();
+  const [unlinkOpen, setUnlinkOpen] = useState(false);
+  const [replaceSlot, setReplaceSlot] = useState<"top" | "bottom" | null>(null);
+  const [replaceKitSlot, setReplaceKitSlot] = useState<"KNB" | "BUT" | null>(null);
+  const [pickedBatchId, setPickedBatchId] = useState<number | null>(null);
+  const [newSticker, setNewSticker] = useState("");
+
+  useEffect(() => {
+    setUnlinkOpen(false);
+    setReplaceSlot(null);
+    setReplaceKitSlot(null);
+    setPickedBatchId(null);
+    setNewSticker("");
+  }, [unit.id]);
+
+  const harvestQuery = useQuery({
+    queryKey: ["floor-bin-history"],
+    queryFn: () => api.getFloorBinHistory(),
+    enabled: replaceKitSlot != null,
+    staleTime: 30_000,
+  });
+
+  const kitCandidates = useMemo(() => {
+    if (replaceKitSlot == null) return [];
+    const rows = (harvestQuery.data ?? [])
+      .map((row) => row.batch)
+      .filter((batch): batch is FloorBinBatch => batch != null && batch.part_code === replaceKitSlot);
+    // Newest harvests first; eligible ones stay selectable, empty/past stay listed
+    // but disabled so the office can see every fill of that type.
+    return [...rows].sort((a, b) => b.id - a.id);
+  }, [harvestQuery.data, replaceKitSlot]);
+
+  const trimmed = newSticker.trim().toUpperCase();
+  const stickerLooksValid = /^BBD-\d{6}$/.test(trimmed);
+  const currentKitBatchId =
+    replaceKitSlot === "KNB" ? unit.knob_batch_id : replaceKitSlot === "BUT" ? unit.button_batch_id : null;
+
+  const openKitBatch = (batchId: number | null | undefined, payload: string | null | undefined) => {
+    if (batchId == null) return;
+    onOpenBin(batchId, payload ?? null, unit);
+  };
+
+  return (
+    <aside
+      className="rounded-lg border border-bambu-dark-tertiary bg-bambu-dark-secondary xl:sticky xl:top-6 xl:flex xl:max-h-[calc(100vh-3rem)] xl:flex-col xl:overflow-hidden"
+      aria-label={t("floor.serialAssemblyLabel", "Assembly detail")}
+    >
+      <div className="flex shrink-0 items-start justify-between gap-3 border-b border-bambu-dark-tertiary p-4">
+        <div>
+          <p className="text-xs uppercase tracking-wide text-bambu-green">
+            {t("floor.serialAssemblyEyebrow", "Product serial")}
+          </p>
+          <h2 className="mt-1 font-mono text-lg font-semibold text-white">{unit.serial_code}</h2>
+        </div>
+        <button
+          type="button"
+          className="rounded p-1 text-bambu-gray hover:bg-bambu-dark-tertiary hover:text-white"
+          onClick={onClose}
+          aria-label={t("floor.serialAssemblyClose", "Close assembly detail")}
+        >
+          <X className="h-5 w-5" />
+        </button>
+      </div>
+      <div className="min-h-0 flex-1 overflow-y-auto p-4">
+        <dl className="grid grid-cols-2 gap-x-4 gap-y-4 text-sm">
+          <div>
+            <dt className="text-bambu-gray">{t("floor.serialsColTop", "Top")}</dt>
+            <dd className="mt-0.5">
+              <button
+                type="button"
+                onClick={() => onOpenPart(unit.top_sticker, unit)}
+                aria-label={t("floor.serialOpenPart", "Open part {{sticker}}", {
+                  sticker: unit.top_sticker,
+                })}
+                className={ASSEMBLY_LINK_CLASS}
+              >
+                {unit.top_sticker}
+              </button>
+            </dd>
+          </div>
+          <div>
+            <dt className="text-bambu-gray">{t("floor.serialsColBottom", "Bottom")}</dt>
+            <dd className="mt-0.5">
+              <button
+                type="button"
+                onClick={() => onOpenPart(unit.bottom_sticker, unit)}
+                aria-label={t("floor.serialOpenPart", "Open part {{sticker}}", {
+                  sticker: unit.bottom_sticker,
+                })}
+                className={ASSEMBLY_LINK_CLASS}
+              >
+                {unit.bottom_sticker}
+              </button>
+            </dd>
+          </div>
+          <div>
+            <dt className="text-bambu-gray">{t("floor.serialAssemblyKnob", "Knob batch")}</dt>
+            <dd className="mt-0.5 font-mono text-white">
+              {unit.knob_batch_id != null ? (
+                <button
+                  type="button"
+                  onClick={() => openKitBatch(unit.knob_batch_id, unit.knob_bin_payload)}
+                  aria-label={t("floor.serialOpenBinBatch", "Open bin batch {{payload}} · #{{id}}", {
+                    payload: unit.knob_bin_payload ?? "KNB",
+                    id: unit.knob_batch_id,
+                  })}
+                  className={ASSEMBLY_LINK_CLASS}
+                >
+                  {unit.knob_bin_payload ?? "KNB"}
+                  {` · #${unit.knob_batch_id}`}
+                </button>
+              ) : (
+                t("floor.serialsNoBin", "—")
+              )}
+            </dd>
+          </div>
+          <div>
+            <dt className="text-bambu-gray">{t("floor.serialAssemblyButton", "Button batch")}</dt>
+            <dd className="mt-0.5 font-mono text-white">
+              {unit.button_batch_id != null ? (
+                <button
+                  type="button"
+                  onClick={() => openKitBatch(unit.button_batch_id, unit.button_bin_payload)}
+                  aria-label={t("floor.serialOpenBinBatch", "Open bin batch {{payload}} · #{{id}}", {
+                    payload: unit.button_bin_payload ?? "BUT",
+                    id: unit.button_batch_id,
+                  })}
+                  className={ASSEMBLY_LINK_CLASS}
+                >
+                  {unit.button_bin_payload ?? "BUT"}
+                  {` · #${unit.button_batch_id}`}
+                </button>
+              ) : (
+                t("floor.serialsNoBin", "—")
+              )}
+            </dd>
+          </div>
+          <div className="col-span-2">
+            <dt className="text-bambu-gray">{t("floor.serialsColLinked", "Linked")}</dt>
+            <dd className="mt-0.5 text-white">
+              {formatFloorDate(unit.linked_at, { dateStyle: "medium", timeStyle: "short" })}
+            </dd>
+          </div>
+        </dl>
+      </div>
+      <div className="shrink-0 space-y-3 border-t border-bambu-dark-tertiary p-4">
+        <div className="flex flex-wrap gap-2">
+          <Button size="sm" variant="secondary" onClick={() => { setReplaceSlot("top"); setNewSticker(""); }}>
+            <Link2 className="h-4 w-4" />
+            {t("floor.serialReplaceTop", "Replace top")}
+          </Button>
+          <Button size="sm" variant="secondary" onClick={() => { setReplaceSlot("bottom"); setNewSticker(""); }}>
+            <Link2 className="h-4 w-4" />
+            {t("floor.serialReplaceBottom", "Replace bottom")}
+          </Button>
+          <Button
+            size="sm"
+            variant="secondary"
+            onClick={() => {
+              setReplaceKitSlot("KNB");
+              setPickedBatchId(null);
+            }}
+          >
+            <Hash className="h-4 w-4" />
+            {t("floor.serialReplaceKnob", "Replace knob")}
+          </Button>
+          <Button
+            size="sm"
+            variant="secondary"
+            onClick={() => {
+              setReplaceKitSlot("BUT");
+              setPickedBatchId(null);
+            }}
+          >
+            <Hash className="h-4 w-4" />
+            {t("floor.serialReplaceButton", "Replace button")}
+          </Button>
+          <Button size="sm" variant="danger" onClick={() => setUnlinkOpen(true)}>
+            <Unlink className="h-4 w-4" />
+            {t("floor.serialUnlink", "Unlink")}
+          </Button>
+        </div>
+      </div>
+      {unlinkOpen && (
+        <ConfirmModal
+          title={t("floor.serialUnlinkTitle", "Unlink this serial?")}
+          message={t(
+            "floor.serialUnlinkMessage",
+            "Frees serial {{serial}} and returns both housings to WIP so they can be reused.",
+            { serial: unit.serial_code },
+          )}
+          confirmText={t("floor.serialUnlinkConfirm", "Unlink unit")}
+          variant="danger"
+          isLoading={unlinkPending}
+          onCancel={() => setUnlinkOpen(false)}
+          onConfirm={() => {
+            onUnlink();
+            setUnlinkOpen(false);
+          }}
+        />
+      )}
+      {replaceSlot && (
+        <ConfirmModal
+          title={
+            replaceSlot === "top"
+              ? t("floor.serialReplaceTopTitle", "Replace the top housing?")
+              : t("floor.serialReplaceBottomTitle", "Replace the bottom housing?")
+          }
+          message={t(
+            "floor.serialReplaceMessage",
+            "Enter the new housing's BBD- sticker (six digits). Replacing the top also updates the kit knob/button from that top. The old housing returns to WIP; the new one ships.",
+          )}
+          confirmText={t("floor.serialReplaceConfirm", "Replace housing")}
+          confirmDisabled={!stickerLooksValid}
+          isLoading={replacePending}
+          onCancel={() => setReplaceSlot(null)}
+          onConfirm={() => {
+            onReplace(replaceSlot, trimmed);
+            setReplaceSlot(null);
+          }}
+        >
+          <input
+            type="text"
+            autoFocus
+            aria-label={
+              replaceSlot === "top"
+                ? t("floor.serialReplaceTopInput", "New top sticker")
+                : t("floor.serialReplaceBottomInput", "New bottom sticker")
+            }
+            placeholder="BBD-000000"
+            value={newSticker}
+            onChange={(event) => setNewSticker(event.target.value)}
+            className="w-full rounded-lg border border-bambu-dark-tertiary bg-bambu-dark px-3 py-2 font-mono text-sm text-white placeholder:text-bambu-gray focus:border-bambu-green focus:outline-none"
+          />
+          {trimmed.length > 0 && !stickerLooksValid ? (
+            <p className="mt-2 text-xs text-amber-400">
+              {t("floor.serialReplaceStickerHint", "Use a part sticker like BBD-000123")}
+            </p>
+          ) : null}
+        </ConfirmModal>
+      )}
+      {replaceKitSlot && (
+        <ConfirmModal
+          title={
+            replaceKitSlot === "KNB"
+              ? t("floor.serialReplaceKnobTitle", "Replace the knob harvest?")
+              : t("floor.serialReplaceButtonTitle", "Replace the button harvest?")
+          }
+          message={t(
+            "floor.serialReplaceKitMessage",
+            "Pick any past or current {{type}} harvest with remaining parts. The previous fill is restored +1 and the new fill is consumed −1.",
+            { type: replaceKitSlot },
+          )}
+          confirmText={t("floor.serialReplaceKitConfirm", "Replace harvest")}
+          confirmDisabled={
+            pickedBatchId == null ||
+            pickedBatchId === currentKitBatchId ||
+            !kitCandidates.some((batch) => batch.id === pickedBatchId && kitHarvestEligible(batch))
+          }
+          isLoading={replaceKitPending}
+          onCancel={() => setReplaceKitSlot(null)}
+          onConfirm={() => {
+            if (pickedBatchId == null) return;
+            onReplaceKit(replaceKitSlot, pickedBatchId);
+            setReplaceKitSlot(null);
+          }}
+        >
+          {harvestQuery.isLoading ? (
+            <div className="flex items-center gap-2 py-4 text-sm text-bambu-gray">
+              <Loader2 className="h-4 w-4 animate-spin" />
+              {t("floor.serialReplaceKitLoading", "Loading harvests…")}
+            </div>
+          ) : harvestQuery.isError ? (
+            <p className="py-2 text-sm text-amber-400">
+              {t("floor.serialReplaceKitLoadError", "Could not load bin harvests.")}
+            </p>
+          ) : kitCandidates.length === 0 ? (
+            <p className="py-2 text-sm text-bambu-gray">
+              {t("floor.serialReplaceKitEmpty", "No {{type}} harvests on record yet.", {
+                type: replaceKitSlot,
+              })}
+            </p>
+          ) : (
+            <ul
+              className="max-h-64 space-y-1 overflow-y-auto"
+              role="listbox"
+              aria-label={t("floor.serialReplaceKitList", "Available harvests")}
+            >
+              {kitCandidates.map((batch) => {
+                const eligible = kitHarvestEligible(batch);
+                const selected = pickedBatchId === batch.id;
+                const current = currentKitBatchId === batch.id;
+                return (
+                  <li key={batch.id}>
+                    <button
+                      type="button"
+                      role="option"
+                      aria-selected={selected}
+                      disabled={!eligible || current}
+                      onClick={() => setPickedBatchId(batch.id)}
+                      className={`flex w-full items-center justify-between gap-3 rounded-lg border px-3 py-2 text-left font-mono text-sm transition-colors ${
+                        selected
+                          ? "border-bambu-green bg-bambu-green/10 text-white"
+                          : "border-bambu-dark-tertiary bg-bambu-dark text-bambu-gray-light hover:border-bambu-gray"
+                      } disabled:cursor-not-allowed disabled:opacity-50`}
+                    >
+                      <span>
+                        {batch.payload}
+                        {` · #${batch.id}`}
+                        {current
+                          ? ` · ${t("floor.serialReplaceKitCurrent", "current")}`
+                          : ""}
+                      </span>
+                      <span className="shrink-0 text-xs text-bambu-gray">
+                        {eligible
+                          ? t("floor.serialReplaceKitRemaining", "{{count}} left", {
+                              count: batch.remaining_quantity,
+                            })
+                          : t("floor.serialReplaceKitUnavailable", "unavailable")}
+                      </span>
+                    </button>
+                  </li>
+                );
+              })}
+            </ul>
+          )}
+        </ConfirmModal>
+      )}
+    </aside>
   );
 }

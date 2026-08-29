@@ -45,6 +45,9 @@ from backend.app.services.floor_bins import (
     BIN_LOCATION_SLUGS,
     BinScanOutcome,
     BinScanResult,
+    adjust_bin_remaining,
+    archive_bin_batch,
+    delete_bin_batch,
     discard_bin,
     list_bin_batch_events,
     list_bin_job_candidates,
@@ -74,6 +77,7 @@ from backend.app.services.floor_codes import (
 from backend.app.services.floor_parts import (
     PART_LOCATION_SLUGS,
     HarvestPrinterResult,
+    KitReassignResult,
     LocationScanOutcome,
     LocationScanResult,
     PartScanResult,
@@ -97,6 +101,7 @@ from backend.app.services.floor_parts import (
     list_part_events,
     list_part_job_candidates,
     list_unlabeled_build_plates,
+    reassign_kit,
     relink_part,
     replace_sticker_code,
     restore_build_plate,
@@ -133,6 +138,21 @@ from backend.app.services.floor_sessions import (
     list_open_sessions,
     list_recent_sessions,
     take_over,
+)
+from backend.app.services.floor_units import (
+    LinkUnitResult,
+    ReplaceUnitKitResult,
+    ReplaceUnitResult,
+    UnitDetail,
+    UnlinkUnitResult,
+    get_unit_by_part,
+    get_unit_by_serial,
+    link_unit,
+    list_units,
+    parse_serial,
+    replace_unit,
+    replace_unit_kit,
+    unlink_unit,
 )
 from backend.app.utils.http import build_content_disposition
 
@@ -912,6 +932,11 @@ class LabeledPartResponse(BaseModel):
     part_name: str | None = None
     part_source: str | None = None
     labeled_at: datetime
+    # Part Assembly Linking (Wave 1): the bin fills this TOP part's kit was
+    # drawn from, and when — null for a part that has not entered WIP.
+    kit_knob_batch_id: int | None = None
+    kit_button_batch_id: int | None = None
+    kit_assigned_at: datetime | None = None
 
 
 class HarvestPrinterScanRequest(BaseModel):
@@ -968,6 +993,7 @@ class BinBatchResponse(BaseModel):
     remaining_quantity: int
     status: str
     harvested_at: datetime
+    archived_at: datetime | None = None
 
 
 class BinBatchEventResponse(BaseModel):
@@ -1005,6 +1031,10 @@ class BinRelinkRequest(BaseModel):
     archive_id: int
 
 
+class DeleteBinBatchResponse(BaseModel):
+    deleted: bool
+
+
 class BinScanRequest(BaseModel):
     device_id: str = Field(..., min_length=1, max_length=64)
     payload: str = Field(..., min_length=1, max_length=256)
@@ -1029,6 +1059,9 @@ class BinScanResponse(BaseModel):
     session: SessionResponse | None = None
     blocking: SessionResponse | None = None
     archive: PlateArchiveResponse | None = None
+    # True when the action left the fill at 0 remaining (Wave 1): the screen
+    # prompts to scan the bin off the line, with no 5→1 countdown.
+    empty_bin_warning: bool = False
 
 
 def _to_plate_printer(printer: Printer | None) -> PlatePrinterResponse | None:
@@ -1077,6 +1110,7 @@ def _to_bin_batch_response(batch) -> BinBatchResponse | None:
         remaining_quantity=batch.remaining_quantity,
         status=batch.status,
         harvested_at=batch.harvested_at,
+        archived_at=batch.archived_at,
     )
 
 
@@ -1089,6 +1123,7 @@ def _to_bin_scan_response(outcome: BinScanOutcome) -> BinScanResponse:
         session=_to_session_response(outcome.session) if outcome.session else None,
         blocking=_to_session_response(outcome.blocking) if outcome.blocking else None,
         archive=_to_plate_archive(outcome.archive),
+        empty_bin_warning=outcome.empty_bin_warning,
     )
 
 
@@ -1124,6 +1159,52 @@ async def get_inventory_bin_batch_events(
     if events is None:
         raise HTTPException(404, "Bin batch not found")
     return [BinBatchEventResponse(**event.__dict__) for event in events]
+
+
+@router.delete("/inventory/bins/batches/{batch_id}", response_model=DeleteBinBatchResponse)
+async def delete_inventory_bin_batch(
+    batch_id: int,
+    db: AsyncSession = Depends(get_db),
+    _: User | None = RequirePermissionIfAuthEnabled(Permission.FLOOR_SCAN),
+) -> DeleteBinBatchResponse:
+    """Permanently delete one harvested bin fill and its history events.
+
+    Active (still-linked) fills must be archived first — returns 409.
+    """
+    result = await delete_bin_batch(db, batch_id)
+    if result == "not_found":
+        raise HTTPException(404, "Bin batch not found")
+    if result == "active":
+        raise HTTPException(409, "Active bin fills must be archived before they can be deleted")
+    await db.commit()
+    return DeleteBinBatchResponse(deleted=True)
+
+
+@router.post("/inventory/bins/batches/{batch_id}/archive", response_model=FloorBinManagementResponse)
+async def archive_inventory_bin_batch(
+    batch_id: int,
+    archived: bool = True,
+    db: AsyncSession = Depends(get_db),
+    _: User | None = RequirePermissionIfAuthEnabled(Permission.FLOOR_SCAN),
+) -> FloorBinManagementResponse:
+    """Archive or restore a harvested bin fill (frees the physical tote when archived).
+
+    Refuses archive while remaining quantity is still > 0 and the fill is linked
+    to a print — deplete or unlink first.
+    """
+    result = await archive_bin_batch(db, batch_id, archived=archived)
+    if result == "not_found":
+        raise HTTPException(404, "Bin batch not found")
+    if result == "in_use":
+        raise HTTPException(
+            409,
+            "Cannot archive a bin fill that still has quantity and is linked to a print",
+        )
+    await db.commit()
+    for item in await list_floor_bin_history(db):
+        if item.batch is not None and item.batch.id == batch_id:
+            return _to_bin_management_response(item)
+    raise HTTPException(404, "Bin batch not found")
 
 
 @router.get("/inventory/bins/batches/{batch_id}/job-candidates", response_model=list[BinJobCandidateResponse])
@@ -1251,6 +1332,29 @@ async def discard_bin_route(
     return _to_bin_scan_response(outcome)
 
 
+class BinAdjustRequest(BaseModel):
+    """Subtract N from an In-WIP bin fill's remaining, from the floor kiosk
+    (§ Part Assembly Linking, Wave 1). Distinct from the office set-to-N
+    override — this only ever decrements, never sets an absolute count."""
+
+    payload: str = Field(..., min_length=1, max_length=256)
+    subtract: int = Field(..., ge=1, le=100_000)
+
+
+@router.post("/bins/adjust", response_model=BinScanResponse)
+async def adjust_floor_bin_route(
+    body: BinAdjustRequest,
+    db: AsyncSession = Depends(get_db),
+    _: User | None = RequirePermissionIfAuthEnabled(Permission.FLOOR_SCAN),
+) -> BinScanResponse:
+    """Subtract N from an In-WIP fill's remaining count. Refused unless the
+    fill is In WIP with remaining left; landing on 0 flags an empty-bin
+    warning so the kiosk can prompt to scan the bin off the line."""
+    outcome = await adjust_bin_remaining(db, body.payload, body.subtract)
+    await db.commit()
+    return _to_bin_scan_response(outcome)
+
+
 @router.post("/harvest/printer", response_model=HarvestScanResponse)
 async def scan_harvest_printer_route(
     body: HarvestPrinterScanRequest,
@@ -1325,6 +1429,9 @@ async def scan_part_route(
                 part_name=presentation.part_name if presentation else None,
                 part_source=presentation.part_source if presentation else None,
                 labeled_at=outcome.part.labeled_at,
+                kit_knob_batch_id=outcome.part.kit_knob_batch_id,
+                kit_button_batch_id=outcome.part.kit_button_batch_id,
+                kit_assigned_at=outcome.part.kit_assigned_at,
             )
             if outcome.part
             else None
@@ -1391,6 +1498,13 @@ class LocationPartScanResponse(BaseModel):
     printer: PlatePrinterResponse | None = None
     archive: PlateArchiveResponse | None = None
     reason: str | None = None
+    # Populated only when a TOP part's WIP commit assigned a kit (Wave 1).
+    kit_knob_batch_id: int | None = None
+    kit_button_batch_id: int | None = None
+    kit_knob_remaining: int | None = None
+    kit_button_remaining: int | None = None
+    kit_knob_emptied: bool = False
+    kit_button_emptied: bool = False
 
 
 def _to_location_response(outcome: LocationScanOutcome) -> LocationPartScanResponse:
@@ -1405,6 +1519,9 @@ def _to_location_response(outcome: LocationScanOutcome) -> LocationPartScanRespo
                 part_code=outcome.part.part_code,
                 section_part_id=outcome.part.section_part_id,
                 labeled_at=outcome.part.labeled_at,
+                kit_knob_batch_id=outcome.part.kit_knob_batch_id,
+                kit_button_batch_id=outcome.part.kit_button_batch_id,
+                kit_assigned_at=outcome.part.kit_assigned_at,
             )
             if outcome.part
             else None
@@ -1412,6 +1529,12 @@ def _to_location_response(outcome: LocationScanOutcome) -> LocationPartScanRespo
         printer=_to_plate_printer(outcome.printer),
         archive=_to_plate_archive(outcome.archive),
         reason=outcome.reason,
+        kit_knob_batch_id=outcome.kit_knob_batch_id,
+        kit_button_batch_id=outcome.kit_button_batch_id,
+        kit_knob_remaining=outcome.kit_knob_remaining,
+        kit_button_remaining=outcome.kit_button_remaining,
+        kit_knob_emptied=outcome.kit_knob_emptied,
+        kit_button_emptied=outcome.kit_button_emptied,
     )
 
 
@@ -1464,6 +1587,340 @@ async def scan_part_location_route(
     await db.commit()
     logger.info("Part location: payload=%s location=%s result=%s", body.payload, body.location_slug, outcome.result)
     return _to_location_response(outcome)
+
+
+class KitReassignRequest(BaseModel):
+    """Move a pending TOP part's knob or button kit slot to a different bin
+    fill (§ Part Assembly Linking, Wave 1). The scanned bin's type picks the
+    slot — a `BBN-KNB-…` reassigns the knob, a `BBN-BUT-…` the button."""
+
+    payload: str = Field(..., min_length=1, max_length=256)
+    bin_payload: str = Field(..., min_length=1, max_length=256)
+
+
+class KitReassignResponse(BaseModel):
+    result: KitReassignResult
+    part: LabeledPartResponse | None = None
+    slot: str | None = None
+    previous_batch_id: int | None = None
+    new_batch_id: int | None = None
+    previous_remaining: int | None = None
+    new_remaining: int | None = None
+
+
+@router.post("/parts/kit/reassign", response_model=KitReassignResponse)
+async def reassign_kit_route(
+    body: KitReassignRequest,
+    db: AsyncSession = Depends(get_db),
+    _: User | None = RequirePermissionIfAuthEnabled(Permission.FLOOR_SCAN),
+) -> KitReassignResponse:
+    """Reassign one kit slot of a pending TOP part to a freshly-scanned bin.
+
+    Restores the previous fill (+1, unless it already left the line emptied)
+    and consumes the new one (−1), recording a `kit_reassigned` part event.
+    Refused for a part with no kit — a BOT, or a TOP that never entered WIP.
+    """
+    outcome = await reassign_kit(db, body.payload, body.bin_payload)
+    await db.commit()
+    part = outcome.part
+    return KitReassignResponse(
+        result=outcome.result,
+        part=(
+            LabeledPartResponse(
+                id=part.id,
+                sticker_code=part.sticker_code,
+                printer_id=part.printer_id,
+                archive_id=part.archive_id,
+                part_code=part.part_code,
+                section_part_id=part.section_part_id,
+                labeled_at=part.labeled_at,
+                kit_knob_batch_id=part.kit_knob_batch_id,
+                kit_button_batch_id=part.kit_button_batch_id,
+                kit_assigned_at=part.kit_assigned_at,
+            )
+            if part is not None
+            else None
+        ),
+        slot=outcome.slot,
+        previous_batch_id=outcome.previous_batch_id,
+        new_batch_id=outcome.new_batch_id,
+        previous_remaining=outcome.previous_remaining,
+        new_remaining=outcome.new_remaining,
+    )
+
+
+# ── Product units (Part Assembly Linking, Wave 2) ─────────────────────────
+
+
+class UnitDetailResponse(BaseModel):
+    """A linked product unit: serial + the four identities the kiosk shows."""
+
+    id: int
+    serial_code: str
+    top_part_id: int
+    bottom_part_id: int
+    top_sticker: str
+    bottom_sticker: str
+    top_part_code: str | None = None
+    bottom_part_code: str | None = None
+    knob_batch_id: int | None = None
+    button_batch_id: int | None = None
+    knob_bin_payload: str | None = None
+    button_bin_payload: str | None = None
+    linked_at: datetime
+
+
+def _to_unit_response(unit: UnitDetail) -> UnitDetailResponse:
+    return UnitDetailResponse(
+        id=unit.id,
+        serial_code=unit.serial_code,
+        top_part_id=unit.top_part_id,
+        bottom_part_id=unit.bottom_part_id,
+        top_sticker=unit.top_sticker,
+        bottom_sticker=unit.bottom_sticker,
+        top_part_code=unit.top_part_code,
+        bottom_part_code=unit.bottom_part_code,
+        knob_batch_id=unit.knob_batch_id,
+        button_batch_id=unit.button_batch_id,
+        knob_bin_payload=unit.knob_bin_payload,
+        button_bin_payload=unit.button_bin_payload,
+        linked_at=unit.linked_at,
+    )
+
+
+class LinkUnitRequest(BaseModel):
+    """The completed linking ceremony: a product serial plus the two housings
+    the kiosk parked (a TOP `BBD-…` and a BOT `BBD-…`)."""
+
+    serial: str = Field(..., min_length=1, max_length=64)
+    top_sticker: str = Field(..., min_length=1, max_length=256)
+    bottom_sticker: str = Field(..., min_length=1, max_length=256)
+
+
+class LinkUnitResponse(BaseModel):
+    result: LinkUnitResult
+    unit: UnitDetailResponse | None = None
+
+
+class UnlinkUnitResponse(BaseModel):
+    result: UnlinkUnitResult
+    unit_id: int | None = None
+    serial_code: str | None = None
+
+
+class ReplaceUnitRequest(BaseModel):
+    """Swap a linked unit's TOP and/or BOT housing for another eligible one
+    (Wave 3). At least one of the two stickers is required; the omitted slot is
+    left untouched."""
+
+    top_sticker: str | None = Field(default=None, max_length=256)
+    bottom_sticker: str | None = Field(default=None, max_length=256)
+
+
+class ReplaceUnitResponse(BaseModel):
+    result: ReplaceUnitResult
+    unit: UnitDetailResponse | None = None
+
+
+@router.post("/units/link", response_model=LinkUnitResponse)
+async def link_unit_route(
+    body: LinkUnitRequest,
+    db: AsyncSession = Depends(get_db),
+    _: User | None = RequirePermissionIfAuthEnabled(Permission.FLOOR_SCAN),
+) -> LinkUnitResponse:
+    """Bind a product serial to a TOP + BOT pair, shipping both (Wave 2 §5).
+
+    The commit end of the kiosk ceremony: refuses (writing nothing) on a bad
+    serial, an already-used serial, an unknown/ineligible/already-linked
+    housing, or a TOP+TOP / BOT+BOT mismatch. On success both housings get
+    `unit_linked` then `shipped`, and further item→location scans on their
+    stickers are refused (lookup only) until unlink.
+    """
+    outcome = await link_unit(db, body.serial, body.top_sticker, body.bottom_sticker)
+    try:
+        await db.commit()
+    except IntegrityError:
+        # Concurrent double-link race (unique serial / top / bottom). Re-check
+        # so the kiosk gets a clean refusal instead of a 500.
+        await db.rollback()
+        serial = parse_serial(body.serial)
+        if serial is not None and await get_unit_by_serial(db, serial) is not None:
+            result = LinkUnitResult.SERIAL_IN_USE
+        else:
+            result = LinkUnitResult.TOP_ALREADY_LINKED
+        logger.info(
+            "Unit link race: serial=%s top=%s bottom=%s result=%s",
+            body.serial,
+            body.top_sticker,
+            body.bottom_sticker,
+            result,
+        )
+        return LinkUnitResponse(result=result, unit=None)
+    logger.info(
+        "Unit link: serial=%s top=%s bottom=%s result=%s",
+        body.serial,
+        body.top_sticker,
+        body.bottom_sticker,
+        outcome.result,
+    )
+    return LinkUnitResponse(
+        result=outcome.result,
+        unit=_to_unit_response(outcome.unit) if outcome.unit is not None else None,
+    )
+
+
+@router.get("/units/by-serial/{code}", response_model=UnitDetailResponse)
+async def get_unit_by_serial_route(
+    code: str,
+    db: AsyncSession = Depends(get_db),
+    _: User | None = RequirePermissionIfAuthEnabled(Permission.FLOOR_SCAN),
+) -> UnitDetailResponse:
+    """Look up a linked unit by product serial — the already-linked idle scan.
+
+    404 when no unit carries that serial, so the kiosk can distinguish an
+    unlinked serial (start the ceremony) from a linked one (read-only card).
+    """
+    unit = await get_unit_by_serial(db, code)
+    if unit is None:
+        raise HTTPException(404, f"No unit for serial: {code}")
+    return _to_unit_response(unit)
+
+
+@router.get("/units/by-part/{sticker}", response_model=UnitDetailResponse)
+async def get_unit_by_part_route(
+    sticker: str,
+    db: AsyncSession = Depends(get_db),
+    _: User | None = RequirePermissionIfAuthEnabled(Permission.FLOOR_SCAN),
+) -> UnitDetailResponse:
+    """Look up the unit a TOP/BOT sticker belongs to (idle part scan), or 404."""
+    unit = await get_unit_by_part(db, sticker)
+    if unit is None:
+        raise HTTPException(404, f"No unit for part: {sticker}")
+    return _to_unit_response(unit)
+
+
+@router.post("/units/{unit_id}/unlink", response_model=UnlinkUnitResponse)
+async def unlink_unit_route(
+    unit_id: int,
+    db: AsyncSession = Depends(get_db),
+    _: User | None = RequirePermissionIfAuthEnabled(Permission.FLOOR_SCAN),
+) -> UnlinkUnitResponse:
+    """Reverse a link: free the serial + both stickers, restore both to WIP.
+
+    Writes `unit_unlinked` then `wip` on each housing so the pair can be
+    corrected and linked again. 404 when the unit id is unknown.
+    """
+    outcome = await unlink_unit(db, unit_id)
+    await db.commit()
+    if outcome.result is UnlinkUnitResult.NOT_FOUND:
+        raise HTTPException(404, f"No unit: {unit_id}")
+    logger.info("Unit unlink: unit_id=%s serial=%s", unit_id, outcome.serial_code)
+    return UnlinkUnitResponse(result=outcome.result, unit_id=outcome.unit_id, serial_code=outcome.serial_code)
+
+
+@router.post("/units/{unit_id}/replace", response_model=ReplaceUnitResponse)
+async def replace_unit_route(
+    unit_id: int,
+    body: ReplaceUnitRequest,
+    db: AsyncSession = Depends(get_db),
+    _: User | None = RequirePermissionIfAuthEnabled(Permission.FLOOR_SCAN),
+) -> ReplaceUnitResponse:
+    """Swap a linked unit's TOP and/or BOT for another eligible housing (Wave 3).
+
+    Keeps the serial. The new housing must be eligible exactly as for a fresh
+    link (new TOP In WIP with a kit; new BOT In WIP; neither already on another
+    unit). The old housing is freed back to WIP so it can be reused; the new one
+    is re-shipped. 404 when the unit id is unknown; every other refusal is a 200
+    carrying the reason so the office screen can message it.
+    """
+    outcome = await replace_unit(db, unit_id, body.top_sticker, body.bottom_sticker)
+    if outcome.result is ReplaceUnitResult.NOT_FOUND:
+        raise HTTPException(404, f"No unit: {unit_id}")
+    try:
+        await db.commit()
+    except IntegrityError:
+        # Concurrent link/replace race on the unique housing FKs — re-read so
+        # the caller gets a clean refusal instead of a 500.
+        await db.rollback()
+        return ReplaceUnitResponse(result=ReplaceUnitResult.TOP_ALREADY_LINKED, unit=None)
+    logger.info(
+        "Unit replace: unit_id=%s top=%s bottom=%s result=%s",
+        unit_id,
+        body.top_sticker,
+        body.bottom_sticker,
+        outcome.result,
+    )
+    return ReplaceUnitResponse(
+        result=outcome.result,
+        unit=_to_unit_response(outcome.unit) if outcome.unit is not None else None,
+    )
+
+
+class ReplaceUnitKitRequest(BaseModel):
+    """Move a linked unit's knob or button onto a specific harvest fill.
+
+    ``slot`` is ``KNB`` or ``BUT``; ``batch_id`` is the ``FloorBinBatch`` id of
+    any past or current eligible fill of that type (remaining > 0, In WIP or
+    Ready-for-Production).
+    """
+
+    slot: str = Field(..., min_length=3, max_length=3)
+    batch_id: int = Field(..., ge=1)
+
+
+class ReplaceUnitKitResponse(BaseModel):
+    result: ReplaceUnitKitResult
+    unit: UnitDetailResponse | None = None
+    slot: str | None = None
+    previous_batch_id: int | None = None
+    new_batch_id: int | None = None
+    previous_remaining: int | None = None
+    new_remaining: int | None = None
+
+
+@router.post("/units/{unit_id}/replace-kit", response_model=ReplaceUnitKitResponse)
+async def replace_unit_kit_route(
+    unit_id: int,
+    body: ReplaceUnitKitRequest,
+    db: AsyncSession = Depends(get_db),
+    _: User | None = RequirePermissionIfAuthEnabled(Permission.FLOOR_SCAN),
+) -> ReplaceUnitKitResponse:
+    """Swap a linked unit's knob or button kit slot onto a chosen harvest fill.
+
+    Office Serials path: pick any eligible past/current batch by id. Restores
+    +1 on the previous fill and consumes −1 on the new one (same rules as floor
+    kit reassign). 404 when the unit id is unknown; every other refusal is a
+    200 carrying the reason.
+    """
+    outcome = await replace_unit_kit(db, unit_id, body.slot, body.batch_id)
+    if outcome.result is ReplaceUnitKitResult.NOT_FOUND:
+        raise HTTPException(404, f"No unit: {unit_id}")
+    await db.commit()
+    logger.info(
+        "Unit replace-kit: unit_id=%s slot=%s batch_id=%s result=%s",
+        unit_id,
+        body.slot,
+        body.batch_id,
+        outcome.result,
+    )
+    return ReplaceUnitKitResponse(
+        result=outcome.result,
+        unit=_to_unit_response(outcome.unit) if outcome.unit is not None else None,
+        slot=outcome.slot,
+        previous_batch_id=outcome.previous_batch_id,
+        new_batch_id=outcome.new_batch_id,
+        previous_remaining=outcome.previous_remaining,
+        new_remaining=outcome.new_remaining,
+    )
+
+
+@router.get("/inventory/units", response_model=list[UnitDetailResponse])
+async def list_units_route(
+    db: AsyncSession = Depends(get_db),
+    _: User | None = RequirePermissionIfAuthEnabled(Permission.FLOOR_SCAN),
+) -> list[UnitDetailResponse]:
+    """Every linked unit, newest first — the minimum the Wave 3 Serials tab needs."""
+    return [_to_unit_response(unit) for unit in await list_units(db)]
 
 
 class BinLocationScanRequest(BaseModel):
@@ -1610,6 +2067,9 @@ class InventoryPartResponse(BaseModel):
     released_at: datetime | None
     latest_event_action: str | None
     latest_event_reason: str | None
+    # Part Assembly Linking (Wave 1): kit fills for a TOP that entered WIP.
+    kit_knob_batch_id: int | None = None
+    kit_button_batch_id: int | None = None
 
 
 class PrintFailureReasonResponse(BaseModel):

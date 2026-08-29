@@ -30,7 +30,7 @@ from __future__ import annotations
 
 import logging
 import re
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import datetime
 from enum import StrEnum
 
@@ -42,6 +42,16 @@ from backend.app.models.floor_part import FloorDismissedBuildPlate, FloorErrorLa
 from backend.app.models.floor_session import FloorStationSession
 from backend.app.models.printer import Printer
 from backend.app.models.settings import Settings
+from backend.app.services.floor_bins import (
+    _latest_bin_event,
+    _remaining_quantity,
+    consume_from_batch,
+    find_reassign_target,
+    find_reassign_target_by_id,
+    find_wip_batch,
+    parse_bin_payload,
+    restore_to_batch,
+)
 from backend.app.services.floor_codes import station_for_slug
 from backend.app.services.floor_printers import (
     LastPrint,
@@ -80,6 +90,11 @@ PART_STATUS_METADATA_ACTIONS = (
     # workflow status (QC / WIP / shipped / …).
     "sticker_replaced",
 )
+
+# Kit bookkeeping describes which fills a TOP drew from, not where the part sits.
+# Ignored whenever we ask for current workflow status.
+_KIT_BOOKKEEPING_ACTIONS = ("kit_assigned", "kit_reassigned")
+_NON_WORKFLOW_STATUS_ACTIONS = PART_STATUS_METADATA_ACTIONS + _KIT_BOOKKEEPING_ACTIONS
 
 
 class PartStatus(StrEnum):
@@ -619,6 +634,16 @@ class LocationScanResult(StrEnum):
     ALREADY_WIP = "already_wip"
     # The sticker has no TOP/BOT part code yet — assign one in inventory first.
     PART_CODE_REQUIRED = "part_code_required"
+    # Part Assembly Linking (Wave 1): a TOP reaching Production WIP must consume
+    # one KNB and one BUT kit unit from the fills on the line. If either type
+    # has no In-WIP fill with remaining left, the whole WIP commit is refused
+    # (no partial consume).
+    KIT_KNOB_UNAVAILABLE = "kit_knob_unavailable"
+    KIT_BUTTON_UNAVAILABLE = "kit_button_unavailable"
+    # Part Assembly Linking (Wave 2): the part has been shipped — it is now on a
+    # linked product unit. Item→location scans are refused (lookup only) until
+    # the unit is unlinked, which restores the part to WIP.
+    SHIPPED = "shipped"
 
 
 # ── Item→location pipeline (§ item-then-location) ─────────────────────────
@@ -671,6 +696,15 @@ class LocationScanOutcome:
     printer: Printer | None = None
     archive: LastPrint | None = None
     reason: str | None = None
+    # Populated only when a TOP part's WIP commit assigned a kit (Wave 1):
+    # which bin fills were consumed, their new remainings, and whether either
+    # fill hit 0 (so the screen can prompt to scan that bin off the line).
+    kit_knob_batch_id: int | None = None
+    kit_button_batch_id: int | None = None
+    kit_knob_remaining: int | None = None
+    kit_button_remaining: int | None = None
+    kit_knob_emptied: bool = False
+    kit_button_emptied: bool = False
 
 
 async def _resolve_part_for_location(
@@ -685,6 +719,12 @@ async def _resolve_part_for_location(
         # print link. A no-job harvest record must be matched in Part history
         # first; an unknown sticker must be enrolled at Harvest first (§9).
         return LocationScanResult.UNKNOWN_PART, None
+    # Part Assembly Linking (Wave 2): a part linked onto a product unit is
+    # shipped — every item→location commit is refused (lookup only) until the
+    # unit is unlinked. Returning the part as ``None`` makes every caller
+    # naturally skip its write, the same contract as UNKNOWN_PART above.
+    if await _part_current_status(db, part.id) == PartStatus.SHIPPED.value:
+        return LocationScanResult.SHIPPED, None
     return LocationScanResult.RECORDED, part
 
 
@@ -693,7 +733,7 @@ async def _part_is_at_location(db: AsyncSession, part_id: int, action: str) -> b
         select(FloorPartEvent.action)
         .where(
             FloorPartEvent.part_id == part_id,
-            FloorPartEvent.action.notin_(PART_STATUS_METADATA_ACTIONS),
+            FloorPartEvent.action.notin_(_NON_WORKFLOW_STATUS_ACTIONS),
         )
         .order_by(FloorPartEvent.occurred_at.desc(), FloorPartEvent.id.desc())
         .limit(1)
@@ -714,6 +754,31 @@ async def _part_has_event(db: AsyncSession, part_id: int, action: str) -> bool:
 async def _part_has_qc_or_rework(db: AsyncSession, part_id: int) -> bool:
     """Initial QC Pass or Rework — either unlocks the rest of the pipeline."""
     return await _part_has_event(db, part_id, "fit_checked") or await _part_has_event(db, part_id, "rework")
+
+
+# Kit bookkeeping actions are defined with PART_STATUS_METADATA_ACTIONS above
+# (``_KIT_BOOKKEEPING_ACTIONS`` / ``_NON_WORKFLOW_STATUS_ACTIONS``).
+
+
+async def _part_current_status(db: AsyncSession, part_id: int) -> str | None:
+    """The part's latest real workflow status, ignoring record-metadata and kit
+    bookkeeping events. Drives Wave 2 eligibility ("is this part In WIP?") and
+    the shipped-part location refusal.
+
+    Unlike ``_part_has_event`` this is the *current* status: a part shipped onto
+    a unit and then unlinked back to WIP reports ``wip`` here (its latest event),
+    so unlink genuinely reopens item→location scans rather than leaving the part
+    permanently refused because it was once shipped.
+    """
+    return await db.scalar(
+        select(FloorPartEvent.action)
+        .where(
+            FloorPartEvent.part_id == part_id,
+            FloorPartEvent.action.notin_(_NON_WORKFLOW_STATUS_ACTIONS),
+        )
+        .order_by(FloorPartEvent.occurred_at.desc(), FloorPartEvent.id.desc())
+        .limit(1)
+    )
 
 
 async def _to_location_outcome(
@@ -884,9 +949,222 @@ async def scan_part_at_location(db: AsyncSession, payload: str, location_slug: s
         return await _to_location_outcome(db, LocationScanResult.FINISHING_REQUIRED, part)
     if await _part_is_at_location(db, part.id, action):
         return await _to_location_outcome(db, LocationScanResult.ALREADY_AT_LOCATION, part)
+
+    # Part Assembly Linking (Wave 1): a TOP part reaching Production WIP for the
+    # first time consumes one KNB and one BUT kit unit from the fills on the
+    # line. This is the only first-time WIP path for a TOP (the restage branch
+    # above handles a part already at WIP, which already holds a kit and must
+    # not consume again). Availability is checked for *both* types before any
+    # consume so a missing type refuses the whole commit — no partial consume,
+    # no WIP event written.
+    if action == PRODUCTION_WIP_ACTION and is_top and part.kit_knob_batch_id is None:
+        knb_batch = await find_wip_batch(db, "KNB", require_remaining=True)
+        if knb_batch is None:
+            return await _to_location_outcome(db, LocationScanResult.KIT_KNOB_UNAVAILABLE, part)
+        but_batch = await find_wip_batch(db, "BUT", require_remaining=True)
+        if but_batch is None:
+            return await _to_location_outcome(db, LocationScanResult.KIT_BUTTON_UNAVAILABLE, part)
+
+        knb_remaining = await consume_from_batch(
+            db, knb_batch, source="kit_assign", part_id=part.id, part_sticker=part.sticker_code
+        )
+        but_remaining = await consume_from_batch(
+            db, but_batch, source="kit_assign", part_id=part.id, part_sticker=part.sticker_code
+        )
+        part.kit_knob_batch_id = knb_batch.id
+        part.kit_button_batch_id = but_batch.id
+        part.kit_assigned_at = datetime.now()
+        # WIP first, then kit — entering production WIP is the primary action;
+        # kit assignment is a side-effect of that scan (never the other way around).
+        db.add(FloorPartEvent(part_id=part.id, action=action, details={"location_slug": location_slug}))
+        db.add(
+            FloorPartEvent(
+                part_id=part.id,
+                action="kit_assigned",
+                details={
+                    "kit_knob_batch_id": knb_batch.id,
+                    "kit_button_batch_id": but_batch.id,
+                    "knob_bin_payload": knb_batch.bin_payload,
+                    "button_bin_payload": but_batch.bin_payload,
+                    "knob_remaining": knb_remaining,
+                    "button_remaining": but_remaining,
+                },
+            )
+        )
+        await db.flush()
+        outcome = await _to_location_outcome(db, LocationScanResult.RECORDED, part)
+        return replace(
+            outcome,
+            kit_knob_batch_id=knb_batch.id,
+            kit_button_batch_id=but_batch.id,
+            kit_knob_remaining=knb_remaining,
+            kit_button_remaining=but_remaining,
+            kit_knob_emptied=knb_remaining == 0,
+            kit_button_emptied=but_remaining == 0,
+        )
+
     db.add(FloorPartEvent(part_id=part.id, action=action, details={"location_slug": location_slug}))
     await db.flush()
     return await _to_location_outcome(db, LocationScanResult.RECORDED, part)
+
+
+# ── Kit reassign (§ Part Assembly Linking, Wave 1) ────────────────────────
+
+
+class KitReassignResult(StrEnum):
+    """What a kit-reassign request did."""
+
+    REASSIGNED = "reassigned"
+    PART_NOT_FOUND = "part_not_found"
+    # The part holds no kit to move (a BOT, or a TOP that never entered WIP).
+    NO_KIT = "no_kit"
+    INVALID_BIN = "invalid_bin"
+    # No fill on the scanned bin is eligible to receive the kit slot (needs a
+    # fill In WIP or Ready-for-Production with remaining > 0).
+    NO_TARGET = "no_target"
+    # Floor scan path only: part is shipped on a product unit — office Serials
+    # replace-kit still uses ``reassign_kit_by_batch_id`` and stays allowed.
+    SHIPPED = "shipped"
+
+
+@dataclass(frozen=True)
+class KitReassignOutcome:
+    result: KitReassignResult
+    part: FloorLabeledPart | None = None
+    # "KNB" or "BUT" — which kit slot the scanned bin type moved.
+    slot: str | None = None
+    previous_batch_id: int | None = None
+    new_batch_id: int | None = None
+    previous_remaining: int | None = None
+    new_remaining: int | None = None
+
+
+async def reassign_kit(db: AsyncSession, sticker_code: str, bin_payload: str) -> KitReassignOutcome:
+    """Move one kit slot of a TOP part to a different bin fill.
+
+    The scanned bin's type picks the slot: a ``KNB`` bin reassigns the knob
+    slot, a ``BUT`` bin the button slot. The previous fill is restored +1
+    (unless it was already emptied off the line — then only the FK moves), and
+    the new fill is consumed −1. Records a ``kit_reassigned`` part event and
+    does not change the part's workflow status. Refused for a part with no kit
+    (a BOT, or a TOP that never entered WIP).
+    """
+    code = parse_sticker_code(sticker_code)
+    if code is None:
+        return KitReassignOutcome(result=KitReassignResult.PART_NOT_FOUND)
+    part = await _get_part_by_code(db, code)
+    if part is None:
+        return KitReassignOutcome(result=KitReassignResult.PART_NOT_FOUND)
+    if part.kit_knob_batch_id is None and part.kit_button_batch_id is None:
+        return KitReassignOutcome(result=KitReassignResult.NO_KIT, part=part)
+    if await _part_current_status(db, part.id) == PartStatus.SHIPPED.value:
+        return KitReassignOutcome(result=KitReassignResult.SHIPPED, part=part)
+
+    parsed = parse_bin_payload(bin_payload)
+    if parsed is None:
+        return KitReassignOutcome(result=KitReassignResult.INVALID_BIN, part=part)
+    slot_code = parsed[0]
+    target = await find_reassign_target(db, bin_payload)
+    if target is None:
+        return KitReassignOutcome(result=KitReassignResult.NO_TARGET, part=part)
+    return await reassign_kit_to_batch(db, part, slot_code, target)
+
+
+async def reassign_kit_to_batch(
+    db: AsyncSession,
+    part: FloorLabeledPart,
+    slot_code: str,
+    target: FloorBinBatch,
+) -> KitReassignOutcome:
+    """Apply a kit-slot move onto an already-resolved eligible fill.
+
+    Shared by the floor bin-scan path and the office Serials path that picks a
+    specific harvest by batch id.
+    """
+    slot = slot_code.strip().upper()
+    if slot not in ("KNB", "BUT"):
+        return KitReassignOutcome(result=KitReassignResult.INVALID_BIN, part=part)
+    if part.kit_knob_batch_id is None and part.kit_button_batch_id is None:
+        return KitReassignOutcome(result=KitReassignResult.NO_KIT, part=part)
+
+    previous_batch_id = part.kit_knob_batch_id if slot == "KNB" else part.kit_button_batch_id
+
+    # Same fill already in that slot: no-op (do not restore+consume noise).
+    if previous_batch_id is not None and target.id == previous_batch_id:
+        remaining = await _remaining_quantity(db, target)
+        return KitReassignOutcome(
+            result=KitReassignResult.REASSIGNED,
+            part=part,
+            slot=slot,
+            previous_batch_id=previous_batch_id,
+            new_batch_id=target.id,
+            previous_remaining=remaining,
+            new_remaining=remaining,
+        )
+
+    previous_remaining: int | None = None
+    if previous_batch_id is not None:
+        previous_batch = await db.get(FloorBinBatch, previous_batch_id)
+        if previous_batch is not None:
+            previous_status = await _latest_bin_event(db, previous_batch.id)
+            # An already-emptied previous fill is gone — only move the FK,
+            # don't credit a unit back onto a bin that left the line.
+            if previous_status not in ("empty", "empty_override"):
+                previous_remaining = await restore_to_batch(db, previous_batch, source="kit_reassign_restore")
+
+    new_remaining = await consume_from_batch(
+        db, target, source="kit_reassign", part_id=part.id, part_sticker=part.sticker_code
+    )
+    if slot == "KNB":
+        part.kit_knob_batch_id = target.id
+    else:
+        part.kit_button_batch_id = target.id
+    db.add(
+        FloorPartEvent(
+            part_id=part.id,
+            action="kit_reassigned",
+            details={
+                "slot": slot,
+                "previous_batch_id": previous_batch_id,
+                "new_batch_id": target.id,
+                "previous_remaining": previous_remaining,
+                "new_remaining": new_remaining,
+            },
+        )
+    )
+    await db.flush()
+    return KitReassignOutcome(
+        result=KitReassignResult.REASSIGNED,
+        part=part,
+        slot=slot,
+        previous_batch_id=previous_batch_id,
+        new_batch_id=target.id,
+        previous_remaining=previous_remaining,
+        new_remaining=new_remaining,
+    )
+
+
+async def reassign_kit_by_batch_id(
+    db: AsyncSession, sticker_code: str, slot_code: str, batch_id: int
+) -> KitReassignOutcome:
+    """Move one kit slot onto a specific harvest fill (office Serials path)."""
+    code = parse_sticker_code(sticker_code)
+    if code is None:
+        return KitReassignOutcome(result=KitReassignResult.PART_NOT_FOUND)
+    part = await _get_part_by_code(db, code)
+    if part is None:
+        return KitReassignOutcome(result=KitReassignResult.PART_NOT_FOUND)
+    if part.kit_knob_batch_id is None and part.kit_button_batch_id is None:
+        return KitReassignOutcome(result=KitReassignResult.NO_KIT, part=part)
+
+    slot = slot_code.strip().upper()
+    if slot not in ("KNB", "BUT"):
+        return KitReassignOutcome(result=KitReassignResult.INVALID_BIN, part=part)
+
+    target = await find_reassign_target_by_id(db, batch_id, part_code=slot)
+    if target is None:
+        return KitReassignOutcome(result=KitReassignResult.NO_TARGET, part=part)
+    return await reassign_kit_to_batch(db, part, slot, target)
 
 
 async def _error_label_for_payload(db: AsyncSession, payload: str) -> FloorErrorLabel | None:
@@ -985,6 +1263,12 @@ class InventoryPart:
     released_at: datetime | None
     latest_event_action: str | None
     latest_event_reason: str | None
+    # Part Assembly Linking (Wave 1): the KNB/BUT bin fills this TOP part's
+    # kit was drawn from when it entered Production WIP — null for a part that
+    # has not entered WIP (or a non-TOP part). Surfaced on the idle sticker
+    # lookup so the kiosk can offer per-slot kit reassign.
+    kit_knob_batch_id: int | None = None
+    kit_button_batch_id: int | None = None
 
 
 @dataclass(frozen=True)
@@ -1264,7 +1548,7 @@ async def list_inventory_parts(db: AsyncSession, *, include_archived: bool = Fal
         select(FloorPartEvent.action)
         .where(
             FloorPartEvent.part_id == FloorLabeledPart.id,
-            FloorPartEvent.action.notin_(PART_STATUS_METADATA_ACTIONS),
+            FloorPartEvent.action.notin_(_NON_WORKFLOW_STATUS_ACTIONS),
         )
         .order_by(FloorPartEvent.occurred_at.desc(), FloorPartEvent.id.desc())
         .limit(1)
@@ -1274,7 +1558,7 @@ async def list_inventory_parts(db: AsyncSession, *, include_archived: bool = Fal
         select(FloorPartEvent.details)
         .where(
             FloorPartEvent.part_id == FloorLabeledPart.id,
-            FloorPartEvent.action.notin_(PART_STATUS_METADATA_ACTIONS),
+            FloorPartEvent.action.notin_(_NON_WORKFLOW_STATUS_ACTIONS),
         )
         .order_by(FloorPartEvent.occurred_at.desc(), FloorPartEvent.id.desc())
         .limit(1)
@@ -1317,6 +1601,8 @@ async def list_inventory_parts(db: AsyncSession, *, include_archived: bool = Fal
             p.released_at,
             event_action,
             _latest_event_reason(event_action, event_details),
+            p.kit_knob_batch_id,
+            p.kit_button_batch_id,
         )
         for p, printer_name, print_name, event_action, event_details, part_name, part_source in result.all()
     ]
@@ -1367,7 +1653,7 @@ async def set_part_status(db: AsyncSession, part_id: int, status: str) -> SetPar
         select(FloorPartEvent.action)
         .where(
             FloorPartEvent.part_id == part.id,
-            FloorPartEvent.action.notin_(PART_STATUS_METADATA_ACTIONS),
+            FloorPartEvent.action.notin_(_NON_WORKFLOW_STATUS_ACTIONS),
         )
         .order_by(FloorPartEvent.occurred_at.desc(), FloorPartEvent.id.desc())
         .limit(1)
@@ -1853,6 +2139,11 @@ __all__ = [
     "LocationScanOutcome",
     "scan_fit_check_part",
     "scan_part_at_location",
+    "KitReassignResult",
+    "KitReassignOutcome",
+    "reassign_kit",
+    "reassign_kit_by_batch_id",
+    "reassign_kit_to_batch",
     "PART_LOCATION_SLUGS",
     "READY_FOR_PRODUCTION_LOCATION_SLUG",
     "PRODUCTION_WIP_LOCATION_SLUG",

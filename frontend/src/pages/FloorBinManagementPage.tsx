@@ -1,4 +1,5 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
+import { useSearchParams } from 'react-router-dom';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { CheckCircle2, ChevronDown, Eraser, Link2, Link2Off, Loader2, Package } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
@@ -40,6 +41,11 @@ export function FloorBinManagementPage() {
   const [relinkTarget, setRelinkTarget] = useState<FloorBinManagement | null>(null);
   const [relinkPrinterId, setRelinkPrinterId] = useState<number | null>(null);
   const [relinkArchiveId, setRelinkArchiveId] = useState<number | null>(null);
+  // Deep-link focus from the Serials assembly card (``?bin=BBN-KNB-1``): the
+  // matching card is highlighted and scrolled into view.
+  const [searchParams] = useSearchParams();
+  const focusPayload = (searchParams.get('bin') ?? '').trim().toUpperCase() || null;
+  const focusedRef = useRef<HTMLElement | null>(null);
 
   const binsQuery = useQuery({
     queryKey: ['floor-bin-management'],
@@ -96,6 +102,11 @@ export function FloorBinManagementPage() {
   }, [relinkTarget]);
 
   const bins = binsQuery.data ?? [];
+  useEffect(() => {
+    if (focusPayload && focusedRef.current && typeof focusedRef.current.scrollIntoView === 'function') {
+      focusedRef.current.scrollIntoView({ block: 'center', behavior: 'smooth' });
+    }
+  }, [focusPayload, binsQuery.data]);
   const relinkCount = bins.filter((bin) => bin.status === 'unlinked').length;
   const activeCount = bins.filter((bin) => bin.batch !== null && bin.status !== 'unlinked').length;
 
@@ -148,8 +159,14 @@ export function FloorBinManagementPage() {
               const parsed = Number(draft);
               const valid = Number.isInteger(parsed) && parsed >= 0 && parsed <= 100_000;
               const busy = overrideMutation.isPending || unlinkMutation.isPending || relinkMutation.isPending;
+              const focused = focusPayload === bin.payload.toUpperCase();
               return (
-                <article key={bin.payload} className="rounded-lg border border-bambu-dark-tertiary bg-bambu-dark p-4">
+                <article
+                  key={bin.payload}
+                  ref={focused ? focusedRef : undefined}
+                  aria-current={focused ? 'true' : undefined}
+                  className={`rounded-lg border bg-bambu-dark p-4 ${focused ? 'border-bambu-green ring-2 ring-bambu-green' : 'border-bambu-dark-tertiary'}`}
+                >
                   <div className="flex items-start justify-between gap-3">
                     <div>
                       <h3 className="font-semibold text-white">{bin.part_name} {bin.bin_number}</h3>

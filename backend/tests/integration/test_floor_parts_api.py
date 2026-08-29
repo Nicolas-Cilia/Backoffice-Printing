@@ -1257,6 +1257,26 @@ async def _enroll_linked_part_with_code(
     return sticker
 
 
+async def _knb_and_but_on_line(async_client, printer_factory, archive_factory):
+    """Put one KNB and one BUT fill In WIP over HTTP so a TOP part can draw a
+    kit when it reaches Production WIP (Part Assembly Linking, Wave 1)."""
+    for payload, qty in (("BBN-KNB-1", 10), ("BBN-BUT-1", 10)):
+        printer = await printer_factory()
+        await archive_factory(printer_id=printer.id)
+        await _open_harvest(async_client, DEVICE_A)
+        await _scan_printer(async_client, printer.id, DEVICE_A)
+        await async_client.post(
+            "/api/v1/floor/harvest/bin",
+            json={"device_id": DEVICE_A, "payload": payload, "quantity": qty},
+        )
+        await _open_harvest(async_client, DEVICE_A)  # close harvest
+        await async_client.post(
+            "/api/v1/floor/locations/fit-check/bin",
+            json={"payload": payload, "passed_quantity": qty},
+        )
+        await async_client.post("/api/v1/floor/wip/bin", json={"payload": payload})
+
+
 async def _seed_completed_archive(async_client, db_session, printer_factory, archive_factory, **archive_kwargs):
     """Set up part tracking and a completed build plate that shows up in the
     unlabeled list, so a test can dismiss and then restore it."""
@@ -1330,6 +1350,9 @@ class TestPartLocationApi:
         assert resp.json()["result"] == "finishing_required"
 
     async def test_top_part_full_finishing_then_wip(self, async_client, printer_factory, archive_factory):
+        # A TOP reaching WIP now draws a kit (Wave 1): put one KNB and one BUT
+        # fill on the line first, or the WIP commit is refused.
+        await _knb_and_but_on_line(async_client, printer_factory, archive_factory)
         sticker = await _enroll_linked_part_with_code(async_client, printer_factory, archive_factory, "TOP")
 
         for slug in ("support-removal", "overhang-removal", "hot-air-removal", "production-wip"):

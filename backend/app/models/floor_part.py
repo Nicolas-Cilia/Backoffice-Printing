@@ -83,6 +83,20 @@ class FloorLabeledPart(Base):
         ForeignKey("floor_station_sessions.id", ondelete="SET NULL"), nullable=True
     )
 
+    # Part Assembly Linking (Wave 1): the KNB and BUT bin fills whose kit this
+    # TOP part consumed one unit from when it entered Production WIP. Nullable
+    # — set once at that WIP commit, and re-pointed by a kit reassign. Not a
+    # cascade concern: ``ondelete="SET NULL"`` degrades a deleted bin fill to
+    # "no kit recorded" rather than removing part history, the same convention
+    # as ``printer_id``/``archive_id`` above.
+    kit_knob_batch_id: Mapped[int | None] = mapped_column(
+        ForeignKey("floor_bin_batches.id", ondelete="SET NULL"), nullable=True
+    )
+    kit_button_batch_id: Mapped[int | None] = mapped_column(
+        ForeignKey("floor_bin_batches.id", ondelete="SET NULL"), nullable=True
+    )
+    kit_assigned_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+
     labeled_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
     # Hidden from the active inventory view, never deleted. The event table
     # below records who/when/why so this remains an audit action.
