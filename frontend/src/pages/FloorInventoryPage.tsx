@@ -2568,7 +2568,7 @@ function BinDetail({
           <X className="h-5 w-5" />
         </button>
       </div>
-      <div className="flex min-h-0 flex-none flex-col gap-5 overflow-hidden p-4">
+      <div className="flex min-h-0 flex-1 flex-col gap-5 overflow-y-auto p-4">
         <div>
           <span
             className={`${STATUS_PILL_CLASS} ${binStatusClass(batch.status, archived)}`}
@@ -3185,7 +3185,7 @@ function PartDetail({
           <X className="h-5 w-5" />
         </button>
       </div>
-      <div className="flex min-h-0 flex-none flex-col gap-5 overflow-hidden p-4">
+      <div className="flex min-h-0 flex-1 flex-col gap-5 overflow-y-auto p-4">
         <div className="flex items-center gap-2">
           <span
             className={`${STATUS_PILL_CLASS} ${statusClass(part, latestEventAction)}`}
