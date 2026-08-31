@@ -147,15 +147,17 @@ describe('FloorScanPage (Phase 1b sessions)', () => {
         await scan('BBS-harvest');
         await screen.findByText('Open for 0s');
 
-        act(() => {
-          vi.advanceTimersByTime(1000);
+        // Async advance so the elapsed setInterval's Date.now() tick flushes
+        // under CI load — sync advanceTimersByTime left "Open for 0s" stuck.
+        await act(async () => {
+          await vi.advanceTimersByTimeAsync(1000);
         });
-        expect(screen.getByText('Open for 1s')).toBeInTheDocument();
+        expect(await screen.findByText('Open for 1s')).toBeInTheDocument();
 
-        act(() => {
-          vi.advanceTimersByTime(2000);
+        await act(async () => {
+          await vi.advanceTimersByTimeAsync(2000);
         });
-        expect(screen.getByText('Open for 3s')).toBeInTheDocument();
+        expect(await screen.findByText('Open for 3s')).toBeInTheDocument();
       } finally {
         vi.useRealTimers();
       }
@@ -178,15 +180,15 @@ describe('FloorScanPage (Phase 1b sessions)', () => {
         await scan('BBS-harvest');
         await screen.findByText('Open for 58s');
 
-        act(() => {
-          vi.advanceTimersByTime(1000);
+        await act(async () => {
+          await vi.advanceTimersByTimeAsync(1000);
         });
-        expect(screen.getByText('Open for 59s')).toBeInTheDocument();
+        expect(await screen.findByText('Open for 59s')).toBeInTheDocument();
 
-        act(() => {
-          vi.advanceTimersByTime(1000);
+        await act(async () => {
+          await vi.advanceTimersByTimeAsync(1000);
         });
-        expect(screen.getByText('Open for 1m')).toBeInTheDocument();
+        expect(await screen.findByText('Open for 1m')).toBeInTheDocument();
       } finally {
         vi.useRealTimers();
       }
@@ -1316,8 +1318,10 @@ describe('FloorScanPage (Phase 1b sessions)', () => {
 
           expect(await screen.findByText('Plate closed · 4 parts')).toBeInTheDocument();
 
-          act(() => {
-            vi.advanceTimersByTime(3000);
+          // Async advance so the 3s plate-closed flash timeout actually fires
+          // (sync advance left the flash stuck on CI).
+          await act(async () => {
+            await vi.advanceTimersByTimeAsync(3000);
           });
 
           expect(await screen.findByText('Scan the printer to begin')).toBeInTheDocument();
