@@ -687,8 +687,9 @@ def _not_superseded_production_file():
 
     Those rows stay in the folder with ``deleted_at`` null but are not any
     slot's ``active_file_id``. Folder cards overlay ``file_count`` the same
-    way; library stats must match so Files/Size agree with what users see.
-    Non-production folders (and root) still count every non-trashed file.
+    way; ``list_files`` and library stats must match so the print picker and
+    Files/Size agree with what users see in File Manager.
+    Non-production folders (and root) still list every non-trashed file.
     """
     production_folder_ids = select(LibraryFolder.id).where(
         or_(LibraryFolder.parameter_tracking.is_(True), LibraryFolder.production_printer_model.isnot(None))
@@ -1985,9 +1986,15 @@ async def list_files(
         )
 
     user, can_read_all = auth_result
-    query = LibraryFile.active().options(
-        selectinload(LibraryFile.created_by),
-        selectinload(LibraryFile.tags),
+    # Match folder file_count / stats: hide superseded production replace history
+    # so StartPrintModal and other library browsers agree with File Manager.
+    query = (
+        LibraryFile.active()
+        .options(
+            selectinload(LibraryFile.created_by),
+            selectinload(LibraryFile.tags),
+        )
+        .where(_not_superseded_production_file())
     )
     if user is not None and not can_read_all:
         query = query.where(LibraryFile.created_by_id == user.id)

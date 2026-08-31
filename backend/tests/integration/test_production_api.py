@@ -219,6 +219,31 @@ class TestProductionAPI:
         assert detail.status_code == 200
         assert detail.json()["file_count"] == 1
 
+    async def test_list_files_excludes_superseded_production_files(self, async_client: AsyncClient):
+        """Print picker uses GET /library/files; it must match active-slot File Manager counts."""
+        boot = (await async_client.post("/api/v1/production/bootstrap")).json()
+        x1c = next(folder for folder in boot["folders"] if folder["production_printer_model"] == "X1C")
+        files, data = _upload("TOP - 1.13.2 - X1C.3mf", folder_id=x1c["id"])
+        created = await async_client.post("/api/v1/production/slots", files=files, data=data)
+        assert created.status_code == 200, created.text
+        old_file_id = created.json()["active_file"]["id"]
+
+        incoming, form = _upload("TOP - 1.14.0 - X1C.3mf", resolution="proceed")
+        replaced = await async_client.post(
+            f"/api/v1/production/slots/{created.json()['id']}/replace", files=incoming, data=form
+        )
+        assert replaced.status_code == 200, replaced.text
+        new_file_id = replaced.json()["active_file"]["id"]
+        assert new_file_id != old_file_id
+
+        # History file remains addressable by id (revision download / history UI).
+        assert (await async_client.get(f"/api/v1/library/files/{old_file_id}")).status_code == 200
+
+        listed = await async_client.get(f"/api/v1/library/files?folder_id={x1c['id']}")
+        assert listed.status_code == 200, listed.text
+        ids = [row["id"] for row in listed.json()]
+        assert ids == [new_file_id]
+
     async def test_library_stats_excludes_superseded_production_files(self, async_client: AsyncClient):
         boot = (await async_client.post("/api/v1/production/bootstrap")).json()
         x1c = next(folder for folder in boot["folders"] if folder["production_printer_model"] == "X1C")
