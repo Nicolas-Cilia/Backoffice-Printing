@@ -778,6 +778,7 @@ export interface ArchiveSlim {
 export interface PrintLogEntry {
   id: number;
   archive_id: number | null;
+  part_code: string | null;
   print_name: string | null;
   printer_name: string | null;
   printer_id: number | null;
@@ -1251,6 +1252,604 @@ export interface SpoolCatalogEntry {
   name: string;
   weight: number;
   is_default: boolean;
+}
+
+/** A scannable floor station (docs/floor-plan.md §5). `payload` is the exact
+ *  string its QR encodes — round-trip it when requesting labels so the printed
+ *  code can't drift from the one the backend resolves on a scan. */
+export interface FloorStation {
+  slug: string;
+  payload: string;
+  name: string;
+  description: string;
+  /** "station" (WIP/+Storage/Move/Harvest) vs "location" (Fit
+   *  Check/Rework) — which Codes-page tab this label prints under (§3.3).
+   *  Purely a presentation grouping; every entry works identically as a
+   *  scannable station regardless of category. */
+  category: 'station' | 'location';
+}
+
+export interface FloorErrorLabel {
+  id: number;
+  name: string;
+  slug: string;
+  payload: string;
+  is_protected: boolean;
+}
+
+/** An open (or just-closed) claim on a floor station (docs/floor-plan.md §2.4).
+ *  Lives on the server, not in the tab: a lock only works if every device sees it. */
+export interface FloorSession {
+  id: number;
+  station_slug: string;
+  station_name: string;
+  device_id: string;
+  opened_at: string;
+  /** How long the session has been open, or *was* open once closed — not time
+   *  since it opened, which would keep growing for finished sessions.
+   *
+   *  Server-computed, so the elapsed indicator does not depend on the kiosk's
+   *  clock being right — a drifted unattended PC would otherwise render the one
+   *  number this display exists to make trustworthy (§5.4). */
+  open_seconds: number;
+  /** Null while open; present on history rows. */
+  closed_at?: string | null;
+  /** True when another device took the station rather than the holder closing
+   *  it — the distinction the history exists to show. */
+  closed_by_takeover?: boolean;
+}
+
+/** Open sessions plus recently closed ones, for the `/floor` landing page. */
+export interface FloorSessionOverview {
+  open: FloorSession[];
+  recent: FloorSession[];
+}
+
+/** What a station scan did. `locked` is a *success* response, not an error: the
+ *  station is real but held by another device, which is a different screen from
+ *  an unrecognised code (a 404). */
+export type FloorScanResult = 'opened' | 'closed' | 'switched' | 'locked';
+
+export interface FloorScanResponse {
+  result: FloorScanResult;
+  station_slug: string;
+  station_name: string;
+  /** The session now open on this device; null after a close or a refusal. */
+  session: FloorSession | null;
+  /** Only on `locked`: who holds the station, and for how long. */
+  blocking: FloorSession | null;
+}
+
+/** A printer as offered in the Codes page's Printer-labels tab. `payload` is
+ *  `BBP-{id}` — the exact string its QR encodes (§4). */
+export interface FloorPrinter {
+  id: number;
+  payload: string;
+  name: string;
+  model: string | null;
+  location: string | null;
+  is_active: boolean;
+}
+
+/** One of the six permanent shared bins. Its current printer/job assignment
+ *  is returned separately in a bin batch after Harvest. */
+export interface FloorBin {
+  payload: string;
+  bin_number: number;
+  part_code: 'KNB' | 'BUT';
+  part_name: string;
+}
+
+/** The printer's most recent finished job — the harvest candidate (§5.6). */
+export interface FloorLastPrint {
+  archive_id: number;
+  print_name: string | null;
+  completed_at: string | null;
+  quantity: number;
+  /** Phase 8 fills this in; until then always false, which reads correctly
+   *  as "nothing labeled yet". */
+  has_labeled_parts: boolean;
+  part_code: string | null;
+}
+
+/** What the machine is doing right now, from MQTT. Absent when the printer
+ *  has no client at all — distinct from `connected: false`, which means we
+ *  know about it and it is unreachable. */
+export interface FloorLiveStatus {
+  connected: boolean;
+  /** Raw gcode state: RUNNING / IDLE / PAUSE / FINISH / FAILED / PREPARE /
+   *  SLICING, or "unknown" before the first MQTT message arrives. */
+  state: string;
+  current_print: string | null;
+  progress: number;
+  remaining_minutes: number;
+  layer_num: number;
+  total_layers: number;
+}
+
+export type FloorStopReasonCode =
+  | 'first_layer_issue'
+  | 'warping'
+  | 'layer_lines'
+  | 'filament_issue'
+  | 'other';
+
+export interface FloorRecentStoppedPrint {
+  print_log_id: number;
+  archive_id: number | null;
+  print_name: string | null;
+  part_code: string | null;
+  status: 'stopped' | 'cancelled' | 'failed';
+  stopped_at: string;
+  reason_code: FloorStopReasonCode | null;
+  reason_text: string | null;
+}
+
+export interface FloorPrintFailureReason {
+  id: number;
+  printer_id: number;
+  printer_name: string | null;
+  archive_id: number | null;
+  print_name: string | null;
+  part_code: string | null;
+  reason_code: FloorStopReasonCode;
+  reason_text: string | null;
+  stopped_at: string;
+}
+
+/** The printer info page (§5.6): what this machine is doing, and whether it
+ *  needs anything. Shown when a `BBP-` code is scanned with no station open. */
+export interface FloorPrinterInfo {
+  id: number;
+  payload: string;
+  name: string;
+  model: string | null;
+  location: string | null;
+  serial_number: string;
+  is_active: boolean;
+  /** A finished job sitting on the bed waiting to be cleared — i.e. there is
+   *  something here to harvest. */
+  awaiting_plate_clear: boolean;
+  total_print_hours: number;
+  last_print: FloorLastPrint | null;
+  maintenance_due_count: number;
+  maintenance_warning_count: number;
+  live: FloorLiveStatus | null;
+  recent_stopped_print: FloorRecentStoppedPrint | null;
+}
+
+// ── Harvest (docs/floor-plan.md §5.4/§7) — phase 8 ─────────────────────────
+
+/** The bound printer, as embedded in a harvest/part-scan response. Distinct
+ *  from `FloorPrinter`/`FloorPrinterInfo`: this is the minimal shape the
+ *  lean harvest screen needs, not the Codes-page or info-page shape. */
+export interface FloorPlatePrinter {
+  id: number;
+  name: string;
+}
+
+/** The plate's resolved job, embedded in a harvest/part-scan response. The
+ *  archive is resolved once, at printer-bind time, and shared by every part
+ *  on that plate (§7.2) — null means no finished job was found, which is a
+ *  plain fact the screen states, not an error. Distinct from `FloorLastPrint`:
+ *  keyed `id` rather than `archive_id`, and carries no `has_labeled_parts` —
+ *  that field only matters for the info page's harvest prompt. */
+export interface FloorPlateArchive {
+  id: number;
+  print_name: string | null;
+  completed_at: string | null;
+  quantity: number;
+  part_code: string | null;
+}
+
+/** A written (or looked-up) labeled part row (§7.2). `archive_id` is null on
+ *  the no-job case — the part is still recorded, against the printer and the
+ *  time, so it is never a dead end. */
+export interface FloorLabeledPart {
+  id: number;
+  sticker_code: string;
+  printer_id: number;
+  archive_id: number | null;
+  /** Canonical Production part code (TOP/BOT/KNB/BUT/...) resolved at link
+   *  time, or null when that print isn't mapped to one (§7). */
+  part_code: string | null;
+  section_part_id: number | null;
+  part_name: string | null;
+  part_source: string | null;
+  labeled_at: string;
+  /** Part Assembly Linking (Wave 1): the KNB/BUT bin fills this TOP part's
+   *  kit was drawn from when it entered Production WIP, and when — null for a
+   *  part that has not entered WIP (or a non-TOP part). */
+  kit_knob_batch_id?: number | null;
+  kit_button_batch_id?: number | null;
+  kit_assigned_at?: string | null;
+}
+
+/** What a `BBP-` scan did while this device holds an open harvest session
+ *  (§5.4, entry #1). `locked` is reachable in shape only — the harvest lock
+ *  is already held by this device whenever a session exists to scan against,
+ *  so the backend returns it rather than crashing, but the client should
+ *  never actually see it here. */
+export type HarvestScanResult =
+  | 'bound'
+  | 'rebound'
+  | 'plate_closed'
+  | 'locked'
+  | 'unknown_printer'
+  | 'no_session';
+
+export interface HarvestScanResponse {
+  result: HarvestScanResult;
+  session: FloorSession | null;
+  printer: FloorPlatePrinter | null;
+  archive: FloorPlateArchive | null;
+  /** Parts labeled against the *current* plate (same session + bound
+   *  printer). On `plate_closed` this is the closed plate's final count. */
+  part_count: number;
+  /** Only when `result === 'locked'` — reserved for completeness (see above). */
+  blocking: FloorSession | null;
+}
+
+/** What a `BBD-` scan did. One endpoint, two entry points (§5.4/§5.6): from
+ *  an open Harvest station, and from the printer info page with nothing
+ *  open, where the first such scan claims the harvest lock. */
+export type PartScanResult =
+  | 'labeled'
+  | 'no_job'
+  | 'duplicate'
+  | 'locked'
+  | 'no_printer'
+  | 'invalid_code'
+  | 'bin_required';
+
+export interface PartScanResponse {
+  result: PartScanResult;
+  part: FloorLabeledPart | null;
+  printer: FloorPlatePrinter | null;
+  archive: FloorPlateArchive | null;
+  part_count: number;
+  /** The harvest session this device holds after the scan — set even when
+   *  the scan is what created it (info-page entry #2). */
+  session: FloorSession | null;
+  /** Only when `result === 'locked'`: who holds harvest, and for how long. */
+  blocking: FloorSession | null;
+}
+
+export type BinScanResult =
+  | 'ready_for_quantity'
+  | 'recorded'
+  | 'bin_in_use'
+  | 'wrong_part'
+  | 'locked'
+  | 'no_session'
+  | 'no_printer'
+  | 'invalid_code'
+  | 'no_batch'
+  | 'ready_for_qc'
+  | 'ready_for_qc_quantity'
+  | 'qc_recorded'
+  | 'qc_quantity_invalid'
+  | 'qc_required'
+  | 'already_wip'
+  | 'wip_recorded'
+  | 'ready_for_production_recorded'
+  | 'already_ready_for_production'
+  | 'empty_recorded'
+  | 'already_empty'
+  | 'empty_requires_wip'
+  | 'quantity_overridden'
+  | 'unlinked'
+  | 'discarded'
+  // Part Assembly Linking (Wave 1).
+  | 'wip_type_occupied'
+  | 'adjusted'
+  | 'adjust_requires_wip';
+
+export interface FloorBinBatch {
+  id: number;
+  payload: string;
+  bin_number: number;
+  printer_id: number | null;
+  printer_name: string | null;
+  archive_id: number | null;
+  print_name: string | null;
+  part_code: 'KNB' | 'BUT';
+  quantity: number;
+  qc_passed_quantity: number | null;
+  remaining_quantity: number;
+  status: string;
+  harvested_at: string;
+  archived_at?: string | null;
+}
+
+export interface FloorBinBatchEvent {
+  id: number;
+  action: string;
+  details: Record<string, unknown> | null;
+  occurred_at: string;
+}
+
+export interface FloorBinJobCandidate {
+  id: number;
+  print_name: string;
+  completed_at: string | null;
+}
+
+export interface FloorBinManagement {
+  payload: string;
+  bin_number: number;
+  part_code: 'KNB' | 'BUT';
+  part_name: string;
+  status: string;
+  batch: FloorBinBatch | null;
+}
+
+export interface BinScanResponse {
+  result: BinScanResult;
+  bin: FloorBin | null;
+  batch: FloorBinBatch | null;
+  printer: FloorPlatePrinter | null;
+  session: FloorSession | null;
+  blocking: FloorSession | null;
+  archive: FloorPlateArchive | null;
+  /** Part Assembly Linking (Wave 1): a `consumed`/`floor_adjust` that took an
+   *  In-WIP fill to 0 remaining. The kiosk should prompt to scan the bin off
+   *  the line — there is no 5→1 countdown. */
+  empty_bin_warning?: boolean;
+}
+
+// ── Fit Check and Rework (docs/floor-plan.md §5.4a/§5.4b) — phase 9a/9b ──
+//
+// Neither is a station — no session, no device/floor-wide state. Each is a
+// plain commit: scan-part-then-location (Fit Check), or scan-part-then-
+// location-then-reason (Rework, where the location scan itself is a pure
+// UI transition on the scan page and never reaches this API on its own).
+
+/** What a scan-part-then-location commit did. No verdict is recorded for
+ *  Fit Check — `recorded` covers both a first check and a re-check
+ *  (§5.4a); there is nothing to amend. `wrong_part_type`,
+ *  `finishing_required`, `qc_required`, `already_wip`, and
+ *  `part_code_required` are item→location refusals. */
+export type LocationScanResult =
+  | 'recorded'
+  | 'already_at_location'
+  | 'unknown_part'
+  | 'invalid_code'
+  | 'wrong_part_type'
+  | 'finishing_required'
+  | 'qc_required'
+  | 'already_wip'
+  | 'part_code_required'
+  // Part Assembly Linking (Wave 1): a TOP's WIP commit needs one KNB and one
+  // BUT kit unit from the fills on the line; refused (no partial consume) when
+  // either type has no In-WIP fill with remaining left.
+  | 'kit_knob_unavailable'
+  | 'kit_button_unavailable'
+  // Part Assembly Linking (Wave 2): the part is shipped (on a linked product
+  // unit). Item→location scans are refused (lookup only) until the unit is
+  // unlinked, which restores the part to WIP.
+  | 'shipped';
+
+/** The item→location destinations a part can be committed to via
+ *  `scanPartLocation` (Fit Check and Rework keep their own endpoints).
+ *  Mirrors `backend.app.services.floor_parts.PART_LOCATION_SLUGS`. */
+export type PartLocationSlug =
+  | 'ready-for-production-inventory'
+  | 'production-wip'
+  | 'support-removal'
+  | 'overhang-removal'
+  | 'hot-air-removal';
+
+/** The item→location destinations a bin can be committed to via
+ *  `scanBinLocation`. Initial QC keeps its own quantity-carrying endpoint.
+ *  Mirrors `backend.app.services.floor_bins.BIN_LOCATION_SLUGS`. */
+export type BinLocationSlug = 'ready-for-production-inventory' | 'production-wip' | 'bin-empty';
+
+export interface LocationScanResponse {
+  result: LocationScanResult;
+  part: FloorLabeledPart | null;
+  printer: FloorPlatePrinter | null;
+  archive: FloorPlateArchive | null;
+  reason: string | null;
+  /** Populated only when a TOP part's WIP commit assigned a kit (Wave 1):
+   *  which fills the knob/button were drawn from, their remaining counts
+   *  after the −1, and whether either landed on 0 (empty-bin warning). */
+  kit_knob_batch_id?: number | null;
+  kit_button_batch_id?: number | null;
+  kit_knob_remaining?: number | null;
+  kit_button_remaining?: number | null;
+  kit_knob_emptied?: boolean;
+  kit_button_emptied?: boolean;
+}
+
+/** What a kit-reassign request did (Wave 1). Mirrors
+ *  `backend.app.services.floor_parts.KitReassignResult`. */
+export type KitReassignResult =
+  | 'reassigned'
+  | 'part_not_found'
+  | 'no_kit'
+  | 'invalid_bin'
+  | 'no_target'
+  | 'shipped';
+
+export interface KitReassignResponse {
+  result: KitReassignResult;
+  part: FloorLabeledPart | null;
+  /** "KNB" or "BUT" — which kit slot the scanned bin type moved. */
+  slot: string | null;
+  previous_batch_id: number | null;
+  new_batch_id: number | null;
+  previous_remaining: number | null;
+  new_remaining: number | null;
+}
+
+/** Fixed, seeded reasons for Rework (§5.4b) — not a user-editable registry,
+ *  the same shape as the office-side unlink/replace-sticker reason codes.
+ *  Mirrors `backend.app.services.floor_parts.ReworkReasonCode`. */
+export type ReworkReasonCode = 'doesnt_fit' | 'rough_surface' | 'layer_lines' | 'other';
+
+/** Part Assembly Linking (Wave 2): a linked product unit — one scanned serial
+ *  bound to a TOP + BOT housing pair, with the knob/button kit read back from
+ *  the TOP. Mirrors `floor.py`'s `UnitDetailResponse`. */
+export interface FloorProductUnit {
+  id: number;
+  serial_code: string;
+  top_part_id: number;
+  bottom_part_id: number;
+  top_sticker: string;
+  bottom_sticker: string;
+  top_part_code: string | null;
+  bottom_part_code: string | null;
+  knob_batch_id: number | null;
+  button_batch_id: number | null;
+  knob_bin_payload: string | null;
+  button_bin_payload: string | null;
+  linked_at: string;
+}
+
+/** What a `linkUnit` request did. Mirrors
+ *  `backend.app.services.floor_units.LinkUnitResult`. `top_not_eligible`
+ *  covers a BOT in the top slot (BOT+BOT); `bottom_not_eligible` covers a TOP
+ *  in the bottom slot (TOP+TOP). */
+export type LinkUnitResult =
+  | 'linked'
+  | 'invalid_serial'
+  | 'serial_in_use'
+  | 'top_not_found'
+  | 'bottom_not_found'
+  | 'same_part'
+  | 'top_not_eligible'
+  | 'bottom_not_eligible'
+  | 'top_already_linked'
+  | 'bottom_already_linked';
+
+export interface LinkUnitResponse {
+  result: LinkUnitResult;
+  unit: FloorProductUnit | null;
+}
+
+/** What an `unlinkUnit` request did. Mirrors
+ *  `backend.app.services.floor_units.UnlinkUnitResult`. */
+export type UnlinkUnitResult = 'unlinked' | 'not_found';
+
+export interface UnlinkUnitResponse {
+  result: UnlinkUnitResult;
+  unit_id: number | null;
+  serial_code: string | null;
+}
+
+/** What a `replaceUnitHousing` request did (Wave 3). Mirrors
+ *  `backend.app.services.floor_units.ReplaceUnitResult`. */
+export type ReplaceUnitResult =
+  | 'replaced'
+  | 'not_found'
+  | 'no_change'
+  | 'top_not_found'
+  | 'bottom_not_found'
+  | 'same_part'
+  | 'top_not_eligible'
+  | 'bottom_not_eligible'
+  | 'top_already_linked'
+  | 'bottom_already_linked';
+
+export interface ReplaceUnitResponse {
+  result: ReplaceUnitResult;
+  unit: FloorProductUnit | null;
+}
+
+/** What a `replaceUnitKit` request did. Mirrors
+ *  `backend.app.services.floor_units.ReplaceUnitKitResult`. */
+export type ReplaceUnitKitResult =
+  | 'replaced'
+  | 'not_found'
+  | 'no_kit'
+  | 'invalid_slot'
+  | 'no_target';
+
+export interface ReplaceUnitKitResponse {
+  result: ReplaceUnitKitResult;
+  unit: FloorProductUnit | null;
+  slot: string | null;
+  previous_batch_id: number | null;
+  new_batch_id: number | null;
+  previous_remaining: number | null;
+  new_remaining: number | null;
+}
+
+/** One row of the `/floor` landing page's needs-attention panel (§7.2): a
+ *  labeled part with no resolved job, waiting to be matched by hand. */
+export interface FloorNeedsAttentionPart {
+  id: number;
+  sticker_code: string;
+  printer_id: number;
+  printer_name: string;
+  labeled_at: string;
+}
+
+export interface FloorNeedsAttentionResponse {
+  parts: FloorNeedsAttentionPart[];
+  /** Unbounded count, so the panel can say "showing 50 of 7xx" rather than
+   *  implying the list it got back is everything. */
+  total: number;
+}
+export interface FloorUnlabeledBuildPlate { id: number; print_name: string | null; printer_name: string | null; completed_at: string | null; }
+export interface FloorDismissedBuildPlate { id: number; print_name: string | null; printer_name: string | null; completed_at: string | null; dismissed_at: string | null; }
+export interface HarvestSummaryLine { printer_id: number | null; printer_name: string | null; print_name: string | null; part_count: number; bin_quantity: number; }
+
+export interface FloorInventoryPart {
+  id: number;
+  sticker_code: string;
+  printer_id: number | null;
+  printer_name: string | null;
+  archive_id: number | null;
+  /** Canonical Production part code (TOP/BOT/KNB/BUT/...), or null when
+   *  none has been resolved or assigned yet (§7). */
+  part_code: string | null;
+  section_part_id: number | null;
+  part_name: string | null;
+  part_source: string | null;
+  print_name: string | null;
+  labeled_at: string;
+  archived_at: string | null;
+  released_at: string | null;
+  latest_event_action?: string | null;
+  /** Concise reason attached to the current Rework event, if there is one. */
+  latest_event_reason?: string | null;
+  /** Part Assembly Linking (Wave 1): the KNB/BUT bin fills a TOP part's kit
+   *  was drawn from on WIP entry — null for a BOT or a TOP not yet in WIP.
+   *  Surfaced on the idle sticker lookup so the kiosk can offer kit reassign. */
+  kit_knob_batch_id?: number | null;
+  kit_button_batch_id?: number | null;
+}
+
+export interface FloorInventoryPartEvent {
+  id: number;
+  action: string;
+  details: Record<string, unknown> | null;
+  occurred_at: string;
+}
+
+export interface FloorPartJobCandidate {
+  id: number;
+  print_name: string;
+  completed_at: string | null;
+}
+
+/** One assignable Production part code (TOP/BOT/KNB/BUT/...), for Part
+ *  history's "assign a part code" picker (§7). */
+export interface FloorPartCodeOption {
+  code: string;
+  name: string;
+}
+
+/** A cross-printer completed job result from the "search all jobs" escalation
+ *  (used when the printer recorded on a part is itself wrong). */
+export interface JobSearchResult {
+  id: number;
+  print_name: string;
+  printer_id: number | null;
+  printer_name: string | null;
+  completed_at: string | null;
 }
 
 export interface StorageLocation {
@@ -3274,6 +3873,7 @@ export type Permission =
   | 'filaments:read' | 'filaments:create' | 'filaments:update' | 'filaments:delete'
   | 'inventory:read' | 'inventory:create' | 'inventory:update' | 'inventory:delete' | 'inventory:view_assignments'
   | 'inventory:forecast_read' | 'inventory:forecast_write'
+  | 'floor:scan'
   | 'smart_plugs:read' | 'smart_plugs:create' | 'smart_plugs:update' | 'smart_plugs:delete' | 'smart_plugs:control'
   | 'camera:view'
   | 'maintenance:read' | 'maintenance:create' | 'maintenance:update' | 'maintenance:delete'
@@ -5426,6 +6026,356 @@ export const api = {
     }
     return response.blob();
   },
+  // ── Floor sessions (docs/floor-plan.md §2.4) ───────────────────────────
+  /** The session this device holds, or null. Called on load so a reload
+   *  resumes the open station instead of stranding it. */
+  getFloorSession: (deviceId: string) =>
+    request<FloorSession | null>(`/floor/session?device_id=${encodeURIComponent(deviceId)}`),
+  /** Apply one scanned `BBS-` payload: opens, closes (same station) or
+   *  switches. Throws on a 404 — that means the payload is not a station at
+   *  all, which the scan page renders as the unknown-code error. */
+  scanFloorStation: (data: { payload: string; device_id: string }) =>
+    request<FloorScanResponse>('/floor/session/scan', {
+      method: 'POST',
+      body: JSON.stringify(data),
+    }),
+  /** Close whoever holds this station and open it here (§2.4). */
+  takeoverFloorStation: (data: { payload: string; device_id: string }) =>
+    request<FloorScanResponse>('/floor/session/takeover', {
+      method: 'POST',
+      body: JSON.stringify(data),
+    }),
+  /** Open sessions plus those closed in the last `hours`, for the `/floor`
+   *  landing page's session panel. */
+  getFloorSessions: (hours = 24) =>
+    request<FloorSessionOverview>(`/floor/sessions?hours=${hours}`),
+  /** Close any session by id, whichever device holds it — the escape hatch
+   *  for a station nobody is coming back to. */
+  closeFloorSessionById: (sessionId: number) =>
+    request<FloorSession>(`/floor/sessions/${sessionId}`, { method: 'DELETE' }),
+  closeFloorSession: (deviceId: string) =>
+    request<FloorSession | null>(`/floor/session?device_id=${encodeURIComponent(deviceId)}`, {
+      method: 'DELETE',
+    }),
+  // ── Floor codes (docs/floor-plan.md §3.3) ──────────────────────────────
+  getFloorStations: () => request<FloorStation[]>('/floor/stations'),
+  getFloorErrorLabels: () => request<FloorErrorLabel[]>('/floor/error-labels'),
+  createFloorErrorLabel: (data: { name: string; slug: string }) =>
+    request<FloorErrorLabel>('/floor/error-labels', { method: 'POST', body: JSON.stringify(data) }),
+  deleteFloorErrorLabel: (labelId: number) => request<void>(`/floor/error-labels/${labelId}`, { method: 'DELETE' }),
+  printFloorStationLabels: async (data: {
+    payloads: string[];
+    width_mm: number;
+    height_mm: number;
+  }): Promise<Blob> => {
+    const headers: Record<string, string> = { 'Content-Type': 'application/json' };
+    if (authToken) headers['Authorization'] = `Bearer ${authToken}`;
+    const response = await fetch(`${API_BASE}/floor/labels/stations`, {
+      method: 'POST',
+      headers,
+      body: JSON.stringify(data),
+    });
+    if (!response.ok) {
+      const error = await response.json().catch(() => ({}));
+      throw new Error(error.detail || `HTTP ${response.status}`);
+    }
+    return response.blob();
+  },
+  printFloorErrorLabels: async (data: { payloads: string[]; width_mm: number; height_mm: number }): Promise<Blob> => {
+    const headers: Record<string, string> = { 'Content-Type': 'application/json' };
+    if (authToken) headers['Authorization'] = `Bearer ${authToken}`;
+    const response = await fetch(`${API_BASE}/floor/labels/errors`, { method: 'POST', headers, body: JSON.stringify(data) });
+    if (!response.ok) {
+      const error = await response.json().catch(() => ({}));
+      throw new Error(error.detail || `HTTP ${response.status}`);
+    }
+    return response.blob();
+  },
+  /** Printers offered in the Codes page's Printer-labels tab (§5.6). */
+  getFloorPrinters: () => request<FloorPrinter[]>('/floor/printers'),
+  getFloorBins: () => request<FloorBin[]>('/floor/bins'),
+  printFloorBinLabels: async (data: {
+    payloads: string[];
+    width_mm: number;
+    height_mm: number;
+  }): Promise<Blob> => {
+    const headers: Record<string, string> = { 'Content-Type': 'application/json' };
+    if (authToken) headers['Authorization'] = `Bearer ${authToken}`;
+    const response = await fetch(`${API_BASE}/floor/labels/bins`, {
+      method: 'POST',
+      headers,
+      body: JSON.stringify(data),
+    });
+    if (!response.ok) {
+      const error = await response.json().catch(() => ({}));
+      throw new Error(error.detail || `HTTP ${response.status}`);
+    }
+    return response.blob();
+  },
+  printFloorPrinterLabels: async (data: {
+    payloads: string[];
+    width_mm: number;
+    height_mm: number;
+  }): Promise<Blob> => {
+    const headers: Record<string, string> = { 'Content-Type': 'application/json' };
+    if (authToken) headers['Authorization'] = `Bearer ${authToken}`;
+    const response = await fetch(`${API_BASE}/floor/labels/printers`, {
+      method: 'POST',
+      headers,
+      body: JSON.stringify(data),
+    });
+    if (!response.ok) {
+      const error = await response.json().catch(() => ({}));
+      throw new Error(error.detail || `HTTP ${response.status}`);
+    }
+    return response.blob();
+  },
+  /** The info page for a scanned printer QR. Keyed by the scanned payload so
+   *  the page hands over exactly what the pistol emitted — no client-side
+   *  parsing that could drift from the backend's idea of a valid code. */
+  getFloorPrinterInfo: (payload: string) =>
+    request<FloorPrinterInfo>(`/floor/printers/${encodeURIComponent(payload)}/info`),
+  recordFloorPrinterStopReason: (printerId: number, data: { reason_code: FloorStopReasonCode; reason_text?: string | null }) =>
+    request<FloorRecentStoppedPrint>(`/floor/printers/${printerId}/stopped-print/reason`, {
+      method: 'POST',
+      body: JSON.stringify(data),
+    }),
+  getFloorPrintFailureReasons: (limit = 20) =>
+    request<FloorPrintFailureReason[]>(`/floor/inventory/print-failures?limit=${limit}`),
+  updateFloorPrintFailureReason: (
+    reasonId: number,
+    data: { reason_code: FloorStopReasonCode; reason_text?: string | null },
+  ) =>
+    request<FloorPrintFailureReason>(`/floor/inventory/print-failures/${reasonId}`, {
+      method: 'PATCH',
+      body: JSON.stringify(data),
+    }),
+  discardFloorPrintFailureReason: (reasonId: number) =>
+    request<void>(`/floor/inventory/print-failures/${reasonId}`, { method: 'DELETE' }),
+  // ── Harvest (docs/floor-plan.md §5.4/§7) — phase 8 ─────────────────────
+  /** A `BBP-` scan made while this device holds an open harvest session:
+   *  binds the plate, rebinds to a different printer, or (on a repeat scan
+   *  of the same one) closes it. */
+  scanHarvestPrinter: (data: { device_id: string; payload: string }) =>
+    request<HarvestScanResponse>('/floor/harvest/printer', {
+      method: 'POST',
+      body: JSON.stringify(data),
+    }),
+  /** A `BBD-` scan from either entry point (§5.4/§5.6). `printer_id` is the
+   *  info-page hint used only to claim the harvest lock on this device's
+   *  first such scan; the backend ignores it once a session already exists,
+   *  so it is safe to always pass the viewed printer's id (or omit it). */
+  scanFloorPart: (data: { device_id: string; payload: string; printer_id?: number | null }) =>
+    request<PartScanResponse>('/floor/parts/scan', {
+      method: 'POST',
+      body: JSON.stringify(data),
+    }),
+  scanHarvestBin: (data: { device_id: string; payload: string; quantity?: number; printer_id?: number | null }) =>
+    request<BinScanResponse>('/floor/harvest/bin', {
+      method: 'POST',
+      body: JSON.stringify(data),
+    }),
+  resolveFloorBin: (data: { payload: string }) =>
+    request<BinScanResponse>('/floor/bins/resolve', {
+      method: 'POST',
+      body: JSON.stringify(data),
+    }),
+  /** The 3MF cover image Files already has on file for a Production part
+   *  code (§7), if any — 404s when the code is unknown or has none, so
+   *  callers should hide the `<img>` on load error rather than treat this
+   *  as a hard dependency. */
+  getFloorPartCodeThumbnailUrl: (code: string, sectionPartId?: number | null) =>
+    withStreamToken(`${API_BASE}/floor/parts/thumbnail/${encodeURIComponent(code)}${sectionPartId ? `?section_part_id=${sectionPartId}` : ''}`),
+  // ── Fit Check and Rework (docs/floor-plan.md §5.4a/§5.4b) — phase 9a/9b ─
+  // Neither is a station — a plain commit, not gated on any open session.
+  /** Commit "this part is at Fit Check" — the second of two scans (part,
+   *  then this location). Re-scanning an already-checked part is not an
+   *  error (§5.4a). */
+  scanFitCheckPart: (data: { payload: string }) =>
+    request<LocationScanResponse>('/floor/locations/fit-check/part', {
+      method: 'POST',
+      body: JSON.stringify(data),
+    }),
+  scanFitCheckBin: (data: { payload: string; passed_quantity?: number }) =>
+    request<BinScanResponse>('/floor/locations/fit-check/bin', {
+      method: 'POST',
+      body: JSON.stringify(data),
+    }),
+  scanWipBin: (data: { payload: string }) =>
+    request<BinScanResponse>('/floor/wip/bin', {
+      method: 'POST',
+      body: JSON.stringify(data),
+    }),
+  scanEmptyBin: (data: { payload: string }) =>
+    request<BinScanResponse>('/floor/bins/empty', {
+      method: 'POST',
+      body: JSON.stringify(data),
+    }),
+  /** Item→location pipeline: commit a scanned part into one of the workflow
+   *  locations (Support/Overhang/Hot Air removal, Ready-for-Production, or
+   *  Production WIP). The TOP-vs-BOT finishing rules are applied server-side;
+   *  Fit Check and Rework keep their own endpoints. */
+  scanPartLocation: (data: { payload: string; location_slug: PartLocationSlug }) =>
+    request<LocationScanResponse>('/floor/locations/part', {
+      method: 'POST',
+      body: JSON.stringify(data),
+    }),
+  /** Part Assembly Linking (Wave 1): subtract N from an In-WIP bin fill's
+   *  remaining count from the kiosk (never a set-to-N — that stays the office
+   *  quantity-override). Landing on 0 flags `empty_bin_warning`. */
+  adjustFloorBin: (data: { payload: string; subtract: number }) =>
+    request<BinScanResponse>('/floor/bins/adjust', {
+      method: 'POST',
+      body: JSON.stringify(data),
+    }),
+  /** Part Assembly Linking (Wave 1): move a pending TOP part's knob or button
+   *  kit slot to a freshly-scanned bin (the bin type picks the slot). Restores
+   *  +1 on the previous fill and consumes −1 on the new one. */
+  reassignKit: (data: { payload: string; bin_payload: string }) =>
+    request<KitReassignResponse>('/floor/parts/kit/reassign', {
+      method: 'POST',
+      body: JSON.stringify(data),
+    }),
+  /** Part Assembly Linking (Wave 2): bind a scanned product serial to a TOP +
+   *  BOT housing pair, shipping both. The commit end of the kiosk ceremony;
+   *  refuses on a bad/used serial, an ineligible/already-linked housing, or a
+   *  TOP+TOP / BOT+BOT mismatch (see `LinkUnitResult`). */
+  linkUnit: (data: { serial: string; top_sticker: string; bottom_sticker: string }) =>
+    request<LinkUnitResponse>('/floor/units/link', {
+      method: 'POST',
+      body: JSON.stringify(data),
+    }),
+  /** Look up a linked unit by product serial — the already-linked idle scan.
+   *  Rejects (404) when the serial is free, so the kiosk can tell an unlinked
+   *  serial (start the ceremony) from a linked one (read-only card). */
+  getUnitBySerial: (code: string) =>
+    request<FloorProductUnit>(`/floor/units/by-serial/${encodeURIComponent(code)}`),
+  /** Look up the unit a TOP/BOT sticker belongs to (idle part scan), or 404. */
+  getUnitByPart: (sticker: string) =>
+    request<FloorProductUnit>(`/floor/units/by-part/${encodeURIComponent(sticker)}`),
+  /** Reverse a link: free the serial + both stickers and restore both housings
+   *  to WIP so the pair can be corrected and linked again. */
+  unlinkUnit: (unitId: number) =>
+    request<UnlinkUnitResponse>(`/floor/units/${unitId}/unlink`, { method: 'POST' }),
+  /** Wave 3: swap a linked unit's TOP and/or BOT housing for another eligible
+   *  housing, keeping the serial. The old housing is freed back to WIP; the new
+   *  one is re-shipped. Refuses on an ineligible/unknown/already-linked housing. */
+  replaceUnitHousing: (unitId: number, data: { top_sticker?: string; bottom_sticker?: string }) =>
+    request<ReplaceUnitResponse>(`/floor/units/${unitId}/replace`, {
+      method: 'POST',
+      body: JSON.stringify(data),
+    }),
+  /** Serials: move a linked unit's knob or button onto a specific harvest fill
+   *  (any past/current eligible batch id). Restores +1 / consumes −1 like floor
+   *  kit reassign. */
+  replaceUnitKit: (unitId: number, data: { slot: 'KNB' | 'BUT'; batch_id: number }) =>
+    request<ReplaceUnitKitResponse>(`/floor/units/${unitId}/replace-kit`, {
+      method: 'POST',
+      body: JSON.stringify(data),
+    }),
+  /** Every linked unit, newest first — the minimum the Wave 3 Serials tab needs. */
+  listUnits: () => request<FloorProductUnit[]>('/floor/inventory/units'),
+  /** Item→location pipeline: commit a scanned bin into Ready-for-Production
+   *  Inventory, Production WIP, or Empty Bin. Replaces the old
+   *  open-WIP-session bin path. */
+  scanBinLocation: (data: { payload: string; location_slug: BinLocationSlug }) =>
+    request<BinScanResponse>('/floor/locations/bin', {
+      method: 'POST',
+      body: JSON.stringify(data),
+    }),
+  /** Discard a bin's whole active fill from the kiosk: unlinks it from its
+   *  printer/job and clears its quantity in one commit. The kiosk gates this
+   *  behind its own two-scan confirmation (Discard, then Discard again)
+   *  before calling it — no reason code, unlike part discard. */
+  discardFloorBin: (data: { payload: string }) =>
+    request<BinScanResponse>('/floor/bins/discard', {
+      method: 'POST',
+      body: JSON.stringify(data),
+    }),
+  getFloorBinManagement: () => request<FloorBinManagement[]>('/floor/inventory/bins'),
+  getFloorBinHistory: () => request<FloorBinManagement[]>('/floor/inventory/bins?include_history=true'),
+  getFloorBinBatchEvents: (batchId: number) =>
+    request<FloorBinBatchEvent[]>(`/floor/inventory/bins/batches/${batchId}/events`),
+  getFloorBinJobCandidates: (batchId: number, printerId: number) =>
+    request<FloorBinJobCandidate[]>(`/floor/inventory/bins/batches/${batchId}/job-candidates?printer_id=${printerId}`),
+  relinkFloorBin: (batchId: number, archiveId: number) =>
+    request<BinScanResponse>(`/floor/inventory/bins/batches/${batchId}/relink`, {
+      method: 'POST',
+      body: JSON.stringify({ archive_id: archiveId }),
+    }),
+  deleteFloorBinBatch: (batchId: number) =>
+    request<{ deleted: boolean }>(`/floor/inventory/bins/batches/${batchId}`, { method: 'DELETE' }),
+  archiveFloorBinBatch: (batchId: number, archived = true) =>
+    request<FloorBinManagement>(`/floor/inventory/bins/batches/${batchId}/archive?archived=${archived}`, {
+      method: 'POST',
+    }),
+  overrideFloorBinQuantity: (data: { payload: string; remaining_quantity: number }) =>
+    request<BinScanResponse>('/floor/inventory/bins/quantity-override', {
+      method: 'POST',
+      body: JSON.stringify(data),
+    }),
+  unlinkFloorBin: (data: { payload: string }) =>
+    request<BinScanResponse>('/floor/inventory/bins/unlink', {
+      method: 'POST',
+      body: JSON.stringify(data),
+    }),
+  /** Commit "this part is at Rework, because …" — the third scan of its
+   *  flow (part, Rework location — a pure UI transition, never a call of
+   *  its own — then this reason). */
+  scanReworkPart: (data: { payload: string; reason_code: ReworkReasonCode; reason_text?: string | null }) =>
+    request<LocationScanResponse>('/floor/locations/rework/part', {
+      method: 'POST',
+      body: JSON.stringify(data),
+    }),
+  scanReworkError: (data: { payload: string; error_payload: string; reason_text?: string | null }) =>
+    request<LocationScanResponse>('/floor/locations/rework/error', { method: 'POST', body: JSON.stringify(data) }),
+  discardFloorPart: (data: { payload: string; error_payload: string; reason_text?: string | null }) =>
+    request<LocationScanResponse>('/floor/parts/discard', { method: 'POST', body: JSON.stringify(data) }),
+  /** Parts with no resolved job, newest first — office matching lives on
+   *  Part history (`/floor/inventory`); this list is the same unmatched set. */
+  getFloorNeedsAttentionParts: (limit = 50) =>
+    request<FloorNeedsAttentionResponse>(`/floor/parts/needs-attention?limit=${limit}`),
+  getFloorUnlabeledBuildPlates: (limit = 50) =>
+    request<FloorUnlabeledBuildPlate[]>(`/floor/parts/unlabeled-build-plates?limit=${limit}`),
+  dismissFloorUnlabeledBuildPlate: (archiveId: number) =>
+    request<{ status: string }>(`/floor/parts/unlabeled-build-plates/${archiveId}/dismiss`, { method: 'POST' }),
+  getFloorDismissedBuildPlates: (limit = 50) =>
+    request<FloorDismissedBuildPlate[]>(`/floor/parts/dismissed-build-plates?limit=${limit}`),
+  restoreFloorDismissedBuildPlate: (archiveId: number) =>
+    request<{ status: string }>(`/floor/parts/dismissed-build-plates/${archiveId}/restore`, { method: 'POST' }),
+  getHarvestSummary: (sessionId: number) => request<HarvestSummaryLine[]>(`/floor/harvest/sessions/${sessionId}/summary`),
+  getFloorInventoryParts: (includeArchived = false) =>
+    request<FloorInventoryPart[]>(`/floor/inventory/parts?include_archived=${includeArchived}`),
+  getFloorInventoryPartBySticker: (stickerCode: string) =>
+    request<FloorInventoryPart>(`/floor/inventory/parts/by-sticker/${encodeURIComponent(stickerCode)}`),
+  getFloorInventoryPartEvents: (partId: number) =>
+    request<FloorInventoryPartEvent[]>(`/floor/inventory/parts/${partId}/events`),
+  getFloorInventoryPartJobCandidates: (partId: number) =>
+    request<FloorPartJobCandidate[]>(`/floor/inventory/parts/${partId}/job-candidates`),
+  archiveFloorInventoryPart: (partId: number, archived = true) =>
+    request<FloorInventoryPart>(`/floor/inventory/parts/${partId}/archive?archived=${archived}`, { method: 'POST' }),
+  setFloorInventoryPartStatus: (partId: number, status: string) =>
+    request<FloorInventoryPart>(`/floor/inventory/parts/${partId}/status`, {
+      method: 'POST',
+      body: JSON.stringify({ status }),
+    }),
+  deleteFloorInventoryPart: (partId: number) =>
+    request<{ deleted: boolean }>(`/floor/inventory/parts/${partId}`, { method: 'DELETE' }),
+  relinkFloorInventoryPart: (partId: number, archiveId: number) =>
+    request<FloorInventoryPart>(`/floor/inventory/parts/${partId}/relink`, { method: 'POST', body: JSON.stringify({ archive_id: archiveId }) }),
+  unlinkFloorInventoryPart: (partId: number, reasonCode: string, reasonText?: string | null) =>
+    request<FloorInventoryPart>(`/floor/inventory/parts/${partId}/unlink`, { method: 'POST', body: JSON.stringify({ reason_code: reasonCode, reason_text: reasonText ?? null }) }),
+  searchFloorInventoryJobs: (query: string, limit = 20) =>
+    request<JobSearchResult[]>(`/floor/inventory/jobs/search?q=${encodeURIComponent(query)}&limit=${limit}`),
+  replaceFloorInventoryPartSticker: (partId: number, newStickerCode: string, reasonCode: string, reasonText?: string | null) =>
+    request<FloorInventoryPart>(`/floor/inventory/parts/${partId}/replace-sticker`, { method: 'POST', body: JSON.stringify({ new_sticker_code: newStickerCode, reason_code: reasonCode, reason_text: reasonText ?? null }) }),
+  /** The Production catalog (§7), for Part history's "assign a part code"
+   *  picker on a part harvest couldn't resolve one for. */
+  getFloorPartCodeOptions: () => request<FloorPartCodeOption[]>('/floor/parts/codes'),
+  setFloorInventoryPartCode: (partId: number, code: string) =>
+    request<FloorInventoryPart>(`/floor/inventory/parts/${partId}/part-code`, { method: 'POST', body: JSON.stringify({ code }) }),
+  clearFloorInventoryPartCode: (partId: number) =>
+    request<FloorInventoryPart>(`/floor/inventory/parts/${partId}/part-code`, { method: 'DELETE' }),
   getSpoolCatalog: () =>
     request<SpoolCatalogEntry[]>('/inventory/catalog'),
   addCatalogEntry: (data: { name: string; weight: number }) =>

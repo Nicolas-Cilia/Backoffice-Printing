@@ -111,6 +111,7 @@ _PUBLIC_ROUTES: frozenset[tuple[str, str]] = frozenset(
         ("GET", "/"),
         ("GET", "/manifest.json"),
         ("GET", "/sw-register.js"),
+        ("GET", "/theme-init.js"),
         ("GET", "/sw.js"),
         ("GET", "/gcode-viewer/"),
         ("GET", "/gcode-viewer/{file_path:path}"),

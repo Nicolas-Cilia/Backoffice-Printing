@@ -41,15 +41,6 @@ class MaintenanceTypeResponse(MaintenanceTypeBase):
 
 
 # Printer Maintenance schemas
-class PrinterMaintenanceBase(BaseModel):
-    printer_id: int
-    maintenance_type_id: int
-    custom_interval_hours: float | None = None
-    enabled: bool = True
-
-
-class PrinterMaintenanceCreate(PrinterMaintenanceBase):
-    pass
 
 
 class PrinterMaintenanceUpdate(BaseModel):
@@ -79,10 +70,6 @@ class MaintenanceHistoryBase(BaseModel):
     notes: str | None = None
     part_url: str | None = Field(default=None, max_length=500)
     cost: float | None = Field(default=None, ge=0)
-
-
-class MaintenanceHistoryCreate(MaintenanceHistoryBase):
-    pass
 
 
 class MaintenanceHistoryResponse(MaintenanceHistoryBase):

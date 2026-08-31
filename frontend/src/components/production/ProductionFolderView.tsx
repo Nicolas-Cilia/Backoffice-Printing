@@ -1,7 +1,7 @@
 import { useMemo, useState, type DragEvent } from 'react';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { useTranslation } from 'react-i18next';
-import { ChevronRight, FileBox, Loader2, Plus, Printer, RefreshCw, Tag, Trash2, X } from 'lucide-react';
+import { ChevronRight, Download, FileBox, Loader2, Plus, Printer, RefreshCw, Tag, Trash2, X } from 'lucide-react';
 import { api } from '../../api/client';
 import type { LibraryTagSummary, ProductionActiveFile, ProductionPartView, ProductionSlotNested } from '../../api/client';
 import { Button } from '../Button';
@@ -45,9 +45,11 @@ function SlotCard({
   canUpload,
   canDelete,
   canEditTags,
+  canDownload,
   onReplace,
   onDelete,
   onPrint,
+  onDownload,
   onEditTags,
   onRemoveTag,
 }: {
@@ -56,9 +58,11 @@ function SlotCard({
   canUpload: boolean;
   canDelete: boolean;
   canEditTags: boolean;
+  canDownload: boolean;
   onReplace: () => void;
   onDelete: () => void;
   onPrint?: (file: ProductionActiveFile) => void;
+  onDownload: (file: ProductionActiveFile) => void;
   onEditTags?: (file: ProductionActiveFile) => void;
   onRemoveTag?: (fileId: number, tagId: number) => void;
 }) {
@@ -103,19 +107,36 @@ function SlotCard({
         <span className="absolute top-2 left-2 text-xs px-1.5 py-0.5 rounded font-medium bg-bambu-dark/80 text-white">
           x{slot.quantity}
         </span>
-        {canDelete && (
-          <button
-            type="button"
-            onClick={(e) => {
-              e.stopPropagation();
-              onDelete();
-            }}
-            className="absolute top-1.5 right-1.5 z-10 p-1.5 rounded bg-bambu-dark-secondary/90 text-bambu-gray hover:bg-bambu-dark-tertiary hover:text-red-700 dark:hover:text-red-400 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-bambu-gray transition-colors"
-            aria-label={t('fileManager.production.delete')}
-          >
-            <Trash2 className="w-4 h-4" aria-hidden />
-          </button>
-        )}
+        {(canDownload && file) || canDelete ? (
+          <div className="absolute top-1.5 right-1.5 z-10 flex items-center gap-1">
+            {canDownload && file && (
+              <button
+                type="button"
+                onClick={(e) => {
+                  e.stopPropagation();
+                  onDownload(file);
+                }}
+                className="p-1.5 rounded bg-bambu-dark-secondary/90 text-bambu-gray hover:bg-bambu-dark-tertiary hover:text-white focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-bambu-gray transition-colors"
+                aria-label={t('common.download')}
+              >
+                <Download className="w-4 h-4" aria-hidden />
+              </button>
+            )}
+            {canDelete && (
+              <button
+                type="button"
+                onClick={(e) => {
+                  e.stopPropagation();
+                  onDelete();
+                }}
+                className="p-1.5 rounded bg-bambu-dark-secondary/90 text-bambu-gray hover:bg-bambu-dark-tertiary hover:text-red-700 dark:hover:text-red-400 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-bambu-gray transition-colors"
+                aria-label={t('fileManager.production.delete')}
+              >
+                <Trash2 className="w-4 h-4" aria-hidden />
+              </button>
+            )}
+          </div>
+        ) : null}
       </div>
       <div className="p-3 flex-1 flex flex-col gap-2">
         <h3 className="text-sm font-medium text-white truncate" title={file?.filename}>
@@ -236,6 +257,7 @@ export function ProductionFolderView({
   const canPrint = hasPermission('queue:create');
   const canDelete = hasAnyPermission('library:delete_own', 'library:delete_all');
   const canEditTags = hasAnyPermission('library:update_own', 'library:update_all');
+  const canDownload = hasPermission('library:read');
   const [showAdd, setShowAdd] = useState(false);
   const [showAddPart, setShowAddPart] = useState(false);
   const [droppedFile, setDroppedFile] = useState<File | null>(null);
@@ -279,6 +301,12 @@ export function ProductionFolderView({
     setTagPickerTarget({
       fileIds: [file.id],
       currentTagIds: (file.tags ?? []).map((tg) => tg.id),
+    });
+  };
+
+  const handleDownload = (file: ProductionActiveFile) => {
+    api.downloadLibraryFile(file.id, file.filename).catch((err) => {
+      console.error('Library file download failed:', err);
     });
   };
 
@@ -458,9 +486,11 @@ export function ProductionFolderView({
                         canUpload={canUpload}
                         canDelete={canDelete}
                         canEditTags={canEditTags}
+                        canDownload={canDownload}
                         onReplace={() => setReplaceSlot(slot)}
                         onDelete={() => setDeleteTarget({ slot, part })}
                         onPrint={canPrint ? onPrint : undefined}
+                        onDownload={handleDownload}
                         onEditTags={openFileTagPicker}
                         onRemoveTag={handleRemoveTag}
                       />

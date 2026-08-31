@@ -956,6 +956,38 @@ class TestQueueCancelEndpoint:
 
     @pytest.mark.asyncio
     @pytest.mark.integration
+    async def test_cancel_pending_transient_library_item_hides_upload(
+        self, async_client: AsyncClient, queue_item_factory, db_session
+    ):
+        """An unsaved manual upload should not remain in Unfiled after cancel."""
+        from backend.app.models.library import LibraryFile
+
+        transient_file = LibraryFile(
+            filename="manual-upload.gcode.3mf",
+            file_path="/tmp/manual-upload.gcode.3mf",
+            file_size=1024,
+            file_type="gcode.3mf",
+        )
+        db_session.add(transient_file)
+        await db_session.commit()
+        await db_session.refresh(transient_file)
+
+        item = await queue_item_factory(
+            status="pending",
+            library_file_id=transient_file.id,
+            archive_id=None,
+            cleanup_library_after_dispatch=True,
+        )
+
+        response = await async_client.post(f"/api/v1/queue/{item.id}/cancel")
+
+        assert response.status_code == 200
+        await db_session.refresh(transient_file)
+        assert transient_file.deleted_at is not None
+        assert item.library_file_id == transient_file.id
+
+    @pytest.mark.asyncio
+    @pytest.mark.integration
     async def test_cancel_non_pending_queue_item(self, async_client: AsyncClient, queue_item_factory, db_session):
         """Verify 400 error when trying to cancel a non-pending queue item."""
         item = await queue_item_factory(status="printing")

@@ -256,7 +256,7 @@ async def test_spa_csp_nonce_changes_per_request(async_client: AsyncClient):
 
 @pytest.mark.asyncio
 @pytest.mark.integration
-@pytest.mark.parametrize("path", ["/manifest.json", "/sw.js", "/sw-register.js"])
+@pytest.mark.parametrize("path", ["/manifest.json", "/sw.js", "/sw-register.js", "/theme-init.js"])
 async def test_pwa_bootstrap_routes_accept_head(async_client: AsyncClient, path: str):
     """Scanners and `curl -I` HEAD-probe these — must not 405 (#1460).
 

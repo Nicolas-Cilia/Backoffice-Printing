@@ -208,61 +208,6 @@ class NotificationTestResponse(BaseModel):
     message: str
 
 
-# Provider-specific config schemas for documentation/validation reference
-class CallMeBotConfig(BaseModel):
-    """CallMeBot/WhatsApp configuration."""
-
-    phone: str = Field(..., description="Phone number with country code (e.g., +1234567890)")
-    apikey: str = Field(..., description="API key from CallMeBot")
-
-
-class NtfyConfig(BaseModel):
-    """ntfy configuration."""
-
-    server: str = Field(default="https://ntfy.sh", description="ntfy server URL")
-    topic: str = Field(..., description="Topic name to publish to")
-    auth_token: str | None = Field(default=None, description="Optional authentication token")
-    event_priorities: dict[str, int] | None = Field(
-        default=None,
-        description=(
-            "Per-event priority override. Keys are event names (e.g. 'on_print_failed'); "
-            "values are ntfy priorities 1-5 (1=min, 2=low, 3=default, 4=high, 5=urgent). "
-            "Events without an entry use ntfy's server-side default."
-        ),
-    )
-
-
-class PushoverConfig(BaseModel):
-    """Pushover configuration."""
-
-    user_key: str = Field(..., description="Your Pushover user key")
-    app_token: str = Field(..., description="Your Pushover application token")
-    priority: int = Field(default=0, ge=-2, le=2, description="Message priority (-2 to 2)")
-    # Emergency priority (2) only: how often to re-alert and when to stop.
-    # Pushover requires retry >= 30s and expire <= 10800s (3h).
-    retry: int = Field(default=60, ge=30, le=10800, description="Emergency re-alert interval in seconds (priority 2)")
-    expire: int = Field(default=3600, ge=30, le=10800, description="Emergency alert expiry in seconds (priority 2)")
-
-
-class TelegramConfig(BaseModel):
-    """Telegram bot configuration."""
-
-    bot_token: str = Field(..., description="Bot token from @BotFather")
-    chat_id: str = Field(..., description="Chat ID to send messages to")
-
-
-class EmailConfig(BaseModel):
-    """Email/SMTP configuration."""
-
-    smtp_server: str = Field(..., description="SMTP server hostname")
-    smtp_port: int = Field(default=587, description="SMTP port (587 for TLS, 465 for SSL)")
-    username: str = Field(..., description="SMTP username/email")
-    password: str = Field(..., description="SMTP password or app password")
-    from_email: str = Field(..., description="From email address")
-    to_email: str = Field(..., description="Recipient email address")
-    use_tls: bool = Field(default=True, description="Use TLS encryption")
-
-
 # Notification Log schemas
 class NotificationLogResponse(BaseModel):
     """Schema for notification log API responses."""

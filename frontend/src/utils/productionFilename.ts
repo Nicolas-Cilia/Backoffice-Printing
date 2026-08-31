@@ -5,8 +5,6 @@ const PRODUCTION_FILENAME_RE =
 
 const STRIP_EXTENSIONS = ['.gcode.3mf', '.3mf', '.gcode'] as const;
 
-export const PRODUCTION_PRINTER_MODELS = ['X1C', 'A1M', 'A1', 'H2D', 'H2S'] as const;
-
 const PRODUCTION_PRINTER_COMPACT: Record<string, string> = {
   A1M: 'A1M',
   A1MINI: 'A1M',

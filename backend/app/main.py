@@ -31,6 +31,7 @@ from backend.app.api.routes import (
     filament_tracking,
     filaments,
     firmware,
+    floor,
     github_backup,
     groups,
     inventory,
@@ -8147,12 +8148,13 @@ async def security_headers_middleware(request, call_next):
     """Add standard HTTP security headers to every response."""
     # Per-request nonce stamped into `script-src` (#1460). On its own this
     # changes nothing for Bambuddy's own pages — index.html has no inline
-    # scripts since the SW registration moved to /sw-register.js. The reason
-    # it's here is Cloudflare: a CF-fronted deployment has the bot-detection
-    # script injected into the HTML on the edge, with a fresh hash on every
-    # load (so hashes can't be allowlisted). When CF sees a nonce in our CSP,
-    # it clones the same nonce onto its injected <script>, and the inline
-    # script passes the policy without us needing 'unsafe-inline'. See
+    # scripts (SW registration is /sw-register.js; theme FOUC bootstrap is
+    # /theme-init.js). The reason it's here is Cloudflare: a CF-fronted
+    # deployment has the bot-detection script injected into the HTML on the
+    # edge, with a fresh hash on every load (so hashes can't be allowlisted).
+    # When CF sees a nonce in our CSP, it clones the same nonce onto its
+    # injected <script>, and the inline script passes the policy without us
+    # needing 'unsafe-inline'. See
     # https://developers.cloudflare.com/cloudflare-challenges/challenge-types/javascript-detections/#if-you-have-a-content-security-policy-csp
     csp_nonce = secrets.token_urlsafe(16)
     response = await call_next(request)
@@ -8417,6 +8419,7 @@ app.include_router(filaments.router, prefix=app_settings.api_prefix)
 app.include_router(filament_tracking.router, prefix=app_settings.api_prefix)
 app.include_router(inventory.router, prefix=app_settings.api_prefix)
 app.include_router(labels.router, prefix=app_settings.api_prefix)
+app.include_router(floor.router, prefix=app_settings.api_prefix)
 app.include_router(settings_routes.router, prefix=app_settings.api_prefix)
 app.include_router(cloud.router, prefix=app_settings.api_prefix)
 app.include_router(orca_cloud.router, prefix=app_settings.api_prefix)
@@ -8566,6 +8569,24 @@ async def serve_sw_register():
     if reg_file.exists():
         return FileResponse(reg_file, media_type="application/javascript")
     return {"error": "sw-register.js not found"}
+
+
+@app.api_route("/theme-init.js", methods=["GET", "HEAD"])
+async def serve_theme_init():
+    """Serve the pre-paint theme bootstrap script.
+
+    Reads localStorage and applies dark/light classes before React mounts so
+    dark-mode refreshes don't flash the light :root background. External file
+    so CSP `script-src 'self'` covers it (same pattern as sw-register.js).
+    """
+    theme_file = app_settings.static_dir / "theme-init.js"
+    if theme_file.exists():
+        return FileResponse(
+            theme_file,
+            media_type="application/javascript",
+            headers={"Cache-Control": "no-cache, must-revalidate"},
+        )
+    return {"error": "theme-init.js not found"}
 
 
 # ── GCode viewer static files ────────────────────────────────────────────────

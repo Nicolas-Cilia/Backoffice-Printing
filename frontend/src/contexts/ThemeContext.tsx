@@ -165,6 +165,10 @@ export function ThemeProvider({ children }: { children: ReactNode }) {
       root.classList.add(`accent-${lightAccent}`);
     }
 
+    root.style.colorScheme = resolvedMode;
+    // Drop the pre-paint bridge set by /theme-init.js so CSS vars own the bg.
+    root.style.removeProperty('background-color');
+
     localStorage.setItem('theme-mode', mode);
     localStorage.removeItem('theme');
   }, [mode, resolvedMode, darkStyle, darkBackground, darkAccent, lightStyle, lightBackground, lightAccent]);

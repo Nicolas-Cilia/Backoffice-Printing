@@ -95,11 +95,6 @@ def _color_from_hex(hex_str: str | None, fallback: Color = HexColor(0x808080)) -
         return fallback
 
 
-def _luminance(color: Color) -> float:
-    """Perceived luminance of a ReportLab Color (0–1, WCAG-style approximation)."""
-    return 0.299 * color.red + 0.587 * color.green + 0.114 * color.blue
-
-
 def _hex_code_label(rgba: str | None) -> str:
     """Format ``data.rgba`` as a printable ``#RRGGBB`` string for the label.
 
@@ -122,7 +117,7 @@ def _hex_code_label(rgba: str | None) -> str:
 # ── QR generation ────────────────────────────────────────────────────────────
 
 
-def _qr_png_bytes(payload: str, *, box_size: int = 4, border: int = 2) -> bytes:
+def qr_png_bytes(payload: str, *, box_size: int = 4, border: int = 2) -> bytes:
     """Render ``payload`` as a tight QR PNG. Empty payload returns empty bytes
     so callers can skip drawing without checking ahead of time.
     """
@@ -189,7 +184,7 @@ def _roomy_qr_size(inner_w: float, inner_h: float) -> float:
 
 def _draw_qr(c: rl_canvas.Canvas, x: float, y: float, size: float, payload: str) -> None:
     """Embed a square QR at (x, y) with edge length ``size`` (in points)."""
-    png = _qr_png_bytes(payload)
+    png = qr_png_bytes(payload)
     if not png:
         return
     from reportlab.lib.utils import ImageReader
@@ -198,7 +193,7 @@ def _draw_qr(c: rl_canvas.Canvas, x: float, y: float, size: float, payload: str)
     c.drawImage(img, x, y, width=size, height=size, mask="auto")
 
 
-def _truncate_to_width(c: rl_canvas.Canvas, text: str, font: str, size: float, max_w: float) -> str:
+def truncate_to_width(c: rl_canvas.Canvas, text: str, font: str, size: float, max_w: float) -> str:
     """Truncate ``text`` with an ellipsis so it fits within ``max_w`` points."""
     if c.stringWidth(text, font, size) <= max_w:
         return text
@@ -281,7 +276,7 @@ def _draw_label_tight(
     brand_size = 6.5
     if data.brand:
         c.setFont("Helvetica-Bold", brand_size)
-        brand = _truncate_to_width(c, data.brand, "Helvetica-Bold", brand_size, text_w)
+        brand = truncate_to_width(c, data.brand, "Helvetica-Bold", brand_size, text_w)
         c.drawString(text_x, y + h - pad - brand_size, brand)
 
     # Second line: material + subtype, small
@@ -290,7 +285,7 @@ def _draw_label_tight(
     sub_y_baseline = y + h - pad - brand_size - 0.6 - sub_size
     if sub_line:
         c.setFont("Helvetica", sub_size)
-        sub_line = _truncate_to_width(c, sub_line, "Helvetica", sub_size, text_w)
+        sub_line = truncate_to_width(c, sub_line, "Helvetica", sub_size, text_w)
         c.drawString(text_x, sub_y_baseline, sub_line)
 
     # Third line (when there's room): hex code, tiny — useful when the user
@@ -307,7 +302,7 @@ def _draw_label_tight(
     # Bottom: BIG spool ID — the killer field at-a-glance.
     id_size = 13
     c.setFont("Helvetica-Bold", id_size)
-    id_text = _truncate_to_width(c, f"#{data.spool_id}", "Helvetica-Bold", id_size, text_w)
+    id_text = truncate_to_width(c, f"#{data.spool_id}", "Helvetica-Bold", id_size, text_w)
     c.drawString(text_x, inner_y + 0.5, id_text)
 
 
@@ -363,7 +358,7 @@ def _draw_label_roomy(
     if line1:
         size = 8
         c.setFont("Helvetica-Bold", size)
-        text = _truncate_to_width(c, line1, "Helvetica-Bold", size, text_w)
+        text = truncate_to_width(c, line1, "Helvetica-Bold", size, text_w)
         cursor_y -= size
         c.drawString(text_x, cursor_y, text)
         cursor_y -= 1.2
@@ -371,7 +366,7 @@ def _draw_label_roomy(
     if line2:
         size = 7
         c.setFont("Helvetica", size)
-        text = _truncate_to_width(c, line2, "Helvetica", size, text_w)
+        text = truncate_to_width(c, line2, "Helvetica", size, text_w)
         cursor_y -= size
         c.drawString(text_x, cursor_y, text)
         cursor_y -= 1.5
@@ -388,7 +383,7 @@ def _draw_label_roomy(
     if name and name != line1:
         size = 9
         c.setFont("Helvetica-Bold", size)
-        text = _truncate_to_width(c, name, "Helvetica-Bold", size, text_w)
+        text = truncate_to_width(c, name, "Helvetica-Bold", size, text_w)
         cursor_y -= size
         c.drawString(text_x, cursor_y, text)
         cursor_y -= 1.2
@@ -396,14 +391,14 @@ def _draw_label_roomy(
     if data.storage_location:
         size = 6.5
         c.setFont("Helvetica-Oblique", size)
-        text = _truncate_to_width(c, data.storage_location, "Helvetica-Oblique", size, text_w)
+        text = truncate_to_width(c, data.storage_location, "Helvetica-Oblique", size, text_w)
         cursor_y -= size
         c.drawString(text_x, cursor_y, text)
 
     # Spool ID — anchored at the bottom of the text column, big and bold.
     id_size = 16
     c.setFont("Helvetica-Bold", id_size)
-    id_text = _truncate_to_width(c, f"#{data.spool_id}", "Helvetica-Bold", id_size, text_w)
+    id_text = truncate_to_width(c, f"#{data.spool_id}", "Helvetica-Bold", id_size, text_w)
     c.drawString(text_x, inner_y + 0.5, id_text)
 
 
@@ -489,6 +484,6 @@ def render_labels(template: TemplateName, data_list: list[LabelData], *, monochr
     raise ValueError(f"Unknown label template: {template!r}")
 
 
-__all__ = ["LabelData", "TemplateName", "render_labels"]
+__all__ = ["LabelData", "TemplateName", "render_labels", "qr_png_bytes", "truncate_to_width"]
 # white re-exported for completeness; future templates may need a paper-tone variant.
 _ = white

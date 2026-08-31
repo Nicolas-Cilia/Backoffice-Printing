@@ -1,16 +1,9 @@
 /**
  * Long-lived camera-stream tokens (#1108).
  *
- * Exports two surfaces:
- *
- * - ``CameraTokensSection`` — the actual list+create+revoke UI. Designed to
- *   drop into Settings → API Keys (or any other host card) without page
- *   chrome of its own.
- *
- * - ``CameraTokensPage`` (default export) — a thin wrapper that puts the
- *   section inside a standalone page layout. Kept around so direct
- *   navigation to ``/camera-tokens`` keeps working for anyone who has
- *   bookmarked it, but the canonical entry point is the Settings tab.
+ * Exports ``CameraTokensSection`` — the list+create+revoke UI, hosted under
+ * Settings → API Keys (and historically at ``/camera-tokens``, which now
+ * redirects there).
  *
  * The plaintext token is shown EXACTLY ONCE at create time inside a copy-
  * to-clipboard modal. Listings only ever show metadata.
@@ -581,17 +574,5 @@ export function CameraTokensSection() {
         />
       )}
     </>
-  );
-}
-
-export default function CameraTokensPage() {
-  const { t } = useTranslation();
-  return (
-    <div className="p-6 max-w-5xl mx-auto">
-      <h1 className="text-2xl font-bold text-white mb-2">
-        {t('cameraTokens.title', 'Camera API Tokens')}
-      </h1>
-      <CameraTokensSection />
-    </div>
   );
 }
