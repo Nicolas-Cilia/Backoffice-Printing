@@ -537,8 +537,8 @@ describe('FloorScanPage (Phase 1b sessions)', () => {
       await screen.findByText('Bench A');
 
       vi.useFakeTimers({ shouldAdvanceTime: true });
-      act(() => {
-        vi.advanceTimersByTime(30000);
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(30000);
       });
       vi.useRealTimers();
 
@@ -1772,8 +1772,8 @@ describe('FloorScanPage (Phase 1b sessions)', () => {
           await scan('BBD-000042');
           expect(await screen.findByText('Linked · bracket_v4')).toBeInTheDocument();
 
-          act(() => {
-            vi.advanceTimersByTime(3100);
+          await act(async () => {
+            await vi.advanceTimersByTimeAsync(3100);
           });
 
           expect(screen.getByText('Linked · bracket_v4')).toBeInTheDocument();
@@ -2278,13 +2278,11 @@ describe('FloorScanPage (Phase 1b sessions)', () => {
         await scan('BBS-initial-qc-pass');
         await screen.findByText('Fit Check Pass');
 
-        act(() => {
-          vi.advanceTimersByTime(3100);
+        await act(async () => {
+          await vi.advanceTimersByTimeAsync(3100);
         });
 
-        // Synchronous assert after the flash timer — findByText + fake timers
-        // race under parallel load and flake (see harvest plate-closed flash test).
-        expect(screen.getByText('Scan a code')).toBeInTheDocument();
+        expect(await screen.findByText('Scan a code')).toBeInTheDocument();
       } finally {
         vi.useRealTimers();
       }
@@ -3419,11 +3417,11 @@ describe('FloorScanPage (Phase 1b sessions)', () => {
       await scan('4001234567890');
       expect(await screen.findByText('Not handled yet')).toBeInTheDocument();
 
-      act(() => {
-        vi.advanceTimersByTime(3000);
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(3000);
       });
 
-      expect(screen.getByText('Scan a code')).toBeInTheDocument();
+      expect(await screen.findByText('Scan a code')).toBeInTheDocument();
     });
 
     it('leaves the takeover prompt up instead of timing it out', async () => {
@@ -3443,8 +3441,8 @@ describe('FloorScanPage (Phase 1b sessions)', () => {
       await scan('BBS-harvest');
       expect(await screen.findByText('Harvest is open elsewhere')).toBeInTheDocument();
 
-      act(() => {
-        vi.advanceTimersByTime(30000);
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(30000);
       });
 
       expect(screen.getByText('Harvest is open elsewhere')).toBeInTheDocument();
