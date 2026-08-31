@@ -1058,7 +1058,7 @@ export function FloorInventoryPage() {
           onClick={() => setFilter("archived")}
         />
       </div>
-      <div className="grid gap-6 xl:grid-cols-[minmax(0,1fr)_24rem] xl:items-start">
+      <div className="grid gap-6 lg:grid-cols-[minmax(0,1fr)_24rem] lg:items-start">
         <section className="min-w-0 overflow-hidden rounded-lg border border-bambu-dark-tertiary bg-bambu-dark-secondary">
           <div className="flex flex-col gap-3 border-b border-bambu-dark-tertiary p-4 md:flex-row md:items-start">
             <HorizontalScrollFade className="w-full md:flex-1" fadeFromClassName="from-bambu-dark-secondary">
@@ -1855,7 +1855,7 @@ function PrintFailureDetail({
 
   return (
     <aside
-      className="rounded-lg border border-bambu-dark-tertiary bg-bambu-dark-secondary xl:sticky xl:top-6 xl:flex xl:max-h-[calc(100vh-3rem)] xl:flex-col xl:overflow-hidden"
+      className="rounded-lg border border-bambu-dark-tertiary bg-bambu-dark-secondary lg:sticky lg:top-6 lg:flex lg:max-h-[calc(100vh-3rem)] lg:flex-col lg:overflow-hidden"
       aria-label={t("floor.printFailureDetailLabel", "Print failure detail")}
     >
       <div className="flex shrink-0 items-start justify-between gap-3 border-b border-bambu-dark-tertiary p-4">
@@ -2505,7 +2505,7 @@ function BinDetail({
 
   if (!batch) {
     return (
-      <aside className="rounded-lg border border-dashed border-bambu-dark-tertiary p-6 text-center text-sm text-bambu-gray break-words xl:sticky xl:top-6">
+      <aside className="rounded-lg border border-dashed border-bambu-dark-tertiary p-6 text-center text-sm text-bambu-gray break-words lg:sticky lg:top-6">
         {t("floor.inventoryBinDetailUnavailable", "This bin fill is no longer active.")}
       </aside>
     );
@@ -2547,7 +2547,7 @@ function BinDetail({
 
   return (
     <aside
-      className="rounded-lg border border-bambu-dark-tertiary bg-bambu-dark-secondary xl:sticky xl:top-6 xl:flex xl:max-h-[calc(100vh-3rem)] xl:flex-col xl:overflow-hidden"
+      className="rounded-lg border border-bambu-dark-tertiary bg-bambu-dark-secondary lg:sticky lg:top-6 lg:flex lg:max-h-[calc(100vh-3rem)] lg:flex-col lg:overflow-hidden"
       aria-label={t("floor.inventoryBinDetailLabel", "Bin detail")}
     >
       <div className="flex shrink-0 items-start justify-between gap-3 border-b border-bambu-dark-tertiary p-4">
@@ -2894,7 +2894,7 @@ function BinQcBranch({
           })}
         </p>
       </div>
-      {/* Fixed arm (w-14), not a 50% grid column — below xl the detail is full-width
+      {/* Fixed arm (w-14), not a 50% grid column — below lg the detail is full-width
           and a percentage branch stretches across half the page. */}
       <div className="relative mt-3 space-y-3">
         <div className="relative pl-[5.25rem]">
@@ -3146,7 +3146,7 @@ function PartDetail({
   }, [part?.id, events.length]);
   if (!part)
     return (
-      <aside className="rounded-lg border border-dashed border-bambu-dark-tertiary p-6 text-center text-sm text-bambu-gray break-words xl:sticky xl:top-6">
+      <aside className="rounded-lg border border-dashed border-bambu-dark-tertiary p-6 text-center text-sm text-bambu-gray break-words lg:sticky lg:top-6">
         {t(
           "floor.inventoryDetailEmpty",
           "Select a part record to inspect its harvest evidence and event history.",
@@ -3164,7 +3164,7 @@ function PartDetail({
   );
   return (
     <aside
-      className="rounded-lg border border-bambu-dark-tertiary bg-bambu-dark-secondary xl:sticky xl:top-6 xl:flex xl:max-h-[calc(100vh-3rem)] xl:flex-col xl:overflow-hidden"
+      className="rounded-lg border border-bambu-dark-tertiary bg-bambu-dark-secondary lg:sticky lg:top-6 lg:flex lg:max-h-[calc(100vh-3rem)] lg:flex-col lg:overflow-hidden"
       aria-label={t("floor.inventoryDetailLabel", "Part detail")}
     >
       <div className="flex shrink-0 items-start justify-between gap-3 border-b border-bambu-dark-tertiary p-4">
@@ -4154,7 +4154,7 @@ function FloorSerialsSection({
           </label>
         </div>
       </div>
-      <div className="grid gap-6 xl:grid-cols-[minmax(0,1fr)_24rem] xl:items-start">
+      <div className="grid gap-6 lg:grid-cols-[minmax(0,1fr)_24rem] lg:items-start">
         <section className="min-w-0 overflow-hidden rounded-lg border border-bambu-dark-tertiary bg-bambu-dark-secondary">
           <div className="flex items-center justify-between border-b border-bambu-dark-tertiary p-4">
             <h2 className="text-sm font-semibold text-white">
@@ -4253,7 +4253,7 @@ function FloorSerialsSection({
             }
           />
         ) : (
-          <aside className="rounded-lg border border-dashed border-bambu-dark-tertiary p-6 text-center text-sm text-bambu-gray break-words xl:sticky xl:top-6">
+          <aside className="rounded-lg border border-dashed border-bambu-dark-tertiary p-6 text-center text-sm text-bambu-gray break-words lg:sticky lg:top-6">
             {unitDeepLinkMissing
               ? t(
                   "floor.serialsUnitNotFound",
@@ -4341,7 +4341,7 @@ function UnitAssemblyCard({
 
   return (
     <aside
-      className="rounded-lg border border-bambu-dark-tertiary bg-bambu-dark-secondary xl:sticky xl:top-6 xl:flex xl:max-h-[calc(100vh-3rem)] xl:flex-col xl:overflow-hidden"
+      className="rounded-lg border border-bambu-dark-tertiary bg-bambu-dark-secondary lg:sticky lg:top-6 lg:flex lg:max-h-[calc(100vh-3rem)] lg:flex-col lg:overflow-hidden"
       aria-label={t("floor.serialAssemblyLabel", "Assembly detail")}
     >
       <div className="flex shrink-0 items-start justify-between gap-3 border-b border-bambu-dark-tertiary p-4">
