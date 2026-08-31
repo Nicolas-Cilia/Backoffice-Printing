@@ -237,19 +237,3 @@ async def _ensure_default_instance(db: AsyncSession, part: ProductionPart, folde
             hidden=False,
         )
     )
-
-
-async def seed_printer_folder_defaults(db: AsyncSession, folder: LibraryFolder) -> None:
-    """Ensure catalog parts and default visible instances exist for this printer folder."""
-    printer_model = (folder.production_printer_model or "").strip()
-    if not printer_model:
-        return
-    parts_by_code: dict[str, ProductionPart] = {}
-    for code, name in DEFAULT_PARTS:
-        _, part = await _ensure_part(db, code, name)
-        parts_by_code[part.code] = part
-    for code in default_part_codes_for_printer(printer_model):
-        part = parts_by_code.get(code)
-        if part is None:
-            continue
-        await _ensure_default_instance(db, part, folder.id, printer_model)

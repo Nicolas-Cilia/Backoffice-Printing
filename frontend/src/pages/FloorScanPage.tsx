@@ -1626,6 +1626,19 @@ export function FloorScanPage() {
           setStatus({ kind: 'idle' });
           return;
         }
+        // Same dismiss for the linked-unit card when either housing is
+        // re-scanned (opened via serial or via getUnitByPart).
+        if (statusRef.current.kind === 'unit-linked') {
+          const unit = statusRef.current.unit;
+          const sticker = route.payload.trim().toUpperCase();
+          if (
+            unit.top_sticker.trim().toUpperCase() === sticker ||
+            unit.bottom_sticker.trim().toUpperCase() === sticker
+          ) {
+            setStatus({ kind: 'idle' });
+            return;
+          }
+        }
         // Part Assembly Linking (Wave 2): during the serial ceremony a `BBD-`
         // scan is a housing for the pending unit, not the start of an
         // item→location flow. A serial must have been scanned first — scanning
@@ -1657,8 +1670,21 @@ export function FloorScanPage() {
         }
         setBusy(true);
         busyRef.current = true;
-        void api.getFloorInventoryPartBySticker(route.payload)
-          .then((part) => {
+        void (async () => {
+          // Part Assembly Linking (Wave 2): an already-linked housing opens the
+          // same read-only unit card as scanning its serial (lookup only).
+          try {
+            const unit = await api.getUnitByPart(route.payload);
+            setStatus({ kind: 'unit-linked', unit });
+            return;
+          } catch (error: unknown) {
+            if (!(error instanceof ApiError && error.status === 404)) {
+              failScan(t('floor.scanFailed', 'Scan failed'), route.payload);
+              return;
+            }
+          }
+          try {
+            const part = await api.getFloorInventoryPartBySticker(route.payload);
             if (part.archive_id === null) {
               failScan(
                 t('floor.scanPartNotLinked', 'Part is not linked to a print — match it in Part history first'),
@@ -1686,8 +1712,7 @@ export function FloorScanPage() {
                 kit_button_batch_id: part.kit_button_batch_id ?? null,
               },
             });
-          })
-          .catch((error: unknown) => {
+          } catch (error: unknown) {
             if (error instanceof ApiError && error.status === 404) {
               failScan(
                 t('floor.scanPartNotRegistered', 'Part is not registered — scan it at Harvest first'),
@@ -1696,11 +1721,11 @@ export function FloorScanPage() {
               return;
             }
             failScan(t('floor.scanFailed', 'Scan failed'), route.payload);
-          })
-          .finally(() => {
-            setBusy(false);
-            busyRef.current = false;
-          });
+          }
+        })().finally(() => {
+          setBusy(false);
+          busyRef.current = false;
+        });
         return;
       }
       if (route.action === 'location') {
@@ -3917,8 +3942,9 @@ function UnitCeremonyScreen({
 
 /** Part Assembly Linking (Wave 2): a linked product unit — the four
  *  identities (top, bottom, knob, button) with an Unlink control that frees
- *  the serial and both stickers back to WIP. Shown both after a fresh link and
- *  when an already-linked serial is looked up (read-only either way). */
+ *  the serial and both stickers back to WIP. Shown after a fresh link, when
+ *  an already-linked serial is looked up, or when either housing sticker is
+ *  scanned at idle (`getUnitByPart`). */
 function UnitLinkedScreen({
   unit,
   busy,

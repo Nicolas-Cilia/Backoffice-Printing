@@ -302,8 +302,8 @@ async def shutdown_broadcaster(key: str) -> bool:
     printer's TCP keepalive reaped it ~20 min later (#2521).
 
     Leaving it in place is safe: ``get_or_create_broadcaster`` replaces a stopped
-    entry (chaining the successor behind its teardown), ``get_subscriber_count``
-    reports 0 for it, and ``active_broadcaster_keys`` filters it out. There is at
+    entry (chaining the successor behind its teardown) and ``get_subscriber_count``
+    reports 0 for it. There is at
     most one entry per printer, and it is overwritten by the next viewer.
     """
     async with _registry_lock:
@@ -320,11 +320,6 @@ async def shutdown_all_broadcasters() -> None:
         bcs = list(_broadcasters.values())
         _broadcasters.clear()
     await asyncio.gather(*(bc.force_shutdown() for bc in bcs), return_exceptions=True)
-
-
-def active_broadcaster_keys() -> list[str]:
-    """Snapshot of keys with a live (non-stopped) broadcaster. For diagnostics."""
-    return [k for k, bc in _broadcasters.items() if not bc.stopped]
 
 
 def get_subscriber_count(key: str) -> int:

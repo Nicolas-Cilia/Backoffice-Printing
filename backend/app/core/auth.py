@@ -1431,9 +1431,6 @@ def check_printer_access(api_key: APIKey, printer_id: int) -> None:
 
 
 # Convenience dependencies - these are functions that return Depends objects
-def RequireAdmin():
-    """Dependency that requires admin role."""
-    return Depends(require_role("admin"))
 
 
 def RequireAdminIfAuthEnabled():
@@ -1627,11 +1624,6 @@ def require_permission_if_auth_enabled(*permissions: str | Permission):
             )
 
     return permission_checker
-
-
-def RequirePermission(*permissions: str | Permission):
-    """Convenience dependency that requires ALL specified permissions."""
-    return Depends(require_permission(*permissions))
 
 
 def RequirePermissionIfAuthEnabled(*permissions: str | Permission):

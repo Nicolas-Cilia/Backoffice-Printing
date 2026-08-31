@@ -2900,6 +2900,15 @@ describe('FloorScanPage (Phase 1b sessions)', () => {
       );
     }
 
+    /** by-part: 404 = free housing (item→location); a unit = already linked. */
+    function mockByPart(unit: unknown | null) {
+      server.use(
+        http.get('/api/v1/floor/units/by-part/:sticker', () =>
+          unit === null ? new HttpResponse(null, { status: 404 }) : HttpResponse.json(unit),
+        ),
+      );
+    }
+
     /** by-sticker part lookup keyed on the sticker → its TOP/BOT code. */
     function mockParts(codesBySticker: Record<string, string>) {
       server.use(
@@ -3059,6 +3068,34 @@ describe('FloorScanPage (Phase 1b sessions)', () => {
       expect(await screen.findByText('BBD-000100')).toBeInTheDocument();
       expect(screen.getByText('BBD-000200')).toBeInTheDocument();
       expect(screen.queryByText('Scan a top or a bottom')).not.toBeInTheDocument();
+    });
+
+    it('opens the same linked-unit card when an already-linked housing sticker is scanned at idle', async () => {
+      mockNoSession();
+      mockByPart(UNIT);
+      render(<FloorScanPage />);
+      await screen.findByText('Scan a code');
+
+      await scan('BBD-000100');
+
+      expect(await screen.findByText('Linked unit')).toBeInTheDocument();
+      expect(screen.getByText('XG2SNP')).toBeInTheDocument();
+      expect(screen.getByText('BBD-000200')).toBeInTheDocument();
+      expect(screen.queryByText('Scan a location')).not.toBeInTheDocument();
+    });
+
+    it('dismisses the linked-unit card when the same housing is scanned again', async () => {
+      mockNoSession();
+      mockByPart(UNIT);
+      render(<FloorScanPage />);
+      await screen.findByText('Scan a code');
+      await scan('BBD-000100');
+      await screen.findByText('Linked unit');
+
+      await scan('BBD-000200');
+
+      expect(await screen.findByText('Scan a code')).toBeInTheDocument();
+      expect(screen.queryByText('Linked unit')).not.toBeInTheDocument();
     });
 
     it('unlinks from the already-linked card after confirming', async () => {

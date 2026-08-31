@@ -15,34 +15,6 @@ BAMBU_RFID_TAG_LENGTH = 32
 
 
 @dataclass
-class SpoolmanSpool:
-    """Represents a spool in Spoolman."""
-
-    id: int
-    filament_id: int | None
-    remaining_weight: float | None
-    used_weight: float
-    first_used: str | None
-    last_used: str | None
-    location: str | None
-    lot_nr: str | None
-    comment: str | None
-    extra: dict | None  # Contains tag_uid in extra.tag
-
-
-@dataclass
-class SpoolmanFilament:
-    """Represents a filament type in Spoolman."""
-
-    id: int
-    name: str
-    vendor_id: int | None
-    material: str | None
-    color_hex: str | None
-    weight: float | None  # Net weight in grams
-
-
-@dataclass
 class AMSTray:
     """Represents an AMS tray with filament data from Bambu printer."""
 
@@ -1028,19 +1000,6 @@ class SpoolmanClient:
             tray_info_idx=tray_info_idx.strip(),
             tray_weight=int(tray_data.get("tray_weight", 1000)),
         )
-
-    def convert_ams_slot_to_location(self, ams_id: int, tray_id: int) -> str:
-        """Return a human-readable location string (e.g. "AMS A1") for the given AMS slot."""
-        if ams_id >= 254:
-            return "External Spool"
-
-        if 128 <= ams_id <= 135:
-            # AMS-HT units use IDs 128-135
-            ht_letter = chr(ord("A") + (ams_id - 128))
-            return f"AMS-HT {ht_letter}{tray_id + 1}"
-
-        ams_letter = chr(ord("A") + ams_id)
-        return f"AMS {ams_letter}{tray_id + 1}"
 
     def is_bambu_lab_spool(self, tray_uuid: str, tag_uid: str = "", tray_info_idx: str = "") -> bool:
         """Return True if tray_uuid or tag_uid identifies a Bambu Lab spool; tray_info_idx is ignored."""

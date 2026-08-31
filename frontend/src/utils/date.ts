@@ -426,31 +426,6 @@ export function formatRelativeTime(
 }
 
 /**
- * Format seconds as MM:SS for media/video player display.
- *
- * @param seconds - Total seconds
- * @returns Formatted string (e.g., "2:05", "0:30")
- */
-export function formatMediaTime(seconds: number): string {
-  const mins = Math.floor(seconds / 60);
-  const secs = Math.floor(seconds % 60);
-  return `${mins}:${secs.toString().padStart(2, '0')}`;
-}
-
-/**
- * Format a duration given in hours to a human-readable string.
- *
- * @param hours - Duration in hours (e.g., 2.5)
- * @returns Formatted string (e.g., "2h 30m", "45m", "3h")
- */
-export function formatDurationFromHours(hours: number): string {
-  if (hours < 1) return `${Math.round(hours * 60)}m`;
-  const h = Math.floor(hours);
-  const m = Math.round((hours - h) * 60);
-  return m > 0 ? `${h}h ${m}m` : `${h}h`;
-}
-
-/**
  * Build a YYYY-MM-DD key for a date, evaluated in the user's local timezone.
  *
  * The naive `iso.split('T')[0]` shortcut gives the UTC date, which buckets

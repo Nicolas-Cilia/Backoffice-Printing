@@ -635,4 +635,6 @@ export const handlers = [
     const body = (await request.json()) as Record<string, unknown>;
     return HttpResponse.json(body);
   }),
+  // Floor: idle BBD scans try by-part first; default free housing → item→location.
+  http.get('/api/v1/floor/units/by-part/:sticker', () => new HttpResponse(null, { status: 404 })),
 ];

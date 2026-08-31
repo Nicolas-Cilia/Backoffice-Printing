@@ -104,7 +104,9 @@ Rules:
 - Scanning a TOP then a BOT **without a serial first** never pairs them.
 - Scanning an **already-linked** serial is a read-only lookup: it shows the
   serial, top, bottom, and knob/button kit, with an **Unlink** control. No
-  ceremony, no write.
+  ceremony, no write. Scanning either **housing sticker** at idle does the
+  same lookup via `GET /floor/units/by-part/{sticker}` (404 → normal
+  item→location pending flow).
 
 ### Shipped on link
 

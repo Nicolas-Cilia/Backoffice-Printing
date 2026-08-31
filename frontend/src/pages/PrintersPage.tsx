@@ -123,7 +123,11 @@ import { PrinterInfoModal } from '../components/PrinterInfoModal';
 import { getAmsLabel, getGlobalTrayId, getFillBarColor, getSpoolmanFillLevel, getFallbackSpoolTag, isBambuLabSpool, resolveSlotNozzleDiameter } from '../utils/amsHelpers';
 import { getPrinterImage, getWifiStrength, filterCompatibleQueueItems } from '../utils/printer';
 import { getPrinterCardChromeClass, PRINTER_CARD_DISABLED_CONTROL } from '../utils/printerCardChrome';
-import { trackingAmsSwatchGroups, trackingHexToRgba } from '../utils/filamentTrackingSwatches';
+import {
+  trackingAmsSwatchGroups,
+  trackingExternalSwatchSlots,
+  trackingHexToRgba,
+} from '../utils/filamentTrackingSwatches';
 import { FilamentSwatch } from '../components/FilamentSwatch';
 import { FilamentSlotCircle } from '../components/FilamentSlotCircle';
 import { SlotTrackingLabel } from '../components/SlotTrackingLabel';
@@ -3295,7 +3299,7 @@ function PrinterCard({
     <Card
       id={`printer-card-${printer.id}`}
       data-printer-status={statusBucket}
-      className={`relative flex ${cardSize === 2 ? 'h-auto' : 'h-full'} flex-col transition-colors ${getPrinterCardChromeClass(statusBucket)} ${isSelected ? 'ring-2 ring-bambu-green' : ''} ${selectionMode || viewMode === 'compact' ? 'cursor-pointer' : ''}`}
+      className={`relative flex h-full flex-col transition-colors ${getPrinterCardChromeClass(statusBucket)} ${isSelected ? 'ring-2 ring-bambu-green' : ''} ${selectionMode || viewMode === 'compact' ? 'cursor-pointer' : ''}`}
       onClick={handleCardClick}
       onDragEnter={handleCardDragEnter}
       onDragOver={handleCardDragOver}
@@ -3346,7 +3350,7 @@ function PrinterCard({
           </div>
         </div>
       )}
-      <CardContent className={`${cardSize === 2 ? '!p-3' : cardSize >= 3 ? 'p-5' : ''} flex ${cardSize === 2 ? '' : 'flex-1'} flex-col`}>
+      <CardContent className={`${cardSize === 2 ? '!p-3' : cardSize >= 3 ? 'p-5' : ''} flex flex-1 flex-col`}>
         {/* Header */}
         <div className={getSpacing()}>
           {/* Top row: Image, Name, Menu */}
@@ -4487,7 +4491,7 @@ function PrinterCard({
                 : 'flex h-8 w-20 items-center justify-center gap-1 px-2 rounded-lg text-xs font-medium transition-colors';
 
               return (
-                <div className={cardSize === 2 ? 'mt-1.5 space-y-1.5' : 'mt-3'}>
+                <div className={cardSize === 2 ? 'mt-auto space-y-1.5 pt-1.5' : 'mt-3'}>
                   {cardSize !== 2 && (
                     <div className="flex items-center gap-2 mb-2">
                       <span className="text-[10px] uppercase tracking-wider text-bambu-gray font-medium">
@@ -4498,15 +4502,58 @@ function PrinterCard({
                   )}
 
                   {cardSize === 2 && (
-                    <div className="flex min-w-0 items-center" data-testid="printer-tracking-swatches">
+                    <div className="flex min-h-3.5 min-w-0 items-center" data-testid="printer-tracking-swatches">
                       {(() => {
+                        const regularAms = (amsData ?? []).filter((ams) => ams.tray.length > 1);
+                        // Only show AMS swatches when AMS is present (or assignments exist for
+                        // an AMS unit). Do not invent four empty slots for external-only printers.
                         const groups = trackingAmsSwatchGroups(
                           trackingAssignments,
-                          (amsData ?? []).filter((ams) => ams.tray.length > 1),
+                          regularAms,
+                          { includeEmptyUnits: regularAms.length > 0 },
                         );
-                        if (groups.length === 0) {
+                        const externalSlots = trackingExternalSwatchSlots(
+                          trackingAssignments,
+                          status.vt_tray?.length ?? 0,
+                        );
+                        const renderSlot = (
+                          slot: (typeof groups)[number]['slots'][number],
+                          keyPrefix: string,
+                        ) => {
+                          const slotLabel = t('printers.trackingSlot', 'Slot {{n}}', { n: slot.trayId + 1 });
+                          if (slot.kind === 'empty') {
+                            return (
+                              <span
+                                key={`${keyPrefix}-${slot.trayId}`}
+                                data-testid="tracking-slot-empty"
+                                title={`${slotLabel} — ${t('printers.trackingUnassigned', 'Not tracking')}`}
+                                className="relative flex h-3.5 w-3.5 items-center justify-center rounded-full border border-bambu-gray/60 bg-bambu-dark"
+                              >
+                                <X className="h-2.5 w-2.5 text-bambu-gray" strokeWidth={3} />
+                              </span>
+                            );
+                          }
                           return (
-                            <span className="text-[10px] text-bambu-gray">
+                            <span
+                              key={`${keyPrefix}-${slot.trayId}`}
+                              data-testid="tracking-slot-tracked"
+                              title={slot.color_name ? `${slotLabel} — ${slot.color_name}` : slotLabel}
+                              className="inline-flex"
+                            >
+                              <FilamentSwatch
+                                rgba={trackingHexToRgba(slot.color_hex)}
+                                extraColors={slot.extra_colors}
+                                effectType={slot.effect_type}
+                                subtype={slot.subtype}
+                                className="h-3.5 w-3.5"
+                                effectSize="table"
+                              />
+                            </span>
+                          );
+                        };
+                        if (groups.length === 0 && externalSlots.length === 0) {
+                          return (
+                            <span className="text-[10px] leading-[14px] text-bambu-gray">
                               {t('printers.trackingNone', 'None')}
                             </span>
                           );
@@ -4519,47 +4566,24 @@ function PrinterCard({
                                 className="grid grid-cols-4 gap-1"
                                 data-testid="tracking-ams-group"
                               >
-                                {group.slots.map((slot) => {
-                                  const slotLabel = t('printers.trackingSlot', 'Slot {{n}}', { n: slot.trayId + 1 });
-                                  if (slot.kind === 'empty') {
-                                    return (
-                                      <span
-                                        key={slot.trayId}
-                                        data-testid="tracking-slot-empty"
-                                        title={`${slotLabel} — ${t('printers.trackingUnassigned', 'Not tracking')}`}
-                                        className="relative flex h-3.5 w-3.5 items-center justify-center rounded-full border border-bambu-gray/60 bg-bambu-dark"
-                                      >
-                                        <X className="h-2.5 w-2.5 text-bambu-gray" strokeWidth={3} />
-                                      </span>
-                                    );
-                                  }
-                                  return (
-                                    <span
-                                      key={slot.trayId}
-                                      data-testid="tracking-slot-tracked"
-                                      title={slot.color_name ? `${slotLabel} — ${slot.color_name}` : slotLabel}
-                                      className="inline-flex"
-                                    >
-                                      <FilamentSwatch
-                                        rgba={trackingHexToRgba(slot.color_hex)}
-                                        extraColors={slot.extra_colors}
-                                        effectType={slot.effect_type}
-                                        subtype={slot.subtype}
-                                        className="h-3.5 w-3.5"
-                                        effectSize="table"
-                                      />
-                                    </span>
-                                  );
-                                })}
+                                {group.slots.map((slot) => renderSlot(slot, `ams-${group.amsId}`))}
                               </div>
                             ))}
+                            {externalSlots.length > 0 && (
+                              <div
+                                className={`grid gap-1 ${externalSlots.length > 1 ? 'grid-cols-2' : 'grid-cols-1'}`}
+                                data-testid="tracking-external-group"
+                              >
+                                {externalSlots.map((slot) => renderSlot(slot, 'ext'))}
+                              </div>
+                            )}
                           </div>
                         );
                       })()}
                     </div>
                   )}
 
-                  <div className={`flex items-center gap-x-2 gap-y-1 ${cardSize === 2 ? 'flex-wrap justify-between' : 'flex-wrap justify-between items-start'}`}>
+                  <div className={cardSize === 2 ? 'flex flex-col gap-1' : 'flex flex-wrap items-start justify-between gap-x-2 gap-y-1'}>
                     {/* Light, motion, plate detection, and speed on M and L; airduct stays model-gated */}
                     <div className={`flex flex-wrap items-center min-w-0 ${cardSize === 2 ? 'gap-1' : 'gap-2'}`}>
                       <button
@@ -4879,8 +4903,8 @@ function PrinterCard({
 
                     </div>
 
-                    {/* Right: Print Control Buttons */}
-                    <div className={`ml-auto flex items-center justify-end flex-shrink-0 ${cardSize === 2 ? 'gap-1' : 'gap-2'}`}>
+                    {/* Right: Print Control Buttons — own row on medium so A / H2 / X1 cards share height */}
+                    <div className={`flex items-center justify-end flex-shrink-0 ${cardSize === 2 ? 'w-full gap-1' : 'ml-auto gap-2'}`}>
                       {(() => {
                         const startUnavailable = isPrinting || isControlBusy || !status.connected || !hasPermission('queue:create');
                         return (
@@ -9380,7 +9404,7 @@ export function PrintersPage() {
                   </h2>
                 }
               >
-                <div className={`grid ${cardSize === 2 ? 'gap-3 items-start' : 'gap-4'} ${cardSize >= 3 ? 'gap-6' : ''} ${getGridClasses()}`}>
+                <div className={`grid ${cardSize === 2 ? 'gap-3' : 'gap-4'} ${cardSize >= 3 ? 'gap-6' : ''} ${getGridClasses()}`}>
                   {groupPrinters.map((printer) => (
                     <PrinterCard
                       key={printer.id}
@@ -9432,7 +9456,7 @@ export function PrintersPage() {
         </div>
       ) : (
         /* Regular grid view */
-        <div className={`grid ${cardSize === 2 ? 'gap-3 items-start' : 'gap-4'} ${cardSize >= 3 ? 'gap-6' : ''} ${getGridClasses()}`}>
+        <div className={`grid ${cardSize === 2 ? 'gap-3' : 'gap-4'} ${cardSize >= 3 ? 'gap-6' : ''} ${getGridClasses()}`}>
           {sortedPrinters.map((printer) => (
             <PrinterCard
               key={printer.id}
