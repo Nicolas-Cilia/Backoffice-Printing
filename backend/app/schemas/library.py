@@ -195,19 +195,6 @@ class SectionPartResponse(BaseModel):
 # ============ File Schemas ============
 
 
-class FileCreate(BaseModel):
-    """Schema for creating a file entry (internal use after upload)."""
-
-    filename: str
-    file_path: str
-    file_type: str
-    file_size: int
-    file_hash: str | None = None
-    thumbnail_path: str | None = None
-    metadata: dict | None = None
-    folder_id: int | None = None
-
-
 class FileUpdate(BaseModel):
     """Schema for updating a file."""
 

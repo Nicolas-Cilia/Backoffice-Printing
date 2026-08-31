@@ -646,6 +646,22 @@ Every entry heading carries a status marker, kept in step with its **Status:** l
   toggle; per-slot overrides UI. Library page import still skips duplicate names.
 - **Branch:** `feat/profile-parameter-tracking` (download: `feat/profile-download`)
 
+### 16. Floor: stations, filament kg, harvest, cleanup 🔵
+
+- **Status:** agreed — full spec in `docs/floor-plan.md`; implementation on
+  `feat/floor-stations`
+- **Area:** frontend + backend
+- **What:** Production-floor scanning: station QRs, filament storage/WIP kg by
+  factory SKU, part labeling at harvest, defect logging at cleanup. See
+  `docs/floor-plan.md` for routes, prefixes, station types, build phases, and
+  test gates.
+- **Why:** Trace parts to printers/jobs; track warehouse vs WIP kg; floor UI for
+  USB pistol.
+- **Acceptance:** phased gates in `docs/floor-plan.md` §10 (scan page → stations
+  → SKU → receive → move → WIP debit → printer QR → harvest → cleanup).
+- **Not in v1:** listed in `docs/floor-plan.md` §11.
+- **Branch:** `feat/floor-stations`
+
 ---
 
 ## Explicitly out of scope

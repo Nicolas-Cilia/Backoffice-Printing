@@ -73,10 +73,15 @@ function slotsForUnit(
 /**
  * One group per AMS, slots in AMS order. Untracked slots stay in place as
  * empty so a 1/3/4 assignment still shows slot 2.
+ *
+ * By default, AMS units with zero tracked slots are omitted. Pass
+ * `includeEmptyUnits` for medium cards so A1 / A1 Mini (AMS Lite) still
+ * reserve the four-slot swatch row and keep card heights aligned.
  */
 export function trackingAmsSwatchGroups(
   assignments: TrackingAssignmentLike[],
   amsUnits: TrackingAmsUnitLike[] = [],
+  options?: { includeEmptyUnits?: boolean },
 ): TrackingAmsGroup[] {
   const regularUnits = amsUnits.filter((unit) => unit.tray.length > 1);
   const units: TrackingAmsUnitLike[] =
@@ -87,10 +92,41 @@ export function trackingAmsSwatchGroups(
           tray: Array.from({ length: REGULAR_AMS_SLOT_COUNT }, (_, i) => ({ id: i })),
         }));
 
-  return units
-    .map((unit) => ({
-      amsId: unit.id,
-      slots: slotsForUnit(unit, assignments),
-    }))
-    .filter((group) => group.slots.some((slot) => slot.kind === 'tracked'));
+  const groups = units.map((unit) => ({
+    amsId: unit.id,
+    slots: slotsForUnit(unit, assignments),
+  }));
+
+  if (options?.includeEmptyUnits) return groups;
+  return groups.filter((group) => group.slots.some((slot) => slot.kind === 'tracked'));
+}
+
+/**
+ * External spool tracking dots for medium cards (ams_id 255).
+ * `trayCount` comes from vt_tray length when present so empty Ext slots still show.
+ */
+export function trackingExternalSwatchSlots(
+  assignments: TrackingAssignmentLike[],
+  trayCount = 0,
+): TrackingSlotDot[] {
+  const external = assignments.filter((row) => row.ams_id === EXTERNAL_AMS_ID);
+  const count = Math.max(
+    trayCount,
+    external.length > 0 ? Math.max(...external.map((row) => row.tray_id)) + 1 : 0,
+  );
+  if (count <= 0) return [];
+
+  return Array.from({ length: count }, (_, trayId) => {
+    const assigned = external.find((row) => row.tray_id === trayId);
+    if (!assigned) return { kind: 'empty' as const, trayId };
+    return {
+      kind: 'tracked' as const,
+      trayId,
+      color_hex: assigned.color_hex ?? null,
+      extra_colors: assigned.extra_colors ?? null,
+      effect_type: assigned.effect_type ?? null,
+      subtype: assigned.subtype ?? null,
+      color_name: assigned.color_name,
+    };
+  });
 }

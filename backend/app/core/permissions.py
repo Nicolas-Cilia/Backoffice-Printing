@@ -80,6 +80,16 @@ class Permission(StrEnum):
     INVENTORY_FORECAST_READ = "inventory:forecast_read"  # View forecast/reorder intelligence panel
     INVENTORY_FORECAST_WRITE = "inventory:forecast_write"  # Modify SKU settings, lead times, shopping list
 
+    # Floor (production-floor scanning — docs/floor-plan.md)
+    # One permission covers the whole feature: claiming station sessions, and
+    # printing the QR labels those sessions are scanned from. Deliberately
+    # NOT inventory:update — a floor operator needs to claim a station, not
+    # to edit or delete spool inventory, and reusing that permission would
+    # grant far more than the job requires. A finer split (office label
+    # printing vs bench scanning) can come later if the roles diverge; one
+    # permission is honest that today they do not.
+    FLOOR_SCAN = "floor:scan"
+
     # Smart Plugs
     SMART_PLUGS_READ = "smart_plugs:read"
     SMART_PLUGS_CREATE = "smart_plugs:create"
@@ -240,6 +250,9 @@ PERMISSION_CATEGORIES = {
         Permission.INVENTORY_FORECAST_READ,
         Permission.INVENTORY_FORECAST_WRITE,
     ],
+    "Floor": [
+        Permission.FLOOR_SCAN,
+    ],
     "Smart Plugs": [
         Permission.SMART_PLUGS_READ,
         Permission.SMART_PLUGS_CREATE,
@@ -394,6 +407,8 @@ DEFAULT_GROUPS = {
             Permission.INVENTORY_VIEW_ASSIGNMENTS.value,
             Permission.INVENTORY_FORECAST_READ.value,
             Permission.INVENTORY_FORECAST_WRITE.value,
+            # Floor - scanning stations is operator work by definition
+            Permission.FLOOR_SCAN.value,
             # Smart Plugs - full access
             Permission.SMART_PLUGS_READ.value,
             Permission.SMART_PLUGS_CREATE.value,

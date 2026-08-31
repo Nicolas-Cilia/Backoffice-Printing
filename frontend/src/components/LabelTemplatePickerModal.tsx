@@ -5,6 +5,7 @@ import { api, type SpoolLabelTemplate, type InventorySpool } from '../api/client
 import { Button } from './Button';
 import { useToast } from '../contexts/ToastContext';
 import { getSwatchStyle } from '../utils/colors';
+import { openBlobInNewTab } from '../utils/file';
 
 /** Subset of InventorySpool the modal needs for checkbox rendering. */
 type SpoolForLabel = Pick<
@@ -70,29 +71,6 @@ const TEMPLATE_OPTIONS: TemplateOption[] = [
     fallbackHint: 'US sheet stock; 30 labels per Letter page.',
   },
 ];
-
-function openBlobInNewTab(blob: Blob): void {
-  const url = window.URL.createObjectURL(blob);
-  // Do NOT pass `noopener,noreferrer`: per the WindowFeatures spec, `noopener`
-  // forces window.open to return `null` even on success, which made the
-  // `if (!win)` popup-block fallback below fire on EVERY click — so the blob
-  // tab opened (downloading a random-named PDF on systems without an inline
-  // viewer) AND the `<a download>` fallback fired (downloading a second copy
-  // named bambuddy-labels.pdf). Two identical PDFs per click — issue #1628.
-  // The blob is same-origin, the destination is a passive PDF tab with no
-  // script context, and `noreferrer` is a no-op for blob URLs, so dropping
-  // these flags has no security impact.
-  const win = window.open(url, '_blank');
-  if (!win) {
-    const a = document.createElement('a');
-    a.href = url;
-    a.download = 'bambuddy-labels.pdf';
-    document.body.appendChild(a);
-    a.click();
-    document.body.removeChild(a);
-  }
-  setTimeout(() => window.URL.revokeObjectURL(url), 60_000);
-}
 
 // Thin wrapper over `getSwatchStyle` from utils/colors so the modal's render
 // sites keep their existing call shape. Transparent (alpha=00) spools now
@@ -277,7 +255,7 @@ export function LabelTemplatePickerModal({
       const blob = spoolmanMode
         ? await api.printSpoolmanSpoolLabels({ spool_ids: ids, template, monochrome })
         : await api.printSpoolLabels({ spool_ids: ids, template, monochrome });
-      openBlobInNewTab(blob);
+      openBlobInNewTab(blob, 'bambuddy-labels.pdf');
       onClose();
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);

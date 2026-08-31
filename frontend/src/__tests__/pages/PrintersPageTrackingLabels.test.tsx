@@ -305,14 +305,56 @@ describe('PrintersPage — FILAMENTS tracking labels', () => {
     expect(screen.queryByText('Tracking')).not.toBeInTheDocument();
     expect(screen.queryByText('Status')).not.toBeInTheDocument();
     expect(screen.queryByText('Controls')).not.toBeInTheDocument();
-    expect(screen.getAllByTestId('tracking-slot-tracked')).toHaveLength(1);
+    // AMS: 1 tracked + 3 empty; external vt_tray: 1 tracked
+    expect(screen.getAllByTestId('tracking-slot-tracked')).toHaveLength(2);
     expect(screen.getAllByTestId('tracking-slot-empty')).toHaveLength(3);
+    expect(screen.getByTestId('tracking-external-group')).toBeInTheDocument();
     expect(screen.queryByText('Filaments')).not.toBeInTheDocument();
     expect(screen.getByRole('button', { name: 'Start' })).toBeInTheDocument();
     expect(screen.getByRole('button', { name: 'Pause' })).toBeInTheDocument();
     expect(screen.getByRole('button', { name: 'Stop' })).toBeInTheDocument();
-    expect(document.getElementById('printer-card-1')?.className).toContain('h-auto');
-    expect(document.getElementById('printer-card-1')?.className).not.toContain('h-full');
+    expect(document.getElementById('printer-card-1')?.className).toContain('h-full');
+    expect(document.getElementById('printer-card-1')?.className).not.toContain('h-auto');
+  });
+
+  it('does not invent AMS swatches on medium cards without AMS', async () => {
+    vi.mocked(localStorage.getItem).mockImplementation((key) =>
+      key === 'printerCardSize' ? '2' : null,
+    );
+    server.use(
+      http.get('/api/v1/filament-tracking/assignments', () =>
+        HttpResponse.json([externalAssignment]),
+      ),
+      http.get('/api/v1/printers/:id/status', () =>
+        HttpResponse.json({ ...mockStatus, ams: [] }),
+      ),
+    );
+
+    render(<PrintersPage />);
+
+    await screen.findByTestId('printer-tracking-swatches');
+    expect(screen.queryByTestId('tracking-ams-group')).not.toBeInTheDocument();
+    expect(screen.getByTestId('tracking-external-group')).toBeInTheDocument();
+    expect(screen.getAllByTestId('tracking-slot-tracked')).toHaveLength(1);
+    expect(screen.queryAllByTestId('tracking-slot-empty')).toHaveLength(0);
+  });
+
+  it('shows empty AMS slot swatches on medium cards when nothing is assigned', async () => {
+    vi.mocked(localStorage.getItem).mockImplementation((key) =>
+      key === 'printerCardSize' ? '2' : null,
+    );
+    server.use(
+      http.get('/api/v1/filament-tracking/assignments', () => HttpResponse.json([])),
+      http.get('/api/v1/printers/:id/status', () =>
+        HttpResponse.json({ ...mockStatus, vt_tray: [] }),
+      ),
+    );
+
+    render(<PrintersPage />);
+
+    const group = await screen.findByTestId('tracking-ams-group');
+    expect(group.querySelectorAll('[data-testid="tracking-slot-empty"]')).toHaveLength(4);
+    expect(screen.queryByText('None')).not.toBeInTheDocument();
   });
 
   it('keeps untracked AMS slots in order as crossed-out circles', async () => {

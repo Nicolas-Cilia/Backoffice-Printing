@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
+import { useEffect, useMemo, useRef, useState, type DragEvent, type ReactNode } from 'react';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { useTranslation } from 'react-i18next';
 import {
@@ -48,6 +48,8 @@ export interface StartPrintModalProps {
   printerModel: string | null;
   /** When set, choosing a file embeds print options in the right panel for this printer. */
   printerId: number | null;
+  /** A just-dropped upload to show in the right-side print panel immediately. */
+  initialFile?: Omit<ChosenPrintFile, 'fromUpload'>;
   onClose: () => void;
   onSuccess?: () => void;
 }
@@ -140,6 +142,7 @@ export function StartPrintModal({
   printerName,
   printerModel,
   printerId,
+  initialFile,
   onClose,
   onSuccess,
 }: StartPrintModalProps) {
@@ -152,13 +155,22 @@ export function StartPrintModal({
   const [searchQuery, setSearchQuery] = useState('');
   const [sortField, setSortField] = useState<SortField>('name');
   const [sortDirection, setSortDirection] = useState<SortDirection>('asc');
-  const [chosenFile, setChosenFile] = useState<ChosenPrintFile | null>(null);
+  const [chosenFile, setChosenFile] = useState<ChosenPrintFile | null>(() =>
+    initialFile ? { ...initialFile, fromUpload: true } : null,
+  );
   /** Only for uploads: keep the file in the library after print. */
   const [saveToLibrary, setSaveToLibrary] = useState(false);
   const [saveFolderId, setSaveFolderId] = useState<number | null>(null);
   const [saveBusy, setSaveBusy] = useState(false);
   const [isPrintSubmitting, setIsPrintSubmitting] = useState(false);
   const [filamentWarningOpen, setFilamentWarningOpen] = useState(false);
+  const [isDiscardingUpload, setIsDiscardingUpload] = useState(false);
+  // Keep a discarded upload out of the picker immediately while its soft
+  // delete request is completing. This prevents a stale library query from
+  // making a temporary print upload look like it was saved.
+  const [discardedUploadIds, setDiscardedUploadIds] = useState<Set<number>>(
+    () => new Set(),
+  );
   /** After a successful queue, PrintModal still calls onClose — skip discard then. */
   const skipDiscardOnCloseRef = useRef(false);
   const saveToLibraryRef = useRef(saveToLibrary);
@@ -229,9 +241,9 @@ export function StartPrintModal({
     if (!files) return [];
     let result = [...files];
     // Hide an unsaved upload from "Your files" so it doesn't look like we auto-filed it.
-    if (chosenFile?.fromUpload && !saveToLibrary) {
-      result = result.filter((f) => f.id !== chosenFile.id);
-    }
+    const hiddenUploadIds = new Set(discardedUploadIds);
+    if (chosenFile?.fromUpload && !saveToLibrary) hiddenUploadIds.add(chosenFile.id);
+    result = result.filter((f) => !hiddenUploadIds.has(f.id));
     if (searchQuery.trim()) {
       const query = searchQuery.toLowerCase();
       result = result.filter(
@@ -258,7 +270,7 @@ export function StartPrintModal({
       return sortDirection === 'asc' ? comparison : -comparison;
     });
     return result;
-  }, [files, searchQuery, sortField, sortDirection, chosenFile, saveToLibrary]);
+  }, [files, searchQuery, sortField, sortDirection, chosenFile, saveToLibrary, discardedUploadIds]);
 
   const folderSaveOptions = useMemo(
     () => (folders ? flattenFolderOptions(folders) : []),
@@ -269,7 +281,7 @@ export function StartPrintModal({
   const hasAnyFolders = filteredFolders.length > 0;
   const hasAnyFiles = filteredAndSortedFiles.length > 0;
   const filePicksDisabled = chosenFile != null || isPrintSubmitting;
-  const shellCloseBlocked = isPrintSubmitting || filamentWarningOpen;
+  const shellCloseBlocked = isPrintSubmitting || filamentWarningOpen || isDiscardingUpload;
 
   const checkCompatibility = (slicedFor: string | null | undefined): string | undefined => {
     if (slicedFor && printerModel && slicedFor.toLowerCase() !== printerModel.toLowerCase()) {
@@ -288,12 +300,28 @@ export function StartPrintModal({
     if (!file?.fromUpload) return;
     // Only delete if the user chose not to keep it in the library.
     if (keepInLibrary) return;
+    setDiscardedUploadIds((previous) => {
+      const next = new Set(previous);
+      next.add(file.id);
+      return next;
+    });
+    setIsDiscardingUpload(true);
     try {
       await api.deleteLibraryFile(file.id);
       queryClient.invalidateQueries({ queryKey: ['library-files'] });
       queryClient.invalidateQueries({ queryKey: ['library-stats'] });
     } catch {
-      // Best-effort cleanup of a transient upload.
+      setDiscardedUploadIds((previous) => {
+        const next = new Set(previous);
+        next.delete(file.id);
+        return next;
+      });
+      showToast(
+        t('printers.discardUploadFailed', 'Could not discard the temporary upload.'),
+        'error',
+      );
+    } finally {
+      setIsDiscardingUpload(false);
     }
   };
 
@@ -463,6 +491,19 @@ export function StartPrintModal({
     );
   };
 
+  // This modal renders as a plain nested child of whatever opened it (e.g. a
+  // printer card that has its own drop-to-print zone), not through a portal,
+  // and the embedded upload dropzone (FileUploadModal) doesn't stop
+  // propagation. Left unguarded, dropping a file anywhere in this modal
+  // bubbles out to that ancestor's drop handler too — uploading the file a
+  // second time and opening a second, out-of-sync copy of this modal on top
+  // of itself. Stop every drag/drop event at the modal boundary so it never
+  // reaches whatever is behind it.
+  const stopBubblingDrag = (e: DragEvent<HTMLDivElement>) => {
+    e.preventDefault();
+    e.stopPropagation();
+  };
+
   return (
     // layout-v4: 5/8 files + 3/8 upload — hard-refresh (Cmd+Shift+R) if HMR misses this
     <div
@@ -470,6 +511,10 @@ export function StartPrintModal({
       onClick={() => {
         if (!shellCloseBlocked) void handleClose();
       }}
+      onDragEnter={stopBubblingDrag}
+      onDragOver={stopBubblingDrag}
+      onDragLeave={stopBubblingDrag}
+      onDrop={stopBubblingDrag}
     >
       <div
         role="dialog"

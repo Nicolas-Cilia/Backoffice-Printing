@@ -1,5 +1,5 @@
 import { useState, useMemo, useEffect, useRef, useCallback, type ReactNode } from 'react';
-import { useSearchParams } from 'react-router-dom';
+import { Navigate, useSearchParams } from 'react-router-dom';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { useTranslation } from 'react-i18next';
 import {
@@ -464,6 +464,10 @@ function saveSortState(state: SortState) {
 
 type InventorySectionTab = 'tracking' | 'spools';
 
+function isLegacyBinTab(searchParams: URLSearchParams): boolean {
+  return searchParams.get('tab') === 'bins';
+}
+
 function inventorySectionTab(searchParams: URLSearchParams): InventorySectionTab {
   const tab = searchParams.get('tab');
   if (tab === 'spools') return 'spools';
@@ -479,7 +483,7 @@ function applyInventorySectionTab(
 ): URLSearchParams {
   const next = new URLSearchParams(searchParams);
   if (tab === 'tracking') next.delete('tab');
-  else next.set('tab', 'spools');
+  else next.set('tab', tab);
   return next;
 }
 
@@ -500,6 +504,10 @@ export default function InventoryPageRouter() {
   const spoolmanModeReady = spoolmanSettings !== undefined;
   const spoolmanMode =
     spoolmanSettings?.spoolman_enabled === 'true' && !!spoolmanSettings?.spoolman_url;
+
+  if (isLegacyBinTab(searchParams)) {
+    return <Navigate to="/inventory?tab=bins" replace />;
+  }
 
   if (pageTab === 'tracking') {
     return (

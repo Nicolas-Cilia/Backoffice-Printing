@@ -1,5 +1,6 @@
 import asyncio
 import logging
+from datetime import datetime, timezone
 
 from sqlalchemy import event
 from sqlalchemy.exc import IntegrityError, OperationalError, ProgrammingError
@@ -261,6 +262,9 @@ async def init_db():
         filament,
         filament_sku_settings,
         filament_tracking,
+        floor_bin,
+        floor_part,
+        floor_session,
         github_backup,
         group,
         kprofile_note,
@@ -325,7 +329,49 @@ async def init_db():
     await seed_spool_catalog()
     await seed_color_catalog()
 
+    await _backfill_floor_part_events()
+    await _backfill_floor_part_codes()
+    await _seed_floor_error_labels()
+
     await check_pool_fits_server()
+
+
+async def _backfill_floor_part_events() -> None:
+    """Ensure every labeled part has an enroll row in the audit log."""
+    from backend.app.services.floor_parts import backfill_missing_enrolled_events
+
+    async with async_session() as db:
+        count = await backfill_missing_enrolled_events(db)
+        if count:
+            await db.commit()
+            logger.info("Backfilled %d floor part enrolled event(s)", count)
+
+
+async def _backfill_floor_part_codes() -> None:
+    from backend.app.services.floor_parts import backfill_missing_part_codes
+
+    async with async_session() as db:
+        count = await backfill_missing_part_codes(db)
+        if count:
+            await db.commit()
+            logger.info("Backfilled %d floor part code(s)", count)
+
+
+async def _seed_floor_error_labels() -> None:
+    """Install the starter labels once; users can add or remove custom ones.
+
+    ``other`` is the catch-all keyboard prompt and cannot be deleted later.
+    """
+    from sqlalchemy import select
+
+    from backend.app.models.floor_part import FloorErrorLabel
+
+    defaults = (("horizontal-line", "Horizontal line"), ("vertical-line", "Vertical line"), ("other", "Other"))
+    async with async_session() as db:
+        existing = set((await db.execute(select(FloorErrorLabel.slug))).scalars())
+        db.add_all(FloorErrorLabel(slug=slug, name=name) for slug, name in defaults if slug not in existing)
+        if {slug for slug, _ in defaults} - existing:
+            await db.commit()
 
 
 async def check_pool_fits_server() -> None:
@@ -1156,6 +1202,68 @@ async def run_migrations(conn):
     swallowed.
     """
     from sqlalchemy import text
+
+    # Floor Part History: persist the canonical Production code resolved from
+    # the source library file, so code searches do not rely on file names.
+    await _safe_execute(conn, "ALTER TABLE floor_labeled_parts ADD COLUMN part_code VARCHAR(32)")
+    await _safe_execute(
+        conn, "CREATE INDEX IF NOT EXISTS ix_floor_labeled_parts_part_code ON floor_labeled_parts(part_code)"
+    )
+    await _safe_execute(
+        conn,
+        "ALTER TABLE floor_labeled_parts ADD COLUMN section_part_id INTEGER REFERENCES library_section_parts(id) ON DELETE SET NULL",
+    )
+    await _safe_execute(
+        conn,
+        "CREATE INDEX IF NOT EXISTS ix_floor_labeled_parts_section_part_id ON floor_labeled_parts(section_part_id)",
+    )
+
+    # Part Assembly Linking (Wave 1): the KNB/BUT bin fills a TOP part consumed
+    # a kit unit from when it entered Production WIP, plus when that happened.
+    # ON DELETE SET NULL mirrors the other floor FKs — a deleted bin fill
+    # degrades the link to "no kit recorded" rather than dropping part history.
+    await _safe_execute(
+        conn,
+        "ALTER TABLE floor_labeled_parts ADD COLUMN kit_knob_batch_id INTEGER REFERENCES floor_bin_batches(id) ON DELETE SET NULL",
+    )
+    await _safe_execute(
+        conn,
+        "ALTER TABLE floor_labeled_parts ADD COLUMN kit_button_batch_id INTEGER REFERENCES floor_bin_batches(id) ON DELETE SET NULL",
+    )
+    await _safe_execute(conn, "ALTER TABLE floor_labeled_parts ADD COLUMN kit_assigned_at DATETIME")
+
+    # Bin Part history: archive a fill without deleting it. Archived rows are
+    # skipped by the "current fill" lookup so the physical tote can be reused.
+    await _safe_execute(conn, "ALTER TABLE floor_bin_batches ADD COLUMN archived_at DATETIME")
+
+    # Part Assembly Linking (Wave 2): the product-unit table binding one scanned
+    # product serial to a TOP + BOT housing pair. Brand-new table, so create_all
+    # already builds it on a fresh DB; this CREATE TABLE IF NOT EXISTS covers
+    # existing installs. serial_code / top_part_id / bottom_part_id are each
+    # unique — the "no double-link" and "one serial = one unit" guards at the
+    # schema level. RESTRICT on the part FKs mirrors floor_part_events: a part
+    # on a unit cannot be deleted; unlink is the sanctioned removal.
+    await _safe_execute(
+        conn,
+        """
+        CREATE TABLE IF NOT EXISTS floor_product_units (
+            id INTEGER PRIMARY KEY,
+            serial_code VARCHAR(32) NOT NULL UNIQUE,
+            top_part_id INTEGER NOT NULL UNIQUE REFERENCES floor_labeled_parts(id) ON DELETE RESTRICT,
+            bottom_part_id INTEGER NOT NULL UNIQUE REFERENCES floor_labeled_parts(id) ON DELETE RESTRICT,
+            linked_at DATETIME DEFAULT CURRENT_TIMESTAMP
+        )
+        """,
+    )
+    await _safe_execute(
+        conn, "CREATE INDEX IF NOT EXISTS ix_floor_product_units_serial_code ON floor_product_units(serial_code)"
+    )
+    await _safe_execute(
+        conn, "CREATE INDEX IF NOT EXISTS ix_floor_product_units_top_part_id ON floor_product_units(top_part_id)"
+    )
+    await _safe_execute(
+        conn, "CREATE INDEX IF NOT EXISTS ix_floor_product_units_bottom_part_id ON floor_product_units(bottom_part_id)"
+    )
 
     # Migration: Add parent_run_id column to pipeline_runs (#1425 PR C).
     # Links a retry-failed run back to its parent so the dashboard can show
@@ -3189,6 +3297,9 @@ async def run_migrations(conn):
     default_settings = [
         ("advanced_auth_enabled", "false"),
         ("smtp_auth_enabled", "true"),
+        # Floor's part backlog begins at installation/cutover, never from
+        # historical archives that predate physical BBD stickers.
+        ("floor_part_tracking_started_at", datetime.now(timezone.utc).replace(tzinfo=None).isoformat()),
     ]
     for key, value in default_settings:
         try:
@@ -4107,6 +4218,26 @@ async def run_migrations(conn):
             )
         )
 
+    # Migration: harvest plate binding on floor_station_sessions (phase 8,
+    # docs/floor-plan.md §5.4). Additive and nullable, so `create_all` alone
+    # would miss them on an upgrading install — floor_station_sessions is an
+    # existing table (phase 1b), not a new one. Idempotent on both SQLite and
+    # Postgres via `_safe_execute`, matching the `pipeline_runs.parent_run_id`
+    # migration above rather than the PRAGMA-table_info pattern used
+    # elsewhere in this function: those guard `ALTER COLUMN` type changes
+    # SQLite cannot do in place, which is not the case here — a plain
+    # nullable `ADD COLUMN` needs no dialect branch.
+    await _safe_execute(
+        conn,
+        "ALTER TABLE floor_station_sessions ADD COLUMN bound_printer_id INTEGER REFERENCES printers(id) ON DELETE SET NULL",
+    )
+    await _safe_execute(
+        conn,
+        "ALTER TABLE floor_station_sessions ADD COLUMN bound_archive_id INTEGER REFERENCES print_archives(id) ON DELETE SET NULL",
+    )
+    await _safe_execute(conn, "ALTER TABLE floor_labeled_parts ADD COLUMN archived_at DATETIME")
+    await _safe_execute(conn, "ALTER TABLE floor_labeled_parts ADD COLUMN released_at DATETIME")
+
 
 _SECTION_PART_DEFAULT_ORDER = ("TOP", "BOT", "KNB", "BUT")
 
@@ -4443,6 +4574,22 @@ async def seed_default_groups():
             ):
                 group.permissions = [*group.permissions, "printers:clear_plate"]
                 logger.info("Added printers:clear_plate to group '%s' (has printers:control)", group.name)
+        await session.commit()
+
+        # Backfill: floor:scan for groups that already do bench work.
+        # The Floor feature (docs/floor-plan.md) is new, so no upgrading
+        # install has a group carrying this permission — without a backfill
+        # the scan page would 403 for every non-admin until an administrator
+        # granted it by hand, which is a silent "the new feature is broken"
+        # rather than a visible one. Keyed off printers:control because
+        # claiming a station is the same kind of shop-floor work as running a
+        # printer; a Viewer-tier group has neither and correctly stays out.
+        # Additive and idempotent, like the clear_plate backfill above.
+        result = await session.execute(select(Group))
+        for group in result.scalars().all():
+            if group.permissions and "printers:control" in group.permissions and "floor:scan" not in group.permissions:
+                group.permissions = [*group.permissions, "floor:scan"]
+                logger.info("Added floor:scan to group '%s' (has printers:control)", group.name)
         await session.commit()
 
         # Backfill: sync the Administrators system group to ALL_PERMISSIONS.

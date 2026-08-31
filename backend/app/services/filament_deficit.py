@@ -210,11 +210,6 @@ def _material_identity_spoolman(spool: dict | None) -> str:
     return f"unmatched:{spool_id}"
 
 
-def _ams_id_from_global(global_tray_id: int) -> int:
-    """Inverse of ``_global_to_ams_key`` returning ams_id only."""
-    return _global_to_ams_key(global_tray_id)[0]
-
-
 def _extruder_side_for_ams(
     ams_id: int,
     ams_extruder_map: dict[str, int],

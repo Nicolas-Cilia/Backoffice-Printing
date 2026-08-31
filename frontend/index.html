@@ -26,6 +26,11 @@
 
     <!-- Splash screens for iOS -->
     <link rel="apple-touch-startup-image" href="/img/android-chrome-512x512.png" />
+
+    <!-- Apply stored dark/light theme classes before first paint to avoid a
+         white flash on refresh. External file so CSP script-src 'self' covers
+         it (same pattern as sw-register.js). Must stay sync + in <head>. -->
+    <script src="/theme-init.js"></script>
   </head>
   <body>
     <div id="root"></div>

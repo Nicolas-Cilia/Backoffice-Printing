@@ -91,7 +91,10 @@ export default defineConfig({
   },
   server: {
     host: '0.0.0.0',
-    port: 5173,
+    // Respects the harness's assigned PORT env var when present (dev
+    // orchestration that auto-picks a free port), falling back to the
+    // usual 5173 for a plain `npm run dev`.
+    port: Number(process.env.PORT) || 5173,
     strictPort: true,
     proxy: {
       '/api/v1/ws': {

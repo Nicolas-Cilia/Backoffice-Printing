@@ -220,6 +220,32 @@ describe('StartPrintModal', () => {
     expect(screen.queryByRole('button', { name: /^Auto$/i })).not.toBeInTheDocument();
   });
 
+  it('opens the full file-management workspace with a dropped upload selected', async () => {
+    render(
+      <StartPrintModal
+        printerName="X1 Carbon"
+        printerModel="X1C"
+        printerId={1}
+        initialFile={{
+          id: 42,
+          filename: 'dropped.gcode.3mf',
+          slicedForModel: 'X1C',
+          thumbnailPath: null,
+          fileSize: 2048,
+          fileType: 'gcode.3mf',
+        }}
+        onClose={onClose}
+        onSuccess={onSuccess}
+      />,
+    );
+
+    expect(await screen.findByTestId('start-print-library')).toBeInTheDocument();
+    expect(screen.getByTestId('start-print-options')).toBeInTheDocument();
+    expect(screen.getByTestId('print-modal-embedded')).toBeInTheDocument();
+    expect(screen.getByText('dropped.gcode.3mf')).toBeInTheDocument();
+    expect(screen.queryByTestId('start-print-dropzone')).not.toBeInTheDocument();
+  });
+
   it('Change file returns to the upload drop zone', async () => {
     const user = userEvent.setup();
     render(
@@ -449,10 +475,27 @@ describe('StartPrintModal', () => {
   it('discards a prior ephemeral upload when switching to a library file', async () => {
     const user = userEvent.setup();
     const deletedIds: number[] = [];
+    let includeUploadInLibrary = false;
 
     server.use(
-      http.post('/api/v1/library/files', async () =>
-        HttpResponse.json({
+      http.get('/api/v1/library/files', () =>
+        HttpResponse.json(
+          includeUploadInLibrary
+            ? [
+                ...mockFiles,
+                {
+                  ...mockFiles[0],
+                  id: 99,
+                  filename: 'fresh.gcode.3mf',
+                  print_name: 'fresh.gcode.3mf',
+                },
+              ]
+            : mockFiles,
+        ),
+      ),
+      http.post('/api/v1/library/files', () => {
+        includeUploadInLibrary = true;
+        return HttpResponse.json({
           id: 99,
           filename: 'fresh.gcode.3mf',
           file_type: 'gcode.3mf',
@@ -460,24 +503,12 @@ describe('StartPrintModal', () => {
           thumbnail_path: null,
           duplicate_of: null,
           metadata: { sliced_for_model: 'X1C' },
-        }),
-      ),
+        });
+      }),
       http.delete('/api/v1/library/files/:id', ({ params }) => {
         deletedIds.push(Number(params.id));
         return HttpResponse.json({ status: 'ok' });
       }),
-      http.get('/api/v1/library/files/99', () =>
-        HttpResponse.json({
-          id: 99,
-          filename: 'fresh.gcode.3mf',
-          print_name: 'fresh.gcode.3mf',
-          file_type: 'gcode.3mf',
-          file_size: 2048,
-          thumbnail_path: null,
-          sliced_for_model: 'X1C',
-          metadata: null,
-        }),
-      ),
       http.get('/api/v1/library/files/99/plates', () =>
         HttpResponse.json({ is_multi_plate: false, plates: [] }),
       ),
@@ -515,5 +546,6 @@ describe('StartPrintModal', () => {
     await waitFor(() => {
       expect(deletedIds).toContain(99);
     });
+    expect(screen.queryByText('fresh.gcode.3mf')).not.toBeInTheDocument();
   });
 });

@@ -1,6 +1,6 @@
 import { useState, useEffect, useCallback, useRef, useMemo } from 'react';
 import { NavLink, Outlet, useNavigate, useLocation } from 'react-router-dom';
-import { Printer, ListOrdered, BarChart3, Cloud, Settings, Sun, Moon, Monitor, ChevronLeft, ChevronRight, Keyboard, Github, ArrowUpCircle, Wrench, FolderOpen, X, Menu, Info, Plug, Bug, LogOut, Key, Loader2, Disc3, ShieldAlert, Bell, type LucideIcon } from 'lucide-react';
+import { Printer, ListOrdered, BarChart3, Cloud, Settings, Sun, Moon, Monitor, ChevronLeft, ChevronRight, Keyboard, Github, ArrowUpCircle, Wrench, FolderOpen, X, Menu, Info, Plug, Bug, LogOut, Key, Loader2, Disc3, Boxes, ShieldAlert, Bell, ScanLine, type LucideIcon } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
 import { useTheme } from '../contexts/ThemeContext';
 import { KeyboardShortcutsModal } from './KeyboardShortcutsModal';
@@ -38,9 +38,17 @@ interface NavItem {
 
 export const defaultNavItems: NavItem[] = [
   { id: 'printers', to: '/', icon: Printer, labelKey: 'nav.printers' },
-  { id: 'inventory', to: '/inventory', icon: Disc3, labelKey: 'nav.inventory' },
+  // Production-floor parts inventory (gated floor:scan). The filament spool
+  // inventory now lives under its own `filament` entry below (→ /filament).
+  { id: 'inventory', to: '/inventory', icon: Boxes, labelKey: 'nav.inventory' },
+  { id: 'filament', to: '/filament', icon: Disc3, labelKey: 'nav.filament' },
   { id: 'queue', to: '/queue', icon: ListOrdered, labelKey: 'nav.queue' },
   { id: 'files', to: '/files', icon: FolderOpen, labelKey: 'nav.files' },
+  // Production-floor scanning (docs/floor-plan.md). Links to the /floor
+  // landing page (Scan/Codes picker) — not directly to /floor/scan, since
+  // floor-bench kiosk PCs bookmark that URL explicitly and shouldn't see a
+  // picker on reload (§2.1).
+  { id: 'floor', to: '/floor', icon: ScanLine, labelKey: 'nav.floor' },
   { id: 'profiles', to: '/profiles', icon: Cloud, labelKey: 'nav.profiles' },
   { id: 'maintenance', to: '/maintenance', icon: Wrench, labelKey: 'nav.maintenance' },
   { id: 'stats', to: '/stats', icon: BarChart3, labelKey: 'nav.stats' },
@@ -281,7 +289,14 @@ export function Layout() {
       stats: 'stats:read',
       profiles: 'kprofiles:read',
       maintenance: 'maintenance:read',
-      inventory: 'inventory:read',
+      // Floor parts inventory (/inventory) is a floor endpoint → floor:scan.
+      inventory: 'floor:scan',
+      // Filament spool inventory (/filament) → inventory:read.
+      filament: 'inventory:read',
+      // Every floor endpoint requires floor:scan, so without this gate a user
+      // lacking it would see the nav item and hit 403s on arrival. Seeded to
+      // Administrators and Operators; a Viewer-tier group loses the entry.
+      floor: 'floor:scan',
       files: ['library:read', 'library:read_own', 'library:read_all'],
       settings: 'settings:read',
       // The user-email-preferences API requires notifications:user_email, so

@@ -10,6 +10,16 @@ from backend.app.models.filament_tracking import (
     FilamentColorUsage,
     FilamentSlotAssignment,
 )
+from backend.app.models.floor_bin import FloorBinBatch, FloorBinBatchEvent
+from backend.app.models.floor_part import (
+    FloorDismissedBuildPlate,
+    FloorErrorLabel,
+    FloorLabeledPart,
+    FloorPartEvent,
+    FloorPrintStopReason,
+)
+from backend.app.models.floor_session import FloorStationSession
+from backend.app.models.floor_unit import FloorProductUnit
 from backend.app.models.github_backup import GitHubBackupConfig, GitHubBackupLog
 from backend.app.models.group import Group, user_groups
 from backend.app.models.kprofile_note import KProfileNote
@@ -61,6 +71,14 @@ __all__ = [
     "FilamentColorBucket",
     "FilamentColorUsage",
     "FilamentSlotAssignment",
+    "FloorStationSession",
+    "FloorBinBatch",
+    "FloorBinBatchEvent",
+    "FloorLabeledPart",
+    "FloorPartEvent",
+    "FloorErrorLabel",
+    "FloorDismissedBuildPlate",
+    "FloorProductUnit",
     "Settings",
     "SmartPlug",
     "SmartPlugEnergySnapshot",

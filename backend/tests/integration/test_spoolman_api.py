@@ -1042,7 +1042,6 @@ class TestSpoolmanAPI:
             tray_weight=1000,
         )
         mock_spoolman_client.parse_ams_tray.return_value = mock_tray
-        mock_spoolman_client.convert_ams_slot_to_location = MagicMock(return_value="AMS A1")
         mock_spoolman_client.sync_ams_tray = AsyncMock(return_value={"id": 42})
         mock_spoolman_client.clear_location_for_removed_spools = AsyncMock(return_value=0)
 

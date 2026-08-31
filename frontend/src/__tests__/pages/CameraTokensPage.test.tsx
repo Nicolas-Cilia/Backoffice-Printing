@@ -16,7 +16,7 @@ import userEvent from '@testing-library/user-event';
 import { http, HttpResponse } from 'msw';
 import { render } from '../utils';
 import { server } from '../mocks/server';
-import CameraTokensPage from '../../pages/CameraTokensPage';
+import { CameraTokensSection } from '../../pages/CameraTokensPage';
 
 function token(overrides: Partial<Record<string, unknown>> = {}) {
   return {
@@ -38,7 +38,7 @@ afterEach(() => {
   vi.restoreAllMocks();
 });
 
-describe('CameraTokensPage', () => {
+describe('CameraTokensSection', () => {
   it('renders the user\'s tokens', async () => {
     server.use(
       http.get('*/api/v1/auth/tokens', ({ request }) => {
@@ -51,7 +51,7 @@ describe('CameraTokensPage', () => {
       }),
     );
 
-    render(<CameraTokensPage />);
+    render(<CameraTokensSection />);
 
     expect(await screen.findByText('Home Assistant')).toBeInTheDocument();
     expect(screen.getByText('abcd1234…')).toBeInTheDocument();
@@ -64,7 +64,7 @@ describe('CameraTokensPage', () => {
       http.get('*/api/v1/users/', () => HttpResponse.json([])),
     );
 
-    render(<CameraTokensPage />);
+    render(<CameraTokensSection />);
 
     // Auth-disabled test environment treats user as admin → "No tokens yet"
     // renders once per panel (My tokens + admin view).
@@ -99,7 +99,7 @@ describe('CameraTokensPage', () => {
     );
 
     const user = userEvent.setup();
-    render(<CameraTokensPage />);
+    render(<CameraTokensSection />);
 
     await screen.findByText(/no tokens yet/i);
     await user.type(screen.getByLabelText(/token name/i), 'My Frigate');
@@ -139,7 +139,7 @@ describe('CameraTokensPage', () => {
     );
 
     const user = userEvent.setup();
-    render(<CameraTokensPage />);
+    render(<CameraTokensSection />);
 
     await screen.findByText(/no tokens yet/i);
     await user.type(screen.getByLabelText(/token name/i), 'OBS');
@@ -159,7 +159,7 @@ describe('CameraTokensPage', () => {
     );
 
     const user = userEvent.setup();
-    render(<CameraTokensPage />);
+    render(<CameraTokensSection />);
     await screen.findByText(/no tokens yet/i);
 
     const daysInput = screen.getByLabelText(/days until expiry/i) as HTMLInputElement;
@@ -186,7 +186,7 @@ describe('CameraTokensPage', () => {
     );
 
     const user = userEvent.setup();
-    render(<CameraTokensPage />);
+    render(<CameraTokensSection />);
 
     await screen.findByText('kiosk');
     // Open the confirm modal.
@@ -221,7 +221,7 @@ describe('CameraTokensPage', () => {
     );
 
     const user = userEvent.setup();
-    render(<CameraTokensPage />);
+    render(<CameraTokensSection />);
 
     await screen.findByText('kiosk');
     await user.click(screen.getByRole('button', { name: /revoke/i }));

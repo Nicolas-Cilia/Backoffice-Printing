@@ -331,31 +331,6 @@ def partial_progress_scale(status: str, progress: float | int | None) -> float:
     return max(0.0, min((progress or 0) / 100.0, 1.0))
 
 
-_NAME_FAMILIES = (
-    ("transparent", "Clear"),
-    ("clear", "Clear"),
-    ("ivory", "White"),
-    ("jade white", "White"),
-    ("white", "White"),
-    ("black", "Black"),
-    ("dark gray", "Dark Gray"),
-    ("dark grey", "Dark Gray"),
-    ("light gray", "Light Gray"),
-    ("light grey", "Light Gray"),
-    ("gray", "Gray"),
-    ("grey", "Gray"),
-    ("brown", "Brown"),
-    ("orange", "Orange"),
-    ("yellow", "Yellow"),
-    ("green", "Green"),
-    ("cyan", "Cyan"),
-    ("blue", "Blue"),
-    ("purple", "Purple"),
-    ("pink", "Pink"),
-    ("red", "Red"),
-)
-
-
 def hex_to_basic_color_name(hex_color: str | None) -> str:
     """HSL family name matching frontend hexToColorName."""
     hex_part = normalize_hex(hex_color)
@@ -413,17 +388,6 @@ def hex_to_basic_color_name(hex_color: str | None) -> str:
     if hue < 290:
         return "Purple"
     return "Pink"
-
-
-def family_color_name(hex_color: str | None = None, fallback: str | None = None) -> str:
-    """Legacy HSL family helper. Tracking products use the typed name instead."""
-    if normalize_hex(hex_color):
-        return hex_to_basic_color_name(hex_color)
-    text = (fallback or "").strip().lower()
-    for needle, family in _NAME_FAMILIES:
-        if needle in text:
-            return family
-    return normalize_color_name(fallback)
 
 
 def global_tray_to_slot(global_tray_id: int) -> tuple[int, int]:
@@ -1500,56 +1464,6 @@ async def get_or_create_bucket(
             return existing
         raise
     return bucket
-
-
-async def record_slot_usage(
-    db: AsyncSession,
-    *,
-    slots: list[SlotUsage],
-    status: str,
-    progress: float | int | None,
-    occurred_at: datetime,
-    archive_id: int | None,
-    printer_id: int | None,
-    print_name: str | None,
-    source_prefix: str,
-) -> list[FilamentColorUsage]:
-    scaled = scale_slots(slots, status, progress)
-    created: list[FilamentColorUsage] = []
-    kind = status if status in PRINT_USAGE_KINDS else "completed"
-    for slot in scaled:
-        bucket = await get_or_create_bucket(
-            db,
-            color_name=slot.color_name,
-            material=slot.material,
-            color_hex=slot.color_hex,
-            occurred_at=occurred_at,
-        )
-        source_key = f"{source_prefix}:{bucket.color_name}:{bucket.material}"
-        existing = await db.execute(select(FilamentColorUsage).where(FilamentColorUsage.source_key == source_key))
-        if existing.scalar_one_or_none():
-            continue
-        event = FilamentColorUsage(
-            bucket_id=bucket.id,
-            grams=slot.grams,
-            occurred_at=occurred_at,
-            kind=kind,
-            progress=None if kind == "completed" else partial_progress_scale(status, progress) * 100,
-            archive_id=archive_id,
-            printer_id=printer_id,
-            print_name=print_name,
-            source_key=source_key,
-            estimated=True,
-        )
-        db.add(event)
-        if bucket.stock_initialized:
-            bucket.on_hand_grams = max(0.0, (bucket.on_hand_grams or 0) - slot.grams)
-        if bucket.tracking_started_at is None:
-            bucket.tracking_started_at = occurred_at
-        created.append(event)
-    if created:
-        await db.flush()
-    return created
 
 
 async def assigned_bucket_for_slot(

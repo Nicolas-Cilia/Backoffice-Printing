@@ -205,6 +205,14 @@ _APIKEY_DENIED_PERMISSIONS: frozenset[Permission] = frozenset(
         Permission.GITHUB_BACKUP,
         Permission.GITHUB_RESTORE,
         Permission.FIRMWARE_UPDATE,
+        # Floor scanning (docs/floor-plan.md). Denied deliberately, not by
+        # oversight: opening a station session takes a **floor-wide lock**
+        # that refuses every other device (§2.4). A script holding that lock
+        # would block real operators at the bench, and the recovery path —
+        # takeover — is built for a human reading an elapsed time and
+        # deciding. Floor work is physical: at a screen, with a pistol in
+        # hand. There is no automation story here to widen the surface for.
+        Permission.FLOOR_SCAN,
         # Resource administration (printer/project/filament/maintenance/k-profile/etc CRUD).
         # API keys with the operational scopes can read these resources via
         # *_READ permissions but cannot mutate the catalog/registry itself.
@@ -1423,9 +1431,6 @@ def check_printer_access(api_key: APIKey, printer_id: int) -> None:
 
 
 # Convenience dependencies - these are functions that return Depends objects
-def RequireAdmin():
-    """Dependency that requires admin role."""
-    return Depends(require_role("admin"))
 
 
 def RequireAdminIfAuthEnabled():
@@ -1619,11 +1624,6 @@ def require_permission_if_auth_enabled(*permissions: str | Permission):
             )
 
     return permission_checker
-
-
-def RequirePermission(*permissions: str | Permission):
-    """Convenience dependency that requires ALL specified permissions."""
-    return Depends(require_permission(*permissions))
 
 
 def RequirePermissionIfAuthEnabled(*permissions: str | Permission):

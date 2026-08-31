@@ -118,13 +118,16 @@ import { useToast } from '../contexts/ToastContext';
 import { ChamberLight } from '../components/icons/ChamberLight';
 import { PlateClearedIcon } from '../components/icons/PlateClearedIcon';
 import { SkipObjectsModal, SkipObjectsIcon } from '../components/SkipObjectsModal';
-import { PrintModal } from '../components/PrintModal';
 import { StartPrintModal } from '../components/StartPrintModal';
 import { PrinterInfoModal } from '../components/PrinterInfoModal';
 import { getAmsLabel, getGlobalTrayId, getFillBarColor, getSpoolmanFillLevel, getFallbackSpoolTag, isBambuLabSpool, resolveSlotNozzleDiameter } from '../utils/amsHelpers';
 import { getPrinterImage, getWifiStrength, filterCompatibleQueueItems } from '../utils/printer';
 import { getPrinterCardChromeClass, PRINTER_CARD_DISABLED_CONTROL } from '../utils/printerCardChrome';
-import { trackingAmsSwatchGroups, trackingHexToRgba } from '../utils/filamentTrackingSwatches';
+import {
+  trackingAmsSwatchGroups,
+  trackingExternalSwatchSlots,
+  trackingHexToRgba,
+} from '../utils/filamentTrackingSwatches';
 import { FilamentSwatch } from '../components/FilamentSwatch';
 import { FilamentSlotCircle } from '../components/FilamentSlotCircle';
 import { SlotTrackingLabel } from '../components/SlotTrackingLabel';
@@ -1879,8 +1882,10 @@ function PrinterCard({
   const [printAfterUpload, setPrintAfterUpload] = useState<{
     id: number;
     filename: string;
-    cleanup?: boolean;
     slicedForModel?: string | null;
+    thumbnailPath?: string | null;
+    fileSize?: number;
+    fileType?: string;
   } | null>(null);
   // AMS drying popover state: which AMS unit has the popover open
   const [dryingPopoverAmsId, setDryingPopoverAmsId] = useState<number | null>(null);
@@ -3065,7 +3070,14 @@ function PrinterCard({
         return;
       }
 
-      setPrintAfterUpload({ id: result.id, filename: result.filename, cleanup: true });
+      setPrintAfterUpload({
+        id: result.id,
+        filename: result.filename,
+        slicedForModel: slicedFor ?? null,
+        thumbnailPath: result.thumbnail_path,
+        fileSize: result.file_size,
+        fileType: result.file_type,
+      });
     } catch {
       showToast(t('common.uploadFailed', 'Upload failed'), 'error');
     } finally {
@@ -3287,7 +3299,7 @@ function PrinterCard({
     <Card
       id={`printer-card-${printer.id}`}
       data-printer-status={statusBucket}
-      className={`relative flex ${cardSize === 2 ? 'h-auto' : 'h-full'} flex-col transition-colors ${getPrinterCardChromeClass(statusBucket)} ${isSelected ? 'ring-2 ring-bambu-green' : ''} ${selectionMode || viewMode === 'compact' ? 'cursor-pointer' : ''}`}
+      className={`relative flex h-full flex-col transition-colors ${getPrinterCardChromeClass(statusBucket)} ${isSelected ? 'ring-2 ring-bambu-green' : ''} ${selectionMode || viewMode === 'compact' ? 'cursor-pointer' : ''}`}
       onClick={handleCardClick}
       onDragEnter={handleCardDragEnter}
       onDragOver={handleCardDragOver}
@@ -3338,7 +3350,7 @@ function PrinterCard({
           </div>
         </div>
       )}
-      <CardContent className={`${cardSize === 2 ? '!p-3' : cardSize >= 3 ? 'p-5' : ''} flex ${cardSize === 2 ? '' : 'flex-1'} flex-col`}>
+      <CardContent className={`${cardSize === 2 ? '!p-3' : cardSize >= 3 ? 'p-5' : ''} flex flex-1 flex-col`}>
         {/* Header */}
         <div className={getSpacing()}>
           {/* Top row: Image, Name, Menu */}
@@ -4479,7 +4491,7 @@ function PrinterCard({
                 : 'flex h-8 w-20 items-center justify-center gap-1 px-2 rounded-lg text-xs font-medium transition-colors';
 
               return (
-                <div className={cardSize === 2 ? 'mt-1.5 space-y-1.5' : 'mt-3'}>
+                <div className={cardSize === 2 ? 'mt-auto space-y-1.5 pt-1.5' : 'mt-3'}>
                   {cardSize !== 2 && (
                     <div className="flex items-center gap-2 mb-2">
                       <span className="text-[10px] uppercase tracking-wider text-bambu-gray font-medium">
@@ -4490,15 +4502,58 @@ function PrinterCard({
                   )}
 
                   {cardSize === 2 && (
-                    <div className="flex min-w-0 items-center" data-testid="printer-tracking-swatches">
+                    <div className="flex min-h-3.5 min-w-0 items-center" data-testid="printer-tracking-swatches">
                       {(() => {
+                        const regularAms = (amsData ?? []).filter((ams) => ams.tray.length > 1);
+                        // Only show AMS swatches when AMS is present (or assignments exist for
+                        // an AMS unit). Do not invent four empty slots for external-only printers.
                         const groups = trackingAmsSwatchGroups(
                           trackingAssignments,
-                          (amsData ?? []).filter((ams) => ams.tray.length > 1),
+                          regularAms,
+                          { includeEmptyUnits: regularAms.length > 0 },
                         );
-                        if (groups.length === 0) {
+                        const externalSlots = trackingExternalSwatchSlots(
+                          trackingAssignments,
+                          status.vt_tray?.length ?? 0,
+                        );
+                        const renderSlot = (
+                          slot: (typeof groups)[number]['slots'][number],
+                          keyPrefix: string,
+                        ) => {
+                          const slotLabel = t('printers.trackingSlot', 'Slot {{n}}', { n: slot.trayId + 1 });
+                          if (slot.kind === 'empty') {
+                            return (
+                              <span
+                                key={`${keyPrefix}-${slot.trayId}`}
+                                data-testid="tracking-slot-empty"
+                                title={`${slotLabel} — ${t('printers.trackingUnassigned', 'Not tracking')}`}
+                                className="relative flex h-3.5 w-3.5 items-center justify-center rounded-full border border-bambu-gray/60 bg-bambu-dark"
+                              >
+                                <X className="h-2.5 w-2.5 text-bambu-gray" strokeWidth={3} />
+                              </span>
+                            );
+                          }
                           return (
-                            <span className="text-[10px] text-bambu-gray">
+                            <span
+                              key={`${keyPrefix}-${slot.trayId}`}
+                              data-testid="tracking-slot-tracked"
+                              title={slot.color_name ? `${slotLabel} — ${slot.color_name}` : slotLabel}
+                              className="inline-flex"
+                            >
+                              <FilamentSwatch
+                                rgba={trackingHexToRgba(slot.color_hex)}
+                                extraColors={slot.extra_colors}
+                                effectType={slot.effect_type}
+                                subtype={slot.subtype}
+                                className="h-3.5 w-3.5"
+                                effectSize="table"
+                              />
+                            </span>
+                          );
+                        };
+                        if (groups.length === 0 && externalSlots.length === 0) {
+                          return (
+                            <span className="text-[10px] leading-[14px] text-bambu-gray">
                               {t('printers.trackingNone', 'None')}
                             </span>
                           );
@@ -4511,47 +4566,24 @@ function PrinterCard({
                                 className="grid grid-cols-4 gap-1"
                                 data-testid="tracking-ams-group"
                               >
-                                {group.slots.map((slot) => {
-                                  const slotLabel = t('printers.trackingSlot', 'Slot {{n}}', { n: slot.trayId + 1 });
-                                  if (slot.kind === 'empty') {
-                                    return (
-                                      <span
-                                        key={slot.trayId}
-                                        data-testid="tracking-slot-empty"
-                                        title={`${slotLabel} — ${t('printers.trackingUnassigned', 'Not tracking')}`}
-                                        className="relative flex h-3.5 w-3.5 items-center justify-center rounded-full border border-bambu-gray/60 bg-bambu-dark"
-                                      >
-                                        <X className="h-2.5 w-2.5 text-bambu-gray" strokeWidth={3} />
-                                      </span>
-                                    );
-                                  }
-                                  return (
-                                    <span
-                                      key={slot.trayId}
-                                      data-testid="tracking-slot-tracked"
-                                      title={slot.color_name ? `${slotLabel} — ${slot.color_name}` : slotLabel}
-                                      className="inline-flex"
-                                    >
-                                      <FilamentSwatch
-                                        rgba={trackingHexToRgba(slot.color_hex)}
-                                        extraColors={slot.extra_colors}
-                                        effectType={slot.effect_type}
-                                        subtype={slot.subtype}
-                                        className="h-3.5 w-3.5"
-                                        effectSize="table"
-                                      />
-                                    </span>
-                                  );
-                                })}
+                                {group.slots.map((slot) => renderSlot(slot, `ams-${group.amsId}`))}
                               </div>
                             ))}
+                            {externalSlots.length > 0 && (
+                              <div
+                                className={`grid gap-1 ${externalSlots.length > 1 ? 'grid-cols-2' : 'grid-cols-1'}`}
+                                data-testid="tracking-external-group"
+                              >
+                                {externalSlots.map((slot) => renderSlot(slot, 'ext'))}
+                              </div>
+                            )}
                           </div>
                         );
                       })()}
                     </div>
                   )}
 
-                  <div className={`flex items-center gap-x-2 gap-y-1 ${cardSize === 2 ? 'flex-wrap justify-between' : 'flex-wrap justify-between items-start'}`}>
+                  <div className={cardSize === 2 ? 'flex flex-col gap-1' : 'flex flex-wrap items-start justify-between gap-x-2 gap-y-1'}>
                     {/* Light, motion, plate detection, and speed on M and L; airduct stays model-gated */}
                     <div className={`flex flex-wrap items-center min-w-0 ${cardSize === 2 ? 'gap-1' : 'gap-2'}`}>
                       <button
@@ -4871,8 +4903,8 @@ function PrinterCard({
 
                     </div>
 
-                    {/* Right: Print Control Buttons */}
-                    <div className={`ml-auto flex items-center justify-end flex-shrink-0 ${cardSize === 2 ? 'gap-1' : 'gap-2'}`}>
+                    {/* Right: Print Control Buttons — own row on medium so A / H2 / X1 cards share height */}
+                    <div className={`flex items-center justify-end flex-shrink-0 ${cardSize === 2 ? 'w-full gap-1' : 'ml-auto gap-2'}`}>
                       {(() => {
                         const startUnavailable = isPrinting || isControlBusy || !status.connected || !hasPermission('queue:create');
                         return (
@@ -6271,17 +6303,22 @@ function PrinterCard({
         />
       )}
 
-      {/* Print Modal after drag-and-drop upload onto the card */}
+      {/* Use the same file-management workspace after drag-and-drop upload. */}
       {printAfterUpload && (
-        <PrintModal
-          mode="create"
-          libraryFileId={printAfterUpload.id}
-          archiveName={printAfterUpload.filename}
-          slicedForModel={printAfterUpload.slicedForModel}
-          initialSelectedPrinterIds={[printer.id]}
+        <StartPrintModal
+          printerName={printer.name}
+          printerModel={mapModelCode(printer.model) || null}
+          printerId={printer.id}
+          initialFile={{
+            id: printAfterUpload.id,
+            filename: printAfterUpload.filename,
+            slicedForModel: printAfterUpload.slicedForModel,
+            thumbnailPath: printAfterUpload.thumbnailPath ?? null,
+            fileSize: printAfterUpload.fileSize ?? null,
+            fileType: printAfterUpload.fileType ?? null,
+          }}
           onClose={() => setPrintAfterUpload(null)}
           onSuccess={() => setPrintAfterUpload(null)}
-          cleanupLibraryAfterDispatch={printAfterUpload.cleanup}
         />
       )}
 
@@ -7253,24 +7290,27 @@ export function AddPrinterModal({
                 {t('printers.discovery.subnetToScan')}
               </label>
               {detectedSubnets.length > 0 ? (
-                <select
-                  className="w-full px-3 py-2 bg-bambu-dark border border-bambu-dark-tertiary rounded-lg text-white focus:border-bambu-green focus:outline-none text-sm"
-                  value={useCustomSubnet ? '__custom__' : subnet}
-                  onChange={(e) => {
-                    if (e.target.value === '__custom__') {
-                      setUseCustomSubnet(true);
-                    } else {
-                      setUseCustomSubnet(false);
-                      setSubnet(e.target.value);
-                    }
-                  }}
-                  disabled={discovering}
-                >
-                  {detectedSubnets.map(s => (
-                    <option key={s} value={s}>{s}</option>
-                  ))}
-                  <option value="__custom__">{t('printers.discovery.customSubnetOption')}</option>
-                </select>
+                <div className="relative">
+                  <select
+                    className="w-full appearance-none px-3 py-2 pr-10 bg-bambu-dark border border-bambu-dark-tertiary rounded-lg text-white focus:border-bambu-green focus:outline-none text-sm"
+                    value={useCustomSubnet ? '__custom__' : subnet}
+                    onChange={(e) => {
+                      if (e.target.value === '__custom__') {
+                        setUseCustomSubnet(true);
+                      } else {
+                        setUseCustomSubnet(false);
+                        setSubnet(e.target.value);
+                      }
+                    }}
+                    disabled={discovering}
+                  >
+                    {detectedSubnets.map(s => (
+                      <option key={s} value={s}>{s}</option>
+                    ))}
+                    <option value="__custom__">{t('printers.discovery.customSubnetOption')}</option>
+                  </select>
+                  <ChevronDown aria-hidden="true" className="pointer-events-none absolute right-3 top-1/2 h-4 w-4 -translate-y-1/2 text-bambu-gray" />
+                </div>
               ) : (
                 <input
                   type="text"
@@ -7417,39 +7457,42 @@ export function AddPrinterModal({
             </div>
             <div>
               <label className="block text-sm text-bambu-gray mb-1">{t('printers.modal.modelOptional')}</label>
-              <select
-                className="w-full px-3 py-2 bg-bambu-dark border border-bambu-dark-tertiary rounded-lg text-white focus:border-bambu-green focus:outline-none"
-                value={form.model || ''}
-                onChange={(e) => setForm({ ...form, model: e.target.value })}
-              >
-                <option value="">{t('printers.modal.selectModel')}</option>
-                <optgroup label="A1 Series">
-                  <option value="A1">A1</option>
-                  <option value="A1 Mini">A1 Mini</option>
-                </optgroup>
-                <optgroup label="A2 Series">
-                  <option value="A2L">A2L</option>
-                </optgroup>
-                <optgroup label="H2 Series">
-                  <option value="H2C">H2C</option>
-                  <option value="H2D">H2D</option>
-                  <option value="H2D Pro">H2D Pro</option>
-                  <option value="H2S">H2S</option>
-                </optgroup>
-                <optgroup label="P Series">
-                  <option value="P1P">P1P</option>
-                  <option value="P1S">P1S</option>
-                  <option value="P2S">P2S</option>
-                </optgroup>
-                <optgroup label="X1 Series">
-                  <option value="X1">X1</option>
-                  <option value="X1C">X1 Carbon</option>
-                  <option value="X1E">X1E</option>
-                </optgroup>
-                <optgroup label="X2 Series">
-                  <option value="X2D">X2D</option>
-                </optgroup>
-              </select>
+              <div className="relative">
+                <select
+                  className="w-full appearance-none px-3 py-2 pr-10 bg-bambu-dark border border-bambu-dark-tertiary rounded-lg text-white focus:border-bambu-green focus:outline-none"
+                  value={form.model || ''}
+                  onChange={(e) => setForm({ ...form, model: e.target.value })}
+                >
+                  <option value="">{t('printers.modal.selectModel')}</option>
+                  <optgroup label="A1 Series">
+                    <option value="A1">A1</option>
+                    <option value="A1 Mini">A1 Mini</option>
+                  </optgroup>
+                  <optgroup label="A2 Series">
+                    <option value="A2L">A2L</option>
+                  </optgroup>
+                  <optgroup label="H2 Series">
+                    <option value="H2C">H2C</option>
+                    <option value="H2D">H2D</option>
+                    <option value="H2D Pro">H2D Pro</option>
+                    <option value="H2S">H2S</option>
+                  </optgroup>
+                  <optgroup label="P Series">
+                    <option value="P1P">P1P</option>
+                    <option value="P1S">P1S</option>
+                    <option value="P2S">P2S</option>
+                  </optgroup>
+                  <optgroup label="X1 Series">
+                    <option value="X1">X1</option>
+                    <option value="X1C">X1 Carbon</option>
+                    <option value="X1E">X1E</option>
+                  </optgroup>
+                  <optgroup label="X2 Series">
+                    <option value="X2D">X2D</option>
+                  </optgroup>
+                </select>
+                <ChevronDown aria-hidden="true" className="pointer-events-none absolute right-3 top-1/2 h-4 w-4 -translate-y-1/2 text-bambu-gray" />
+              </div>
             </div>
             <div>
               <label className="block text-sm text-bambu-gray mb-1">{t('printers.modal.locationGroup')}</label>
@@ -7948,39 +7991,42 @@ function EditPrinterModal({
             </div>
             <div>
               <label className="block text-sm text-bambu-gray mb-1">{t('printers.model')}</label>
-              <select
-                className="w-full px-3 py-2 bg-bambu-dark border border-bambu-dark-tertiary rounded-lg text-white focus:border-bambu-green focus:outline-none"
-                value={form.model}
-                onChange={(e) => setForm({ ...form, model: e.target.value })}
-              >
-                <option value="">{t('printers.modal.selectModel')}</option>
-                <optgroup label="A1 Series">
-                  <option value="A1">A1</option>
-                  <option value="A1 Mini">A1 Mini</option>
-                </optgroup>
-                <optgroup label="A2 Series">
-                  <option value="A2L">A2L</option>
-                </optgroup>
-                <optgroup label="H2 Series">
-                  <option value="H2C">H2C</option>
-                  <option value="H2D">H2D</option>
-                  <option value="H2D Pro">H2D Pro</option>
-                  <option value="H2S">H2S</option>
-                </optgroup>
-                <optgroup label="P Series">
-                  <option value="P1P">P1P</option>
-                  <option value="P1S">P1S</option>
-                  <option value="P2S">P2S</option>
-                </optgroup>
-                <optgroup label="X1 Series">
-                  <option value="X1">X1</option>
-                  <option value="X1C">X1 Carbon</option>
-                  <option value="X1E">X1E</option>
-                </optgroup>
-                <optgroup label="X2 Series">
-                  <option value="X2D">X2D</option>
-                </optgroup>
-              </select>
+              <div className="relative">
+                <select
+                  className="w-full appearance-none px-3 py-2 pr-10 bg-bambu-dark border border-bambu-dark-tertiary rounded-lg text-white focus:border-bambu-green focus:outline-none"
+                  value={form.model}
+                  onChange={(e) => setForm({ ...form, model: e.target.value })}
+                >
+                  <option value="">{t('printers.modal.selectModel')}</option>
+                  <optgroup label="A1 Series">
+                    <option value="A1">A1</option>
+                    <option value="A1 Mini">A1 Mini</option>
+                  </optgroup>
+                  <optgroup label="A2 Series">
+                    <option value="A2L">A2L</option>
+                  </optgroup>
+                  <optgroup label="H2 Series">
+                    <option value="H2C">H2C</option>
+                    <option value="H2D">H2D</option>
+                    <option value="H2D Pro">H2D Pro</option>
+                    <option value="H2S">H2S</option>
+                  </optgroup>
+                  <optgroup label="P Series">
+                    <option value="P1P">P1P</option>
+                    <option value="P1S">P1S</option>
+                    <option value="P2S">P2S</option>
+                  </optgroup>
+                  <optgroup label="X1 Series">
+                    <option value="X1">X1</option>
+                    <option value="X1C">X1 Carbon</option>
+                    <option value="X1E">X1E</option>
+                  </optgroup>
+                  <optgroup label="X2 Series">
+                    <option value="X2D">X2D</option>
+                  </optgroup>
+                </select>
+                <ChevronDown aria-hidden="true" className="pointer-events-none absolute right-3 top-1/2 h-4 w-4 -translate-y-1/2 text-bambu-gray" />
+              </div>
             </div>
             <div>
               <label className="block text-sm text-bambu-gray mb-1">Location / Group</label>
@@ -9358,7 +9404,7 @@ export function PrintersPage() {
                   </h2>
                 }
               >
-                <div className={`grid ${cardSize === 2 ? 'gap-3 items-start' : 'gap-4'} ${cardSize >= 3 ? 'gap-6' : ''} ${getGridClasses()}`}>
+                <div className={`grid ${cardSize === 2 ? 'gap-3' : 'gap-4'} ${cardSize >= 3 ? 'gap-6' : ''} ${getGridClasses()}`}>
                   {groupPrinters.map((printer) => (
                     <PrinterCard
                       key={printer.id}
@@ -9410,7 +9456,7 @@ export function PrintersPage() {
         </div>
       ) : (
         /* Regular grid view */
-        <div className={`grid ${cardSize === 2 ? 'gap-3 items-start' : 'gap-4'} ${cardSize >= 3 ? 'gap-6' : ''} ${getGridClasses()}`}>
+        <div className={`grid ${cardSize === 2 ? 'gap-3' : 'gap-4'} ${cardSize >= 3 ? 'gap-6' : ''} ${getGridClasses()}`}>
           {sortedPrinters.map((printer) => (
             <PrinterCard
               key={printer.id}
