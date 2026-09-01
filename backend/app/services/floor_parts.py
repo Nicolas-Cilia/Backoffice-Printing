@@ -123,13 +123,14 @@ PART_STATUS_VALUES = frozenset(status.value for status in PartStatus)
 # payload to resolve it from in the first place.
 HARVEST_STATION_SLUG = "harvest"
 
-# Fit Check and Rework are locations, not stations (§5.4a/§5.4b) — nothing
-# ever opens a session for them (`floor_codes.FloorStation.category ==
-# "location"`, enforced in the `/floor/session/scan` route). These slugs are
-# only used to label which location a scan-part-then-location flow landed
-# on; there is no session to key them against.
+# Initial QC Pass and Sanding / WIP Rework are locations, not stations (§5.4a/§5.4b)
+# — nothing ever opens a session for them. These slugs label which location a
+# scan-part-then-location flow landed on; there is no session to key them against.
 FIT_CHECK_LOCATION_SLUG = "fit-check"
-REWORK_LOCATION_SLUG = "rework"
+SANDING_LOCATION_SLUG = "sanding"
+WIP_REWORK_LOCATION_SLUG = "wip-rework"
+# Backward-compatible alias — callers and tests that still import the old name.
+REWORK_LOCATION_SLUG = WIP_REWORK_LOCATION_SLUG
 
 
 # ── Sticker codes (§7.1) ──────────────────────────────────────────────────
@@ -625,9 +626,11 @@ class LocationScanResult(StrEnum):
     # TOP part sent to Ready-for-Production / Production WIP before all three
     # finishing steps are done.
     FINISHING_REQUIRED = "finishing_required"
-    # Initial QC Pass or Rework has not been recorded yet — required before
+    # Initial QC Pass or Sanding has not been recorded yet — required before
     # finishing, Ready-for-Production, or Production WIP.
     QC_REQUIRED = "qc_required"
+    # WIP Rework requires the part to have entered Production WIP first.
+    WIP_REQUIRED = "wip_required"
     # The part has already entered Production WIP; finishing benches stay
     # closed. Ready-for-Production Inventory may still be scanned to restage
     # from WIP; a second WIP commit while already at WIP is refused.
@@ -751,9 +754,25 @@ async def _part_has_event(db: AsyncSession, part_id: int, action: str) -> bool:
     return found is not None
 
 
-async def _part_has_qc_or_rework(db: AsyncSession, part_id: int) -> bool:
-    """Initial QC Pass or Rework — either unlocks the rest of the pipeline."""
-    return await _part_has_event(db, part_id, "fit_checked") or await _part_has_event(db, part_id, "rework")
+async def _part_has_valid_qc(db: AsyncSession, part_id: int) -> bool:
+    """Initial QC Pass: the latest ``fit_checked`` / ``sanding`` event must be
+    ``fit_checked``. Sanding without a subsequent fit check does not unlock
+    the rest of the pipeline."""
+    latest = await db.scalar(
+        select(FloorPartEvent.action)
+        .where(
+            FloorPartEvent.part_id == part_id,
+            FloorPartEvent.action.in_(("fit_checked", "sanding")),
+        )
+        .order_by(FloorPartEvent.occurred_at.desc(), FloorPartEvent.id.desc())
+        .limit(1)
+    )
+    return latest == "fit_checked"
+
+
+async def _part_has_qc_or_sanding(db: AsyncSession, part_id: int) -> bool:
+    """Initial QC Pass or Sanding — either unlocks the rest of the pipeline."""
+    return await _part_has_event(db, part_id, "fit_checked") or await _part_has_event(db, part_id, "sanding")
 
 
 # Kit bookkeeping actions are defined with PART_STATUS_METADATA_ACTIONS above
@@ -836,20 +855,39 @@ class ReworkReasonCode(StrEnum):
     OTHER = "other"
 
 
-async def scan_rework_part(
+async def scan_sanding_part(
     db: AsyncSession, payload: str, reason_code: str, reason_text: str | None = None
 ) -> LocationScanOutcome:
-    """Commit "part BBD-… is at Rework, because …" (§5.4b, §9).
+    """Commit "part BBD-… is at Sanding, because …" — pre-WIP surface work.
 
-    Unlike Fit Check, this is the *third* scan of its flow (part, then the
-    Rework location — which is a pure UI transition on the scan page, no
-    server call — then this reason). Nothing commits until the reason is
-    known, which is why there is no separate "part is now at Rework, reason
-    pending" server state to represent: the two facts are written together,
-    in one event, or not at all.
+    Same three-scan shape as WIP Rework (part, location QR, reason) but records
+    a ``sanding`` event and is available before Production WIP.
     """
     result, part = await _resolve_part_for_location(db, payload)
     if part is not None:
+        if await _part_is_at_location(db, part.id, "sanding"):
+            return await _to_location_outcome(db, LocationScanResult.ALREADY_AT_LOCATION, part)
+        db.add(
+            FloorPartEvent(
+                part_id=part.id, action="sanding", details={"reason_code": reason_code, "reason_text": reason_text}
+            )
+        )
+        await db.flush()
+    return await _to_location_outcome(db, result, part, reason=reason_text or reason_code)
+
+
+async def scan_rework_part(
+    db: AsyncSession, payload: str, reason_code: str, reason_text: str | None = None
+) -> LocationScanOutcome:
+    """Commit "part BBD-… is at WIP Rework, because …".
+
+    Unlike Sanding, this is only valid after the part has entered Production
+    WIP. Nothing commits until the reason is known — same three-scan flow.
+    """
+    result, part = await _resolve_part_for_location(db, payload)
+    if part is not None:
+        if not await _part_has_event(db, part.id, PRODUCTION_WIP_ACTION):
+            return await _to_location_outcome(db, LocationScanResult.WIP_REQUIRED, part)
         if await _part_is_at_location(db, part.id, "rework"):
             return await _to_location_outcome(db, LocationScanResult.ALREADY_AT_LOCATION, part)
         db.add(
@@ -919,7 +957,7 @@ async def scan_part_at_location(db: AsyncSession, payload: str, location_slug: s
             return await _to_location_outcome(db, LocationScanResult.RECORDED, part)
         return await _to_location_outcome(db, LocationScanResult.ALREADY_WIP, part)
 
-    if not await _part_has_qc_or_rework(db, part.id):
+    if not await _part_has_valid_qc(db, part.id):
         return await _to_location_outcome(db, LocationScanResult.QC_REQUIRED, part)
 
     if location_slug in _FINISHING_STEPS:
@@ -1174,15 +1212,46 @@ async def _error_label_for_payload(db: AsyncSession, payload: str) -> FloorError
     return await db.scalar(select(FloorErrorLabel).where(FloorErrorLabel.slug == normalized[4:].lower()))
 
 
-async def scan_rework_error(
+async def scan_sanding_error(
     db: AsyncSession, payload: str, error_payload: str, reason_text: str | None = None
 ) -> LocationScanOutcome:
-    """Record a Rework visit using a user-managed error label."""
+    """Record a Sanding visit using a user-managed error label."""
     result, part = await _resolve_part_for_location(db, payload)
     label = await _error_label_for_payload(db, error_payload)
     if part is not None and label is None:
         return LocationScanOutcome(result=LocationScanResult.INVALID_CODE)
     if part is not None and label is not None:
+        if await _part_is_at_location(db, part.id, "sanding"):
+            return await _to_location_outcome(db, LocationScanResult.ALREADY_AT_LOCATION, part)
+        db.add(
+            FloorPartEvent(
+                part_id=part.id,
+                action="sanding",
+                details={
+                    "error_label_id": label.id,
+                    "error_payload": f"BBF-{label.slug}",
+                    "error_name": label.name,
+                    "reason_text": reason_text,
+                },
+            )
+        )
+        await db.flush()
+    return await _to_location_outcome(
+        db, result, part, reason=reason_text or (label.name if label is not None else None)
+    )
+
+
+async def scan_rework_error(
+    db: AsyncSession, payload: str, error_payload: str, reason_text: str | None = None
+) -> LocationScanOutcome:
+    """Record a WIP Rework visit using a user-managed error label."""
+    result, part = await _resolve_part_for_location(db, payload)
+    label = await _error_label_for_payload(db, error_payload)
+    if part is not None and label is None:
+        return LocationScanOutcome(result=LocationScanResult.INVALID_CODE)
+    if part is not None and label is not None:
+        if not await _part_has_event(db, part.id, PRODUCTION_WIP_ACTION):
+            return await _to_location_outcome(db, LocationScanResult.WIP_REQUIRED, part)
         if await _part_is_at_location(db, part.id, "rework"):
             return await _to_location_outcome(db, LocationScanResult.ALREADY_AT_LOCATION, part)
         db.add(
@@ -1263,6 +1332,9 @@ class InventoryPart:
     released_at: datetime | None
     latest_event_action: str | None
     latest_event_reason: str | None
+    # Most recent floor scan / workflow event on this sticker (falls back to
+    # ``labeled_at`` when no events exist yet).
+    last_scanned_at: datetime
     # Part Assembly Linking (Wave 1): the KNB/BUT bin fills this TOP part's
     # kit was drawn from when it entered Production WIP — null for a part that
     # has not entered WIP (or a non-TOP part). Surfaced on the idle sticker
@@ -1564,6 +1636,13 @@ async def list_inventory_parts(db: AsyncSession, *, include_archived: bool = Fal
         .limit(1)
         .scalar_subquery()
     )
+    latest_event_occurred_at = (
+        select(FloorPartEvent.occurred_at)
+        .where(FloorPartEvent.part_id == FloorLabeledPart.id)
+        .order_by(FloorPartEvent.occurred_at.desc(), FloorPartEvent.id.desc())
+        .limit(1)
+        .scalar_subquery()
+    )
     from backend.app.models.library import LibraryFolderSection, LibrarySectionPart
 
     statement = (
@@ -1573,6 +1652,7 @@ async def list_inventory_parts(db: AsyncSession, *, include_archived: bool = Fal
             PrintArchive.print_name,
             latest_event_action,
             latest_event_details,
+            latest_event_occurred_at,
             LibrarySectionPart.name,
             LibraryFolderSection.name,
         )
@@ -1583,7 +1663,9 @@ async def list_inventory_parts(db: AsyncSession, *, include_archived: bool = Fal
     )
     if not include_archived:
         statement = statement.where(FloorLabeledPart.archived_at.is_(None))
-    result = await db.execute(statement.order_by(FloorLabeledPart.labeled_at.desc()))
+    result = await db.execute(
+        statement.order_by(func.coalesce(latest_event_occurred_at, FloorLabeledPart.labeled_at).desc())
+    )
     return [
         InventoryPart(
             p.id,
@@ -1601,10 +1683,11 @@ async def list_inventory_parts(db: AsyncSession, *, include_archived: bool = Fal
             p.released_at,
             event_action,
             _latest_event_reason(event_action, event_details),
+            event_occurred_at or p.labeled_at,
             p.kit_knob_batch_id,
             p.kit_button_batch_id,
         )
-        for p, printer_name, print_name, event_action, event_details, part_name, part_source in result.all()
+        for p, printer_name, print_name, event_action, event_details, event_occurred_at, part_name, part_source in result.all()
     ]
 
 
@@ -2126,6 +2209,8 @@ __all__ = [
     "find_part_code_thumbnail",
     "HARVEST_STATION_SLUG",
     "FIT_CHECK_LOCATION_SLUG",
+    "SANDING_LOCATION_SLUG",
+    "WIP_REWORK_LOCATION_SLUG",
     "REWORK_LOCATION_SLUG",
     "normalize_sticker_code",
     "parse_sticker_code",
@@ -2138,6 +2223,8 @@ __all__ = [
     "LocationScanResult",
     "LocationScanOutcome",
     "scan_fit_check_part",
+    "scan_sanding_part",
+    "scan_sanding_error",
     "scan_part_at_location",
     "KitReassignResult",
     "KitReassignOutcome",

@@ -38,6 +38,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from backend.app.models.floor_bin import FloorBinBatch
 from backend.app.models.floor_part import FloorLabeledPart, FloorPartEvent
 from backend.app.models.floor_unit import FloorProductUnit
+from backend.app.services.floor_bot_bins import consume_bot_bin_member_on_link
 from backend.app.services.floor_parts import (
     BOT_PART_CODE,
     PRODUCTION_WIP_ACTION,
@@ -146,6 +147,8 @@ class UnitDetail:
 class LinkUnitOutcome:
     result: LinkUnitResult
     unit: UnitDetail | None = None
+    empty_bin_warning: bool = False
+    bot_bin_payload: str | None = None
 
 
 @dataclass(frozen=True)
@@ -159,6 +162,8 @@ class UnlinkUnitOutcome:
 class ReplaceUnitOutcome:
     result: ReplaceUnitResult
     unit: UnitDetail | None = None
+    empty_bin_warning: bool = False
+    bot_bin_payload: str | None = None
 
 
 async def _bin_payload_for_batch(db: AsyncSession, batch_id: int | None) -> str | None:
@@ -290,7 +295,15 @@ async def link_unit(db: AsyncSession, serial: str, top_sticker: str, bottom_stic
         )
     await db.flush()
 
-    return LinkUnitOutcome(result=LinkUnitResult.LINKED, unit=await _detail_from_unit(db, unit))
+    _bot_batch_id, empty_bin_warning = await consume_bot_bin_member_on_link(db, bottom.id)
+    bot_bin_payload = await _bin_payload_for_batch(db, _bot_batch_id)
+
+    return LinkUnitOutcome(
+        result=LinkUnitResult.LINKED,
+        unit=await _detail_from_unit(db, unit),
+        empty_bin_warning=empty_bin_warning,
+        bot_bin_payload=bot_bin_payload,
+    )
 
 
 async def get_unit_by_serial(db: AsyncSession, serial: str) -> UnitDetail | None:
@@ -493,15 +506,24 @@ async def replace_unit(
         return ReplaceUnitOutcome(result=ReplaceUnitResult.SAME_PART)
 
     serial = unit.serial_code
+    empty_bin_warning = False
+    bot_bin_payload: str | None = None
     if new_top is not None:
         _swap_housing_events(db, unit.id, serial, unit.top_part_id, new_top, "top")
         unit.top_part_id = new_top.id
     if new_bottom is not None:
         _swap_housing_events(db, unit.id, serial, unit.bottom_part_id, new_bottom, "bottom")
         unit.bottom_part_id = new_bottom.id
+        _bot_batch_id, empty_bin_warning = await consume_bot_bin_member_on_link(db, new_bottom.id)
+        bot_bin_payload = await _bin_payload_for_batch(db, _bot_batch_id)
     await db.flush()
 
-    return ReplaceUnitOutcome(result=ReplaceUnitResult.REPLACED, unit=await _detail_from_unit(db, unit))
+    return ReplaceUnitOutcome(
+        result=ReplaceUnitResult.REPLACED,
+        unit=await _detail_from_unit(db, unit),
+        empty_bin_warning=empty_bin_warning,
+        bot_bin_payload=bot_bin_payload,
+    )
 
 
 class ReplaceUnitKitResult(StrEnum):
