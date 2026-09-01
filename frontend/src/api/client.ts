@@ -1537,6 +1537,7 @@ export type BinScanResult =
   | 'empty_recorded'
   | 'already_empty'
   | 'empty_requires_wip'
+  | 'bin_not_empty'
   | 'quantity_overridden'
   | 'unlinked'
   | 'discarded'
