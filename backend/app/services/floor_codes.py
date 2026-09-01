@@ -105,10 +105,19 @@ FLOOR_STATIONS: tuple[FloorStation, ...] = (
         category="location",
     ),
     FloorStation(
-        slug="rework",
+        slug="sanding",
+        name="Sanding",
+        description="Optional bench for parts that need surface work before production.",
+        # No floor-wide lock: parallel sanding benches are normal work.
+        exclusive=False,
+        category="location",
+    ),
+    FloorStation(
+        slug="wip-rework",
         name="Rework",
-        description="Optional shelf for parts that need rework before returning to production.",
-        # No floor-wide lock: parallel rework benches are normal work.
+        description="Shelf within Production WIP for parts that need rework.",
+        payload_slug="wip-rework",
+        # No floor-wide lock: parallel rework shelves are normal work.
         exclusive=False,
         category="location",
     ),
@@ -167,7 +176,8 @@ _STATIONS_BY_SLUG: dict[str, FloorStation] = {s.slug: s for s in FLOOR_STATIONS}
 # the canonical Initial QC Pass location but are no longer offered for new
 # printing.
 _STATIONS_BY_PAYLOAD[f"{STATION_PREFIX}fit-check"] = _STATIONS_BY_SLUG["fit-check"]
-_STATIONS_BY_PAYLOAD[f"{STATION_PREFIX}sanding"] = _STATIONS_BY_SLUG["rework"]
+# Pre-WIP bench labels printed as ``BBS-rework`` before Sanding was named.
+_STATIONS_BY_PAYLOAD[f"{STATION_PREFIX}rework"] = _STATIONS_BY_SLUG["sanding"]
 
 
 def station_for_payload(payload: str) -> FloorStation | None:

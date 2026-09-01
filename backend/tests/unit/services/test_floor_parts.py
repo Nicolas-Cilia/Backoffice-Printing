@@ -44,6 +44,7 @@ from backend.app.services.floor_parts import (
     scan_part,
     scan_part_at_location,
     scan_rework_part,
+    scan_sanding_part,
     search_completed_jobs,
     set_part_code,
     set_part_status,
@@ -665,23 +666,21 @@ class TestFitCheckPartScan:
         assert outcome.result is LocationScanResult.RECORDED
 
 
-class TestReworkPartScan:
-    """§5.4b: the third scan of its flow (part, then the Rework location —
-    a pure UI transition with no server call, then this reason). Like Fit
-    Check, `scan_rework_part` is a plain commit with no session concept."""
+class TestSandingPartScan:
+    """Pre-WIP Sanding: surface work before Production WIP."""
 
     @pytest.mark.asyncio
-    async def test_records_a_rework_event_with_the_reason(self, db_session, printer_factory, archive_factory):
+    async def test_records_a_sanding_event_with_the_reason(self, db_session, printer_factory, archive_factory):
         printer = await printer_factory()
         await archive_factory(printer_id=printer.id)
         await _harvest_one_part(db_session, printer.id)
 
-        outcome = await scan_rework_part(db_session, "BBD-000001", ReworkReasonCode.DOESNT_FIT)
+        outcome = await scan_sanding_part(db_session, "BBD-000001", ReworkReasonCode.DOESNT_FIT)
         await db_session.commit()
 
         assert outcome.result is LocationScanResult.RECORDED
         events = await list_part_events(db_session, outcome.part.id)
-        assert [e.action for e in events] == ["enrolled", "rework"]
+        assert [e.action for e in events] == ["enrolled", "sanding"]
         assert events[-1].details == {"reason_code": "doesnt_fit", "reason_text": None}
 
     @pytest.mark.asyncio
@@ -689,6 +688,78 @@ class TestReworkPartScan:
         printer = await printer_factory()
         await archive_factory(printer_id=printer.id)
         await _harvest_one_part(db_session, printer.id)
+
+        outcome = await scan_sanding_part(db_session, "BBD-000001", ReworkReasonCode.OTHER, "warped corner")
+        await db_session.commit()
+
+        events = await list_part_events(db_session, outcome.part.id)
+        assert events[-1].details == {"reason_code": "other", "reason_text": "warped corner"}
+
+    @pytest.mark.asyncio
+    async def test_inventory_part_exposes_its_current_sanding_reason(
+        self, db_session, printer_factory, archive_factory
+    ):
+        printer = await printer_factory()
+        await archive_factory(printer_id=printer.id)
+        await _harvest_one_part(db_session, printer.id)
+        await scan_sanding_part(db_session, "BBD-000001", ReworkReasonCode.OTHER, "warped corner")
+        await db_session.commit()
+
+        [part] = await list_inventory_parts(db_session)
+
+        assert part.latest_event_action == "sanding"
+        assert part.latest_event_reason == "Other · warped corner"
+
+    @pytest.mark.asyncio
+    async def test_sanding_more_than_once_is_rejected(self, db_session, printer_factory, archive_factory):
+        printer = await printer_factory()
+        await archive_factory(printer_id=printer.id)
+        await _harvest_one_part(db_session, printer.id)
+        await scan_sanding_part(db_session, "BBD-000001", ReworkReasonCode.ROUGH_SURFACE)
+        await db_session.commit()
+
+        outcome = await scan_sanding_part(db_session, "BBD-000001", ReworkReasonCode.LAYER_LINES)
+        await db_session.commit()
+
+        events = await list_part_events(db_session, outcome.part.id)
+        assert outcome.result is LocationScanResult.ALREADY_AT_LOCATION
+        assert [e.action for e in events] == ["enrolled", "sanding"]
+
+
+class TestReworkPartScan:
+    """WIP Rework: only after Production WIP."""
+
+    async def _part_in_wip(self, db_session, printer_factory, archive_factory, code: str = "BBD-000001"):
+        part = await _enroll_qc_linked_part(db_session, printer_factory, archive_factory, "BOT", code=code)
+        await scan_part_at_location(db_session, part.sticker_code, PRODUCTION_WIP_LOCATION_SLUG)
+        await db_session.commit()
+        return part
+
+    @pytest.mark.asyncio
+    async def test_records_a_rework_event_with_the_reason(self, db_session, printer_factory, archive_factory):
+        await self._part_in_wip(db_session, printer_factory, archive_factory)
+
+        outcome = await scan_rework_part(db_session, "BBD-000001", ReworkReasonCode.DOESNT_FIT)
+        await db_session.commit()
+
+        assert outcome.result is LocationScanResult.RECORDED
+        events = await list_part_events(db_session, outcome.part.id)
+        assert events[-1].action == "rework"
+        assert events[-1].details == {"reason_code": "doesnt_fit", "reason_text": None}
+
+    @pytest.mark.asyncio
+    async def test_refused_before_wip(self, db_session, printer_factory, archive_factory):
+        printer = await printer_factory()
+        await archive_factory(printer_id=printer.id)
+        await _harvest_one_part(db_session, printer.id)
+
+        outcome = await scan_rework_part(db_session, "BBD-000001", ReworkReasonCode.DOESNT_FIT)
+
+        assert outcome.result is LocationScanResult.WIP_REQUIRED
+
+    @pytest.mark.asyncio
+    async def test_other_reason_carries_free_text(self, db_session, printer_factory, archive_factory):
+        await self._part_in_wip(db_session, printer_factory, archive_factory)
 
         outcome = await scan_rework_part(db_session, "BBD-000001", ReworkReasonCode.OTHER, "warped corner")
         await db_session.commit()
@@ -698,9 +769,7 @@ class TestReworkPartScan:
 
     @pytest.mark.asyncio
     async def test_inventory_part_exposes_its_current_rework_reason(self, db_session, printer_factory, archive_factory):
-        printer = await printer_factory()
-        await archive_factory(printer_id=printer.id)
-        await _harvest_one_part(db_session, printer.id)
+        await self._part_in_wip(db_session, printer_factory, archive_factory)
         await scan_rework_part(db_session, "BBD-000001", ReworkReasonCode.OTHER, "warped corner")
         await db_session.commit()
 
@@ -711,19 +780,14 @@ class TestReworkPartScan:
 
     @pytest.mark.asyncio
     async def test_rework_more_than_once_is_rejected(self, db_session, printer_factory, archive_factory):
-        """A part cannot be sent to the same current location twice in a row."""
-        printer = await printer_factory()
-        await archive_factory(printer_id=printer.id)
-        await _harvest_one_part(db_session, printer.id)
+        await self._part_in_wip(db_session, printer_factory, archive_factory)
         await scan_rework_part(db_session, "BBD-000001", ReworkReasonCode.ROUGH_SURFACE)
         await db_session.commit()
 
         outcome = await scan_rework_part(db_session, "BBD-000001", ReworkReasonCode.LAYER_LINES)
         await db_session.commit()
 
-        events = await list_part_events(db_session, outcome.part.id)
         assert outcome.result is LocationScanResult.ALREADY_AT_LOCATION
-        assert [e.action for e in events] == ["enrolled", "rework"]
 
     @pytest.mark.asyncio
     async def test_unknown_sticker_is_rejected(self, db_session):
@@ -1395,6 +1459,33 @@ class TestSetPartCode:
         result = await set_part_code(db_session, outcome.part.id, "TOP")
 
         assert result.result is SetPartCodeResult.ARCHIVED
+
+
+class TestInventoryPartLastScanned:
+    @pytest.mark.asyncio
+    async def test_last_scanned_at_falls_back_to_labeled_at(self, db_session, printer_factory):
+        printer = await printer_factory()
+        await scan_part(db_session, DEVICE_A, "BBD-000001", printer_id_hint=printer.id)
+        await db_session.commit()
+
+        [part] = await list_inventory_parts(db_session)
+
+        assert part.last_scanned_at == part.labeled_at
+
+    @pytest.mark.asyncio
+    async def test_last_scanned_at_uses_latest_event(self, db_session, printer_factory, archive_factory):
+        printer = await printer_factory()
+        await archive_factory(printer_id=printer.id)
+        await _harvest_one_part(db_session, printer.id)
+        await scan_fit_check_part(db_session, "BBD-000001")
+        await db_session.commit()
+
+        [part] = await list_inventory_parts(db_session)
+        events = await list_part_events(db_session, part.id)
+        fit_checked_at = next(event.occurred_at for event in events if event.action == "fit_checked")
+
+        assert part.last_scanned_at == fit_checked_at
+        assert part.last_scanned_at >= part.labeled_at
 
 
 class TestSetPartStatus:

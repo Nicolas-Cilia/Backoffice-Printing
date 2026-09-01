@@ -46,6 +46,13 @@ async def _scan_fit_check_part(client: AsyncClient, code: str):
     return await client.post("/api/v1/floor/locations/fit-check/part", json={"payload": code})
 
 
+async def _scan_sanding_part(client: AsyncClient, code: str, reason_code: str, reason_text: str | None = None):
+    body = {"payload": code, "reason_code": reason_code}
+    if reason_text is not None:
+        body["reason_text"] = reason_text
+    return await client.post("/api/v1/floor/locations/sanding/part", json=body)
+
+
 async def _scan_rework_part(client: AsyncClient, code: str, reason_code: str, reason_text: str | None = None):
     body = {"payload": code, "reason_code": reason_code}
     if reason_text is not None:
@@ -386,17 +393,13 @@ class TestFitCheckPartScan:
 
 @pytest.mark.asyncio
 @pytest.mark.integration
-class TestReworkPartScan:
-    """§5.4b: the third scan of its flow (part, Rework location — a pure UI
-    transition with no server call, then reason). Like Fit Check, this is a
-    plain commit with no session concept."""
-
-    async def test_records_a_rework_event_with_the_reason(self, async_client, printer_factory, archive_factory):
+class TestSandingPartScan:
+    async def test_records_a_sanding_event_with_the_reason(self, async_client, printer_factory, archive_factory):
         printer = await printer_factory(name="Bench A")
         archive = await archive_factory(printer_id=printer.id, print_name="Bracket v4")
         await _harvest_one_part(async_client, printer.id, DEVICE_A)
 
-        resp = await _scan_rework_part(async_client, "BBD-000001", "doesnt_fit")
+        resp = await _scan_sanding_part(async_client, "BBD-000001", "doesnt_fit")
 
         assert resp.status_code == 200
         body = resp.json()
@@ -407,13 +410,62 @@ class TestReworkPartScan:
 
         events = await async_client.get(f"/api/v1/floor/inventory/parts/{body['part']['id']}/events")
         last_event = events.json()[-1]
+        assert last_event["action"] == "sanding"
+        assert last_event["details"] == {"reason_code": "doesnt_fit", "reason_text": None}
+
+    async def test_session_scan_refuses_to_open_sanding_as_a_station(self, async_client):
+        resp = await async_client.post(
+            "/api/v1/floor/session/scan",
+            json={"payload": "BBS-sanding", "device_id": DEVICE_A},
+        )
+
+        assert resp.status_code == 404
+
+
+@pytest.mark.asyncio
+@pytest.mark.integration
+class TestReworkPartScan:
+    """WIP Rework: only after Production WIP."""
+
+    async def _part_in_wip(self, async_client, printer_factory, archive_factory, code: str = "BBD-000001"):
+        sticker = await _enroll_linked_part_with_code(
+            async_client, printer_factory, archive_factory, "BOT", sticker=code
+        )
+        await async_client.post(
+            "/api/v1/floor/locations/part",
+            json={"payload": sticker, "location_slug": "production-wip"},
+        )
+        return sticker
+
+    async def test_records_a_rework_event_with_the_reason(self, async_client, printer_factory, archive_factory):
+        await self._part_in_wip(async_client, printer_factory, archive_factory)
+
+        resp = await _scan_rework_part(async_client, "BBD-000001", "doesnt_fit")
+
+        assert resp.status_code == 200
+        body = resp.json()
+        assert body["result"] == "recorded"
+        assert body["part"]["sticker_code"] == "BBD-000001"
+        assert body["printer"] is not None
+        assert body["archive"] is not None
+
+        events = await async_client.get(f"/api/v1/floor/inventory/parts/{body['part']['id']}/events")
+        last_event = events.json()[-1]
         assert last_event["action"] == "rework"
         assert last_event["details"] == {"reason_code": "doesnt_fit", "reason_text": None}
 
-    async def test_other_reason_carries_free_text(self, async_client, printer_factory, archive_factory):
+    async def test_refused_before_wip(self, async_client, printer_factory, archive_factory):
         printer = await printer_factory()
         await archive_factory(printer_id=printer.id)
         await _harvest_one_part(async_client, printer.id, DEVICE_A)
+
+        resp = await _scan_rework_part(async_client, "BBD-000001", "doesnt_fit")
+
+        assert resp.status_code == 200
+        assert resp.json()["result"] == "wip_required"
+
+    async def test_other_reason_carries_free_text(self, async_client, printer_factory, archive_factory):
+        await self._part_in_wip(async_client, printer_factory, archive_factory)
 
         resp = await _scan_rework_part(async_client, "BBD-000001", "other", "warped corner")
 
@@ -436,7 +488,7 @@ class TestReworkPartScan:
     async def test_session_scan_refuses_to_open_it_as_a_station(self, async_client):
         resp = await async_client.post(
             "/api/v1/floor/session/scan",
-            json={"payload": "BBS-rework", "device_id": DEVICE_A},
+            json={"payload": "BBS-wip-rework", "device_id": DEVICE_A},
         )
 
         assert resp.status_code == 404
@@ -1016,6 +1068,9 @@ class TestReusableBinFlow:
             "BBN-BUT-1",
             "BBN-BUT-2",
             "BBN-BUT-3",
+            "BBN-BOT-1",
+            "BBN-BOT-2",
+            "BBN-BOT-3",
         }
 
     async def test_quantity_is_required_then_visual_qc_gates_wip(self, async_client, printer_factory):

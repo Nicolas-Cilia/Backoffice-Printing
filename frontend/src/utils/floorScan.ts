@@ -34,6 +34,11 @@ export const PREFIX_STATION = 'BBS-';
 export const PREFIX_PRINTER = 'BBP-';
 export const PREFIX_PART = 'BBD-';
 export const PREFIX_BIN = 'BBN-';
+
+/** Shared reusable bottom-housing bins (`BBN-BOT-1` … `BBN-BOT-3`). */
+export function isBotBinPayload(payload: string): boolean {
+  return /^BBN-BOT-/i.test(payload.trim());
+}
 export const PREFIX_DEFECT = 'BBF-';
 export const PREFIX_COMMAND = 'BBX-';
 export const PREFIX_REASON = 'BBR-';
@@ -45,18 +50,22 @@ export const PREFIX_REASON = 'BBR-';
  *  constant means a slug typo can't silently desync the two. */
 export const HARVEST_STATION_SLUG = 'harvest';
 
-/** Initial QC Pass and Rework's slugs and payloads (§5.4a/§5.4b). Not stations —
+/** Initial QC Pass, Sanding, and WIP Rework slugs and payloads (§5.4a/§5.4b). Not stations —
  *  these exist so `routeScan` can recognise their exact `BBS-…` payload and
  *  pull it out of the generic 'station' classification, same reasoning as
  *  `HARVEST_STATION_SLUG` above. */
 export const FIT_CHECK_LOCATION_SLUG = 'fit-check';
-export const REWORK_LOCATION_SLUG = 'rework';
+export const SANDING_LOCATION_SLUG = 'sanding';
+export const WIP_REWORK_LOCATION_SLUG = 'wip-rework';
+/** @deprecated Use `WIP_REWORK_LOCATION_SLUG`. */
+export const REWORK_LOCATION_SLUG = WIP_REWORK_LOCATION_SLUG;
 export const FIT_CHECK_PAYLOAD = `${PREFIX_STATION}initial-qc-pass`;
 /** Existing labels remain scannable after the Initial QC Pass rename. */
 export const LEGACY_FIT_CHECK_PAYLOAD = `${PREFIX_STATION}${FIT_CHECK_LOCATION_SLUG}`;
-export const REWORK_PAYLOAD = `${PREFIX_STATION}${REWORK_LOCATION_SLUG}`;
-/** Legacy label compatibility. New labels use `BBS-rework`. */
-export const LEGACY_SANDING_PAYLOAD = `${PREFIX_STATION}sanding`;
+export const SANDING_PAYLOAD = `${PREFIX_STATION}${SANDING_LOCATION_SLUG}`;
+export const WIP_REWORK_PAYLOAD = `${PREFIX_STATION}${WIP_REWORK_LOCATION_SLUG}`;
+/** Pre-WIP bench labels printed as `BBS-rework` before Sanding was named. */
+export const LEGACY_SANDING_PAYLOAD = `${PREFIX_STATION}rework`;
 
 /** Item→location pipeline destinations (`backend/app/services/floor_codes.py`).
  *  Like Initial QC Pass / Rework these print `BBS-…` QRs but are *not*
@@ -76,7 +85,8 @@ export const HOT_AIR_REMOVAL_LOCATION_SLUG = 'hot-air-removal';
  *  whichever item is currently pending — this router only classifies. */
 export type LocationSlug =
   | 'fit-check'
-  | 'rework'
+  | 'sanding'
+  | 'wip-rework'
   | typeof READY_FOR_PRODUCTION_LOCATION_SLUG
   | typeof PRODUCTION_WIP_LOCATION_SLUG
   | typeof BIN_EMPTY_LOCATION_SLUG
@@ -196,8 +206,8 @@ export type ScanAction =
    *  and which slugs are valid for the pending item, since this router has
    *  no notion of pending state. */
   | { action: 'location'; slug: LocationSlug; payload: string }
-  /** A `BBR-…` reason code — only meaningful mid-Rework-flow (a part is
-   *  pending and its location was Rework); same "page decides" reasoning
+  /** A `BBR-…` reason code — only meaningful mid Sanding or WIP-Rework flow (a part is
+   *  pending and its location was Sanding or WIP Rework); same "page decides" reasoning
    *  as 'location' above. */
   | { action: 'rework-reason'; payload: string }
   | { action: 'error-label'; payload: string }
@@ -241,15 +251,17 @@ export function routeScan(
   }
 
   if (scan.kind === 'station') {
-    // Initial QC Pass and Rework print `BBS-…` QRs but are not sessions
-    // (§5.4a/§5.4b) — pull their two exact payloads out before the generic
+    // Initial QC Pass, Sanding, and WIP Rework print `BBS-…` QRs but are not sessions
+    // (§5.4a/§5.4b) — pull their exact payloads out before the generic
     // station-scan path, unconditionally: whether this is meaningful right
     // now (is a part actually pending?) is the page's call, not the
     // router's, so this classification never depends on `stationSlug`.
     if (scan.value === FIT_CHECK_PAYLOAD || scan.value === LEGACY_FIT_CHECK_PAYLOAD)
       return { action: 'location', slug: 'fit-check', payload: scan.value };
-    if (scan.value === REWORK_PAYLOAD || scan.value === LEGACY_SANDING_PAYLOAD)
-      return { action: 'location', slug: 'rework', payload: scan.value };
+    if (scan.value === SANDING_PAYLOAD || scan.value === LEGACY_SANDING_PAYLOAD)
+      return { action: 'location', slug: 'sanding', payload: scan.value };
+    if (scan.value === WIP_REWORK_PAYLOAD)
+      return { action: 'location', slug: 'wip-rework', payload: scan.value };
     const itemLocationSlug = ITEM_LOCATION_PAYLOADS.get(scan.value);
     if (itemLocationSlug) return { action: 'location', slug: itemLocationSlug, payload: scan.value };
     return { action: 'station', payload: scan.value };
@@ -292,9 +304,12 @@ export function routeScan(
   }
 
   if (scan.kind === 'bin') {
-    if (stationSlug === HARVEST_STATION_SLUG) return { action: 'harvest-bin', payload: scan.value };
-    if (stationSlug === null && viewingPrinterId != null) {
-      return { action: 'harvest-bin', payload: scan.value, printerId: viewingPrinterId };
+    // BOT bins collect QC-passed bottoms — no Harvest quantity flow.
+    if (!isBotBinPayload(scan.value)) {
+      if (stationSlug === HARVEST_STATION_SLUG) return { action: 'harvest-bin', payload: scan.value };
+      if (stationSlug === null && viewingPrinterId != null) {
+        return { action: 'harvest-bin', payload: scan.value, printerId: viewingPrinterId };
+      }
     }
     // Idle: the start of scan-bin-then-location (Initial QC, Ready-for-
     // Production, Production WIP, Empty Bin). Bins no longer route through an

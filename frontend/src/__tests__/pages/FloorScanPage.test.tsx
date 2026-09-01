@@ -379,7 +379,7 @@ describe('FloorScanPage (Phase 1b sessions)', () => {
 
       await scan('BBF-warping');
 
-      expect(await screen.findByText('Scan a part, then Rework or Discard first')).toBeInTheDocument();
+      expect(await screen.findByText('Scan a part, then Sanding, Rework, or Discard first')).toBeInTheDocument();
       expect(screen.getByText('BBF-warping')).toBeInTheDocument();
     });
 
@@ -1192,7 +1192,7 @@ describe('FloorScanPage (Phase 1b sessions)', () => {
         expect(await screen.findByText('Scan a code')).toBeInTheDocument();
       });
 
-      it('names Rework specifically as unsupported for a bin, rather than a generic redirect', async () => {
+      it('names Sanding specifically as unsupported for a bin, rather than a generic redirect', async () => {
         mockNoSession();
         server.use(
           http.post('/api/v1/floor/bins/resolve', () =>
@@ -1229,7 +1229,7 @@ describe('FloorScanPage (Phase 1b sessions)', () => {
         await scan('BBS-rework');
 
         expect(
-          await screen.findByText("Bins aren't supported for Rework — scan a part instead"),
+          await screen.findByText("Bins aren't supported for Sanding — scan a part instead"),
         ).toBeInTheDocument();
       });
 
@@ -1650,7 +1650,59 @@ describe('FloorScanPage (Phase 1b sessions)', () => {
         await scan('BBD-000099');
 
         expect(await screen.findByText('Part already scanned')).toBeInTheDocument();
+        expect(screen.getByText('Bench A')).toBeInTheDocument();
         expect(floorSound.playScanErrorTone).toHaveBeenCalled();
+      });
+
+      it('stays on the printer info page after a bad scan once harvest is open', async () => {
+        mockNoSession();
+        mockHarvestInfo();
+        vi.useFakeTimers({ shouldAdvanceTime: true });
+        try {
+          render(<FloorScanPage />);
+          await screen.findByText('Scan a code');
+          await scan('BBP-12');
+          await screen.findByText('Bench A');
+
+          mockPartScan({
+            result: 'labeled',
+            part: { id: 1, sticker_code: 'BBD-000042', printer_id: 12, archive_id: 88, labeled_at: '2026-08-24T15:00:00' },
+            printer: { id: 12, name: 'Bench A' },
+            archive: { id: 88, print_name: 'bracket_v4', completed_at: null, quantity: 1 },
+            part_count: 1,
+            session: HARVEST_SESSION,
+            blocking: null,
+          });
+          await scan('BBD-000042');
+          await screen.findByText('Linked · bracket_v4');
+
+          mockPartScan({
+            result: 'duplicate',
+            part: null,
+            printer: null,
+            archive: null,
+            part_count: 1,
+            session: HARVEST_SESSION,
+            blocking: null,
+          });
+          await scan('BBD-000099');
+
+          expect(await screen.findByText('Part already scanned')).toBeInTheDocument();
+          expect(screen.getByText('Bench A')).toBeInTheDocument();
+          expect(screen.queryByText('parts labeled')).not.toBeInTheDocument();
+          expect(screen.queryByRole('button', { name: 'Close station' })).not.toBeInTheDocument();
+
+          await act(async () => {
+            await vi.advanceTimersByTimeAsync(3100);
+          });
+
+          expect(screen.getByText('Bench A')).toBeInTheDocument();
+          expect(screen.getByText('Linked · bracket_v4')).toBeInTheDocument();
+          expect(screen.queryByText('parts labeled')).not.toBeInTheDocument();
+          expect(screen.queryByRole('button', { name: 'Close station' })).not.toBeInTheDocument();
+        } finally {
+          vi.useRealTimers();
+        }
       });
 
       it('returns to idle scan after Done when a part opened harvest', async () => {
@@ -2185,6 +2237,17 @@ describe('FloorScanPage (Phase 1b sessions)', () => {
       return captured;
     }
 
+    function mockSandingScan(response: unknown, status = 200) {
+      const captured: { body: Record<string, unknown> | null } = { body: null };
+      server.use(
+        http.post('/api/v1/floor/locations/sanding/part', async ({ request }) => {
+          captured.body = (await request.json()) as Record<string, unknown>;
+          return HttpResponse.json(response, { status });
+        }),
+      );
+      return captured;
+    }
+
     function mockReworkScan(response: unknown, status = 200) {
       const captured: { body: Record<string, unknown> | null } = { body: null };
       server.use(
@@ -2363,24 +2426,24 @@ describe('FloorScanPage (Phase 1b sessions)', () => {
       expect(screen.queryByText('Scan a location')).not.toBeInTheDocument();
     });
 
-    it('does not commit on the Rework location scan — it only advances to asking why', async () => {
+    it('does not commit on the Sanding location scan — it only advances to asking why', async () => {
       mockNoSession();
-      const reworkCall = mockReworkScan({ result: 'recorded', part: RECORDED_PART, printer: RECORDED_PRINTER, archive: RECORDED_ARCHIVE });
+      const sandingCall = mockSandingScan({ result: 'recorded', part: RECORDED_PART, printer: RECORDED_PRINTER, archive: RECORDED_ARCHIVE });
       render(<FloorScanPage />);
       await screen.findByText('Scan a code');
       await scan('BBD-000042');
       await screen.findByText('Scan a location');
 
-      await scan('BBS-rework');
+      await scan('BBS-sanding');
 
       expect(await screen.findByText('Scan an error label')).toBeInTheDocument();
-      expect(screen.getByText('Rework')).toBeInTheDocument();
-      expect(reworkCall.body).toBeNull();
+      expect(screen.getByText('Sanding')).toBeInTheDocument();
+      expect(sandingCall.body).toBeNull();
     });
 
-    it('commits Rework on the reason scan, sending the bare reason code', async () => {
+    it('commits Sanding on the reason scan, sending the bare reason code', async () => {
       mockNoSession();
-      const captured = mockReworkScan({ result: 'recorded', part: RECORDED_PART, printer: RECORDED_PRINTER, archive: RECORDED_ARCHIVE });
+      const captured = mockSandingScan({ result: 'recorded', part: RECORDED_PART, printer: RECORDED_PRINTER, archive: RECORDED_ARCHIVE });
       render(<FloorScanPage />);
       await screen.findByText('Scan a code');
       await scan('BBD-000042');
@@ -2390,36 +2453,83 @@ describe('FloorScanPage (Phase 1b sessions)', () => {
 
       await scan('BBR-doesnt_fit');
 
-      expect(await screen.findByText('Sent to Rework · doesnt_fit')).toBeInTheDocument();
+      expect(await screen.findByText('Sent to Sanding · doesnt_fit')).toBeInTheDocument();
       expect(captured.body).toEqual({ payload: 'BBD-000042', reason_code: 'doesnt_fit' });
     });
 
-    it('rejects a reason scan with no part pending in Rework', async () => {
+    it('rejects a reason scan with no part pending in Sanding or Rework', async () => {
       mockNoSession();
       render(<FloorScanPage />);
       await screen.findByText('Scan a code');
 
       await scan('BBR-other');
 
-      expect(await screen.findByText('Scan a part into Rework first')).toBeInTheDocument();
+      expect(await screen.findByText('Scan a part into Sanding or Rework first')).toBeInTheDocument();
     });
 
-    it('blocks a bin from being scanned into Rework instead of silently abandoning the pending part', async () => {
+    it('blocks a bin from being scanned into Sanding instead of silently abandoning the pending part', async () => {
       mockNoSession();
-      const reworkCall = mockReworkScan({ result: 'recorded', part: RECORDED_PART, printer: RECORDED_PRINTER, archive: RECORDED_ARCHIVE });
+      const sandingCall = mockSandingScan({ result: 'recorded', part: RECORDED_PART, printer: RECORDED_PRINTER, archive: RECORDED_ARCHIVE });
       render(<FloorScanPage />);
       await screen.findByText('Scan a code');
       await scan('BBD-000042');
       await screen.findByText('Scan a location');
-      await scan('BBS-rework');
+      await scan('BBS-sanding');
       await screen.findByText('Scan an error label');
 
       await scan('BBN-BUT-1');
 
       expect(
-        await screen.findByText("Bins aren't supported for Rework — scan a part instead"),
+        await screen.findByText("Bins aren't supported for Sanding — scan a part instead"),
       ).toBeInTheDocument();
-      expect(reworkCall.body).toBeNull();
+      expect(sandingCall.body).toBeNull();
+    });
+
+    it('refuses WIP Rework before the part has entered Production WIP', async () => {
+      mockNoSession();
+      render(<FloorScanPage />);
+      await screen.findByText('Scan a code');
+      await scan('BBD-000042');
+      await screen.findByText('Scan a location');
+
+      await scan('BBS-wip-rework');
+
+      expect(await screen.findByText('Part must enter Production WIP before Rework')).toBeInTheDocument();
+    });
+
+    it('commits WIP Rework on the reason scan after the part is In WIP', async () => {
+      mockNoSession();
+      server.use(
+        http.get('/api/v1/floor/inventory/parts/by-sticker/:stickerCode', ({ params }) => HttpResponse.json({
+          id: 42,
+          sticker_code: params.stickerCode,
+          printer_id: 12,
+          printer_name: 'P1S-3',
+          archive_id: 88,
+          part_code: 'TOP',
+          section_part_id: null,
+          part_name: 'Top Housing',
+          part_source: 'Production',
+          print_name: 'bracket_v4',
+          labeled_at: '2026-08-24T10:00:00',
+          archived_at: null,
+          released_at: null,
+          latest_event_action: 'wip',
+          latest_event_reason: null,
+        })),
+      );
+      const captured = mockReworkScan({ result: 'recorded', part: RECORDED_PART, printer: RECORDED_PRINTER, archive: RECORDED_ARCHIVE });
+      render(<FloorScanPage />);
+      await screen.findByText('Scan a code');
+      await scan('BBD-000042');
+      await screen.findByText('Scan a location');
+      await scan('BBS-wip-rework');
+      await screen.findByText('Scan an error label');
+
+      await scan('BBR-doesnt_fit');
+
+      expect(await screen.findByText('Sent to Rework · doesnt_fit')).toBeInTheDocument();
+      expect(captured.body).toEqual({ payload: 'BBD-000042', reason_code: 'doesnt_fit' });
     });
 
     it('blocks a bin from interrupting a part pending at the location prompt', async () => {
@@ -2523,7 +2633,7 @@ describe('FloorScanPage (Phase 1b sessions)', () => {
       render(<FloorScanPage />);
       await screen.findByText('Scan a code');
       await scan('BBD-000042');
-      await screen.findByText('Scan a location');
+      await screen.findByText('Scan a BOT bin or a location');
 
       await scan('BBS-production-wip');
 
@@ -2538,7 +2648,7 @@ describe('FloorScanPage (Phase 1b sessions)', () => {
       render(<FloorScanPage />);
       await screen.findByText('Scan a code');
       await scan('BBD-000042');
-      await screen.findByText('Scan a location');
+      await screen.findByText('Scan a BOT bin or a location');
 
       await scan('BBS-ready-for-production-inventory');
 
@@ -2553,7 +2663,7 @@ describe('FloorScanPage (Phase 1b sessions)', () => {
       render(<FloorScanPage />);
       await screen.findByText('Scan a code');
       await scan('BBD-000042');
-      await screen.findByText('Scan a location');
+      await screen.findByText('Scan a BOT bin or a location');
 
       await scan('BBS-support-removal');
 
@@ -2599,7 +2709,7 @@ describe('FloorScanPage (Phase 1b sessions)', () => {
       render(<FloorScanPage />);
       await screen.findByText('Scan a code');
       await scan('BBD-000042');
-      await screen.findByText('Scan a location');
+      await screen.findByText('Scan a BOT bin or a location');
 
       await scan('BBS-bin-empty');
 
@@ -2760,7 +2870,7 @@ describe('FloorScanPage (Phase 1b sessions)', () => {
       await screen.findByText('Scan a code');
 
       await scan('BBD-000042');
-      await screen.findByText('Scan a location');
+      await screen.findByText('Scan a BOT bin or a location');
 
       expect(screen.queryByRole('button', { name: 'Reassign knob' })).not.toBeInTheDocument();
       expect(screen.queryByRole('button', { name: 'Reassign button' })).not.toBeInTheDocument();
@@ -3589,13 +3699,13 @@ describe('FloorScanPage (Phase 1b sessions)', () => {
         render(<FloorScanPage />);
         await screen.findByText('Scan a code');
         await scan('BBD-000042');
-        await screen.findByText('Scan a location');
+        await screen.findByText('Scan a BOT bin or a location');
 
         await act(async () => {
           await vi.advanceTimersByTimeAsync(10_050);
         });
 
-        expect(screen.getByText('Scan a location')).toBeInTheDocument();
+        expect(screen.getByText('Scan a BOT bin or a location')).toBeInTheDocument();
       } finally {
         vi.useRealTimers();
       }
@@ -3726,6 +3836,85 @@ describe('FloorScanPage (Phase 1b sessions)', () => {
       } finally {
         vi.useRealTimers();
       }
+    });
+  });
+
+  describe('BOT bins', () => {
+    const BOT_PART = {
+      id: 9,
+      sticker_code: 'BBD-000211',
+      printer_id: 4,
+      printer_name: 'Bench A',
+      archive_id: 22,
+      part_code: 'BOT',
+      section_part_id: null,
+      part_name: 'Bottom',
+      part_source: null,
+      print_name: 'Bottom plate',
+      labeled_at: '2026-08-26T12:00:00Z',
+      archived_at: null,
+      released_at: null,
+      latest_event_action: 'fit_checked',
+    };
+
+    it('prompts for a BOT bin after scanning a bottom housing', async () => {
+      mockNoSession();
+      server.use(
+        http.get('/api/v1/floor/units/by-part/:sticker', () => new HttpResponse(null, { status: 404 })),
+        http.get('/api/v1/floor/inventory/parts/by-sticker/:stickerCode', () => HttpResponse.json(BOT_PART)),
+      );
+      render(<FloorScanPage />);
+      await screen.findByText('Scan a code');
+
+      await scan('BBD-000211');
+
+      expect(await screen.findByText('Scan a BOT bin or a location')).toBeInTheDocument();
+    });
+
+    it('loads a pending bottom into a BOT bin', async () => {
+      mockNoSession();
+      let loadBody: unknown = null;
+      server.use(
+        http.get('/api/v1/floor/units/by-part/:sticker', () => new HttpResponse(null, { status: 404 })),
+        http.get('/api/v1/floor/inventory/parts/by-sticker/:stickerCode', () => HttpResponse.json(BOT_PART)),
+        http.post('/api/v1/floor/bot-bins/members', async ({ request }) => {
+          loadBody = await request.json();
+          return HttpResponse.json({
+            result: 'recorded',
+            bin: { payload: 'BBN-BOT-1', bin_number: 1, part_code: 'BOT', part_name: 'Bot bin' },
+            batch: {
+              id: 42,
+              payload: 'BBN-BOT-1',
+              bin_number: 1,
+              printer_id: null,
+              printer_name: null,
+              archive_id: null,
+              print_name: null,
+              part_code: 'BOT',
+              quantity: 0,
+              qc_passed_quantity: null,
+              remaining_quantity: 1,
+              status: 'loaded',
+              harvested_at: '2026-08-26T12:00:00Z',
+            },
+            printer: null,
+            session: null,
+            blocking: null,
+            archive: null,
+          });
+        }),
+      );
+      render(<FloorScanPage />);
+      await screen.findByText('Scan a code');
+      await scan('BBD-000211');
+      await screen.findByText('Scan a BOT bin or a location');
+      await scan('BBN-BOT-1');
+
+      await waitFor(() => expect(loadBody).toEqual({
+        part_sticker: 'BBD-000211',
+        bin_payload: 'BBN-BOT-1',
+      }));
+      expect(await screen.findByText('Bottom loaded into BOT bin')).toBeInTheDocument();
     });
   });
 });

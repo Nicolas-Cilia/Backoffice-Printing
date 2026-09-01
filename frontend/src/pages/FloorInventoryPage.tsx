@@ -286,6 +286,57 @@ function unitSearchValues(
     .map((value) => value.toLowerCase());
 }
 
+type PartHistorySort =
+  | "last_scanned_desc"
+  | "last_scanned_asc"
+  | "labeled_desc"
+  | "labeled_asc";
+
+const PART_HISTORY_SORT_OPTIONS: { id: PartHistorySort; labelKey: string; fallback: string }[] = [
+  { id: "last_scanned_desc", labelKey: "floor.inventorySortLastScannedDesc", fallback: "Last scanned (newest)" },
+  { id: "last_scanned_asc", labelKey: "floor.inventorySortLastScannedAsc", fallback: "Last scanned (oldest)" },
+  { id: "labeled_desc", labelKey: "floor.inventorySortLabeledDesc", fallback: "First labeled (newest)" },
+  { id: "labeled_asc", labelKey: "floor.inventorySortLabeledAsc", fallback: "First labeled (oldest)" },
+];
+
+function partLastScannedAt(part: FloorInventoryPart): string {
+  return part.last_scanned_at ?? part.labeled_at;
+}
+
+function compareInventoryParts(left: FloorInventoryPart, right: FloorInventoryPart, sort: PartHistorySort): number {
+  switch (sort) {
+    case "last_scanned_desc":
+      return new Date(partLastScannedAt(right)).getTime() - new Date(partLastScannedAt(left)).getTime();
+    case "last_scanned_asc":
+      return new Date(partLastScannedAt(left)).getTime() - new Date(partLastScannedAt(right)).getTime();
+    case "labeled_desc":
+      return new Date(right.labeled_at).getTime() - new Date(left.labeled_at).getTime();
+    case "labeled_asc":
+      return new Date(left.labeled_at).getTime() - new Date(right.labeled_at).getTime();
+    default:
+      return 0;
+  }
+}
+
+function unitRowLastScannedAt(row: UnitRow): string {
+  const timestamps = row.parts.map(partLastScannedAt);
+  if (timestamps.length === 0) return row.unit.linked_at;
+  return timestamps.reduce((latest, value) =>
+    new Date(value).getTime() > new Date(latest).getTime() ? value : latest,
+  );
+}
+
+function compareUnitRows(left: UnitRow, right: UnitRow, sort: PartHistorySort): number {
+  if (sort === "labeled_desc" || sort === "labeled_asc") {
+    const leftTs = new Date(left.unit.linked_at).getTime();
+    const rightTs = new Date(right.unit.linked_at).getTime();
+    return sort === "labeled_desc" ? rightTs - leftTs : leftTs - rightTs;
+  }
+  const leftTs = new Date(unitRowLastScannedAt(left)).getTime();
+  const rightTs = new Date(unitRowLastScannedAt(right)).getTime();
+  return sort === "last_scanned_asc" ? leftTs - rightTs : rightTs - leftTs;
+}
+
 export function FloorInventoryPage() {
   const { t } = useTranslation();
   const { showToast } = useToast();
@@ -310,6 +361,7 @@ export function FloorInventoryPage() {
     }, { replace: true });
   };
   const [filter, setFilter] = useState<PartFilter>("linked");
+  const [sort, setSort] = useState<PartHistorySort>("last_scanned_desc");
   const [search, setSearch] = useState("");
   const [searchFocused, setSearchFocused] = useState(false);
   const [selectedId, setSelectedId] = useState<number | null>(null);
@@ -845,6 +897,10 @@ export function FloorInventoryPage() {
       );
     });
   }, [filter, latestEventActions, records, search, unitMemberPartIds]);
+  const sortedVisibleParts = useMemo(
+    () => [...visibleParts].sort((left, right) => compareInventoryParts(left, right, sort)),
+    [visibleParts, sort],
+  );
   // Collapsed product-serial rows: linked TOP + BOT housings shown as one row.
   const visibleUnitRows = useMemo<UnitRow[]>(() => {
     const term = search.trim().toLowerCase();
@@ -866,6 +922,10 @@ export function FloorInventoryPage() {
         );
       });
   }, [partUnitsQuery.data, records, filter, search, latestEventActions]);
+  const sortedVisibleUnitRows = useMemo(
+    () => [...visibleUnitRows].sort((left, right) => compareUnitRows(left, right, sort)),
+    [visibleUnitRows, sort],
+  );
   const visibleBins = useMemo(() => {
     const term = search.trim().toLowerCase();
     return historyBins.filter((bin) => {
@@ -890,6 +950,18 @@ export function FloorInventoryPage() {
       );
     });
   }, [historyBins, filter, search]);
+  const sortedVisibleBins = useMemo(() => {
+    const rows = [...visibleBins];
+    rows.sort((left, right) => {
+      const leftTs = new Date(left.batch?.harvested_at ?? 0).getTime();
+      const rightTs = new Date(right.batch?.harvested_at ?? 0).getTime();
+      if (sort === "labeled_asc" || sort === "last_scanned_asc") {
+        return leftTs - rightTs;
+      }
+      return rightTs - leftTs;
+    });
+    return rows;
+  }, [visibleBins, sort]);
   const visibleFailureRecords = useMemo(() => {
     if (filter !== "all") return [];
     const term = search.trim().toLowerCase();
@@ -1060,8 +1132,8 @@ export function FloorInventoryPage() {
       </div>
       <div className="grid gap-6 lg:grid-cols-[minmax(0,1fr)_24rem] lg:items-start">
         <section className="min-w-0 overflow-hidden rounded-lg border border-bambu-dark-tertiary bg-bambu-dark-secondary">
-          <div className="flex flex-col gap-3 border-b border-bambu-dark-tertiary p-4 md:flex-row md:items-start">
-            <HorizontalScrollFade className="w-full md:flex-1" fadeFromClassName="from-bambu-dark-secondary">
+          <div className="space-y-3 border-b border-bambu-dark-tertiary p-4">
+            <HorizontalScrollFade className="w-full" fadeFromClassName="from-bambu-dark-secondary">
               <div className="inline-flex min-w-full flex-nowrap gap-1 rounded-lg bg-bambu-dark p-1 md:min-w-0">
                 {filters.map((item) => (
                   <button
@@ -1078,31 +1150,56 @@ export function FloorInventoryPage() {
                 ))}
               </div>
             </HorizontalScrollFade>
-            <div className="flex shrink-0 items-center justify-between gap-2 md:flex-col md:items-end">
-              <button
-                type="button"
-                onClick={() => setFilter("archived")}
-                className={`whitespace-nowrap rounded-md border px-3 py-1.5 text-sm transition-colors ${filter === "archived" ? "border-bambu-green bg-bambu-green text-white" : "border-bambu-dark-tertiary bg-bambu-dark-tertiary text-white hover:border-bambu-gray hover:bg-bambu-dark hover:text-white"}`}
-              >
-                {t("floor.inventoryShowArchived", "Show archived")}
-              </button>
-              <p className="text-sm text-bambu-gray">
-              {filter === "failures"
-                ? failureLogCount === 1
-                  ? t("floor.inventoryRecordCountOne", "{{count}} record", {
-                      count: failureLogCount,
-                    })
-                  : t("floor.inventoryRecordCountMany", "{{count}} records", {
-                      count: failureLogCount,
-                    })
-                : displayedRecordCount === 1
-                ? t("floor.inventoryRecordCountOne", "{{count}} record", {
-                    count: displayedRecordCount,
-                  })
-                : t("floor.inventoryRecordCountMany", "{{count}} records", {
-                      count: displayedRecordCount,
-                  })}
-              </p>
+            <div className="flex flex-wrap items-center justify-between gap-3">
+              <label className="inline-flex min-w-0 items-center gap-1 rounded-lg bg-bambu-dark p-1">
+                <span className="shrink-0 pl-2 text-sm text-bambu-gray">
+                  {t("floor.inventorySortLabel", "Sort by")}
+                </span>
+                <div className="relative min-w-0">
+                  <select
+                    value={sort}
+                    onChange={(event) => setSort(event.target.value as PartHistorySort)}
+                    className="w-full min-w-[12rem] appearance-none rounded-md bg-bambu-dark-secondary py-1.5 pl-2.5 pr-8 text-sm text-white transition-colors hover:text-white focus:border-bambu-green focus:outline-none focus:ring-1 focus:ring-bambu-green sm:min-w-[14rem]"
+                    aria-label={t("floor.inventorySortLabel", "Sort by")}
+                  >
+                    {PART_HISTORY_SORT_OPTIONS.map((option) => (
+                      <option key={option.id} value={option.id}>
+                        {t(option.labelKey, option.fallback)}
+                      </option>
+                    ))}
+                  </select>
+                  <ChevronDown
+                    className="pointer-events-none absolute right-2 top-1/2 h-4 w-4 -translate-y-1/2 text-bambu-gray"
+                    aria-hidden="true"
+                  />
+                </div>
+              </label>
+              <div className="flex flex-wrap items-center gap-3">
+                <button
+                  type="button"
+                  onClick={() => setFilter("archived")}
+                  className={`whitespace-nowrap rounded-md border px-3 py-1.5 text-sm transition-colors ${filter === "archived" ? "border-bambu-green bg-bambu-green text-white" : "border-bambu-dark-tertiary bg-bambu-dark-tertiary text-white hover:border-bambu-gray hover:bg-bambu-dark hover:text-white"}`}
+                >
+                  {t("floor.inventoryShowArchived", "Show archived")}
+                </button>
+                <p className="text-sm text-bambu-gray">
+                  {filter === "failures"
+                    ? failureLogCount === 1
+                      ? t("floor.inventoryRecordCountOne", "{{count}} record", {
+                          count: failureLogCount,
+                        })
+                      : t("floor.inventoryRecordCountMany", "{{count}} records", {
+                          count: failureLogCount,
+                        })
+                    : displayedRecordCount === 1
+                      ? t("floor.inventoryRecordCountOne", "{{count}} record", {
+                          count: displayedRecordCount,
+                        })
+                      : t("floor.inventoryRecordCountMany", "{{count}} records", {
+                          count: displayedRecordCount,
+                        })}
+                </p>
+              </div>
             </div>
           </div>
           {filter === "failures" ? (
@@ -1201,9 +1298,9 @@ export function FloorInventoryPage() {
             </div>
               ) : (
                 <InventoryHistoryTable
-                  parts={visibleParts}
-                  unitRows={visibleUnitRows}
-                  bins={visibleBins}
+                  parts={sortedVisibleParts}
+                  unitRows={sortedVisibleUnitRows}
+                  bins={sortedVisibleBins}
                   allBins={historyBins}
                   failures={visibleFailureRecords}
                   latestEventActions={latestEventActions}
@@ -1403,7 +1500,7 @@ function InventoryHistoryTable({
               {t("floor.inventoryColPrinter", "Printer")}
             </th>
             <th className="px-4 py-3 font-medium">
-              {t("floor.inventoryColLabeled", "Labeled")}
+              {t("floor.inventoryColLastScanned", "Last scanned")}
             </th>
           </tr>
         </thead>
@@ -1529,7 +1626,10 @@ function InventoryHistoryTable({
                   </td>
                   <td className={`${INVENTORY_CELL_CLASS} text-bambu-gray-light`}>{printerName}</td>
                   <td className={`${INVENTORY_CELL_CLASS} text-bambu-gray md:whitespace-nowrap`}>
-                    {formatFloorDate(unit.linked_at, { dateStyle: "medium", timeStyle: "short" })}
+                    {formatFloorDate(unitRowLastScannedAt({ unit, parts: unitParts }), {
+                      dateStyle: "medium",
+                      timeStyle: "short",
+                    })}
                   </td>
                 </tr>
                 {expanded && (
@@ -1558,7 +1658,7 @@ function InventoryHistoryTable({
                       }
                       job={topPart?.print_name ?? null}
                       printer={topPart?.printer_name ?? null}
-                      labeledAt={topPart?.labeled_at ?? null}
+                      labeledAt={topPart ? partLastScannedAt(topPart) : null}
                       onSelect={() => topPart && onSelectPart(topPart)}
                       t={t}
                     />
@@ -1588,7 +1688,7 @@ function InventoryHistoryTable({
                       }
                       job={bottomPart?.print_name ?? null}
                       printer={bottomPart?.printer_name ?? null}
-                      labeledAt={bottomPart?.labeled_at ?? null}
+                      labeledAt={bottomPart ? partLastScannedAt(bottomPart) : null}
                       onSelect={() => bottomPart && onSelectPart(bottomPart)}
                       t={t}
                     />
@@ -1704,8 +1804,8 @@ function InventoryHistoryTable({
                 <td className={`${INVENTORY_CELL_CLASS} text-bambu-gray-light`}>
                   {part.printer_name ?? t("floor.inventoryDeletedPrinter", "Deleted printer")}
                 </td>
-                <td className={`${INVENTORY_CELL_CLASS} text-bambu-gray md:whitespace-nowrap`}>
-                  {formatFloorDate(part.labeled_at, { dateStyle: "medium", timeStyle: "short" })}
+                  <td className={`${INVENTORY_CELL_CLASS} text-bambu-gray md:whitespace-nowrap`}>
+                  {formatFloorDate(partLastScannedAt(part), { dateStyle: "medium", timeStyle: "short" })}
                 </td>
               </tr>
             );
@@ -2008,8 +2108,8 @@ function PrintFailureReasonLog({
     ...records.map((record) => ({ type: "failure" as const, record })),
     ...discardedParts.map((part) => ({ type: "discarded" as const, part })),
   ].sort((left, right) => {
-    const leftDate = left.type === "failure" ? left.record.stopped_at : left.part.labeled_at;
-    const rightDate = right.type === "failure" ? right.record.stopped_at : right.part.labeled_at;
+    const leftDate = left.type === "failure" ? left.record.stopped_at : partLastScannedAt(left.part);
+    const rightDate = right.type === "failure" ? right.record.stopped_at : partLastScannedAt(right.part);
     return new Date(rightDate).getTime() - new Date(leftDate).getTime();
   });
 
@@ -2052,7 +2152,7 @@ function PrintFailureReasonLog({
                   {t("floor.inventoryColPrinter", "Printer")}
                 </th>
                 <th className="px-4 py-3 font-medium">
-                  {t("floor.inventoryColLabeled", "Labeled")}
+                  {t("floor.inventoryColLastScanned", "Last scanned")}
                 </th>
               </tr>
             </thead>
@@ -2121,7 +2221,7 @@ function PrintFailureReasonLog({
                         t("floor.inventoryDeletedPrinter", "Deleted printer")}
                     </td>
                     <td className={`${INVENTORY_CELL_CLASS} text-bambu-gray md:whitespace-nowrap`}>
-                      {formatFloorDate(isFailure ? entry.record.stopped_at : entry.part.labeled_at, {
+                      {formatFloorDate(isFailure ? entry.record.stopped_at : partLastScannedAt(entry.part), {
                         dateStyle: "medium",
                         timeStyle: "short",
                       })}
@@ -3278,7 +3378,18 @@ function PartDetail({
           </div>
           <div>
             <dt className="text-bambu-gray">
-              {t("floor.inventoryColLabeled", "Labeled")}
+              {t("floor.inventoryColLastScanned", "Last scanned")}
+            </dt>
+            <dd className="mt-0.5 text-white">
+              {formatFloorDate(partLastScannedAt(part), {
+                dateStyle: "medium",
+                timeStyle: "short",
+              })}
+            </dd>
+          </div>
+          <div>
+            <dt className="text-bambu-gray">
+              {t("floor.inventoryColFirstLabeled", "First labeled")}
             </dt>
             <dd className="mt-0.5 text-white">
               {formatFloorDate(part.labeled_at, {

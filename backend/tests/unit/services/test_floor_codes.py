@@ -37,7 +37,8 @@ class TestStationCatalog:
         assert {s.payload for s in FLOOR_STATIONS} == {
             "BBS-harvest",
             "BBS-initial-qc-pass",
-            "BBS-rework",
+            "BBS-sanding",
+            "BBS-wip-rework",
             "BBS-ready-for-production-inventory",
             "BBS-production-wip",
             "BBS-bin-empty",
@@ -54,14 +55,14 @@ class TestStationCatalog:
         assert len({s.name for s in FLOOR_STATIONS}) == len(FLOOR_STATIONS)
 
     def test_all_current_floor_codes_are_present(self):
-        assert len(FLOOR_STATIONS) == 9
+        assert len(FLOOR_STATIONS) == 10
 
-    def test_fit_check_and_rework_carry_no_floor_wide_lock(self):
-        """Parallel fit-check and rework benches on separate machines are
-        normal work for both."""
+    def test_fit_check_sanding_and_wip_rework_carry_no_floor_wide_lock(self):
+        """Parallel fit-check, sanding, and rework benches are normal work."""
         by_slug = {s.slug: s for s in FLOOR_STATIONS}
         assert by_slug["fit-check"].exclusive is False
-        assert by_slug["rework"].exclusive is False
+        assert by_slug["sanding"].exclusive is False
+        assert by_slug["wip-rework"].exclusive is False
 
     def test_category_splits_locations_from_stations(self):
         """§3.3: item→location destinations print under the Codes page's
@@ -69,7 +70,8 @@ class TestStationCatalog:
         by_slug = {s.slug: s for s in FLOOR_STATIONS}
         assert {s.slug for s in FLOOR_STATIONS if s.category == "location"} == {
             "fit-check",
-            "rework",
+            "sanding",
+            "wip-rework",
             "ready-for-production-inventory",
             "production-wip",
             "bin-empty",
@@ -109,6 +111,12 @@ class TestStationLookup:
         station = station_for_payload("BBS-fit-check")
         assert station is not None
         assert station.name == "Initial QC Pass"
+
+    def test_resolves_the_legacy_pre_wip_rework_payload_as_sanding(self):
+        station = station_for_payload("BBS-rework")
+        assert station is not None
+        assert station.name == "Sanding"
+        assert station.slug == "sanding"
 
     def test_tolerates_surrounding_whitespace(self):
         """A pistol can emit a trailing character depending on its suffix

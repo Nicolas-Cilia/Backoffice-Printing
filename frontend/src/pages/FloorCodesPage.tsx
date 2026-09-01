@@ -331,7 +331,7 @@ export function FloorCodesPage() {
                   : tab === 'errors'
                     ? t('floor.codesErrorsHint', 'Scan an error label after Rework or Discard. Add or remove reasons as needed.')
                   : tab === 'bins'
-                    ? t('floor.codesBinsHint', 'Print three shared reusable KNB bins and three shared reusable BUT bins.')
+                    ? t('floor.codesBinsHint', 'Print three shared reusable KNB bins, three shared reusable BUT bins, and three shared reusable BOT bins.')
                   : t(
                       'floor.codesPrintersHint',
                       'One label per printer, stuck on the machine. Scanning it shows what that printer is doing and what it last finished.',
@@ -386,7 +386,7 @@ export function FloorCodesPage() {
             </p>
             <p className="text-sm text-bambu-gray mt-1">
               {tab === 'bins'
-                ? t('floor.codesNoBinsHint', 'These six permanent bin labels are available independently of the printer catalog.')
+                ? t('floor.codesNoBinsHint', 'These nine permanent bin labels are available independently of the printer catalog.')
                 : t('floor.codesNoPrintersHint', 'Add a printer first, then print its label here.')}
             </p>
           </div>

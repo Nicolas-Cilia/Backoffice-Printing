@@ -217,26 +217,141 @@ describe('FloorBinManagementPage', () => {
     }));
   });
 
-  it('groups knob and button bins into separate columns', async () => {
+  it('groups knob, button, and bot bins into separate columns', async () => {
     server.use(
-      http.get('/api/v1/floor/inventory/bins', () => HttpResponse.json(ALL_BINS)),
+      http.get('/api/v1/floor/inventory/bins', () => HttpResponse.json([
+        ...ALL_BINS,
+        ...[1, 2, 3].map((bin_number) => ({
+          payload: `BBN-BOT-${bin_number}`,
+          bin_number,
+          part_code: 'BOT' as const,
+          part_name: 'Bot bin',
+          status: 'available',
+          batch: null,
+        })),
+      ])),
+      http.get('/api/v1/floor/inventory/parts', () => HttpResponse.json([])),
     );
     render(<FloorBinManagementPage />);
 
-    expect(await screen.findByText('Knob bins')).toBeInTheDocument();
-    expect(screen.getByText('Button bins')).toBeInTheDocument();
-    expect(screen.getByText('Knob bin 1')).toBeInTheDocument();
-    expect(screen.getByText('Knob bin 3')).toBeInTheDocument();
-    expect(screen.getByText('Button bin 1')).toBeInTheDocument();
-    expect(screen.getByText('Button bin 3')).toBeInTheDocument();
+    expect(await screen.findByText('Bot bins')).toBeInTheDocument();
+    expect(screen.getByText('Bot bin 1')).toBeInTheDocument();
+  });
 
-    const knobHeading = screen.getByText('Knob bins');
-    const buttonHeading = screen.getByText('Button bins');
-    const knobColumn = knobHeading.parentElement;
-    const buttonColumn = buttonHeading.parentElement;
-    expect(knobColumn).toContainElement(screen.getByText('Knob bin 2'));
-    expect(knobColumn).not.toContainElement(screen.getByText('Button bin 2'));
-    expect(buttonColumn).toContainElement(screen.getByText('Button bin 2'));
-    expect(buttonColumn).not.toContainElement(screen.getByText('Knob bin 2'));
+  it('lists BOT bin members with office remove/move on WIP fills', async () => {
+    server.use(
+      http.get('/api/v1/floor/inventory/bins', () => HttpResponse.json([
+        {
+          payload: 'BBN-BOT-1',
+          bin_number: 1,
+          part_code: 'BOT',
+          part_name: 'Bot bin',
+          status: 'wip',
+          batch: {
+            id: 42,
+            payload: 'BBN-BOT-1',
+            bin_number: 1,
+            printer_id: null,
+            printer_name: null,
+            archive_id: null,
+            print_name: null,
+            part_code: 'BOT',
+            quantity: 0,
+            qc_passed_quantity: null,
+            remaining_quantity: 1,
+            status: 'wip',
+            harvested_at: '2026-08-26T12:00:00Z',
+          },
+        },
+      ])),
+      http.get('/api/v1/floor/bot-bins/batches/42/members', () => HttpResponse.json([
+        { part_id: 7, sticker_code: 'BBD-000099', part_code: 'BOT', added_at: '2026-08-26T12:00:00Z' },
+      ])),
+      http.get('/api/v1/floor/inventory/parts', () => HttpResponse.json([
+        {
+          id: 7,
+          sticker_code: 'BBD-000099',
+          printer_id: 4,
+          printer_name: 'Bench A',
+          archive_id: 22,
+          part_code: 'BOT',
+          section_part_id: null,
+          part_name: 'Bottom',
+          part_source: null,
+          print_name: 'Bottom plate',
+          labeled_at: '2026-08-26T11:00:00Z',
+          archived_at: null,
+          released_at: null,
+        },
+      ])),
+    );
+    render(<FloorBinManagementPage />);
+
+    expect(await screen.findByText('BBD-000099')).toBeInTheDocument();
+    expect(screen.getByText('Bench A · Bottom plate')).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Remove' })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Move' })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Return to staged' })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Clear bin' })).toBeInTheDocument();
+  });
+
+  it('shows stage and member actions on loaded BOT bins', async () => {
+    server.use(
+      http.get('/api/v1/floor/inventory/bins', () => HttpResponse.json([
+        {
+          payload: 'BBN-BOT-1',
+          bin_number: 1,
+          part_code: 'BOT',
+          part_name: 'Bot bin',
+          status: 'loaded',
+          batch: {
+            id: 43,
+            payload: 'BBN-BOT-1',
+            bin_number: 1,
+            printer_id: null,
+            printer_name: null,
+            archive_id: null,
+            print_name: null,
+            part_code: 'BOT',
+            quantity: 0,
+            qc_passed_quantity: null,
+            remaining_quantity: 1,
+            status: 'loaded',
+            harvested_at: '2026-08-26T12:00:00Z',
+          },
+        },
+      ])),
+      http.get('/api/v1/floor/bot-bins/batches/43/members', () => HttpResponse.json([
+        { part_id: 8, sticker_code: 'BBD-000100', part_code: 'BOT', added_at: '2026-08-26T12:00:00Z' },
+      ])),
+      http.get('/api/v1/floor/inventory/parts', () => HttpResponse.json([])),
+    );
+    render(<FloorBinManagementPage />);
+
+    expect(await screen.findByText('BBD-000100')).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Stage for production' })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Clear bin' })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Add' })).toBeInTheDocument();
+  });
+
+  it('shows assign bottom input on available BOT bins', async () => {
+    server.use(
+      http.get('/api/v1/floor/inventory/bins', () => HttpResponse.json([
+        {
+          payload: 'BBN-BOT-2',
+          bin_number: 2,
+          part_code: 'BOT',
+          part_name: 'Bot bin',
+          status: 'available',
+          batch: null,
+        },
+      ])),
+      http.get('/api/v1/floor/inventory/parts', () => HttpResponse.json([])),
+    );
+    render(<FloorBinManagementPage />);
+
+    expect(await screen.findByText('Bot bin 2')).toBeInTheDocument();
+    expect(screen.getByRole('textbox', { name: 'Bot bin 2 bottom sticker' })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Add' })).toBeDisabled();
   });
 });

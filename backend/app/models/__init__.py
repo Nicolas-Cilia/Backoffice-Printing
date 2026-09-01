@@ -10,7 +10,7 @@ from backend.app.models.filament_tracking import (
     FilamentColorUsage,
     FilamentSlotAssignment,
 )
-from backend.app.models.floor_bin import FloorBinBatch, FloorBinBatchEvent
+from backend.app.models.floor_bin import FloorBinBatch, FloorBinBatchEvent, FloorBotBinMember
 from backend.app.models.floor_part import (
     FloorDismissedBuildPlate,
     FloorErrorLabel,
@@ -74,6 +74,7 @@ __all__ = [
     "FloorStationSession",
     "FloorBinBatch",
     "FloorBinBatchEvent",
+    "FloorBotBinMember",
     "FloorLabeledPart",
     "FloorPartEvent",
     "FloorErrorLabel",

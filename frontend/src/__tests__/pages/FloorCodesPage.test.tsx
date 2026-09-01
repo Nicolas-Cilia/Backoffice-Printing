@@ -22,10 +22,17 @@ const STATIONS = [
     category: 'location',
   },
   {
-    slug: 'rework',
-    payload: 'BBS-rework',
+    slug: 'sanding',
+    payload: 'BBS-sanding',
+    name: 'Sanding',
+    description: 'Optional bench for surface work before production.',
+    category: 'location',
+  },
+  {
+    slug: 'wip-rework',
+    payload: 'BBS-wip-rework',
     name: 'Rework',
-    description: 'Optional shelf for rework.',
+    description: 'Shelf within Production WIP for parts that need rework.',
     category: 'location',
   },
 ];
@@ -258,6 +265,7 @@ describe('FloorCodesPage', () => {
 
       await user.click(screen.getByRole('button', { name: 'Processes' }));
       await screen.findByText('Initial QC Pass');
+      await user.click(screen.getByRole('checkbox', { name: 'Sanding' }));
       await user.click(screen.getByRole('checkbox', { name: 'Rework' }));
       await user.click(screen.getByRole('button', { name: /Print selected \(1\)/ }));
 
@@ -275,7 +283,7 @@ describe('FloorCodesPage', () => {
       await user.click(screen.getByRole('button', { name: 'Processes' }));
       await screen.findByText('Initial QC Pass');
 
-      expect(screen.getByRole('button', { name: /Print selected \(2\)/ })).toBeEnabled();
+      expect(screen.getByRole('button', { name: /Print selected \(3\)/ })).toBeEnabled();
     });
   });
 

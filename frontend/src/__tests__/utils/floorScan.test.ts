@@ -217,16 +217,24 @@ describe('routeScan', () => {
       });
     });
 
-    it('classifies BBS-rework as a location the same way', () => {
-      expect(routeScan('BBS-rework', null)).toEqual({
+    it('classifies BBS-sanding as a pre-WIP location', () => {
+      expect(routeScan('BBS-sanding', null)).toEqual({
         action: 'location',
-        slug: 'rework',
-        payload: 'BBS-rework',
+        slug: 'sanding',
+        payload: 'BBS-sanding',
       });
     });
 
-    it('keeps the legacy BBS-sanding label working as Rework', () => {
-      expect(routeScan('BBS-sanding', null)).toEqual({ action: 'location', slug: 'rework', payload: 'BBS-sanding' });
+    it('classifies BBS-wip-rework as a WIP location', () => {
+      expect(routeScan('BBS-wip-rework', null)).toEqual({
+        action: 'location',
+        slug: 'wip-rework',
+        payload: 'BBS-wip-rework',
+      });
+    });
+
+    it('keeps the legacy BBS-rework label working as Sanding', () => {
+      expect(routeScan('BBS-rework', null)).toEqual({ action: 'location', slug: 'sanding', payload: 'BBS-rework' });
     });
 
     it('classifies a location payload the same way regardless of what station is open', () => {
@@ -260,6 +268,11 @@ describe('routeScan', () => {
   describe('reusable KNB/BUT bins', () => {
     it('routes bins to Harvest for quantity capture', () => {
       expect(routeScan('BBN-KNB-1', 'harvest')).toEqual({ action: 'harvest-bin', payload: 'BBN-KNB-1' });
+    });
+
+    it('does not route BOT bins through Harvest', () => {
+      expect(routeScan('BBN-BOT-1', 'harvest').action).toBe('not-implemented');
+      expect(routeScan('BBN-BOT-2', null, 12)).toEqual({ action: 'bin-scanned', payload: 'BBN-BOT-2' });
     });
 
     it('routes bins from a printer info page to the direct Harvest path', () => {

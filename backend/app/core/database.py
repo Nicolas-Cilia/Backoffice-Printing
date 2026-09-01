@@ -1236,6 +1236,25 @@ async def run_migrations(conn):
     # skipped by the "current fill" lookup so the physical tote can be reused.
     await _safe_execute(conn, "ALTER TABLE floor_bin_batches ADD COLUMN archived_at DATETIME")
 
+    # BOT bins: membership rows track individual BBD- bottoms in a shared tote.
+    await _safe_execute(
+        conn,
+        """
+        CREATE TABLE IF NOT EXISTS floor_bot_bin_members (
+            id INTEGER PRIMARY KEY,
+            batch_id INTEGER NOT NULL REFERENCES floor_bin_batches(id) ON DELETE CASCADE,
+            part_id INTEGER NOT NULL UNIQUE REFERENCES floor_labeled_parts(id) ON DELETE CASCADE,
+            added_at DATETIME DEFAULT CURRENT_TIMESTAMP
+        )
+        """,
+    )
+    await _safe_execute(
+        conn, "CREATE INDEX IF NOT EXISTS ix_floor_bot_bin_members_batch ON floor_bot_bin_members(batch_id)"
+    )
+    await _safe_execute(
+        conn, "CREATE INDEX IF NOT EXISTS ix_floor_bot_bin_members_part_id ON floor_bot_bin_members(part_id)"
+    )
+
     # Part Assembly Linking (Wave 2): the product-unit table binding one scanned
     # product serial to a TOP + BOT housing pair. Brand-new table, so create_all
     # already builds it on a fresh DB; this CREATE TABLE IF NOT EXISTS covers

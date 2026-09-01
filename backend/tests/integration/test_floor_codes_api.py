@@ -18,13 +18,14 @@ class TestListStations:
         assert resp.status_code == 200
 
         stations = resp.json()
-        assert len(stations) == 9
+        assert len(stations) == 10
 
         payloads = [s["payload"] for s in stations]
         assert payloads == [
             "BBS-harvest",
             "BBS-initial-qc-pass",
-            "BBS-rework",
+            "BBS-sanding",
+            "BBS-wip-rework",
             "BBS-ready-for-production-inventory",
             "BBS-production-wip",
             "BBS-bin-empty",
@@ -40,7 +41,8 @@ class TestListStations:
         by_slug = {s["slug"]: s for s in stations}
         assert by_slug["fit-check"]["name"] == "Initial QC Pass"
         assert by_slug["fit-check"]["category"] == "location"
-        assert by_slug["rework"]["category"] == "location"
+        assert by_slug["sanding"]["category"] == "location"
+        assert by_slug["wip-rework"]["category"] == "location"
         assert by_slug["harvest"]["category"] == "station"
         assert "wip" not in by_slug
         assert "storage-receive" not in by_slug
@@ -63,7 +65,7 @@ class TestRenderStationLabels:
     async def test_renders_a_pdf(self, async_client: AsyncClient):
         resp = await async_client.post(
             "/api/v1/floor/labels/stations",
-            json={"payloads": ["BBS-harvest", "BBS-rework"], "width_mm": 60, "height_mm": 60},
+            json={"payloads": ["BBS-harvest", "BBS-sanding"], "width_mm": 60, "height_mm": 60},
         )
         assert resp.status_code == 200
         assert resp.headers["content-type"] == "application/pdf"
