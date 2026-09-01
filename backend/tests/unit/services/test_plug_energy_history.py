@@ -63,9 +63,7 @@ async def test_derives_today_and_yesterday_from_the_counter(db_session):
     await _snapshot(db_session, plug.id, local_day_start(now, days_ago=1), 100.0)
     await _snapshot(db_session, plug.id, local_day_start(now, days_ago=0), 102.0)
 
-    today, yesterday = await derive_today_yesterday(
-        db_session, plug.id, live_total_kwh=103.5, now_utc=now
-    )
+    today, yesterday = await derive_today_yesterday(db_session, plug.id, live_total_kwh=103.5, now_utc=now)
 
     assert today == pytest.approx(1.5)  # counter now, minus this midnight
     assert yesterday == pytest.approx(2.0)  # this midnight, minus the one before
@@ -79,9 +77,7 @@ async def test_yesterday_is_none_until_two_midnights_have_passed(db_session):
     now = _FIXED_NOW
     await _snapshot(db_session, plug.id, local_day_start(now, days_ago=0), 102.0)
 
-    today, yesterday = await derive_today_yesterday(
-        db_session, plug.id, live_total_kwh=103.5, now_utc=now
-    )
+    today, yesterday = await derive_today_yesterday(db_session, plug.id, live_total_kwh=103.5, now_utc=now)
 
     assert today == pytest.approx(1.5)
     assert yesterday is None
@@ -98,9 +94,7 @@ async def test_nothing_derivable_before_the_first_midnight(db_session):
         102.0,
     )
 
-    today, yesterday = await derive_today_yesterday(
-        db_session, plug.id, live_total_kwh=103.5, now_utc=now
-    )
+    today, yesterday = await derive_today_yesterday(db_session, plug.id, live_total_kwh=103.5, now_utc=now)
 
     assert today is None
     assert yesterday is None
@@ -115,9 +109,7 @@ async def test_counter_reset_reports_nothing_rather_than_a_negative(db_session):
     await _snapshot(db_session, plug.id, local_day_start(now, days_ago=1), 100.0)
     await _snapshot(db_session, plug.id, local_day_start(now, days_ago=0), 102.0)
 
-    today, _ = await derive_today_yesterday(
-        db_session, plug.id, live_total_kwh=0.4, now_utc=now
-    )
+    today, _ = await derive_today_yesterday(db_session, plug.id, live_total_kwh=0.4, now_utc=now)
 
     assert today is None
 
@@ -132,9 +124,7 @@ async def test_snapshots_from_other_plugs_are_not_borrowed(db_session):
     now = _FIXED_NOW
     await _snapshot(db_session, other.id, local_day_start(now, days_ago=0), 50.0)
 
-    today, yesterday = await derive_today_yesterday(
-        db_session, plug.id, live_total_kwh=103.5, now_utc=now
-    )
+    today, yesterday = await derive_today_yesterday(db_session, plug.id, live_total_kwh=103.5, now_utc=now)
 
     assert today is None
     assert yesterday is None
@@ -147,9 +137,7 @@ class TestFillDerivedEnergy:
         await _snapshot(db_session, plug.id, local_day_start(now, days_ago=1), 100.0)
         await _snapshot(db_session, plug.id, local_day_start(now, days_ago=0), 102.0)
 
-        energy = await fill_derived_energy(
-            db_session, plug.id, {"power": 84.0, "total": 103.5}, now_utc=now
-        )
+        energy = await fill_derived_energy(db_session, plug.id, {"power": 84.0, "total": 103.5}, now_utc=now)
 
         assert energy["today"] == pytest.approx(1.5)
         assert energy["yesterday"] == pytest.approx(2.0)

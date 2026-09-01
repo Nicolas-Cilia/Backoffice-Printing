@@ -98,9 +98,7 @@ async def derive_today_yesterday(
     return today, yesterday
 
 
-async def fill_derived_energy(
-    db: AsyncSession, plug_id: int, energy: dict, *, now_utc: datetime | None = None
-) -> dict:
+async def fill_derived_energy(db: AsyncSession, plug_id: int, energy: dict, *, now_utc: datetime | None = None) -> dict:
     """Fill in Today / Yesterday on an energy dict that only has a lifetime total.
 
     A no-op for Tasmota, which reports both itself — a device that knows its own
