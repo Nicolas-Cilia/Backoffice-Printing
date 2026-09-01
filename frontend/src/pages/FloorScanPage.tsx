@@ -2158,6 +2158,8 @@ export function FloorScanPage() {
             // Empty Bin is a bin-only destination; a part sitting here is a
             // scanning mistake, so say so rather than call the parts endpoint.
             failScan(t('floor.locationPartNotSupported', "This location isn't available for parts"), route.payload);
+          } else if (route.slug === 'ready-to-ship') {
+            failScan(t('floor.readyToShipSerialFirst', 'Scan the product serial first'), route.payload);
           } else {
             // Ready-for-Production, Production WIP, and the three TOP
             // finishing benches. Eligibility (TOP vs BOT, finishing order)
