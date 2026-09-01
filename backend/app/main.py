@@ -7530,6 +7530,10 @@ async def lifespan(app: FastAPI):
 
     await init_db()
 
+    from backend.app.core.network import log_lan_access_urls
+
+    log_lan_access_urls(port=int(os.environ.get("PORT", "7474")))
+
     # After migrations, so the is_env_managed column exists. Never raises --
     # a bad BAMBUDDY_OIDC_* value is logged and skipped rather than blocking
     # startup (see apply_env_oidc_provider).

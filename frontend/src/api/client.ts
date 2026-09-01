@@ -1336,7 +1336,7 @@ export interface FloorPrinter {
 export interface FloorBin {
   payload: string;
   bin_number: number;
-  part_code: 'KNB' | 'BUT';
+  part_code: 'KNB' | 'BUT' | 'BOT';
   part_name: string;
 }
 
@@ -1537,6 +1537,7 @@ export type BinScanResult =
   | 'empty_recorded'
   | 'already_empty'
   | 'empty_requires_wip'
+  | 'bin_not_empty'
   | 'quantity_overridden'
   | 'unlinked'
   | 'discarded'
@@ -1553,7 +1554,7 @@ export interface FloorBinBatch {
   printer_name: string | null;
   archive_id: number | null;
   print_name: string | null;
-  part_code: 'KNB' | 'BUT';
+  part_code: 'KNB' | 'BUT' | 'BOT';
   quantity: number;
   qc_passed_quantity: number | null;
   remaining_quantity: number;
@@ -1578,10 +1579,17 @@ export interface FloorBinJobCandidate {
 export interface FloorBinManagement {
   payload: string;
   bin_number: number;
-  part_code: 'KNB' | 'BUT';
+  part_code: 'KNB' | 'BUT' | 'BOT';
   part_name: string;
   status: string;
   batch: FloorBinBatch | null;
+}
+
+export interface FloorBotBinMember {
+  part_id: number;
+  sticker_code: string;
+  part_code: string | null;
+  added_at: string;
 }
 
 export interface BinScanResponse {
@@ -1618,6 +1626,7 @@ export type LocationScanResult =
   | 'wrong_part_type'
   | 'finishing_required'
   | 'qc_required'
+  | 'wip_required'
   | 'already_wip'
   | 'part_code_required'
   // Part Assembly Linking (Wave 1): a TOP's WIP commit needs one KNB and one
@@ -1726,6 +1735,9 @@ export type LinkUnitResult =
 export interface LinkUnitResponse {
   result: LinkUnitResult;
   unit: FloorProductUnit | null;
+  /** True when linking consumed the last bottom in a WIP BOT bin. */
+  empty_bin_warning?: boolean;
+  bot_bin_payload?: string | null;
 }
 
 /** What an `unlinkUnit` request did. Mirrors
@@ -1755,6 +1767,8 @@ export type ReplaceUnitResult =
 export interface ReplaceUnitResponse {
   result: ReplaceUnitResult;
   unit: FloorProductUnit | null;
+  empty_bin_warning?: boolean;
+  bot_bin_payload?: string | null;
 }
 
 /** What a `replaceUnitKit` request did. Mirrors
@@ -1820,6 +1834,8 @@ export interface FloorInventoryPart {
    *  Surfaced on the idle sticker lookup so the kiosk can offer kit reassign. */
   kit_knob_batch_id?: number | null;
   kit_button_batch_id?: number | null;
+  /** Latest floor scan / workflow event on this sticker (falls back to labeled_at). */
+  last_scanned_at?: string;
 }
 
 export interface FloorInventoryPartEvent {
@@ -6329,9 +6345,43 @@ export const api = {
       method: 'POST',
       body: JSON.stringify(data),
     }),
-  /** Commit "this part is at Rework, because …" — the third scan of its
-   *  flow (part, Rework location — a pure UI transition, never a call of
-   *  its own — then this reason). */
+  addBotBinMember: (data: { part_sticker: string; bin_payload: string }) =>
+    request<BinScanResponse>('/floor/bot-bins/members', {
+      method: 'POST',
+      body: JSON.stringify(data),
+    }),
+  listBotBinMembers: (batchId: number) =>
+    request<FloorBotBinMember[]>(`/floor/bot-bins/batches/${batchId}/members`),
+  officeRemoveBotBinMember: (batchId: number, partId: number) =>
+    request<BinScanResponse>(`/floor/inventory/bot-bins/batches/${batchId}/members/${partId}`, {
+      method: 'DELETE',
+    }),
+  officeMoveBotBinMember: (batchId: number, partId: number, target_payload: string) =>
+    request<BinScanResponse>(
+      `/floor/inventory/bot-bins/batches/${batchId}/members/${partId}/move`,
+      {
+        method: 'POST',
+        body: JSON.stringify({ target_payload }),
+      },
+    ),
+  officeStageBotBin: (payload: string) =>
+    request<BinScanResponse>('/floor/inventory/bot-bins/stage', {
+      method: 'POST',
+      body: JSON.stringify({ payload }),
+    }),
+  officeClearBotBin: (payload: string) =>
+    request<BinScanResponse>('/floor/inventory/bot-bins/clear', {
+      method: 'POST',
+      body: JSON.stringify({ payload }),
+    }),
+  scanSandingPart: (data: { payload: string; reason_code: ReworkReasonCode; reason_text?: string | null }) =>
+    request<LocationScanResponse>('/floor/locations/sanding/part', {
+      method: 'POST',
+      body: JSON.stringify(data),
+    }),
+  scanSandingError: (data: { payload: string; error_payload: string; reason_text?: string | null }) =>
+    request<LocationScanResponse>('/floor/locations/sanding/error', { method: 'POST', body: JSON.stringify(data) }),
+  /** Commit "this part is at WIP Rework, because …" — only after Production WIP. */
   scanReworkPart: (data: { payload: string; reason_code: ReworkReasonCode; reason_text?: string | null }) =>
     request<LocationScanResponse>('/floor/locations/rework/part', {
       method: 'POST',

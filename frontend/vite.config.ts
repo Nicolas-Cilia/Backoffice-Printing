@@ -90,12 +90,19 @@ export default defineConfig({
     chunkSizeWarningLimit: 3000,
   },
   server: {
-    host: '0.0.0.0',
+    // Listen on all interfaces so floor tablets / phones on the same LAN can
+    // reach the dev server (Vite prints the Network URL on startup).
+    host: true,
     // Respects the harness's assigned PORT env var when present (dev
     // orchestration that auto-picks a free port), falling back to the
     // usual 5173 for a plain `npm run dev`.
     port: Number(process.env.PORT) || 5173,
     strictPort: true,
+    // When a device loads the UI via the LAN IP, keep HMR on that host
+    // instead of defaulting to localhost (which only works on this machine).
+    hmr: {
+      clientPort: Number(process.env.PORT) || 5173,
+    },
     proxy: {
       '/api/v1/ws': {
         target: backendUrl,
@@ -107,6 +114,11 @@ export default defineConfig({
         changeOrigin: true,
       },
     },
+  },
+  preview: {
+    host: true,
+    port: Number(process.env.PORT) || 5173,
+    strictPort: true,
   },
   resolve: {
     dedupe: ['react', 'react-dom'],

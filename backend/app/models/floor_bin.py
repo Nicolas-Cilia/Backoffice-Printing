@@ -1,10 +1,10 @@
-"""Reusable KNB/BUT harvest bins and their append-only workflow history."""
+"""Reusable KNB/BUT harvest bins, BOT member bins, and append-only workflow history."""
 
 from __future__ import annotations
 
 from datetime import datetime
 
-from sqlalchemy import JSON, DateTime, ForeignKey, Index, Integer, String, func
+from sqlalchemy import JSON, DateTime, ForeignKey, Index, Integer, String, UniqueConstraint, func
 from sqlalchemy.orm import Mapped, mapped_column
 
 from backend.app.core.database import Base
@@ -46,3 +46,18 @@ class FloorBinBatchEvent(Base):
     action: Mapped[str] = mapped_column(String(32))
     details: Mapped[dict | None] = mapped_column(JSON, nullable=True)
     occurred_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
+
+
+class FloorBotBinMember(Base):
+    """One BBD- bottom housed in a shared BOT bin fill."""
+
+    __tablename__ = "floor_bot_bin_members"
+    __table_args__ = (
+        Index("ix_floor_bot_bin_members_batch", "batch_id"),
+        UniqueConstraint("part_id", name="uq_floor_bot_bin_members_part_id"),
+    )
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    batch_id: Mapped[int] = mapped_column(ForeignKey("floor_bin_batches.id", ondelete="CASCADE"), index=True)
+    part_id: Mapped[int] = mapped_column(ForeignKey("floor_labeled_parts.id", ondelete="CASCADE"), index=True)
+    added_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())

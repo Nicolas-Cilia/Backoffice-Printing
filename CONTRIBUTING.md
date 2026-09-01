@@ -53,7 +53,22 @@ npm run dev
 ```
 
 Vite serves the UI at **http://localhost:5173** and proxies API requests to the
-backend on port 7474.
+backend on port 7474. Both bind to all interfaces (`0.0.0.0`) so other devices
+on the same LAN can connect — Vite prints a **Network** URL on startup.
+
+**From a floor tablet or phone on the same Wi‑Fi:**
+
+| URL | Use |
+| --- | --- |
+| `http://<this-pc-ip>:5173` | Dev UI with hot reload (recommended while developing) |
+| `http://<this-pc-ip>:7474` | API + built UI (run `npm run build` in `frontend/` first) |
+| `http://<this-pc-ip>:5173/floor/scan` | Floor scan page directly |
+
+Quick start for LAN dev: `./scripts/dev-lan.sh` (starts backend + frontend and
+prints the LAN URLs).
+
+If connections fail from other devices, check **System Settings → Network →
+Firewall** on the host and allow incoming connections for Python and Node.
 
 ### Docker (alternate run path)
 

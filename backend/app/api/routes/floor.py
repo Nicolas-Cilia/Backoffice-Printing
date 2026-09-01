@@ -65,6 +65,14 @@ from backend.app.services.floor_bins import (
     scan_harvest_bin,
     unlink_bin,
 )
+from backend.app.services.floor_bot_bins import (
+    add_part_to_bot_bin,
+    list_bot_bin_members,
+    office_bot_bin_ready_for_production,
+    office_clear_bot_bin,
+    office_move_bot_bin_member,
+    office_remove_bot_bin_member,
+)
 from backend.app.services.floor_codes import (
     FLOOR_STATIONS,
     MAX_LABEL_MM,
@@ -112,6 +120,8 @@ from backend.app.services.floor_parts import (
     scan_part_at_location,
     scan_rework_error,
     scan_rework_part,
+    scan_sanding_error,
+    scan_sanding_part,
     search_completed_jobs,
     set_part_code,
     set_part_status,
@@ -1396,6 +1406,126 @@ async def adjust_floor_bin_route(
     return _to_bin_scan_response(outcome)
 
 
+class BotBinMemberAddRequest(BaseModel):
+    part_sticker: str = Field(..., min_length=1, max_length=256)
+    bin_payload: str = Field(..., min_length=1, max_length=256)
+
+
+class BotBinMemberResponse(BaseModel):
+    part_id: int
+    sticker_code: str
+    part_code: str | None
+    added_at: datetime
+
+
+@router.post("/bot-bins/members", response_model=BinScanResponse)
+async def add_bot_bin_member_route(
+    body: BotBinMemberAddRequest,
+    db: AsyncSession = Depends(get_db),
+    _: User | None = RequirePermissionIfAuthEnabled(Permission.FLOOR_SCAN),
+) -> BinScanResponse:
+    """Load a QC-passed BBD- bottom into a BOT bin, or move it from another non-WIP bin."""
+    outcome = await add_part_to_bot_bin(db, body.part_sticker, body.bin_payload)
+    await db.commit()
+    return _to_bin_scan_response(outcome)
+
+
+@router.get("/bot-bins/batches/{batch_id}/members", response_model=list[BotBinMemberResponse])
+async def list_bot_bin_members_route(
+    batch_id: int,
+    db: AsyncSession = Depends(get_db),
+    _: User | None = RequirePermissionIfAuthEnabled(Permission.FLOOR_SCAN),
+) -> list[BotBinMemberResponse]:
+    members = await list_bot_bin_members(db, batch_id)
+    if members is None:
+        raise HTTPException(404, "Bot bin batch not found")
+    return [
+        BotBinMemberResponse(
+            part_id=member.part_id,
+            sticker_code=member.sticker_code,
+            part_code=member.part_code,
+            added_at=member.added_at,
+        )
+        for member in members
+    ]
+
+
+class BotBinOfficeMoveRequest(BaseModel):
+    target_payload: str = Field(..., min_length=1, max_length=256)
+
+
+class BotBinOfficePayloadRequest(BaseModel):
+    payload: str = Field(..., min_length=1, max_length=256)
+
+
+@router.delete("/inventory/bot-bins/batches/{batch_id}/members/{part_id}", response_model=BinScanResponse)
+async def office_remove_bot_bin_member_route(
+    batch_id: int,
+    part_id: int,
+    db: AsyncSession = Depends(get_db),
+    _: User | None = RequirePermissionIfAuthEnabled(Permission.FLOOR_SCAN),
+) -> BinScanResponse:
+    """Office override: remove one member from a BOT bin (including when on WIP)."""
+    outcome = await office_remove_bot_bin_member(db, batch_id, part_id)
+    if outcome.result is BinScanResult.NO_BATCH:
+        raise HTTPException(404, "Member or batch not found")
+    await db.commit()
+    return _to_bin_scan_response(outcome)
+
+
+@router.post(
+    "/inventory/bot-bins/batches/{batch_id}/members/{part_id}/move",
+    response_model=BinScanResponse,
+)
+async def office_move_bot_bin_member_route(
+    batch_id: int,
+    part_id: int,
+    body: BotBinOfficeMoveRequest,
+    db: AsyncSession = Depends(get_db),
+    _: User | None = RequirePermissionIfAuthEnabled(Permission.FLOOR_SCAN),
+) -> BinScanResponse:
+    """Office override: move one member to another BOT bin (including from WIP)."""
+    outcome = await office_move_bot_bin_member(db, batch_id, part_id, body.target_payload)
+    if outcome.result is BinScanResult.NO_BATCH:
+        raise HTTPException(404, "Member or batch not found")
+    if outcome.result is BinScanResult.INVALID_CODE:
+        raise HTTPException(400, "Invalid target bin")
+    await db.commit()
+    return _to_bin_scan_response(outcome)
+
+
+@router.post("/inventory/bot-bins/stage", response_model=BinScanResponse)
+async def office_bot_bin_stage_route(
+    body: BotBinOfficePayloadRequest,
+    db: AsyncSession = Depends(get_db),
+    _: User | None = RequirePermissionIfAuthEnabled(Permission.FLOOR_SCAN),
+) -> BinScanResponse:
+    """Office override: stage a loaded BOT bin, or return one from WIP to staged."""
+    outcome = await office_bot_bin_ready_for_production(db, body.payload)
+    if outcome.result is BinScanResult.INVALID_CODE:
+        raise HTTPException(400, "Invalid bin code")
+    if outcome.result is BinScanResult.NO_BATCH:
+        raise HTTPException(404, "No active BOT bin fill")
+    await db.commit()
+    return _to_bin_scan_response(outcome)
+
+
+@router.post("/inventory/bot-bins/clear", response_model=BinScanResponse)
+async def office_bot_bin_clear_route(
+    body: BotBinOfficePayloadRequest,
+    db: AsyncSession = Depends(get_db),
+    _: User | None = RequirePermissionIfAuthEnabled(Permission.FLOOR_SCAN),
+) -> BinScanResponse:
+    """Office override: remove every bottom from the fill and release the bin."""
+    outcome = await office_clear_bot_bin(db, body.payload)
+    if outcome.result is BinScanResult.INVALID_CODE:
+        raise HTTPException(400, "Invalid bin code")
+    if outcome.result is BinScanResult.NO_BATCH:
+        raise HTTPException(404, "No active BOT bin fill")
+    await db.commit()
+    return _to_bin_scan_response(outcome)
+
+
 @router.post("/harvest/printer", response_model=HarvestScanResponse)
 async def scan_harvest_printer_route(
     body: HarvestPrinterScanRequest,
@@ -1741,6 +1871,8 @@ class LinkUnitRequest(BaseModel):
 class LinkUnitResponse(BaseModel):
     result: LinkUnitResult
     unit: UnitDetailResponse | None = None
+    empty_bin_warning: bool = False
+    bot_bin_payload: str | None = None
 
 
 class UnlinkUnitResponse(BaseModel):
@@ -1761,6 +1893,8 @@ class ReplaceUnitRequest(BaseModel):
 class ReplaceUnitResponse(BaseModel):
     result: ReplaceUnitResult
     unit: UnitDetailResponse | None = None
+    empty_bin_warning: bool = False
+    bot_bin_payload: str | None = None
 
 
 @router.post("/units/link", response_model=LinkUnitResponse)
@@ -1807,6 +1941,8 @@ async def link_unit_route(
     return LinkUnitResponse(
         result=outcome.result,
         unit=_to_unit_response(outcome.unit) if outcome.unit is not None else None,
+        empty_bin_warning=outcome.empty_bin_warning,
+        bot_bin_payload=outcome.bot_bin_payload,
     )
 
 
@@ -1894,6 +2030,8 @@ async def replace_unit_route(
     return ReplaceUnitResponse(
         result=outcome.result,
         unit=_to_unit_response(outcome.unit) if outcome.unit is not None else None,
+        empty_bin_warning=outcome.empty_bin_warning,
+        bot_bin_payload=outcome.bot_bin_payload,
     )
 
 
@@ -2007,19 +2145,40 @@ class ErrorPartScanRequest(BaseModel):
     reason_text: str | None = Field(default=None, max_length=120)
 
 
-@router.post("/locations/sanding/part", response_model=LocationPartScanResponse, deprecated=True)
+@router.post("/locations/sanding/part", response_model=LocationPartScanResponse)
+async def scan_sanding_part_route(
+    body: ReworkScanRequest,
+    db: AsyncSession = Depends(get_db),
+    _: User | None = RequirePermissionIfAuthEnabled(Permission.FLOOR_SCAN),
+) -> LocationPartScanResponse:
+    """Commit "this part is at Sanding, because …" — pre-WIP surface work."""
+    outcome = await scan_sanding_part(db, body.payload, body.reason_code, body.reason_text)
+    await db.commit()
+    logger.info("Sanding: payload=%s reason=%s result=%s", body.payload, body.reason_code, outcome.result)
+    return _to_location_response(outcome)
+
+
 @router.post("/locations/rework/part", response_model=LocationPartScanResponse)
 async def scan_rework_part_route(
     body: ReworkScanRequest,
     db: AsyncSession = Depends(get_db),
     _: User | None = RequirePermissionIfAuthEnabled(Permission.FLOOR_SCAN),
 ) -> LocationPartScanResponse:
-    """Commit "this part is at Rework, because …" (§5.4b) — the third scan
-    of its flow (part, Rework location, reason); this is the only point at
-    which anything is written."""
+    """Commit "this part is at WIP Rework, because …" — only after Production WIP."""
     outcome = await scan_rework_part(db, body.payload, body.reason_code, body.reason_text)
     await db.commit()
-    logger.info("Rework: payload=%s reason=%s result=%s", body.payload, body.reason_code, outcome.result)
+    logger.info("WIP Rework: payload=%s reason=%s result=%s", body.payload, body.reason_code, outcome.result)
+    return _to_location_response(outcome)
+
+
+@router.post("/locations/sanding/error", response_model=LocationPartScanResponse)
+async def scan_sanding_error_route(
+    body: ErrorPartScanRequest,
+    db: AsyncSession = Depends(get_db),
+    _: User | None = RequirePermissionIfAuthEnabled(Permission.FLOOR_SCAN),
+) -> LocationPartScanResponse:
+    outcome = await scan_sanding_error(db, body.payload, body.error_payload, body.reason_text)
+    await db.commit()
     return _to_location_response(outcome)
 
 
@@ -2108,6 +2267,7 @@ class InventoryPartResponse(BaseModel):
     released_at: datetime | None
     latest_event_action: str | None
     latest_event_reason: str | None
+    last_scanned_at: datetime
     # Part Assembly Linking (Wave 1): kit fills for a TOP that entered WIP.
     kit_knob_batch_id: int | None = None
     kit_button_batch_id: int | None = None

@@ -29,6 +29,8 @@ from backend.app.services.floor_sessions import (
 
 BIN_PREFIX = "BBN-"
 BIN_PART_CODES = ("KNB", "BUT")
+BOT_BIN_PART_CODE = "BOT"
+ALL_BIN_PART_CODES = (*BIN_PART_CODES, BOT_BIN_PART_CODE)
 
 # Item→location pipeline slugs a bin understands (§ item-then-location). Fit
 # Check keeps its own quantity-carrying entry point and is not routed here.
@@ -49,12 +51,17 @@ BIN_NON_STATUS_EVENTS = frozenset(("quantity_override", "consumed", "floor_adjus
 # The subset of non-status events that carry an authoritative
 # ``remaining_quantity`` in their details (newest wins).
 BIN_REMAINING_QUANTITY_EVENTS = frozenset(("quantity_override", "consumed", "floor_adjust"))
-_BIN_PATTERN = re.compile(r"^BBN-(KNB|BUT)-([1-3])$")
+_BIN_PATTERN = re.compile(r"^BBN-(KNB|BUT|BOT)-([1-3])$")
+
+
+def is_bot_bin_payload(payload: str) -> bool:
+    parsed = parse_bin_payload(payload)
+    return parsed is not None and parsed[0] == BOT_BIN_PART_CODE
 
 
 def bin_payload(part_code: str, bin_number: int) -> str:
     normalized = part_code.strip().upper()
-    if normalized not in BIN_PART_CODES:
+    if normalized not in ALL_BIN_PART_CODES:
         raise ValueError(f"Unsupported bin part code: {part_code}")
     if bin_number < 1 or bin_number > BIN_COUNT:
         raise ValueError(f"Bin number must be between 1 and {BIN_COUNT}")
@@ -96,6 +103,8 @@ class BinScanResult(StrEnum):
     # Part Assembly Linking (Wave 1).
     # A second fill of a type refused because one is already on the line.
     WIP_TYPE_OCCUPIED = "wip_type_occupied"
+    # BOT bin still holds members — empty only when the tote is depleted.
+    BIN_NOT_EMPTY = "bin_not_empty"
     # A floor remaining subtract succeeded / was refused because the fill is
     # not In WIP with remaining left.
     ADJUSTED = "adjusted"
@@ -163,11 +172,11 @@ class BinManagementInfo:
 
 
 def _part_name(part_code: str) -> str:
-    return {"KNB": "Knob bin", "BUT": "Button bin"}[part_code]
+    return {"KNB": "Knob bin", "BUT": "Button bin", "BOT": "Bot bin"}[part_code]
 
 
 async def list_floor_bins(db: AsyncSession) -> list[BinInfo]:
-    """Return the six permanent physical bin labels, independent of printers."""
+    """Return the nine permanent physical bin labels, independent of printers."""
     return [
         BinInfo(
             payload=bin_payload(part_code, bin_number),
@@ -175,7 +184,7 @@ async def list_floor_bins(db: AsyncSession) -> list[BinInfo]:
             part_code=part_code,
             part_name=_part_name(part_code),
         )
-        for part_code in BIN_PART_CODES
+        for part_code in ALL_BIN_PART_CODES
         for bin_number in range(1, BIN_COUNT + 1)
     ]
 
@@ -308,6 +317,8 @@ async def scan_harvest_bin(
     info = await _resolve_bin(db, payload)
     if info is None:
         return BinScanOutcome(result=BinScanResult.INVALID_CODE)
+    if info.part_code == BOT_BIN_PART_CODE:
+        return BinScanOutcome(result=BinScanResult.INVALID_CODE, bin=info)
 
     session = await get_open_session_for_device(db, device_id)
     if session is not None and session.station_slug != "harvest":
@@ -411,6 +422,10 @@ async def scan_harvest_bin(
 
 async def resolve_bin_for_flow(db: AsyncSession, payload: str) -> BinScanOutcome:
     """Look up the current (not emptied) fill for a shared reusable bin."""
+    if is_bot_bin_payload(payload):
+        from backend.app.services.floor_bot_bins import resolve_bot_bin_for_flow
+
+        return await resolve_bot_bin_for_flow(db, payload)
     info = await _resolve_bin(db, payload)
     if info is None:
         return BinScanOutcome(result=BinScanResult.INVALID_CODE)
@@ -500,6 +515,10 @@ async def scan_bin_wip(db: AsyncSession, payload: str) -> BinScanOutcome:
     stopped at Ready-for-Production Inventory first — Ready-for-Production is
     optional, so both are valid predecessors. Anything earlier (still
     ``harvested``, never QC'd) is refused with ``QC_REQUIRED``."""
+    if is_bot_bin_payload(payload):
+        from backend.app.services.floor_bot_bins import scan_bot_bin_wip
+
+        return await scan_bot_bin_wip(db, payload)
     outcome = await resolve_bin_for_flow(db, payload)
     if outcome.batch is None:
         return outcome
@@ -524,6 +543,10 @@ async def scan_bin_wip(db: AsyncSession, payload: str) -> BinScanOutcome:
 
 async def scan_bin_empty(db: AsyncSession, payload: str) -> BinScanOutcome:
     """Close the current fill so this physical bin can be assigned again."""
+    if is_bot_bin_payload(payload):
+        from backend.app.services.floor_bot_bins import scan_bot_bin_empty
+
+        return await scan_bot_bin_empty(db, payload)
     info = await _resolve_bin(db, payload)
     if info is None:
         return BinScanOutcome(result=BinScanResult.INVALID_CODE)
@@ -546,6 +569,10 @@ async def scan_bin_at_location(db: AsyncSession, payload: str, location_slug: st
     The bin half of the universal scan-item-then-location pattern. Only the
     three bin locations are accepted here; a finishing or unknown location
     slug is an ``INVALID_CODE`` rather than a silent no-op."""
+    if is_bot_bin_payload(payload):
+        from backend.app.services.floor_bot_bins import scan_bot_bin_at_location
+
+        return await scan_bot_bin_at_location(db, payload, location_slug)
     if location_slug == READY_FOR_PRODUCTION_LOCATION_SLUG:
         return await scan_bin_ready_for_production(db, payload)
     if location_slug == PRODUCTION_WIP_LOCATION_SLUG:
@@ -557,8 +584,13 @@ async def scan_bin_at_location(db: AsyncSession, payload: str, location_slug: st
 
 async def list_floor_bin_management(db: AsyncSession) -> list[BinManagementInfo]:
     """Return all shared bins with their current active fill, if any."""
+    from backend.app.services.floor_bot_bins import bot_bin_management_info
+
     managed: list[BinManagementInfo] = []
     for info in await list_floor_bins(db):
+        if info.part_code == BOT_BIN_PART_CODE:
+            managed.append(await bot_bin_management_info(db, info))
+            continue
         batch, status = await _latest_batch_with_status(db, info)
         active = batch is not None and status not in BIN_FREE_STATUSES
         needs_relink = batch is not None and status == "unlinked"
@@ -787,6 +819,8 @@ async def assign_bin_manually(
     info = await _resolve_bin(db, payload)
     if info is None:
         return BinScanOutcome(result=BinScanResult.INVALID_CODE)
+    if info.part_code == BOT_BIN_PART_CODE:
+        return BinScanOutcome(result=BinScanResult.INVALID_CODE, bin=info)
 
     current_batch, current_status = await _latest_batch_with_status(db, info)
     if current_batch is not None and current_status not in ("empty", "empty_override"):
@@ -1205,7 +1239,10 @@ async def adjust_bin_remaining(db: AsyncSession, payload: str, subtract: int) ->
 __all__ = [
     "BIN_PREFIX",
     "BIN_PART_CODES",
+    "BOT_BIN_PART_CODE",
+    "ALL_BIN_PART_CODES",
     "BIN_COUNT",
+    "is_bot_bin_payload",
     "BinScanResult",
     "BinScanOutcome",
     "BinInfo",
