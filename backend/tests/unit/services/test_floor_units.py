@@ -35,6 +35,7 @@ from backend.app.services.floor_units import (
     LinkUnitResult,
     ReplaceUnitKitResult,
     ReplaceUnitResult,
+    ReturnUnitToReworkResult,
     UnlinkUnitResult,
     get_unit_by_part,
     get_unit_by_serial,
@@ -43,6 +44,7 @@ from backend.app.services.floor_units import (
     parse_serial,
     replace_unit,
     replace_unit_kit,
+    return_unit_to_rework,
     unlink_unit,
 )
 from backend.tests.unit.services.test_floor_kit import (
@@ -341,6 +343,30 @@ class TestUnlink:
     async def test_unlink_unknown_unit(self, db_session):
         outcome = await unlink_unit(db_session, 999999)
         assert outcome.result is UnlinkUnitResult.NOT_FOUND
+
+
+class TestReturnUnitToRework:
+    @pytest.mark.asyncio
+    async def test_return_unlinks_and_sends_both_housings_to_rework(self, db_session, printer_factory, archive_factory):
+        top = await _top_in_wip_with_kit(db_session, printer_factory, archive_factory, code="BBD-000165")
+        bottom = await _bot_in_wip(db_session, printer_factory, archive_factory, code="BBD-000265")
+        await link_unit(db_session, "OEQ0AC", top.sticker_code, bottom.sticker_code)
+        await db_session.commit()
+
+        outcome = await return_unit_to_rework(db_session, "OEQ0AC", "doesnt_fit", "Customer return")
+        await db_session.commit()
+
+        assert outcome.result is ReturnUnitToReworkResult.RETURNED
+        assert await get_unit_by_serial(db_session, "OEQ0AC") is None
+        top_actions = [e.action for e in await list_part_events(db_session, top.id)]
+        bot_actions = [e.action for e in await list_part_events(db_session, bottom.id)]
+        assert top_actions[-2:] == ["unit_unlinked", "rework"]
+        assert bot_actions[-2:] == ["unit_unlinked", "rework"]
+
+    @pytest.mark.asyncio
+    async def test_return_unknown_serial(self, db_session):
+        outcome = await return_unit_to_rework(db_session, "XG2SNP", "doesnt_fit")
+        assert outcome.result is ReturnUnitToReworkResult.NOT_FOUND
 
 
 class TestReplace:

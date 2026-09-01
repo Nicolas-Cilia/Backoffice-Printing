@@ -62,6 +62,7 @@ import {
   type FloorBinBatch,
   type FloorProductUnit,
   type HarvestSummaryLine,
+  type ReturnUnitToReworkResponse,
   type PrinterMaintenanceOverview,
   type ReworkReasonCode,
   type FloorStopReasonCode,
@@ -148,8 +149,16 @@ type Status =
    *  — now waiting for the reason that actually commits it. */
   | { kind: 'awaiting-sanding-reason'; payload: string; part: PartImageIdentity | null }
   | { kind: 'awaiting-rework-reason'; payload: string; part: PartImageIdentity | null }
+  | { kind: 'awaiting-unit-rework-reason'; unit: FloorProductUnit }
   | { kind: 'awaiting-discard-reason'; payload: string; part: PartImageIdentity | null }
-  | { kind: 'awaiting-custom-reason'; locationSlug: 'sanding' | 'wip-rework' | 'discard'; payload: string; reasonPayload: string; part: PartImageIdentity | null }
+  | {
+      kind: 'awaiting-custom-reason';
+      locationSlug: 'sanding' | 'wip-rework' | 'discard' | 'unit-rework';
+      payload: string;
+      reasonPayload: string;
+      part: PartImageIdentity | null;
+      unit?: FloorProductUnit;
+    }
   /** Quantity prompt after a harvest bin scan. `returnToPrinter` is set when
    *  the bin was scanned from the printer info page (§5.6 entry #2), so Save
    *  restores that panel instead of dropping into the Harvest station screen. */
@@ -1629,6 +1638,77 @@ export function FloorScanPage() {
     [failScan, restoreScanFocus, showToast, t],
   );
 
+  const applyUnitReturnReworkResponse = useCallback(
+    (resp: ReturnUnitToReworkResponse, reasonCode?: string) => {
+      if (resp.result === 'invalid_serial') {
+        failScan(t('floor.unitInvalidSerial', 'That serial is not valid'));
+        return;
+      }
+      if (resp.result === 'not_found') {
+        failScan(t('floor.unitReturnNotFound', 'No linked unit for that serial'));
+        return;
+      }
+      if (resp.result === 'not_shipped') {
+        failScan(t('floor.unitReturnNotShipped', 'That unit is not shipped'));
+        return;
+      }
+      if (resp.result === 'invalid_reason') {
+        failScan(t('floor.scanInvalidCode', 'Invalid part code'));
+        return;
+      }
+      if (resp.result !== 'returned') {
+        failScan(t('floor.scanFailed', 'Scan failed'));
+        return;
+      }
+      setStatus({ kind: 'idle' });
+      showToast(
+        t('floor.unitReturnedToRework', 'Unit sent to Rework · {{reason}}', {
+          reason: resp.reason ?? reasonCode ?? '',
+        }),
+        'success',
+      );
+    },
+    [failScan, showToast, t],
+  );
+
+  const submitUnitReturnRework = useCallback(
+    async (serial: string, reasonPayload: string, reasonText?: string | null) => {
+      setBusy(true);
+      busyRef.current = true;
+      try {
+        const reasonCode = reasonPayload.slice(PREFIX_REASON.length) as ReworkReasonCode;
+        applyUnitReturnReworkResponse(
+          await api.returnUnitToRework({ serial, reason_code: reasonCode, reason_text: reasonText }),
+          reasonCode,
+        );
+      } catch {
+        failScan(t('floor.scanFailed', 'Scan failed'), serial);
+      } finally {
+        setBusy(false);
+        busyRef.current = false;
+      }
+    },
+    [applyUnitReturnReworkResponse, failScan, t],
+  );
+
+  const submitUnitReturnReworkError = useCallback(
+    async (serial: string, errorPayload: string, reasonText?: string | null) => {
+      setBusy(true);
+      busyRef.current = true;
+      try {
+        applyUnitReturnReworkResponse(
+          await api.returnUnitToReworkError({ serial, error_payload: errorPayload, reason_text: reasonText }),
+        );
+      } catch {
+        failScan(t('floor.scanFailed', 'Scan failed'), serial);
+      } finally {
+        setBusy(false);
+        busyRef.current = false;
+      }
+    },
+    [applyUnitReturnReworkResponse, failScan, t],
+  );
+
   const handleScan = useCallback(
     (scanned: string) => {
       // Drop scans fired while a request is in flight rather than queueing
@@ -1725,13 +1805,15 @@ export function FloorScanPage() {
           statusRef.current.kind === 'awaiting-location' ||
           statusRef.current.kind === 'awaiting-sanding-reason' ||
           statusRef.current.kind === 'awaiting-rework-reason' ||
+          statusRef.current.kind === 'awaiting-unit-rework-reason' ||
           statusRef.current.kind === 'awaiting-discard-reason' ||
           statusRef.current.kind === 'awaiting-custom-reason'
         ) {
           failScan(
             statusRef.current.kind === 'awaiting-sanding-reason'
               ? t('floor.sandingBinNotAllowed', "Bins aren't supported for Sanding — scan a part instead")
-              : statusRef.current.kind === 'awaiting-rework-reason'
+              : statusRef.current.kind === 'awaiting-rework-reason' ||
+                  statusRef.current.kind === 'awaiting-unit-rework-reason'
                 ? t('floor.reworkBinNotAllowed', "Bins aren't supported for Rework — scan a part instead")
                 : t('floor.locationBinNotAllowed', 'A part is still pending — scan its location, not a bin'),
             route.payload,
@@ -1820,6 +1902,20 @@ export function FloorScanPage() {
           customReasonPendingRef.current = false;
           if (pendingCustomReason.locationSlug === 'discard') {
             void submitDiscardScan(pendingCustomReason.payload, pendingCustomReason.reasonPayload, reasonText, false);
+          } else if (pendingCustomReason.locationSlug === 'unit-rework') {
+            if (pendingCustomReason.reasonPayload.toLowerCase() === 'bbr-other') {
+              void submitUnitReturnRework(
+                pendingCustomReason.unit?.serial_code ?? pendingCustomReason.payload,
+                pendingCustomReason.reasonPayload,
+                reasonText,
+              );
+            } else {
+              void submitUnitReturnReworkError(
+                pendingCustomReason.unit?.serial_code ?? pendingCustomReason.payload,
+                pendingCustomReason.reasonPayload,
+                reasonText,
+              );
+            }
           } else if (pendingCustomReason.locationSlug === 'sanding') {
             if (pendingCustomReason.reasonPayload.toLowerCase() === 'bbr-other') {
               void submitSandingPartScan(pendingCustomReason.payload, pendingCustomReason.reasonPayload, reasonText, false);
@@ -1893,6 +1989,10 @@ export function FloorScanPage() {
         return;
       }
       if (route.action === 'location') {
+        if (statusRef.current.kind === 'unit-linked' && route.slug === 'wip-rework') {
+          setStatus({ kind: 'awaiting-unit-rework-reason', unit: statusRef.current.unit });
+          return;
+        }
         if (statusRef.current.kind === 'awaiting-bin-location') {
           const binPayload = statusRef.current.payload;
           const isBot = statusRef.current.batch.part_code === 'BOT';
@@ -2019,6 +2119,24 @@ export function FloorScanPage() {
           void submitReworkPartScan(statusRef.current.payload, route.payload);
           return;
         }
+        if (statusRef.current.kind === 'awaiting-unit-rework-reason') {
+          if (route.payload.toLowerCase() === 'bbr-other') {
+            if (customReasonPendingRef.current) return;
+            customReasonPendingRef.current = true;
+            customReasonDraftRef.current = null;
+            setStatus({
+              kind: 'awaiting-custom-reason',
+              locationSlug: 'unit-rework',
+              payload: statusRef.current.unit.serial_code,
+              reasonPayload: route.payload,
+              part: null,
+              unit: statusRef.current.unit,
+            });
+            return;
+          }
+          void submitUnitReturnRework(statusRef.current.unit.serial_code, route.payload);
+          return;
+        }
         failScan(t('floor.reworkReasonNoPartPending', 'Scan a part into Sanding or Rework first'), route.payload);
         return;
       }
@@ -2098,6 +2216,24 @@ export function FloorScanPage() {
           void submitReworkErrorScan(statusRef.current.payload, route.payload);
           return;
         }
+        if (statusRef.current.kind === 'awaiting-unit-rework-reason') {
+          if (route.payload.toLowerCase() === 'bbf-other') {
+            if (customReasonPendingRef.current) return;
+            customReasonPendingRef.current = true;
+            customReasonDraftRef.current = null;
+            setStatus({
+              kind: 'awaiting-custom-reason',
+              locationSlug: 'unit-rework',
+              payload: statusRef.current.unit.serial_code,
+              reasonPayload: route.payload,
+              part: null,
+              unit: statusRef.current.unit,
+            });
+            return;
+          }
+          void submitUnitReturnReworkError(statusRef.current.unit.serial_code, route.payload);
+          return;
+        }
         if (statusRef.current.kind === 'awaiting-discard-reason') {
           if (route.payload.toLowerCase() === 'bbf-other') {
             if (customReasonPendingRef.current) return;
@@ -2142,6 +2278,8 @@ export function FloorScanPage() {
       submitReassignKit,
       submitProductSerial,
       submitUnitHousing,
+      submitUnitReturnRework,
+      submitUnitReturnReworkError,
       showToast,
       t,
     ],
@@ -2439,6 +2577,8 @@ export function FloorScanPage() {
         <AwaitingReasonScreen payload={status.payload} part={status.part} location="sanding" t={t} />
       ) : status.kind === 'awaiting-rework-reason' ? (
         <AwaitingReasonScreen payload={status.payload} part={status.part} location="wip-rework" t={t} />
+      ) : status.kind === 'awaiting-unit-rework-reason' ? (
+        <AwaitingUnitReworkReasonScreen unit={status.unit} t={t} />
       ) : status.kind === 'awaiting-discard-reason' ? (
         <AwaitingDiscardReasonScreen payload={status.payload} part={status.part} t={t} />
       ) : status.kind === 'awaiting-custom-reason' ? (
@@ -2459,6 +2599,20 @@ export function FloorScanPage() {
                 void submitSandingPartScan(status.payload, status.reasonPayload, reasonText);
               } else {
                 void submitSandingErrorScan(status.payload, status.reasonPayload, reasonText);
+              }
+            } else if (status.locationSlug === 'unit-rework') {
+              if (status.reasonPayload.toLowerCase() === 'bbr-other') {
+                void submitUnitReturnRework(
+                  status.unit?.serial_code ?? status.payload,
+                  status.reasonPayload,
+                  reasonText,
+                );
+              } else {
+                void submitUnitReturnReworkError(
+                  status.unit?.serial_code ?? status.payload,
+                  status.reasonPayload,
+                  reasonText,
+                );
               }
             } else if (status.reasonPayload.toLowerCase() === 'bbr-other') {
               void submitReworkPartScan(status.payload, status.reasonPayload, reasonText);
@@ -4236,6 +4390,9 @@ function UnitLinkedScreen({
       <ScanLine className="w-16 h-16 mb-6 text-bambu-green shrink-0" aria-hidden="true" />
       <p className="text-lg text-bambu-green">{t('floor.unitLinkedHeading', 'Linked unit')}</p>
       <p className="text-4xl font-bold text-white font-mono">{unit.serial_code}</p>
+      <p className="mt-2 text-lg text-bambu-gray-light">
+        {t('floor.unitScanReworkHint', 'Scan the Rework shelf to send this unit back for rework')}
+      </p>
       <dl className="mt-5 w-full max-w-md space-y-2">
         {rows.map(([label, value]) => (
           <div key={label} className="flex items-center justify-between gap-4 rounded-lg bg-bambu-dark-secondary px-4 py-2">
@@ -4272,6 +4429,27 @@ function UnitLinkedScreen({
           {t('floor.unitDone', 'Done')}
         </button>
       </div>
+    </div>
+  );
+}
+
+/** A linked product serial waiting for the rework reason that sends both
+ *  housings back from shipped to WIP Rework. */
+function AwaitingUnitReworkReasonScreen({
+  unit,
+  t,
+}: {
+  unit: FloorProductUnit;
+  t: ReturnType<typeof useTranslation>['t'];
+}) {
+  return (
+    <div className="flex max-h-full w-full max-w-2xl flex-col items-center overflow-y-auto py-6">
+      <ScanLine className="w-16 h-16 mb-6 text-orange-500 shrink-0" aria-hidden="true" />
+      <p className="text-lg text-orange-500">{t('floor.unitReturnReworkHeading', 'Return to Rework')}</p>
+      <p className="text-4xl font-bold text-white font-mono">{unit.serial_code}</p>
+      <p className="mt-2 text-lg text-bambu-gray-light font-mono">{unit.top_sticker}</p>
+      <p className="text-lg text-bambu-gray-light font-mono">{unit.bottom_sticker}</p>
+      <p className="mt-3 text-2xl text-orange-500">{t('floor.reworkScanReason', 'Scan an error label')}</p>
     </div>
   );
 }
@@ -4330,7 +4508,7 @@ function AwaitingCustomReasonScreen({
 }: {
   payload: string;
   part: PartImageIdentity | null;
-  locationSlug: 'sanding' | 'wip-rework' | 'discard';
+  locationSlug: 'sanding' | 'wip-rework' | 'discard' | 'unit-rework';
   t: ReturnType<typeof useTranslation>['t'];
   onDraftChange: (reasonText: string) => void;
   onSubmit: (reasonText: string | null) => void;

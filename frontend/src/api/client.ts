@@ -1750,6 +1750,22 @@ export interface UnlinkUnitResponse {
   serial_code: string | null;
 }
 
+export type ReturnUnitToReworkResult =
+  | 'returned'
+  | 'not_found'
+  | 'invalid_serial'
+  | 'not_shipped'
+  | 'invalid_reason';
+
+export interface ReturnUnitToReworkResponse {
+  result: ReturnUnitToReworkResult;
+  unit_id: number | null;
+  serial_code: string | null;
+  top_sticker: string | null;
+  bottom_sticker: string | null;
+  reason: string | null;
+}
+
 /** What a `replaceUnitHousing` request did (Wave 3). Mirrors
  *  `backend.app.services.floor_units.ReplaceUnitResult`. */
 export type ReplaceUnitResult =
@@ -6273,6 +6289,16 @@ export const api = {
    *  to WIP so the pair can be corrected and linked again. */
   unlinkUnit: (unitId: number) =>
     request<UnlinkUnitResponse>(`/floor/units/${unitId}/unlink`, { method: 'POST' }),
+  returnUnitToRework: (data: { serial: string; reason_code: string; reason_text?: string | null }) =>
+    request<ReturnUnitToReworkResponse>('/floor/units/return-rework', {
+      method: 'POST',
+      body: JSON.stringify(data),
+    }),
+  returnUnitToReworkError: (data: { serial: string; error_payload: string; reason_text?: string | null }) =>
+    request<ReturnUnitToReworkResponse>('/floor/units/return-rework/error', {
+      method: 'POST',
+      body: JSON.stringify(data),
+    }),
   /** Wave 3: swap a linked unit's TOP and/or BOT housing for another eligible
    *  housing, keeping the serial. The old housing is freed back to WIP; the new
    *  one is re-shipped. Refuses on an ineligible/unknown/already-linked housing. */

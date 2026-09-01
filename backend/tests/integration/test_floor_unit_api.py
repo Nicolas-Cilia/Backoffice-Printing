@@ -306,6 +306,27 @@ class TestUnlinkApi:
 
 @pytest.mark.asyncio
 @pytest.mark.integration
+class TestReturnUnitReworkApi:
+    async def test_return_rework_unlinks_and_frees_serial(self, async_client, printer_factory, archive_factory):
+        top, bot = await _kitted_top_and_bot(async_client, printer_factory, archive_factory)
+        await async_client.post(
+            "/api/v1/floor/units/link",
+            json={"serial": "XG2SNP", "top_sticker": top, "bottom_sticker": bot},
+        )
+
+        resp = await async_client.post(
+            "/api/v1/floor/units/return-rework",
+            json={"serial": "XG2SNP", "reason_code": "doesnt_fit", "reason_text": "Customer return"},
+        )
+
+        assert resp.status_code == 200
+        body = resp.json()
+        assert body["result"] == "returned"
+        assert (await async_client.get("/api/v1/floor/units/by-serial/XG2SNP")).status_code == 404
+
+
+@pytest.mark.asyncio
+@pytest.mark.integration
 class TestReplaceApi:
     async def test_replace_top_via_api(self, async_client, printer_factory, archive_factory):
         top, bot = await _kitted_top_and_bot(async_client, printer_factory, archive_factory)

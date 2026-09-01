@@ -45,6 +45,7 @@ from backend.app.services.floor_parts import (
     TOP_PART_CODE,
     KitReassignResult,
     PartStatus,
+    _error_label_for_payload,
     _get_part_by_code,
     _part_current_status,
     parse_sticker_code,
@@ -526,6 +527,16 @@ async def replace_unit(
     )
 
 
+class ReturnUnitToReworkResult(StrEnum):
+    """What a ``return_unit_to_rework`` request did."""
+
+    RETURNED = "returned"
+    NOT_FOUND = "not_found"
+    INVALID_SERIAL = "invalid_serial"
+    NOT_SHIPPED = "not_shipped"
+    INVALID_REASON = "invalid_reason"
+
+
 class ReplaceUnitKitResult(StrEnum):
     """What a ``replace_unit_kit`` request did (Serials knob/button harvest swap)."""
 
@@ -545,6 +556,135 @@ class ReplaceUnitKitOutcome:
     new_batch_id: int | None = None
     previous_remaining: int | None = None
     new_remaining: int | None = None
+
+
+@dataclass(frozen=True)
+class ReturnUnitToReworkOutcome:
+    result: ReturnUnitToReworkResult
+    unit_id: int | None = None
+    serial_code: str | None = None
+    top_sticker: str | None = None
+    bottom_sticker: str | None = None
+    reason: str | None = None
+
+
+async def _return_unit_parts_to_rework(
+    db: AsyncSession,
+    unit: FloorProductUnit,
+    *,
+    rework_details: dict,
+    reason_display: str | None,
+) -> ReturnUnitToReworkOutcome:
+    """Unlink a shipped unit and write ``rework`` on both housings."""
+    top = await db.get(FloorLabeledPart, unit.top_part_id)
+    bottom = await db.get(FloorLabeledPart, unit.bottom_part_id)
+    if top is None or bottom is None:
+        return ReturnUnitToReworkOutcome(result=ReturnUnitToReworkResult.NOT_FOUND)
+
+    for part in (top, bottom):
+        if await _part_current_status(db, part.id) != PartStatus.SHIPPED.value:
+            return ReturnUnitToReworkOutcome(result=ReturnUnitToReworkResult.NOT_SHIPPED)
+
+    unit_id = unit.id
+    serial_code = unit.serial_code
+    top_sticker = top.sticker_code
+    bottom_sticker = bottom.sticker_code
+    top_part_id = unit.top_part_id
+    bottom_part_id = unit.bottom_part_id
+
+    await db.delete(unit)
+    await db.flush()
+
+    unlink_details = {"unit_id": unit_id, "serial_code": serial_code, "source": "serial_return"}
+    for part_id in (top_part_id, bottom_part_id):
+        db.add(
+            FloorPartEvent(
+                part_id=part_id,
+                action="unit_unlinked",
+                details=unlink_details,
+            )
+        )
+        db.add(
+            FloorPartEvent(
+                part_id=part_id,
+                action=PartStatus.REWORK.value,
+                details=rework_details,
+            )
+        )
+    await db.flush()
+
+    return ReturnUnitToReworkOutcome(
+        result=ReturnUnitToReworkResult.RETURNED,
+        unit_id=unit_id,
+        serial_code=serial_code,
+        top_sticker=top_sticker,
+        bottom_sticker=bottom_sticker,
+        reason=reason_display,
+    )
+
+
+async def return_unit_to_rework(
+    db: AsyncSession,
+    serial: str,
+    reason_code: str,
+    reason_text: str | None = None,
+) -> ReturnUnitToReworkOutcome:
+    """Return a linked (shipped) unit to WIP Rework via its product serial."""
+    normalized = parse_serial(serial)
+    if normalized is None:
+        return ReturnUnitToReworkOutcome(result=ReturnUnitToReworkResult.INVALID_SERIAL)
+
+    unit = await db.scalar(select(FloorProductUnit).where(FloorProductUnit.serial_code == normalized))
+    if unit is None:
+        return ReturnUnitToReworkOutcome(result=ReturnUnitToReworkResult.NOT_FOUND)
+
+    rework_details = {
+        "reason_code": reason_code,
+        "reason_text": reason_text,
+        "source": "serial_return",
+        "serial_code": normalized,
+    }
+    return await _return_unit_parts_to_rework(
+        db,
+        unit,
+        rework_details=rework_details,
+        reason_display=reason_text or reason_code,
+    )
+
+
+async def return_unit_to_rework_error(
+    db: AsyncSession,
+    serial: str,
+    error_payload: str,
+    reason_text: str | None = None,
+) -> ReturnUnitToReworkOutcome:
+    """Return a shipped unit to WIP Rework using a user-managed error label."""
+    normalized = parse_serial(serial)
+    if normalized is None:
+        return ReturnUnitToReworkOutcome(result=ReturnUnitToReworkResult.INVALID_SERIAL)
+
+    unit = await db.scalar(select(FloorProductUnit).where(FloorProductUnit.serial_code == normalized))
+    if unit is None:
+        return ReturnUnitToReworkOutcome(result=ReturnUnitToReworkResult.NOT_FOUND)
+
+    label = await _error_label_for_payload(db, error_payload)
+    if label is None:
+        return ReturnUnitToReworkOutcome(result=ReturnUnitToReworkResult.INVALID_REASON)
+
+    rework_details = {
+        "error_label_id": label.id,
+        "error_payload": f"BBF-{label.slug}",
+        "error_name": label.name,
+        "reason_text": reason_text,
+        "source": "serial_return",
+        "serial_code": normalized,
+    }
+    return await _return_unit_parts_to_rework(
+        db,
+        unit,
+        rework_details=rework_details,
+        reason_display=reason_text or label.name,
+    )
 
 
 async def replace_unit_kit(
@@ -600,11 +740,13 @@ __all__ = [
     "UnlinkUnitResult",
     "ReplaceUnitResult",
     "ReplaceUnitKitResult",
+    "ReturnUnitToReworkResult",
     "UnitDetail",
     "LinkUnitOutcome",
     "UnlinkUnitOutcome",
     "ReplaceUnitOutcome",
     "ReplaceUnitKitOutcome",
+    "ReturnUnitToReworkOutcome",
     "link_unit",
     "get_unit_by_serial",
     "get_unit_by_part",
@@ -612,4 +754,6 @@ __all__ = [
     "unlink_unit",
     "replace_unit",
     "replace_unit_kit",
+    "return_unit_to_rework",
+    "return_unit_to_rework_error",
 ]
