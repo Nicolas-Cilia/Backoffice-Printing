@@ -47,6 +47,7 @@ from backend.app.services.floor_bins import (
     BinScanResult,
     adjust_bin_remaining,
     archive_bin_batch,
+    assign_bin_manually,
     delete_bin_batch,
     discard_bin,
     list_bin_batch_events,
@@ -1027,6 +1028,13 @@ class BinUnlinkRequest(BaseModel):
     payload: str = Field(..., min_length=1, max_length=256)
 
 
+class BinManualAssignRequest(BaseModel):
+    payload: str = Field(..., min_length=1, max_length=256)
+    printer_id: int
+    quantity: int = Field(..., ge=1, le=100_000)
+    archive_id: int | None = None
+
+
 class BinRelinkRequest(BaseModel):
     archive_id: int
 
@@ -1254,6 +1262,39 @@ async def unlink_inventory_bin(
 ) -> BinScanResponse:
     """Release a bin assignment while retaining its audit history."""
     outcome = await unlink_bin(db, body.payload)
+    await db.commit()
+    return _to_bin_scan_response(outcome)
+
+
+@router.post("/inventory/bins/assign", response_model=BinScanResponse)
+async def assign_inventory_bin(
+    body: BinManualAssignRequest,
+    db: AsyncSession = Depends(get_db),
+    _: User | None = RequirePermissionIfAuthEnabled(Permission.FLOOR_SCAN),
+) -> BinScanResponse:
+    """Manually assign a free KNB/BUT bin to a printer with a quantity.
+
+    Used when Harvest cannot recognize a matching print file but parts are
+    physically in the tote. An optional completed job may be linked when its
+    part code is unresolved or matches the bin.
+    """
+    outcome = await assign_bin_manually(
+        db,
+        body.payload,
+        body.printer_id,
+        body.quantity,
+        body.archive_id,
+    )
+    if outcome.result is BinScanResult.BIN_IN_USE:
+        raise HTTPException(409, "Bin is already assigned")
+    if outcome.result is BinScanResult.NO_PRINTER:
+        raise HTTPException(404, "Printer not found")
+    if outcome.result is BinScanResult.WRONG_PART:
+        raise HTTPException(409, "Completed job part code does not match this bin")
+    if outcome.result is BinScanResult.INVALID_CODE:
+        raise HTTPException(400, "Invalid bin code")
+    if outcome.result is BinScanResult.NO_BATCH:
+        raise HTTPException(404, "Completed job not found for this printer")
     await db.commit()
     return _to_bin_scan_response(outcome)
 

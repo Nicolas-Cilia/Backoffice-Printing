@@ -38,6 +38,25 @@ const BINS = [
   },
 ];
 
+const ALL_BINS = [
+  ...[1, 2, 3].map((bin_number) => ({
+    payload: `BBN-KNB-${bin_number}`,
+    bin_number,
+    part_code: 'KNB' as const,
+    part_name: 'Knob bin',
+    status: 'available',
+    batch: null,
+  })),
+  ...[1, 2, 3].map((bin_number) => ({
+    payload: `BBN-BUT-${bin_number}`,
+    bin_number,
+    part_code: 'BUT' as const,
+    part_name: 'Button bin',
+    status: 'available',
+    batch: null,
+  })),
+];
+
 describe('FloorBinManagementPage', () => {
   it('shows active assignments and can override the remaining quantity', async () => {
     let overrideBody: unknown = null;
@@ -167,5 +186,57 @@ describe('FloorBinManagementPage', () => {
     await user.click(screen.getByRole('button', { name: 'Link' }));
 
     await waitFor(() => expect(relinkBody).toEqual({ archive_id: 99 }));
+  });
+
+  it('assigns an available bin to a printer with a quantity', async () => {
+    let assignBody: unknown = null;
+    server.use(
+      http.get('/api/v1/floor/inventory/bins', () => HttpResponse.json(BINS)),
+      http.get('/api/v1/floor/printers', () => HttpResponse.json([
+        { id: 4, payload: 'BBP-4', name: 'Bench A', model: 'X1C', location: null, is_active: true },
+      ])),
+      http.post('/api/v1/floor/inventory/bins/assign', async ({ request }) => {
+        assignBody = await request.json();
+        return HttpResponse.json({ result: 'recorded' });
+      }),
+    );
+    const user = userEvent.setup();
+    render(<FloorBinManagementPage />);
+
+    expect(await screen.findByText('Button bin 1')).toBeInTheDocument();
+    expect(screen.getByText(/Assign manually when Harvest did not recognize/)).toBeInTheDocument();
+
+    await user.selectOptions(screen.getByRole('combobox', { name: 'Button bin 1 printer' }), '4');
+    await user.type(screen.getByRole('spinbutton', { name: 'Button bin 1 quantity' }), '25');
+    await user.click(screen.getByRole('button', { name: 'Assign' }));
+
+    await waitFor(() => expect(assignBody).toEqual({
+      payload: 'BBN-BUT-1',
+      printer_id: 4,
+      quantity: 25,
+    }));
+  });
+
+  it('groups knob and button bins into separate columns', async () => {
+    server.use(
+      http.get('/api/v1/floor/inventory/bins', () => HttpResponse.json(ALL_BINS)),
+    );
+    render(<FloorBinManagementPage />);
+
+    expect(await screen.findByText('Knob bins')).toBeInTheDocument();
+    expect(screen.getByText('Button bins')).toBeInTheDocument();
+    expect(screen.getByText('Knob bin 1')).toBeInTheDocument();
+    expect(screen.getByText('Knob bin 3')).toBeInTheDocument();
+    expect(screen.getByText('Button bin 1')).toBeInTheDocument();
+    expect(screen.getByText('Button bin 3')).toBeInTheDocument();
+
+    const knobHeading = screen.getByText('Knob bins');
+    const buttonHeading = screen.getByText('Button bins');
+    const knobColumn = knobHeading.parentElement;
+    const buttonColumn = buttonHeading.parentElement;
+    expect(knobColumn).toContainElement(screen.getByText('Knob bin 2'));
+    expect(knobColumn).not.toContainElement(screen.getByText('Button bin 2'));
+    expect(buttonColumn).toContainElement(screen.getByText('Button bin 2'));
+    expect(buttonColumn).not.toContainElement(screen.getByText('Knob bin 2'));
   });
 });

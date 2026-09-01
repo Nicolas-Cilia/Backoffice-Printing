@@ -19,15 +19,18 @@ from backend.app.services.floor_bins import (
     READY_FOR_PRODUCTION_LOCATION_SLUG,
     BinScanResult,
     archive_bin_batch,
+    assign_bin_manually,
     delete_bin_batch,
     list_bin_batch_events,
     list_floor_bin_history,
+    list_floor_bin_management,
     scan_bin_at_location,
     scan_bin_empty,
     scan_bin_fit_check,
     scan_bin_ready_for_production,
     scan_bin_wip,
     scan_harvest_bin,
+    unlink_bin,
 )
 from backend.app.services.floor_codes import station_for_slug
 from backend.app.services.floor_sessions import apply_station_scan
@@ -323,3 +326,70 @@ class TestArchiveBinBatch:
         restored = await db_session.get(FloorBinBatch, batch_id)
         assert restored is not None
         assert restored.archived_at is None
+
+
+class TestAssignBinManually:
+    @pytest.mark.asyncio
+    async def test_assigns_free_bin_without_archive(self, db_session, printer_factory):
+        printer = await printer_factory()
+
+        outcome = await assign_bin_manually(db_session, "BBN-KNB-2", printer.id, quantity=42)
+        await db_session.commit()
+
+        assert outcome.result is BinScanResult.RECORDED
+        assert outcome.batch is not None
+        assert outcome.batch.quantity == 42
+        assert outcome.batch.remaining_quantity == 42
+        assert outcome.batch.printer is not None
+        assert outcome.batch.printer.id == printer.id
+        assert outcome.batch.archive is None
+        assert outcome.batch.part_code == "KNB"
+        assert outcome.batch.status == "harvested"
+
+        managed = await list_floor_bin_management(db_session)
+        assigned = next(item for item in managed if item.bin.payload == "BBN-KNB-2")
+        assert assigned.batch is not None
+        assert assigned.batch.quantity == 42
+
+        events = await list_bin_batch_events(db_session, outcome.batch.id)
+        assert events is not None
+        assert events[0].action == "harvested"
+        assert events[0].details["source"] == "inventory_manual"
+
+    @pytest.mark.asyncio
+    async def test_refuses_occupied_bin(self, db_session, printer_factory, archive_factory):
+        await _fill_bin(db_session, printer_factory, archive_factory, payload="BBN-BUT-1", quantity=5)
+        printer = await printer_factory()
+
+        outcome = await assign_bin_manually(db_session, "BBN-BUT-1", printer.id, quantity=8)
+        await db_session.commit()
+
+        assert outcome.result is BinScanResult.BIN_IN_USE
+
+    @pytest.mark.asyncio
+    async def test_refuses_unlinked_bin(self, db_session, printer_factory, archive_factory):
+        payload = await _fill_bin(db_session, printer_factory, archive_factory, payload="BBN-BUT-2", quantity=6)
+        await unlink_bin(db_session, payload)
+        await db_session.commit()
+        printer = await printer_factory()
+
+        outcome = await assign_bin_manually(db_session, payload, printer.id, quantity=4)
+        await db_session.commit()
+
+        assert outcome.result is BinScanResult.BIN_IN_USE
+
+    @pytest.mark.asyncio
+    async def test_allows_after_empty_override(self, db_session, printer_factory, archive_factory):
+        from backend.app.services.floor_bins import override_bin_quantity
+
+        payload = await _fill_bin(db_session, printer_factory, archive_factory, payload="BBN-KNB-3", quantity=7)
+        await override_bin_quantity(db_session, payload, 0)
+        await db_session.commit()
+        printer = await printer_factory()
+
+        outcome = await assign_bin_manually(db_session, payload, printer.id, quantity=15)
+        await db_session.commit()
+
+        assert outcome.result is BinScanResult.RECORDED
+        assert outcome.batch is not None
+        assert outcome.batch.quantity == 15

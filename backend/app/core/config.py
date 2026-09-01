@@ -8,7 +8,7 @@ from pydantic_settings import BaseSettings
 
 # Application version — Backoffice Printing (not upstream Bambuddy).
 # Sidebar and Settings read this via GET /updates/version.
-APP_VERSION = "1.3.1"
+APP_VERSION = "1.3.2"
 GITHUB_REPO = "Nicolas-Cilia/Backoffice-Printing"
 
 # App directory - where the application is installed (for static files)

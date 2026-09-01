@@ -1,9 +1,9 @@
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useRef, useState, type Dispatch, type RefObject, type SetStateAction } from 'react';
 import { useSearchParams } from 'react-router-dom';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import { CheckCircle2, ChevronDown, Eraser, Link2, Link2Off, Loader2, Package } from 'lucide-react';
+import { CheckCircle2, ChevronDown, Eraser, Link2, Link2Off, Loader2, Package, Plus } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
-import { api, type FloorBinManagement } from '../api/client';
+import { api, type FloorBinJobCandidate, type FloorBinManagement, type FloorPrinter } from '../api/client';
 import { Button } from '../components/Button';
 import { ConfirmModal } from '../components/ConfirmModal';
 import { useToast } from '../contexts/ToastContext';
@@ -36,6 +36,8 @@ export function FloorBinManagementPage() {
   const { showToast } = useToast();
   const queryClient = useQueryClient();
   const [drafts, setDrafts] = useState<Record<string, string>>({});
+  const [assignPrinterIds, setAssignPrinterIds] = useState<Record<string, number | null>>({});
+  const [assignQuantities, setAssignQuantities] = useState<Record<string, string>>({});
   const [clearTarget, setClearTarget] = useState<FloorBinManagement | null>(null);
   const [unlinkTarget, setUnlinkTarget] = useState<FloorBinManagement | null>(null);
   const [relinkTarget, setRelinkTarget] = useState<FloorBinManagement | null>(null);
@@ -78,6 +80,24 @@ export function FloorBinManagementPage() {
     queryKey: ['floor-printers'],
     queryFn: api.getFloorPrinters,
   });
+  const assignMutation = useMutation({
+    mutationFn: ({
+      payload,
+      printer_id,
+      quantity,
+    }: {
+      payload: string;
+      printer_id: number;
+      quantity: number;
+    }) => api.assignFloorBin({ payload, printer_id, quantity }),
+    onSuccess: async (_data, variables) => {
+      setAssignPrinterIds((current) => ({ ...current, [variables.payload]: null }));
+      setAssignQuantities((current) => ({ ...current, [variables.payload]: '' }));
+      await refresh();
+      showToast(t('inventory.binAssigned', 'Bin assigned to printer'), 'success');
+    },
+    onError: () => showToast(t('inventory.binAssignFailed', 'Could not assign bin'), 'error'),
+  });
   const candidatesQuery = useQuery({
     queryKey: ['floor-bin-job-candidates', relinkTarget?.batch?.id, relinkPrinterId],
     queryFn: () => api.getFloorBinJobCandidates(relinkTarget!.batch!.id, relinkPrinterId!),
@@ -102,6 +122,8 @@ export function FloorBinManagementPage() {
   }, [relinkTarget]);
 
   const bins = binsQuery.data ?? [];
+  const knobBins = bins.filter((bin) => bin.part_code === 'KNB').sort((a, b) => a.bin_number - b.bin_number);
+  const buttonBins = bins.filter((bin) => bin.part_code === 'BUT').sort((a, b) => a.bin_number - b.bin_number);
   useEffect(() => {
     if (focusPayload && focusedRef.current && typeof focusedRef.current.scrollIntoView === 'function') {
       focusedRef.current.scrollIntoView({ block: 'center', behavior: 'smooth' });
@@ -136,7 +158,10 @@ export function FloorBinManagementPage() {
         <div className="border-b border-bambu-dark-tertiary px-4 py-3">
           <h2 className="font-semibold text-white">{t('inventory.binsManagementHeading', 'Shared reusable bins')}</h2>
           <p className="mt-0.5 text-xs text-bambu-gray">
-            {t('inventory.binsManagementHint', 'Override a remaining count when needed, or unlink a fill completely.')}
+            {t(
+              'inventory.binsManagementHint',
+              'Override a remaining count when needed, unlink a fill, or manually assign a free bin when Harvest did not recognize knobs or buttons.',
+            )}
           </p>
         </div>
         {binsQuery.isLoading ? (
@@ -152,149 +177,79 @@ export function FloorBinManagementPage() {
             </Button>
           </div>
         ) : (
-          <div className="grid gap-3 p-4 md:grid-cols-2 xl:grid-cols-3">
-            {bins.map((bin) => {
-              const batch = bin.batch;
-              const draft = drafts[bin.payload] ?? String(batch?.remaining_quantity ?? 0);
-              const parsed = Number(draft);
-              const valid = Number.isInteger(parsed) && parsed >= 0 && parsed <= 100_000;
-              const busy = overrideMutation.isPending || unlinkMutation.isPending || relinkMutation.isPending;
-              const focused = focusPayload === bin.payload.toUpperCase();
-              return (
-                <article
-                  key={bin.payload}
-                  ref={focused ? focusedRef : undefined}
-                  aria-current={focused ? 'true' : undefined}
-                  className={`rounded-lg border bg-bambu-dark p-4 ${focused ? 'border-bambu-green ring-2 ring-bambu-green' : 'border-bambu-dark-tertiary'}`}
-                >
-                  <div className="flex items-start justify-between gap-3">
-                    <div>
-                      <h3 className="font-semibold text-white">{bin.part_name} {bin.bin_number}</h3>
-                      <p className="mt-1 font-mono text-xs text-bambu-gray">{bin.payload}</p>
-                    </div>
-                    <span className={`inline-flex whitespace-nowrap rounded-full px-2 py-1 text-xs font-medium ${batch ? statusClass(bin.status) : 'bg-bambu-dark-tertiary text-bambu-gray'}`}>
-                      {batch ? statusLabel(bin.status) : t('inventory.binAvailable', 'Available')}
-                    </span>
-                  </div>
-
-                  {batch ? (
-                    <>
-                      <div className="mt-4 space-y-1 text-sm text-bambu-gray-light">
-                        <p>
-                          {bin.status === 'unlinked'
-                            ? t('inventory.binUnlinkedDetails', 'Printer/job needs relinking')
-                            : `${batch.printer_name ?? 'Printer'}${batch.print_name ? ` · ${batch.print_name}` : ''}`}
-                        </p>
-                        <p>{batch.remaining_quantity} {t('inventory.binRemaining', 'remaining')} / {batch.quantity} {t('inventory.binHarvested', 'harvested')}</p>
-                      </div>
-                      <div className="mt-4 flex items-end gap-2">
-                        <label className="min-w-0 flex-1">
-                          <span className="mb-1 block text-xs text-bambu-gray">{t('inventory.binOverrideLabel', 'Remaining quantity')}</span>
-                          <input
-                            aria-label={`${bin.part_name} ${bin.bin_number} remaining quantity`}
-                            type="number"
-                            min={0}
-                            max={100000}
-                            step={1}
-                            value={draft}
-                            disabled={busy}
-                            onChange={(event) => setDrafts((current) => ({ ...current, [bin.payload]: event.target.value }))}
-                            className="w-full rounded border border-bambu-dark-tertiary bg-bambu-dark-secondary px-2 py-2 text-sm text-white focus:border-bambu-green focus:outline-none"
-                          />
-                        </label>
-                        <Button
-                          size="sm"
-                          variant="secondary"
-                          disabled={!valid || busy}
-                          onClick={() => overrideMutation.mutate({ payload: bin.payload, remaining_quantity: parsed })}
-                        >
-                          {t('inventory.binOverride', 'Override')}
-                        </Button>
-                      </div>
-                      {bin.status === 'unlinked' ? (
-                        <div className="mt-4 rounded-lg border border-amber-500/30 bg-amber-500/10 p-3">
-                          <div className="flex gap-2">
-                            <Link2 className="mt-0.5 h-4 w-4 shrink-0 text-amber-300" />
-                            <div>
-                              <p className="font-medium text-amber-200">{t('inventory.binRelinkHeading', 'Link this bin to a completed job')}</p>
-                              <p className="mt-1 text-xs text-amber-100/70">{t('inventory.binRelinkHint', 'Choose the printer, then select the completed print this fill came from.')}</p>
-                            </div>
-                          </div>
-                          <div className="relative mt-3">
-                            <select
-                              aria-label={t('inventory.binRelinkPrinter', 'Printer')}
-                              value={relinkTarget?.batch?.id === batch.id ? String(relinkPrinterId ?? '') : ''}
-                              disabled={busy || printersQuery.isLoading}
-                              onChange={(event) => {
-                                setRelinkTarget(bin);
-                                setRelinkPrinterId(event.target.value ? Number(event.target.value) : null);
-                                setRelinkArchiveId(null);
-                              }}
-                              className="w-full appearance-none rounded-lg border border-amber-500/30 bg-bambu-dark px-2 py-2 pr-10 text-sm text-white focus:border-bambu-green focus:outline-none"
-                            >
-                              <option value="">{printersQuery.isLoading ? t('common.loading', 'Loading…') : t('inventory.binChoosePrinter', 'Choose a printer')}</option>
-                              {(printersQuery.data ?? []).map((printer) => (
-                                <option key={printer.id} value={printer.id}>{printer.name}</option>
-                              ))}
-                            </select>
-                            <ChevronDown aria-hidden="true" className="pointer-events-none absolute right-3 top-1/2 h-4 w-4 -translate-y-1/2 text-bambu-gray" />
-                          </div>
-                          {relinkPrinterId !== null && (
-                            <div className="mt-2 flex gap-2">
-                              <div className="relative min-w-0 flex-1">
-                                <select
-                                  aria-label={t('inventory.binRelinkJob', 'Completed job')}
-                                  value={relinkTarget?.batch?.id === batch.id ? String(relinkArchiveId ?? '') : ''}
-                                  disabled={busy || candidatesQuery.isLoading}
-                                  onChange={(event) => setRelinkArchiveId(event.target.value ? Number(event.target.value) : null)}
-                                  className="w-full appearance-none rounded-lg border border-amber-500/30 bg-bambu-dark px-2 py-2 pr-10 text-sm text-white focus:border-bambu-green focus:outline-none"
-                                >
-                                  <option value="">{candidatesQuery.isLoading ? t('common.loading', 'Loading…') : t('inventory.binChooseJob', 'Choose a completed job')}</option>
-                                  {(candidatesQuery.data ?? []).map((job) => (
-                                    <option key={job.id} value={job.id}>
-                                      {job.print_name}{job.completed_at ? ` · ${formatFloorDate(job.completed_at, { dateStyle: 'short', timeStyle: 'short' })}` : ''}
-                                    </option>
-                                  ))}
-                                </select>
-                                <ChevronDown aria-hidden="true" className="pointer-events-none absolute right-3 top-1/2 h-4 w-4 -translate-y-1/2 text-bambu-gray" />
-                              </div>
-                              <Button
-                                size="sm"
-                                disabled={relinkArchiveId === null || busy}
-                                onClick={() => relinkMutation.mutate({ batchId: batch.id, archiveId: relinkArchiveId! })}
-                              >
-                                {relinkMutation.isPending ? <Loader2 className="h-4 w-4 animate-spin" /> : <CheckCircle2 className="h-4 w-4" />}
-                                {t('inventory.binRelink', 'Link')}
-                              </Button>
-                            </div>
-                          )}
-                        </div>
-                      ) : (
-                        <div className="mt-3 flex items-center justify-between gap-2">
-                          <Button
-                            size="sm"
-                            variant="secondary"
-                            disabled={busy}
-                            onClick={() => setClearTarget(bin)}
-                          >
-                            <Eraser className="h-4 w-4" />
-                            {t('inventory.binClearQuantity', 'Clear quantity')}
-                          </Button>
-                          <Button size="sm" variant="danger" disabled={busy} onClick={() => setUnlinkTarget(bin)}>
-                            <Link2Off className="h-4 w-4" />
-                            {t('inventory.binUnlink', 'Unlink')}
-                          </Button>
-                        </div>
-                      )}
-                    </>
-                  ) : (
-                    <p className="mt-5 text-sm text-bambu-gray">
-                      {t('inventory.binReadyHint', 'This bin can be assigned during the next matching harvest.')}
-                    </p>
-                  )}
-                </article>
-              );
-            })}
+          <div className="grid gap-4 p-4 md:grid-cols-2">
+            <BinColumn
+              title={t('inventory.binsKnobColumn', 'Knob bins')}
+              bins={knobBins}
+              drafts={drafts}
+              setDrafts={setDrafts}
+              assignPrinterIds={assignPrinterIds}
+              setAssignPrinterIds={setAssignPrinterIds}
+              assignQuantities={assignQuantities}
+              setAssignQuantities={setAssignQuantities}
+              relinkTarget={relinkTarget}
+              relinkPrinterId={relinkPrinterId}
+              setRelinkTarget={setRelinkTarget}
+              setRelinkPrinterId={setRelinkPrinterId}
+              setRelinkArchiveId={setRelinkArchiveId}
+              relinkArchiveId={relinkArchiveId}
+              printers={printersQuery.data ?? []}
+              printersLoading={printersQuery.isLoading}
+              candidates={candidatesQuery.data ?? []}
+              candidatesLoading={candidatesQuery.isLoading}
+              busy={
+                overrideMutation.isPending
+                || unlinkMutation.isPending
+                || relinkMutation.isPending
+                || assignMutation.isPending
+              }
+              focusPayload={focusPayload}
+              focusedRef={focusedRef}
+              onOverride={(payload, remaining_quantity) => overrideMutation.mutate({ payload, remaining_quantity })}
+              onUnlink={setUnlinkTarget}
+              onClear={setClearTarget}
+              onAssign={(payload, printer_id, quantity) => assignMutation.mutate({ payload, printer_id, quantity })}
+              onRelink={(batchId, archiveId) => relinkMutation.mutate({ batchId, archiveId })}
+              assignPending={assignMutation.isPending}
+              relinkPending={relinkMutation.isPending}
+              t={t}
+            />
+            <BinColumn
+              title={t('inventory.binsButtonColumn', 'Button bins')}
+              bins={buttonBins}
+              drafts={drafts}
+              setDrafts={setDrafts}
+              assignPrinterIds={assignPrinterIds}
+              setAssignPrinterIds={setAssignPrinterIds}
+              assignQuantities={assignQuantities}
+              setAssignQuantities={setAssignQuantities}
+              relinkTarget={relinkTarget}
+              relinkPrinterId={relinkPrinterId}
+              setRelinkTarget={setRelinkTarget}
+              setRelinkPrinterId={setRelinkPrinterId}
+              setRelinkArchiveId={setRelinkArchiveId}
+              relinkArchiveId={relinkArchiveId}
+              printers={printersQuery.data ?? []}
+              printersLoading={printersQuery.isLoading}
+              candidates={candidatesQuery.data ?? []}
+              candidatesLoading={candidatesQuery.isLoading}
+              busy={
+                overrideMutation.isPending
+                || unlinkMutation.isPending
+                || relinkMutation.isPending
+                || assignMutation.isPending
+              }
+              focusPayload={focusPayload}
+              focusedRef={focusedRef}
+              onOverride={(payload, remaining_quantity) => overrideMutation.mutate({ payload, remaining_quantity })}
+              onUnlink={setUnlinkTarget}
+              onClear={setClearTarget}
+              onAssign={(payload, printer_id, quantity) => assignMutation.mutate({ payload, printer_id, quantity })}
+              onRelink={(batchId, archiveId) => relinkMutation.mutate({ batchId, archiveId })}
+              assignPending={assignMutation.isPending}
+              relinkPending={relinkMutation.isPending}
+              t={t}
+            />
           </div>
         )}
       </section>
@@ -330,6 +285,277 @@ export function FloorBinManagementPage() {
           }}
         />
       )}
+    </div>
+  );
+}
+
+type BinColumnProps = {
+  title: string;
+  bins: FloorBinManagement[];
+  drafts: Record<string, string>;
+  setDrafts: Dispatch<SetStateAction<Record<string, string>>>;
+  assignPrinterIds: Record<string, number | null>;
+  setAssignPrinterIds: Dispatch<SetStateAction<Record<string, number | null>>>;
+  assignQuantities: Record<string, string>;
+  setAssignQuantities: Dispatch<SetStateAction<Record<string, string>>>;
+  relinkTarget: FloorBinManagement | null;
+  relinkPrinterId: number | null;
+  setRelinkTarget: (bin: FloorBinManagement | null) => void;
+  setRelinkPrinterId: (id: number | null) => void;
+  setRelinkArchiveId: (id: number | null) => void;
+  relinkArchiveId: number | null;
+  printers: FloorPrinter[];
+  printersLoading: boolean;
+  candidates: FloorBinJobCandidate[];
+  candidatesLoading: boolean;
+  busy: boolean;
+  focusPayload: string | null;
+  focusedRef: RefObject<HTMLElement | null>;
+  onOverride: (payload: string, remaining_quantity: number) => void;
+  onUnlink: (bin: FloorBinManagement) => void;
+  onClear: (bin: FloorBinManagement) => void;
+  onAssign: (payload: string, printer_id: number, quantity: number) => void;
+  onRelink: (batchId: number, archiveId: number) => void;
+  assignPending: boolean;
+  relinkPending: boolean;
+  t: ReturnType<typeof useTranslation>['t'];
+};
+
+function BinColumn({
+  title,
+  bins,
+  drafts,
+  setDrafts,
+  assignPrinterIds,
+  setAssignPrinterIds,
+  assignQuantities,
+  setAssignQuantities,
+  relinkTarget,
+  relinkPrinterId,
+  setRelinkTarget,
+  setRelinkPrinterId,
+  setRelinkArchiveId,
+  relinkArchiveId,
+  printers,
+  printersLoading,
+  candidates,
+  candidatesLoading,
+  busy,
+  focusPayload,
+  focusedRef,
+  onOverride,
+  onUnlink,
+  onClear,
+  onAssign,
+  onRelink,
+  assignPending,
+  relinkPending,
+  t,
+}: BinColumnProps) {
+  return (
+    <div className="space-y-3">
+      <h3 className="text-sm font-semibold uppercase tracking-wide text-bambu-gray">{title}</h3>
+      {bins.map((bin) => {
+        const batch = bin.batch;
+        const draft = drafts[bin.payload] ?? String(batch?.remaining_quantity ?? 0);
+        const parsed = Number(draft);
+        const valid = Number.isInteger(parsed) && parsed >= 0 && parsed <= 100_000;
+        const assignPrinterId = assignPrinterIds[bin.payload] ?? null;
+        const assignQtyDraft = assignQuantities[bin.payload] ?? '';
+        const assignQty = Number(assignQtyDraft);
+        const assignQtyValid = Number.isInteger(assignQty) && assignQty >= 1 && assignQty <= 100_000;
+        const focused = focusPayload === bin.payload.toUpperCase();
+        return (
+          <article
+            key={bin.payload}
+            ref={focused ? focusedRef : undefined}
+            aria-current={focused ? 'true' : undefined}
+            className={`rounded-lg border bg-bambu-dark p-4 ${focused ? 'border-bambu-green ring-2 ring-bambu-green' : 'border-bambu-dark-tertiary'}`}
+          >
+            <div className="flex items-start justify-between gap-3">
+              <div>
+                <h4 className="font-semibold text-white">{bin.part_name} {bin.bin_number}</h4>
+                <p className="mt-1 font-mono text-xs text-bambu-gray">{bin.payload}</p>
+              </div>
+              <span className={`inline-flex whitespace-nowrap rounded-full px-2 py-1 text-xs font-medium ${batch ? statusClass(bin.status) : 'bg-bambu-dark-tertiary text-bambu-gray'}`}>
+                {batch ? statusLabel(bin.status) : t('inventory.binAvailable', 'Available')}
+              </span>
+            </div>
+
+            {batch ? (
+              <>
+                <div className="mt-4 space-y-1 text-sm text-bambu-gray-light">
+                  <p>
+                    {bin.status === 'unlinked'
+                      ? t('inventory.binUnlinkedDetails', 'Printer/job needs relinking')
+                      : `${batch.printer_name ?? 'Printer'}${batch.print_name ? ` · ${batch.print_name}` : ''}`}
+                  </p>
+                  <p>{batch.remaining_quantity} {t('inventory.binRemaining', 'remaining')} / {batch.quantity} {t('inventory.binHarvested', 'harvested')}</p>
+                </div>
+                <div className="mt-4 flex items-end gap-2">
+                  <label className="min-w-0 flex-1">
+                    <span className="mb-1 block text-xs text-bambu-gray">{t('inventory.binOverrideLabel', 'Remaining quantity')}</span>
+                    <input
+                      aria-label={`${bin.part_name} ${bin.bin_number} remaining quantity`}
+                      type="number"
+                      min={0}
+                      max={100000}
+                      step={1}
+                      value={draft}
+                      disabled={busy}
+                      onChange={(event) => setDrafts((current) => ({ ...current, [bin.payload]: event.target.value }))}
+                      className="w-full rounded border border-bambu-dark-tertiary bg-bambu-dark-secondary px-2 py-2 text-sm text-white focus:border-bambu-green focus:outline-none"
+                    />
+                  </label>
+                  <Button
+                    size="sm"
+                    variant="secondary"
+                    disabled={!valid || busy}
+                    onClick={() => onOverride(bin.payload, parsed)}
+                  >
+                    {t('inventory.binOverride', 'Override')}
+                  </Button>
+                </div>
+                {bin.status === 'unlinked' ? (
+                  <div className="mt-4 rounded-lg border border-amber-500/30 bg-amber-500/10 p-3">
+                    <div className="flex gap-2">
+                      <Link2 className="mt-0.5 h-4 w-4 shrink-0 text-amber-300" />
+                      <div>
+                        <p className="font-medium text-amber-200">{t('inventory.binRelinkHeading', 'Link this bin to a completed job')}</p>
+                        <p className="mt-1 text-xs text-amber-100/70">{t('inventory.binRelinkHint', 'Choose the printer, then select the completed print this fill came from.')}</p>
+                      </div>
+                    </div>
+                    <div className="relative mt-3">
+                      <select
+                        aria-label={t('inventory.binRelinkPrinter', 'Printer')}
+                        value={relinkTarget?.batch?.id === batch.id ? String(relinkPrinterId ?? '') : ''}
+                        disabled={busy || printersLoading}
+                        onChange={(event) => {
+                          setRelinkTarget(bin);
+                          setRelinkPrinterId(event.target.value ? Number(event.target.value) : null);
+                          setRelinkArchiveId(null);
+                        }}
+                        className="w-full appearance-none rounded-lg border border-amber-500/30 bg-bambu-dark px-2 py-2 pr-10 text-sm text-white focus:border-bambu-green focus:outline-none"
+                      >
+                        <option value="">{printersLoading ? t('common.loading', 'Loading…') : t('inventory.binChoosePrinter', 'Choose a printer')}</option>
+                        {printers.map((printer) => (
+                          <option key={printer.id} value={printer.id}>{printer.name}</option>
+                        ))}
+                      </select>
+                      <ChevronDown aria-hidden="true" className="pointer-events-none absolute right-3 top-1/2 h-4 w-4 -translate-y-1/2 text-bambu-gray" />
+                    </div>
+                    {relinkPrinterId !== null && relinkTarget?.batch?.id === batch.id && (
+                      <div className="mt-2 flex gap-2">
+                        <div className="relative min-w-0 flex-1">
+                          <select
+                            aria-label={t('inventory.binRelinkJob', 'Completed job')}
+                            value={String(relinkArchiveId ?? '')}
+                            disabled={busy || candidatesLoading}
+                            onChange={(event) => setRelinkArchiveId(event.target.value ? Number(event.target.value) : null)}
+                            className="w-full appearance-none rounded-lg border border-amber-500/30 bg-bambu-dark px-2 py-2 pr-10 text-sm text-white focus:border-bambu-green focus:outline-none"
+                          >
+                            <option value="">{candidatesLoading ? t('common.loading', 'Loading…') : t('inventory.binChooseJob', 'Choose a completed job')}</option>
+                            {candidates.map((job) => (
+                              <option key={job.id} value={job.id}>
+                                {job.print_name}{job.completed_at ? ` · ${formatFloorDate(job.completed_at, { dateStyle: 'short', timeStyle: 'short' })}` : ''}
+                              </option>
+                            ))}
+                          </select>
+                          <ChevronDown aria-hidden="true" className="pointer-events-none absolute right-3 top-1/2 h-4 w-4 -translate-y-1/2 text-bambu-gray" />
+                        </div>
+                        <Button
+                          size="sm"
+                          disabled={relinkArchiveId === null || busy}
+                          onClick={() => onRelink(batch.id, relinkArchiveId!)}
+                        >
+                          {relinkPending ? <Loader2 className="h-4 w-4 animate-spin" /> : <CheckCircle2 className="h-4 w-4" />}
+                          {t('inventory.binRelink', 'Link')}
+                        </Button>
+                      </div>
+                    )}
+                  </div>
+                ) : (
+                  <div className="mt-3 flex items-center justify-between gap-2">
+                    <Button
+                      size="sm"
+                      variant="secondary"
+                      disabled={busy}
+                      onClick={() => onClear(bin)}
+                    >
+                      <Eraser className="h-4 w-4" />
+                      {t('inventory.binClearQuantity', 'Clear quantity')}
+                    </Button>
+                    <Button size="sm" variant="danger" disabled={busy} onClick={() => onUnlink(bin)}>
+                      <Link2Off className="h-4 w-4" />
+                      {t('inventory.binUnlink', 'Unlink')}
+                    </Button>
+                  </div>
+                )}
+              </>
+            ) : (
+              <div className="mt-4 space-y-3">
+                <p className="text-sm text-bambu-gray">
+                  {t(
+                    'inventory.binManualAssignHint',
+                    'Assign manually when Harvest did not recognize knobs or buttons for a printer.',
+                  )}
+                </p>
+                <div className="relative">
+                  <select
+                    aria-label={`${bin.part_name} ${bin.bin_number} printer`}
+                    value={assignPrinterId !== null ? String(assignPrinterId) : ''}
+                    disabled={busy || printersLoading}
+                    onChange={(event) => {
+                      setAssignPrinterIds((current) => ({
+                        ...current,
+                        [bin.payload]: event.target.value ? Number(event.target.value) : null,
+                      }));
+                    }}
+                    className="w-full appearance-none rounded-lg border border-bambu-dark-tertiary bg-bambu-dark-secondary px-2 py-2 pr-10 text-sm text-white focus:border-bambu-green focus:outline-none"
+                  >
+                    <option value="">
+                      {printersLoading
+                        ? t('common.loading', 'Loading…')
+                        : t('inventory.binChoosePrinter', 'Choose a printer')}
+                    </option>
+                    {printers.map((printer) => (
+                      <option key={printer.id} value={printer.id}>{printer.name}</option>
+                    ))}
+                  </select>
+                  <ChevronDown aria-hidden="true" className="pointer-events-none absolute right-3 top-1/2 h-4 w-4 -translate-y-1/2 text-bambu-gray" />
+                </div>
+                <div className="flex items-end gap-2">
+                  <label className="min-w-0 flex-1">
+                    <span className="mb-1 block text-xs text-bambu-gray">{t('inventory.binAssignQuantity', 'Quantity')}</span>
+                    <input
+                      aria-label={`${bin.part_name} ${bin.bin_number} quantity`}
+                      type="number"
+                      min={1}
+                      max={100000}
+                      step={1}
+                      value={assignQtyDraft}
+                      disabled={busy}
+                      onChange={(event) => setAssignQuantities((current) => ({
+                        ...current,
+                        [bin.payload]: event.target.value,
+                      }))}
+                      className="w-full rounded border border-bambu-dark-tertiary bg-bambu-dark-secondary px-2 py-2 text-sm text-white focus:border-bambu-green focus:outline-none"
+                    />
+                  </label>
+                  <Button
+                    size="sm"
+                    disabled={assignPrinterId === null || !assignQtyValid || busy}
+                    onClick={() => onAssign(bin.payload, assignPrinterId!, assignQty)}
+                  >
+                    {assignPending ? <Loader2 className="h-4 w-4 animate-spin" /> : <Plus className="h-4 w-4" />}
+                    {t('inventory.binAssign', 'Assign')}
+                  </Button>
+                </div>
+              </div>
+            )}
+          </article>
+        );
+      })}
     </div>
   );
 }
