@@ -770,6 +770,91 @@ async def delete_bin_batch(db: AsyncSession, batch_id: int) -> str:
     return "deleted"
 
 
+async def assign_bin_manually(
+    db: AsyncSession,
+    payload: str,
+    printer_id: int,
+    quantity: int,
+    archive_id: int | None = None,
+) -> BinScanOutcome:
+    """Create a bin fill from Inventory when Harvest could not match a KNB/BUT job.
+
+    Allows assigning a free tote to a printer with a quantity even when no
+    completed print resolves to the bin's part code. An optional ``archive_id``
+    may still be attached when the job is unresolved (``part_code is None``) or
+    already matches the bin; a mismatched resolved code is refused.
+    """
+    info = await _resolve_bin(db, payload)
+    if info is None:
+        return BinScanOutcome(result=BinScanResult.INVALID_CODE)
+
+    current_batch, current_status = await _latest_batch_with_status(db, info)
+    if current_batch is not None and current_status not in ("empty", "empty_override"):
+        # Unlinked fills keep their batch for relink; do not silently replace them.
+        return BinScanOutcome(
+            result=BinScanResult.BIN_IN_USE,
+            bin=info,
+            batch=await _batch_info(db, current_batch, info),
+        )
+
+    printer = await get_printer(db, printer_id)
+    if printer is None:
+        return BinScanOutcome(result=BinScanResult.NO_PRINTER, bin=info)
+
+    archive: LastPrint | None = None
+    resolved_archive_id: int | None = None
+    if archive_id is not None:
+        from backend.app.models.archive import PrintArchive
+
+        archive_row = await db.get(PrintArchive, archive_id)
+        if archive_row is None or archive_row.status != "completed" or archive_row.printer_id != printer.id:
+            return BinScanOutcome(result=BinScanResult.NO_BATCH, bin=info, printer=printer)
+        archive = await get_archive_summary(db, archive_id)
+        archive_code = archive.part_code if archive is not None else None
+        if archive_code is not None and archive_code != info.part_code:
+            return BinScanOutcome(
+                result=BinScanResult.WRONG_PART,
+                bin=info,
+                printer=printer,
+                archive=archive,
+            )
+        resolved_archive_id = archive_id
+
+    batch = FloorBinBatch(
+        bin_payload=info.payload,
+        printer_id=printer.id,
+        archive_id=resolved_archive_id,
+        part_code=info.part_code,
+        quantity=quantity,
+        session_id=None,
+    )
+    db.add(batch)
+    await db.flush()
+    db.add(
+        FloorBinBatchEvent(
+            batch_id=batch.id,
+            action="harvested",
+            details={
+                "source": "inventory_manual",
+                "bin_payload": info.payload,
+                "bin_number": info.bin_number,
+                "printer_id": printer.id,
+                "archive_id": resolved_archive_id,
+                "part_code": info.part_code,
+                "quantity": quantity,
+            },
+        )
+    )
+    await db.flush()
+    return BinScanOutcome(
+        result=BinScanResult.RECORDED,
+        bin=info,
+        batch=await _batch_info(db, batch, info),
+        printer=printer,
+        archive=archive,
+    )
+
+
 async def override_bin_quantity(db: AsyncSession, payload: str, remaining_quantity: int) -> BinScanOutcome:
     """Override a fill's remaining quantity; zero releases it as empty."""
     info = await _resolve_bin(db, payload)
