@@ -6314,6 +6314,16 @@ export const api = {
       method: 'POST',
       body: JSON.stringify(data),
     }),
+  assignFloorBin: (data: {
+    payload: string;
+    printer_id: number;
+    quantity: number;
+    archive_id?: number | null;
+  }) =>
+    request<BinScanResponse>('/floor/inventory/bins/assign', {
+      method: 'POST',
+      body: JSON.stringify(data),
+    }),
   unlinkFloorBin: (data: { payload: string }) =>
     request<BinScanResponse>('/floor/inventory/bins/unlink', {
       method: 'POST',

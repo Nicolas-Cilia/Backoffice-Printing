@@ -1155,6 +1155,33 @@ class TestReusableBinFlow:
         active_item = next(item for item in active_again.json() if item["payload"] == "BBN-BUT-1")
         assert active_item["batch"]["archive_id"] == replacement_job.id
 
+    async def test_inventory_can_manually_assign_free_bin(self, async_client, printer_factory):
+        printer = await printer_factory(name="Bench Manual")
+
+        assigned = await async_client.post(
+            "/api/v1/floor/inventory/bins/assign",
+            json={"payload": "BBN-KNB-1", "printer_id": printer.id, "quantity": 33},
+        )
+        assert assigned.status_code == 200
+        body = assigned.json()
+        assert body["result"] == "recorded"
+        assert body["batch"]["quantity"] == 33
+        assert body["batch"]["remaining_quantity"] == 33
+        assert body["batch"]["printer_name"] == "Bench Manual"
+        assert body["batch"]["archive_id"] is None
+        assert body["batch"]["part_code"] == "KNB"
+
+        listed = await async_client.get("/api/v1/floor/inventory/bins")
+        current = next(item for item in listed.json() if item["payload"] == "BBN-KNB-1")
+        assert current["batch"]["quantity"] == 33
+        assert current["status"] == "harvested"
+
+        conflict = await async_client.post(
+            "/api/v1/floor/inventory/bins/assign",
+            json={"payload": "BBN-KNB-1", "printer_id": printer.id, "quantity": 1},
+        )
+        assert conflict.status_code == 409
+
     async def test_harvest_summary_reports_bins_instead_of_zero_parts(
         self, async_client, printer_factory, archive_factory
     ):
