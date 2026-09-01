@@ -22,11 +22,14 @@ from backend.app.services.floor_bot_bins import (
     office_clear_bot_bin,
     office_move_bot_bin_member,
     office_remove_bot_bin_member,
+    scan_bot_bin_ready_for_production,
     scan_bot_bin_wip,
 )
 from backend.app.services.floor_codes import station_for_slug
 from backend.app.services.floor_parts import (
     LocationScanResult,
+    list_inventory_parts,
+    list_part_events,
     scan_fit_check_part,
     scan_harvest_printer,
     scan_part,
@@ -403,3 +406,30 @@ class TestBotBinOfficeOverrides:
         assert cleared.batch is not None
         assert cleared.batch.status == "empty"
         assert await list_bot_bin_members(db_session, load.batch.id) == []
+
+
+class TestBotBinPartInventoryEvents:
+    @pytest.mark.asyncio
+    async def test_load_and_stage_update_last_scanned_and_status(self, db_session, printer_factory, archive_factory):
+        part = await _bot_part_with_qc(db_session, printer_factory, archive_factory, code="BBD-000320")
+        await add_part_to_bot_bin(db_session, part.sticker_code, BOT1)
+        await db_session.commit()
+
+        load_events = await list_part_events(db_session, part.id)
+        assert load_events is not None
+        assert any(event.action == "bot_bin_loaded" for event in load_events)
+
+        [after_load] = await list_inventory_parts(db_session)
+        assert after_load.id == part.id
+        load_scanned_at = after_load.last_scanned_at
+
+        staged = await scan_bot_bin_ready_for_production(db_session, BOT1)
+        await db_session.commit()
+
+        assert staged.result is BinScanResult.READY_FOR_PRODUCTION_RECORDED
+        [after_stage] = await list_inventory_parts(db_session)
+        assert after_stage.last_scanned_at >= load_scanned_at
+        assert after_stage.latest_event_action == "ready_for_production"
+        stage_events = await list_part_events(db_session, part.id)
+        assert stage_events is not None
+        assert any(event.action == "ready_for_production" for event in stage_events)

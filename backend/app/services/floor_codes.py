@@ -121,6 +121,14 @@ FLOOR_STATIONS: tuple[FloorStation, ...] = (
         exclusive=False,
         category="location",
     ),
+    FloorStation(
+        slug="ready-to-ship",
+        name="Ready to Ship",
+        description="After rework on a linked serial, scan this shelf to restore both housings to shipped.",
+        payload_slug="ready-to-ship",
+        exclusive=False,
+        category="location",
+    ),
     # ── Item→location pipeline locations ──────────────────────────────────
     # Every station below is a *location*, not a session: the operator scans
     # an item first (a `BBD-` part sticker or a `BBN-` bin) and then this QR,

@@ -307,7 +307,7 @@ class TestUnlinkApi:
 @pytest.mark.asyncio
 @pytest.mark.integration
 class TestReturnUnitReworkApi:
-    async def test_return_rework_unlinks_and_frees_serial(self, async_client, printer_factory, archive_factory):
+    async def test_return_rework_keeps_unit_linked(self, async_client, printer_factory, archive_factory):
         top, bot = await _kitted_top_and_bot(async_client, printer_factory, archive_factory)
         await async_client.post(
             "/api/v1/floor/units/link",
@@ -322,7 +322,38 @@ class TestReturnUnitReworkApi:
         assert resp.status_code == 200
         body = resp.json()
         assert body["result"] == "returned"
-        assert (await async_client.get("/api/v1/floor/units/by-serial/XG2SNP")).status_code == 404
+        unit = await async_client.get("/api/v1/floor/units/by-serial/XG2SNP")
+        assert unit.status_code == 200
+        assert unit.json()["unit_workflow_status"] == "rework"
+
+
+@pytest.mark.asyncio
+@pytest.mark.integration
+class TestReadyUnitToShipApi:
+    async def test_linked_unit_ready_to_ship_after_rework(self, async_client, printer_factory, archive_factory):
+        top, bot = await _kitted_top_and_bot(async_client, printer_factory, archive_factory)
+        await async_client.post(
+            "/api/v1/floor/units/link",
+            json={"serial": "XG2SNP", "top_sticker": top, "bottom_sticker": bot},
+        )
+        await async_client.post(
+            "/api/v1/floor/units/return-rework",
+            json={"serial": "XG2SNP", "reason_code": "other"},
+        )
+
+        resp = await async_client.post(
+            "/api/v1/floor/units/ready-to-ship",
+            json={"serial": "XG2SNP"},
+        )
+        assert resp.status_code == 200
+        assert resp.json()["result"] == "ready"
+
+        unit = await async_client.get("/api/v1/floor/units/by-serial/XG2SNP")
+        assert unit.status_code == 200
+        assert unit.json()["unit_workflow_status"] == "shipped"
+
+        top_part = await async_client.get(f"/api/v1/floor/inventory/parts/by-sticker/{top}")
+        assert top_part.json()["latest_event_action"] == "shipped"
 
 
 @pytest.mark.asyncio

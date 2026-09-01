@@ -39,6 +39,7 @@ class TestStationCatalog:
             "BBS-initial-qc-pass",
             "BBS-sanding",
             "BBS-wip-rework",
+            "BBS-ready-to-ship",
             "BBS-ready-for-production-inventory",
             "BBS-production-wip",
             "BBS-bin-empty",
@@ -55,7 +56,7 @@ class TestStationCatalog:
         assert len({s.name for s in FLOOR_STATIONS}) == len(FLOOR_STATIONS)
 
     def test_all_current_floor_codes_are_present(self):
-        assert len(FLOOR_STATIONS) == 10
+        assert len(FLOOR_STATIONS) == 11
 
     def test_fit_check_sanding_and_wip_rework_carry_no_floor_wide_lock(self):
         """Parallel fit-check, sanding, and rework benches are normal work."""
@@ -63,6 +64,7 @@ class TestStationCatalog:
         assert by_slug["fit-check"].exclusive is False
         assert by_slug["sanding"].exclusive is False
         assert by_slug["wip-rework"].exclusive is False
+        assert by_slug["ready-to-ship"].exclusive is False
 
     def test_category_splits_locations_from_stations(self):
         """§3.3: item→location destinations print under the Codes page's
@@ -72,6 +74,7 @@ class TestStationCatalog:
             "fit-check",
             "sanding",
             "wip-rework",
+            "ready-to-ship",
             "ready-for-production-inventory",
             "production-wip",
             "bin-empty",

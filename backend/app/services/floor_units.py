@@ -142,6 +142,7 @@ class UnitDetail:
     knob_bin_payload: str | None
     button_bin_payload: str | None
     linked_at: datetime
+    unit_workflow_status: str
 
 
 @dataclass(frozen=True)
@@ -174,6 +175,16 @@ async def _bin_payload_for_batch(db: AsyncSession, batch_id: int | None) -> str 
     return batch.bin_payload if batch is not None else None
 
 
+async def _unit_workflow_status(db: AsyncSession, top_part_id: int, bottom_part_id: int) -> str:
+    top_status = await _part_current_status(db, top_part_id)
+    bottom_status = await _part_current_status(db, bottom_part_id)
+    if top_status == PartStatus.REWORK.value and bottom_status == PartStatus.REWORK.value:
+        return "rework"
+    if top_status == PartStatus.SHIPPED.value and bottom_status == PartStatus.SHIPPED.value:
+        return "shipped"
+    return "mixed"
+
+
 async def _detail_from_unit(db: AsyncSession, unit: FloorProductUnit) -> UnitDetail:
     top = await db.get(FloorLabeledPart, unit.top_part_id)
     bottom = await db.get(FloorLabeledPart, unit.bottom_part_id)
@@ -194,6 +205,7 @@ async def _detail_from_unit(db: AsyncSession, unit: FloorProductUnit) -> UnitDet
         knob_bin_payload=await _bin_payload_for_batch(db, knob_batch_id),
         button_bin_payload=await _bin_payload_for_batch(db, button_batch_id),
         linked_at=unit.linked_at,
+        unit_workflow_status=await _unit_workflow_status(db, unit.top_part_id, unit.bottom_part_id),
     )
 
 
@@ -534,6 +546,7 @@ class ReturnUnitToReworkResult(StrEnum):
     NOT_FOUND = "not_found"
     INVALID_SERIAL = "invalid_serial"
     NOT_SHIPPED = "not_shipped"
+    ALREADY_IN_REWORK = "already_in_rework"
     INVALID_REASON = "invalid_reason"
 
 
@@ -575,50 +588,36 @@ async def _return_unit_parts_to_rework(
     rework_details: dict,
     reason_display: str | None,
 ) -> ReturnUnitToReworkOutcome:
-    """Unlink a shipped unit and write ``rework`` on both housings."""
+    """Move a linked unit from shipped to rework without unlinking the serial."""
     top = await db.get(FloorLabeledPart, unit.top_part_id)
     bottom = await db.get(FloorLabeledPart, unit.bottom_part_id)
     if top is None or bottom is None:
         return ReturnUnitToReworkOutcome(result=ReturnUnitToReworkResult.NOT_FOUND)
 
-    for part in (top, bottom):
-        if await _part_current_status(db, part.id) != PartStatus.SHIPPED.value:
-            return ReturnUnitToReworkOutcome(result=ReturnUnitToReworkResult.NOT_SHIPPED)
+    top_status = await _part_current_status(db, top.id)
+    bottom_status = await _part_current_status(db, bottom.id)
+    if top_status == PartStatus.REWORK.value and bottom_status == PartStatus.REWORK.value:
+        return ReturnUnitToReworkOutcome(result=ReturnUnitToReworkResult.ALREADY_IN_REWORK)
+    if top_status != PartStatus.SHIPPED.value or bottom_status != PartStatus.SHIPPED.value:
+        return ReturnUnitToReworkOutcome(result=ReturnUnitToReworkResult.NOT_SHIPPED)
 
-    unit_id = unit.id
     serial_code = unit.serial_code
-    top_sticker = top.sticker_code
-    bottom_sticker = bottom.sticker_code
-    top_part_id = unit.top_part_id
-    bottom_part_id = unit.bottom_part_id
-
-    await db.delete(unit)
-    await db.flush()
-
-    unlink_details = {"unit_id": unit_id, "serial_code": serial_code, "source": "serial_return"}
-    for part_id in (top_part_id, bottom_part_id):
+    for part in (top, bottom):
         db.add(
             FloorPartEvent(
-                part_id=part_id,
-                action="unit_unlinked",
-                details=unlink_details,
-            )
-        )
-        db.add(
-            FloorPartEvent(
-                part_id=part_id,
+                part_id=part.id,
                 action=PartStatus.REWORK.value,
-                details=rework_details,
+                details={**rework_details, "unit_id": unit.id},
             )
         )
     await db.flush()
 
     return ReturnUnitToReworkOutcome(
         result=ReturnUnitToReworkResult.RETURNED,
-        unit_id=unit_id,
+        unit_id=unit.id,
         serial_code=serial_code,
-        top_sticker=top_sticker,
-        bottom_sticker=bottom_sticker,
+        top_sticker=top.sticker_code,
+        bottom_sticker=bottom.sticker_code,
         reason=reason_display,
     )
 
@@ -687,6 +686,73 @@ async def return_unit_to_rework_error(
     )
 
 
+class ReadyUnitToShipResult(StrEnum):
+    """What a ``ready_unit_to_ship`` request did."""
+
+    READY = "ready"
+    NOT_FOUND = "not_found"
+    INVALID_SERIAL = "invalid_serial"
+    NOT_IN_REWORK = "not_in_rework"
+    ALREADY_READY = "already_ready"
+
+
+@dataclass(frozen=True)
+class ReadyUnitToShipOutcome:
+    result: ReadyUnitToShipResult
+    serial_code: str | None = None
+    top_sticker: str | None = None
+    bottom_sticker: str | None = None
+
+
+async def ready_unit_to_ship(db: AsyncSession, serial: str) -> ReadyUnitToShipOutcome:
+    """Restore a linked unit from rework back to shipped, keeping the serial bound."""
+    normalized = parse_serial(serial)
+    if normalized is None:
+        return ReadyUnitToShipOutcome(result=ReadyUnitToShipResult.INVALID_SERIAL)
+
+    unit = await db.scalar(select(FloorProductUnit).where(FloorProductUnit.serial_code == normalized))
+    if unit is None:
+        return ReadyUnitToShipOutcome(result=ReadyUnitToShipResult.NOT_FOUND)
+
+    top = await db.get(FloorLabeledPart, unit.top_part_id)
+    bottom = await db.get(FloorLabeledPart, unit.bottom_part_id)
+    if top is None or bottom is None:
+        return ReadyUnitToShipOutcome(result=ReadyUnitToShipResult.NOT_FOUND)
+
+    top_status = await _part_current_status(db, top.id)
+    bottom_status = await _part_current_status(db, bottom.id)
+    if top_status == PartStatus.SHIPPED.value and bottom_status == PartStatus.SHIPPED.value:
+        return ReadyUnitToShipOutcome(
+            result=ReadyUnitToShipResult.ALREADY_READY,
+            serial_code=normalized,
+            top_sticker=top.sticker_code,
+            bottom_sticker=bottom.sticker_code,
+        )
+    if top_status != PartStatus.REWORK.value or bottom_status != PartStatus.REWORK.value:
+        return ReadyUnitToShipOutcome(result=ReadyUnitToShipResult.NOT_IN_REWORK)
+
+    shipped_details = {
+        "unit_id": unit.id,
+        "serial_code": normalized,
+        "source": "serial_ready_to_ship",
+    }
+    for part in (top, bottom):
+        db.add(
+            FloorPartEvent(
+                part_id=part.id,
+                action=PartStatus.SHIPPED.value,
+                details=shipped_details,
+            )
+        )
+    await db.flush()
+    return ReadyUnitToShipOutcome(
+        result=ReadyUnitToShipResult.READY,
+        serial_code=normalized,
+        top_sticker=top.sticker_code,
+        bottom_sticker=bottom.sticker_code,
+    )
+
+
 async def replace_unit_kit(
     db: AsyncSession,
     unit_id: int,
@@ -741,12 +807,14 @@ __all__ = [
     "ReplaceUnitResult",
     "ReplaceUnitKitResult",
     "ReturnUnitToReworkResult",
+    "ReadyUnitToShipResult",
     "UnitDetail",
     "LinkUnitOutcome",
     "UnlinkUnitOutcome",
     "ReplaceUnitOutcome",
     "ReplaceUnitKitOutcome",
     "ReturnUnitToReworkOutcome",
+    "ReadyUnitToShipOutcome",
     "link_unit",
     "get_unit_by_serial",
     "get_unit_by_part",
@@ -756,4 +824,5 @@ __all__ = [
     "replace_unit_kit",
     "return_unit_to_rework",
     "return_unit_to_rework_error",
+    "ready_unit_to_ship",
 ]

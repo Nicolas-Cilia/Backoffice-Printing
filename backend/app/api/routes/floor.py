@@ -152,6 +152,7 @@ from backend.app.services.floor_sessions import (
 )
 from backend.app.services.floor_units import (
     LinkUnitResult,
+    ReadyUnitToShipResult,
     ReplaceUnitKitResult,
     ReplaceUnitResult,
     ReturnUnitToReworkResult,
@@ -162,6 +163,7 @@ from backend.app.services.floor_units import (
     link_unit,
     list_units,
     parse_serial,
+    ready_unit_to_ship,
     replace_unit,
     replace_unit_kit,
     return_unit_to_rework,
@@ -1842,6 +1844,7 @@ class UnitDetailResponse(BaseModel):
     knob_bin_payload: str | None = None
     button_bin_payload: str | None = None
     linked_at: datetime
+    unit_workflow_status: str
 
 
 def _to_unit_response(unit: UnitDetail) -> UnitDetailResponse:
@@ -1859,6 +1862,7 @@ def _to_unit_response(unit: UnitDetail) -> UnitDetailResponse:
         knob_bin_payload=unit.knob_bin_payload,
         button_bin_payload=unit.button_bin_payload,
         linked_at=unit.linked_at,
+        unit_workflow_status=unit.unit_workflow_status,
     )
 
 
@@ -2065,6 +2069,35 @@ async def return_unit_rework_error_route(
         top_sticker=outcome.top_sticker,
         bottom_sticker=outcome.bottom_sticker,
         reason=outcome.reason,
+    )
+
+
+class ReadyUnitToShipRequest(BaseModel):
+    serial: str = Field(..., min_length=1, max_length=64)
+
+
+class ReadyUnitToShipResponse(BaseModel):
+    result: ReadyUnitToShipResult
+    serial_code: str | None = None
+    top_sticker: str | None = None
+    bottom_sticker: str | None = None
+
+
+@router.post("/units/ready-to-ship", response_model=ReadyUnitToShipResponse)
+async def ready_unit_to_ship_route(
+    body: ReadyUnitToShipRequest,
+    db: AsyncSession = Depends(get_db),
+    _: User | None = RequirePermissionIfAuthEnabled(Permission.FLOOR_SCAN),
+) -> ReadyUnitToShipResponse:
+    """Restore a linked unit from rework back to shipped, keeping the serial bound."""
+    outcome = await ready_unit_to_ship(db, body.serial)
+    await db.commit()
+    logger.info("Unit ready to ship: serial=%s result=%s", body.serial, outcome.result)
+    return ReadyUnitToShipResponse(
+        result=outcome.result,
+        serial_code=outcome.serial_code,
+        top_sticker=outcome.top_sticker,
+        bottom_sticker=outcome.bottom_sticker,
     )
 
 

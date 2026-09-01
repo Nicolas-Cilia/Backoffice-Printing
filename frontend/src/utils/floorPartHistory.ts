@@ -212,6 +212,12 @@ export function partEventLabel(
           })
         : t('floor.inventoryEventPartCodeRemoved', 'Part code removed');
     }
+    case 'bot_bin_loaded': {
+      const binPayload = event.details?.bin_payload;
+      return typeof binPayload === 'string' && binPayload.trim()
+        ? t('floor.inventoryEventBotBinLoaded', 'Loaded into BOT bin · {{bin}}', { bin: binPayload.trim() })
+        : t('floor.inventoryEventBotBinLoadedGeneric', 'Loaded into BOT bin');
+    }
     default:
       return event.action.replaceAll('_', ' ');
   }

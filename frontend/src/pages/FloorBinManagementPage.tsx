@@ -30,7 +30,7 @@ function binManagementCardClass(focused: boolean, constrained = false): string {
   ].join(' ');
 }
 
-const BOT_BIN_MAX_MEMBERS = 20;
+const BOT_BIN_MAX_MEMBERS = 18;
 
 function botBinAssignErrorMessage(
   result: string,
@@ -939,7 +939,7 @@ function BotBinCard({
     <article
       ref={focused ? focusedRef : undefined}
       aria-current={focused ? 'true' : undefined}
-      className={binManagementCardClass(focused, batch != null)}
+      className={binManagementCardClass(focused)}
     >
       <div className="flex shrink-0 items-start justify-between gap-3">
         <div>
@@ -952,19 +952,8 @@ function BotBinCard({
       </div>
 
       {batch ? (
-        <div className="mt-4 flex min-h-0 flex-1 flex-col gap-3">
-          {canAssign && (
-            <BotBinAssignRow
-              bin={bin}
-              assignSticker={assignSticker}
-              setAssignSticker={setAssignSticker}
-              busy={busy}
-              assignPending={assignPending}
-              onAssign={onAssign}
-              t={t}
-            />
-          )}
-          <p className="shrink-0 text-sm text-bambu-gray-light">
+        <div className="mt-4 flex flex-col gap-3">
+          <p className="text-sm text-bambu-gray-light">
             {batch.remaining_quantity} {t('inventory.botBinMembers', 'bottoms loaded')}
           </p>
           {membersQuery.isLoading ? (
@@ -975,47 +964,75 @@ function BotBinCard({
           ) : membersQuery.isError ? (
             <p className="text-sm text-red-400">{t('inventory.botBinMembersLoadError', 'Could not load members')}</p>
           ) : (membersQuery.data ?? []).length === 0 ? (
-            <p className="text-sm text-bambu-gray">{t('inventory.botBinNoMembers', 'No bottoms loaded')}</p>
+            <>
+              <p className="text-sm text-bambu-gray">{t('inventory.botBinNoMembers', 'No bottoms loaded')}</p>
+              {canAssign && (
+                <BotBinAssignRow
+                  bin={bin}
+                  assignSticker={assignSticker}
+                  setAssignSticker={setAssignSticker}
+                  busy={busy}
+                  assignPending={assignPending}
+                  onAssign={onAssign}
+                  t={t}
+                />
+              )}
+            </>
           ) : (
-            <div className="-mr-1 min-h-0 flex-1 overflow-y-auto overscroll-y-contain pr-1">
-              <ul className="space-y-2">
-                {(membersQuery.data ?? []).map((member: FloorBotBinMember) => {
-                  const part = partsById.get(member.part_id);
-                  return (
-                    <li
-                      key={member.part_id}
-                      className="rounded-lg border border-bambu-dark-tertiary bg-bambu-dark-secondary px-3 py-2 text-sm"
-                    >
-                      <p className="font-mono text-white">{member.sticker_code}</p>
-                      <p className="mt-1 text-bambu-gray">
-                        {part?.printer_name ?? t('inventory.botBinUnknownPrinter', 'Unknown printer')}
-                        {part?.print_name ? ` · ${part.print_name}` : ''}
-                      </p>
-                      <div className="mt-2 flex flex-wrap gap-2">
-                        <Button
-                          size="sm"
-                          variant="secondary"
-                          disabled={busy}
-                          onClick={() => onMove(batch.id, member.part_id, member.sticker_code)}
-                        >
-                          {t('inventory.botBinMoveMember', 'Move')}
-                        </Button>
-                        <Button
-                          size="sm"
-                          variant="danger"
-                          disabled={busy}
-                          onClick={() => onRemove(batch.id, member.part_id, member.sticker_code)}
-                        >
-                          {t('inventory.botBinRemoveMember', 'Remove')}
-                        </Button>
-                      </div>
-                    </li>
-                  );
-                })}
-              </ul>
-            </div>
+            <>
+              <div className="max-h-56 overflow-y-auto overscroll-y-contain rounded-lg border border-bambu-dark-tertiary">
+                <ul className="divide-y divide-bambu-dark-tertiary">
+                  {(membersQuery.data ?? []).map((member: FloorBotBinMember) => {
+                    const part = partsById.get(member.part_id);
+                    return (
+                      <li
+                        key={member.part_id}
+                        className="flex items-start justify-between gap-2 bg-bambu-dark-secondary px-3 py-2 text-sm"
+                      >
+                        <div className="min-w-0 flex-1">
+                          <p className="font-mono text-white">{member.sticker_code}</p>
+                          <p className="mt-0.5 truncate text-xs text-bambu-gray">
+                            {part?.printer_name ?? t('inventory.botBinUnknownPrinter', 'Unknown printer')}
+                            {part?.print_name ? ` · ${part.print_name}` : ''}
+                          </p>
+                        </div>
+                        <div className="flex shrink-0 gap-1">
+                          <Button
+                            size="sm"
+                            variant="secondary"
+                            disabled={busy}
+                            onClick={() => onMove(batch.id, member.part_id, member.sticker_code)}
+                          >
+                            {t('inventory.botBinMoveMember', 'Move')}
+                          </Button>
+                          <Button
+                            size="sm"
+                            variant="danger"
+                            disabled={busy}
+                            onClick={() => onRemove(batch.id, member.part_id, member.sticker_code)}
+                          >
+                            {t('inventory.botBinRemoveMember', 'Remove')}
+                          </Button>
+                        </div>
+                      </li>
+                    );
+                  })}
+                </ul>
+              </div>
+              {canAssign && (
+                <BotBinAssignRow
+                  bin={bin}
+                  assignSticker={assignSticker}
+                  setAssignSticker={setAssignSticker}
+                  busy={busy}
+                  assignPending={assignPending}
+                  onAssign={onAssign}
+                  t={t}
+                />
+              )}
+            </>
           )}
-          <div className="flex shrink-0 flex-wrap gap-2">
+          <div className="flex flex-wrap gap-2 border-t border-bambu-dark-tertiary pt-3">
             {canStage && (
               <Button
                 size="sm"

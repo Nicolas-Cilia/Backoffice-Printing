@@ -68,6 +68,8 @@ const NON_STATUS_EVENT_ACTIONS = new Set([
   // Kit bookkeeping is which fills were drawn — not a workflow status.
   "kit_assigned",
   "kit_reassigned",
+  // BOT bin load is audit-only — workflow status stays on fit check until staged/WIP.
+  "bot_bin_loaded",
 ]);
 const FAILURE_REASON_OPTIONS: Array<{ value: FloorStopReasonCode; label: string }> = [
   { value: "first_layer_issue", label: "First layer issue" },

@@ -1714,6 +1714,7 @@ export interface FloorProductUnit {
   knob_bin_payload: string | null;
   button_bin_payload: string | null;
   linked_at: string;
+  unit_workflow_status: 'shipped' | 'rework' | 'mixed';
 }
 
 /** What a `linkUnit` request did. Mirrors
@@ -1755,7 +1756,8 @@ export type ReturnUnitToReworkResult =
   | 'not_found'
   | 'invalid_serial'
   | 'not_shipped'
-  | 'invalid_reason';
+  | 'invalid_reason'
+  | 'already_in_rework';
 
 export interface ReturnUnitToReworkResponse {
   result: ReturnUnitToReworkResult;
@@ -1764,6 +1766,20 @@ export interface ReturnUnitToReworkResponse {
   top_sticker: string | null;
   bottom_sticker: string | null;
   reason: string | null;
+}
+
+export type ReadyUnitToShipResult =
+  | 'ready'
+  | 'not_found'
+  | 'invalid_serial'
+  | 'not_in_rework'
+  | 'already_ready';
+
+export interface ReadyUnitToShipResponse {
+  result: ReadyUnitToShipResult;
+  serial_code: string | null;
+  top_sticker: string | null;
+  bottom_sticker: string | null;
 }
 
 /** What a `replaceUnitHousing` request did (Wave 3). Mirrors
@@ -6296,6 +6312,12 @@ export const api = {
     }),
   returnUnitToReworkError: (data: { serial: string; error_payload: string; reason_text?: string | null }) =>
     request<ReturnUnitToReworkResponse>('/floor/units/return-rework/error', {
+      method: 'POST',
+      body: JSON.stringify(data),
+    }),
+  /** Restore a linked unit from rework back to shipped. */
+  readyUnitToShip: (data: { serial: string }) =>
+    request<ReadyUnitToShipResponse>('/floor/units/ready-to-ship', {
       method: 'POST',
       body: JSON.stringify(data),
     }),

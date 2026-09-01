@@ -62,6 +62,7 @@ import {
   type FloorBinBatch,
   type FloorProductUnit,
   type HarvestSummaryLine,
+  type ReadyUnitToShipResponse,
   type ReturnUnitToReworkResponse,
   type PrinterMaintenanceOverview,
   type ReworkReasonCode,
@@ -1074,7 +1075,7 @@ export function FloorScanPage() {
           failScan(
             t(
               'floor.locationPartShipped',
-              'Part is shipped on a product serial — unlink it first',
+              'Part is linked to a product serial — unlink it first',
             ),
             binPayload,
           );
@@ -1179,7 +1180,7 @@ export function FloorScanPage() {
           failScan(
             t(
               'floor.locationPartShipped',
-              'Part is shipped on a product serial — unlink it first',
+              'Part is linked to a product serial — unlink it first',
             ),
             payload,
           );
@@ -1280,7 +1281,7 @@ export function FloorScanPage() {
         failScan(
           t(
             'floor.locationPartShipped',
-            'Part is shipped on a product serial — unlink it first',
+            'Part is linked to a product serial — unlink it first',
           ),
         );
         return;
@@ -1413,7 +1414,7 @@ export function FloorScanPage() {
           failScan(
             t(
               'floor.locationPartShipped',
-              'Part is shipped on a product serial — unlink it first',
+              'Part is linked to a product serial — unlink it first',
             ),
             payload,
           );
@@ -1652,21 +1653,38 @@ export function FloorScanPage() {
         failScan(t('floor.unitReturnNotShipped', 'That unit is not shipped'));
         return;
       }
+      if (resp.result === 'already_in_rework') {
+        failScan(t('floor.unitAlreadyInRework', 'That unit is already in Rework'));
+        return;
+      }
       if (resp.result === 'invalid_reason') {
         failScan(t('floor.scanInvalidCode', 'Invalid part code'));
         return;
       }
-      if (resp.result !== 'returned') {
+      if (resp.result !== 'returned' || !resp.serial_code) {
         failScan(t('floor.scanFailed', 'Scan failed'));
         return;
       }
-      setStatus({ kind: 'idle' });
-      showToast(
-        t('floor.unitReturnedToRework', 'Unit sent to Rework · {{reason}}', {
-          reason: resp.reason ?? reasonCode ?? '',
-        }),
-        'success',
-      );
+      void (async () => {
+        try {
+          const unit = await api.getUnitBySerial(resp.serial_code!);
+          setStatus({ kind: 'unit-linked', unit });
+          showToast(
+            t('floor.unitReturnedToRework', 'Unit sent to Rework · {{reason}}', {
+              reason: resp.reason ?? reasonCode ?? '',
+            }),
+            'success',
+          );
+        } catch {
+          setStatus({ kind: 'idle' });
+          showToast(
+            t('floor.unitReturnedToRework', 'Unit sent to Rework · {{reason}}', {
+              reason: resp.reason ?? reasonCode ?? '',
+            }),
+            'success',
+          );
+        }
+      })();
     },
     [failScan, showToast, t],
   );
@@ -1707,6 +1725,54 @@ export function FloorScanPage() {
       }
     },
     [applyUnitReturnReworkResponse, failScan, t],
+  );
+
+  const applyReadyToShipResponse = useCallback(
+    (resp: ReadyUnitToShipResponse) => {
+      if (resp.result === 'invalid_serial') {
+        failScan(t('floor.unitInvalidSerial', 'That serial is not valid'));
+        return;
+      }
+      if (resp.result === 'not_found' || resp.result === 'not_in_rework') {
+        failScan(t('floor.unitReadyNotFound', 'That unit is not in Rework'));
+        return;
+      }
+      if (resp.result === 'already_ready') {
+        failScan(t('floor.unitAlreadyReadyToShip', 'That unit is already ready to ship'));
+        return;
+      }
+      if (resp.result !== 'ready' || !resp.serial_code) {
+        failScan(t('floor.scanFailed', 'Scan failed'));
+        return;
+      }
+      void (async () => {
+        try {
+          const unit = await api.getUnitBySerial(resp.serial_code!);
+          setStatus({ kind: 'unit-linked', unit });
+          showToast(t('floor.unitReadyToShipDone', 'Unit ready to ship again'), 'success');
+        } catch {
+          setStatus({ kind: 'idle' });
+          showToast(t('floor.unitReadyToShipDone', 'Unit ready to ship again'), 'success');
+        }
+      })();
+    },
+    [failScan, showToast, t],
+  );
+
+  const submitReadyToShip = useCallback(
+    async (serial: string) => {
+      setBusy(true);
+      busyRef.current = true;
+      try {
+        applyReadyToShipResponse(await api.readyUnitToShip({ serial }));
+      } catch {
+        failScan(t('floor.scanFailed', 'Scan failed'), serial);
+      } finally {
+        setBusy(false);
+        busyRef.current = false;
+      }
+    },
+    [applyReadyToShipResponse, failScan, t],
   );
 
   const handleScan = useCallback(
@@ -1990,7 +2056,23 @@ export function FloorScanPage() {
       }
       if (route.action === 'location') {
         if (statusRef.current.kind === 'unit-linked' && route.slug === 'wip-rework') {
-          setStatus({ kind: 'awaiting-unit-rework-reason', unit: statusRef.current.unit });
+          if (statusRef.current.unit.unit_workflow_status === 'shipped') {
+            setStatus({ kind: 'awaiting-unit-rework-reason', unit: statusRef.current.unit });
+          } else if (statusRef.current.unit.unit_workflow_status === 'rework') {
+            failScan(t('floor.unitAlreadyInRework', 'That unit is already in Rework'), route.payload);
+          } else {
+            failScan(t('floor.unitReturnNotShipped', 'That unit is not shipped'), route.payload);
+          }
+          return;
+        }
+        if (statusRef.current.kind === 'unit-linked' && route.slug === 'ready-to-ship') {
+          if (statusRef.current.unit.unit_workflow_status === 'rework') {
+            void submitReadyToShip(statusRef.current.unit.serial_code);
+          } else if (statusRef.current.unit.unit_workflow_status === 'shipped') {
+            failScan(t('floor.unitAlreadyReadyToShip', 'That unit is already ready to ship'), route.payload);
+          } else {
+            failScan(t('floor.unitReadyNotFound', 'That unit is not in Rework'), route.payload);
+          }
           return;
         }
         if (statusRef.current.kind === 'awaiting-bin-location') {
@@ -2016,6 +2098,11 @@ export function FloorScanPage() {
               route.slug === 'sanding'
                 ? t('floor.sandingBinNotAllowed', "Bins aren't supported for Sanding — scan a part instead")
                 : t('floor.reworkBinNotAllowed', "Bins aren't supported for Rework — scan a part instead"),
+              route.payload,
+            );
+          } else if (route.slug === 'ready-to-ship') {
+            failScan(
+              t('floor.readyToShipSerialFirst', 'Scan the product serial first'),
               route.payload,
             );
           } else {
@@ -2081,7 +2168,11 @@ export function FloorScanPage() {
         }
         // No part pending: a location code scanned on its own says so
         // specifically, rather than reading as a generic unknown code.
-        failScan(t('floor.locationNoPartPending', 'Scan a part first'), route.payload);
+        if (route.slug === 'ready-to-ship') {
+          failScan(t('floor.readyToShipSerialFirst', 'Scan the product serial first'), route.payload);
+        } else {
+          failScan(t('floor.locationNoPartPending', 'Scan a part first'), route.payload);
+        }
         return;
       }
       if (route.action === 'rework-reason') {
@@ -2280,6 +2371,7 @@ export function FloorScanPage() {
       submitUnitHousing,
       submitUnitReturnRework,
       submitUnitReturnReworkError,
+      submitReadyToShip,
       showToast,
       t,
     ],
@@ -4199,7 +4291,11 @@ function BinRecordedFlash({
         <p className="mt-2 text-lg text-bambu-gray">
           {action === 'qc' && typeof batch.qc_passed_quantity === 'number'
             ? `${batch.qc_passed_quantity} / ${batch.quantity} passed QC`
-            : `${batch.quantity} · ${batch.printer_name ?? 'Printer'}`}
+            : action === 'loaded' && batch.part_code === 'BOT'
+              ? batch.remaining_quantity === 1
+                ? t('floor.botBinMemberCountOne', '1 bottom loaded')
+                : t('floor.botBinMemberCount', '{{count}} bottoms loaded', { count: batch.remaining_quantity })
+              : `${batch.quantity} · ${batch.printer_name ?? 'Printer'}`}
         </p>
       )}
     </>
@@ -4390,9 +4486,25 @@ function UnitLinkedScreen({
       <ScanLine className="w-16 h-16 mb-6 text-bambu-green shrink-0" aria-hidden="true" />
       <p className="text-lg text-bambu-green">{t('floor.unitLinkedHeading', 'Linked unit')}</p>
       <p className="text-4xl font-bold text-white font-mono">{unit.serial_code}</p>
-      <p className="mt-2 text-lg text-bambu-gray-light">
-        {t('floor.unitScanReworkHint', 'Scan the Rework shelf to send this unit back for rework')}
-      </p>
+      {unit.unit_workflow_status === 'rework' ? (
+        <>
+          <p className="mt-2 text-lg text-bambu-gray-light">
+            {t('floor.unitScanReadyToShipShelf', 'Scan the Ready to Ship shelf')}
+          </p>
+          <p className="mt-1 text-sm text-bambu-gray">
+            {t('floor.unitInReworkHint', 'Both housings are in Rework — the serial stays linked')}
+          </p>
+        </>
+      ) : (
+        <>
+          <p className="mt-2 text-lg text-bambu-gray-light">
+            {t('floor.unitScanReworkHint', 'Scan the Rework shelf to send this unit back for rework')}
+          </p>
+          <p className="mt-1 text-sm text-bambu-gray">
+            {t('floor.unitShippedHint', 'After rework, scan the Ready to Ship shelf from this same unit card')}
+          </p>
+        </>
+      )}
       <dl className="mt-5 w-full max-w-md space-y-2">
         {rows.map(([label, value]) => (
           <div key={label} className="flex items-center justify-between gap-4 rounded-lg bg-bambu-dark-secondary px-4 py-2">
