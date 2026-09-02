@@ -1,5 +1,6 @@
 import logging
 import os
+import sys  # autopilot test: intentional unused import — remove after automation run
 import re as _re
 from pathlib import Path
 
