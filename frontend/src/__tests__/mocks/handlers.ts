@@ -637,6 +637,13 @@ export const handlers = [
   }),
   // Floor: idle BBD scans try by-part first; default free housing → item→location.
   http.get('/api/v1/floor/units/by-part/:sticker', () => new HttpResponse(null, { status: 404 })),
+  http.get('/api/v1/floor/error-labels', () =>
+    HttpResponse.json([
+      { id: 1, name: 'Horizontal line', slug: 'horizontal-line', payload: 'BBF-horizontal-line', is_protected: false },
+      { id: 2, name: 'Vertical line', slug: 'vertical-line', payload: 'BBF-vertical-line', is_protected: false },
+      { id: 3, name: 'Other', slug: 'other', payload: 'BBF-other', is_protected: true },
+    ]),
+  ),
   http.get('/api/v1/floor/inventory/bins', () => HttpResponse.json([])),
   http.post('/api/v1/floor/bot-bins/members', () => HttpResponse.json({ result: 'recorded' })),
   http.get('/api/v1/floor/bot-bins/batches/:batchId/members', () => HttpResponse.json([])),

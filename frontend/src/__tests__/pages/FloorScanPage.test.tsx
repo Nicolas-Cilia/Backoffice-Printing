@@ -559,6 +559,23 @@ describe('FloorScanPage (Phase 1b sessions)', () => {
       expect(screen.getByLabelText('Scan field')).toHaveFocus();
     });
 
+    it('returns to idle from the back control instead of leaving for /floor', async () => {
+      mockNoSession();
+      mockInfo();
+      render(<FloorScanPage />);
+      await screen.findByText('Scan a code');
+      await scan('BBP-12');
+      await screen.findByText('Bench A');
+
+      fireEvent.pointerDown(screen.getByRole('button', { name: 'Back to Scan' }), {
+        pointerType: 'touch',
+        button: 0,
+      });
+
+      expect(await screen.findByText('Scan a code')).toBeInTheDocument();
+      expect(mockNavigate).not.toHaveBeenCalled();
+    });
+
     it('leads with the live status', async () => {
       // Standing at a machine, "is this running" is the first question.
       mockNoSession();
@@ -1737,6 +1754,39 @@ describe('FloorScanPage (Phase 1b sessions)', () => {
         expect(screen.getByLabelText('Scan field')).toHaveFocus();
       });
 
+      it('returns to idle scan from Back when a part opened harvest', async () => {
+        mockNoSession();
+        mockHarvestInfo();
+        server.use(
+          http.delete('/api/v1/floor/session', () => HttpResponse.json(HARVEST_SESSION)),
+        );
+        render(<FloorScanPage />);
+        await screen.findByText('Scan a code');
+        await scan('BBP-12');
+        await screen.findByText('Bench A');
+
+        mockPartScan({
+          result: 'labeled',
+          part: { id: 1, sticker_code: 'BBD-000042', printer_id: 12, archive_id: 88, labeled_at: '2026-08-24T15:00:00' },
+          printer: { id: 12, name: 'Bench A' },
+          archive: { id: 88, print_name: 'bracket_v4', completed_at: null, quantity: 1 },
+          part_count: 1,
+          session: HARVEST_SESSION,
+          blocking: null,
+        });
+        await scan('BBD-000042');
+        await screen.findByText('Linked · bracket_v4');
+
+        fireEvent.pointerDown(screen.getByRole('button', { name: 'Back to Scan' }), {
+          pointerType: 'touch',
+          button: 0,
+        });
+
+        expect(await screen.findByText('Scan a code')).toBeInTheDocument();
+        expect(screen.queryByText('Harvest')).not.toBeInTheDocument();
+        expect(mockNavigate).not.toHaveBeenCalled();
+      });
+
       it('returns to idle scan when re-scanning the same printer after linking a part', async () => {
         mockNoSession();
         mockHarvestInfo();
@@ -2162,7 +2212,7 @@ describe('FloorScanPage (Phase 1b sessions)', () => {
       expect(screen.getByText('Scan Discard again to confirm')).toBeInTheDocument();
       // No reason prompt, unlike a part's discard — the first Discard scan
       // must not have committed anything yet either.
-      expect(screen.queryByText('Scan an error label')).not.toBeInTheDocument();
+      expect(screen.queryByText('Select a reason')).not.toBeInTheDocument();
       expect(discardCall.body).toBeNull();
 
       await scan('BBX-discard');
@@ -2248,15 +2298,30 @@ describe('FloorScanPage (Phase 1b sessions)', () => {
       return captured;
     }
 
-    function mockReworkScan(response: unknown, status = 200) {
+    function mockSandingErrorScan(response: unknown, status = 200) {
       const captured: { body: Record<string, unknown> | null } = { body: null };
       server.use(
-        http.post('/api/v1/floor/locations/rework/part', async ({ request }) => {
+        http.post('/api/v1/floor/locations/sanding/error', async ({ request }) => {
           captured.body = (await request.json()) as Record<string, unknown>;
           return HttpResponse.json(response, { status });
         }),
       );
       return captured;
+    }
+
+    function mockReworkErrorScan(response: unknown, status = 200) {
+      const captured: { body: Record<string, unknown> | null } = { body: null };
+      server.use(
+        http.post('/api/v1/floor/locations/rework/error', async ({ request }) => {
+          captured.body = (await request.json()) as Record<string, unknown>;
+          return HttpResponse.json(response, { status });
+        }),
+      );
+      return captured;
+    }
+
+    function tapReason(name: string) {
+      fireEvent.pointerDown(screen.getByRole('button', { name }), { pointerType: 'touch', button: 0 });
     }
 
     it('prompts for a location only after confirming the part is registered and linked', async () => {
@@ -2428,7 +2493,7 @@ describe('FloorScanPage (Phase 1b sessions)', () => {
 
     it('does not commit on the Sanding location scan — it only advances to asking why', async () => {
       mockNoSession();
-      const sandingCall = mockSandingScan({ result: 'recorded', part: RECORDED_PART, printer: RECORDED_PRINTER, archive: RECORDED_ARCHIVE });
+      const sandingCall = mockSandingErrorScan({ result: 'recorded', part: RECORDED_PART, printer: RECORDED_PRINTER, archive: RECORDED_ARCHIVE });
       render(<FloorScanPage />);
       await screen.findByText('Scan a code');
       await scan('BBD-000042');
@@ -2436,25 +2501,160 @@ describe('FloorScanPage (Phase 1b sessions)', () => {
 
       await scan('BBS-sanding');
 
-      expect(await screen.findByText('Scan an error label')).toBeInTheDocument();
+      expect(await screen.findByText('Select a reason')).toBeInTheDocument();
+      expect(await screen.findByRole('button', { name: 'Horizontal line' })).toBeInTheDocument();
       expect(screen.getByText('Sanding')).toBeInTheDocument();
       expect(sandingCall.body).toBeNull();
     });
 
-    it('commits Sanding on the reason scan, sending the bare reason code', async () => {
+    it('commits Sanding from an on-screen reason button', async () => {
+      mockNoSession();
+      const captured = mockSandingErrorScan({
+        result: 'recorded',
+        part: RECORDED_PART,
+        printer: RECORDED_PRINTER,
+        archive: RECORDED_ARCHIVE,
+        reason: 'Horizontal line',
+      });
+      render(<FloorScanPage />);
+      await screen.findByText('Scan a code');
+      await scan('BBD-000042');
+      await screen.findByText('Scan a location');
+      await scan('BBS-rework');
+      await screen.findByRole('button', { name: 'Horizontal line' });
+
+      tapReason('Horizontal line');
+
+      expect(await screen.findByText('Sent to Sanding · Horizontal line')).toBeInTheDocument();
+      expect(captured.body).toEqual({ payload: 'BBD-000042', error_payload: 'BBF-horizontal-line' });
+    });
+
+    it('still commits Sanding from a leftover BBR reason sticker', async () => {
       mockNoSession();
       const captured = mockSandingScan({ result: 'recorded', part: RECORDED_PART, printer: RECORDED_PRINTER, archive: RECORDED_ARCHIVE });
       render(<FloorScanPage />);
       await screen.findByText('Scan a code');
       await scan('BBD-000042');
       await screen.findByText('Scan a location');
-      await scan('BBS-rework');
-      await screen.findByText('Scan an error label');
+      await scan('BBS-sanding');
+      await screen.findByText('Select a reason');
 
       await scan('BBR-doesnt_fit');
 
       expect(await screen.findByText('Sent to Sanding · doesnt_fit')).toBeInTheDocument();
       expect(captured.body).toEqual({ payload: 'BBD-000042', reason_code: 'doesnt_fit' });
+    });
+
+    it('opens Other as a custom reason and pauses the countdown while typing', async () => {
+      vi.useFakeTimers({ shouldAdvanceTime: true });
+      try {
+        mockNoSession();
+        const captured = mockSandingErrorScan({
+          result: 'recorded',
+          part: RECORDED_PART,
+          printer: RECORDED_PRINTER,
+          archive: RECORDED_ARCHIVE,
+          reason: 'Other',
+        });
+        render(<FloorScanPage />);
+        await screen.findByText('Scan a code');
+        await scan('BBD-000042');
+        await screen.findByText('Scan a location');
+        await scan('BBS-sanding');
+        await screen.findByRole('button', { name: 'Other' });
+
+        tapReason('Other');
+        expect(await screen.findByText('Other reason selected')).toBeInTheDocument();
+        expect(screen.getByText('Continuing in 10s')).toBeInTheDocument();
+
+        await vi.advanceTimersByTimeAsync(3000);
+        expect(screen.getByText('Continuing in 7s')).toBeInTheDocument();
+
+        fireEvent.click(screen.getByRole('button', { name: 'Add short description' }));
+        const input = await screen.findByPlaceholderText('Short description (optional)');
+        expect(screen.getByText('Paused while typing')).toBeInTheDocument();
+        fireEvent.change(input, { target: { value: 'warped corner' } });
+
+        await vi.advanceTimersByTimeAsync(8000);
+        expect(captured.body).toBeNull();
+        expect(screen.getByText('Paused while typing')).toBeInTheDocument();
+
+        fireEvent.blur(input);
+        await vi.advanceTimersByTimeAsync(7500);
+        expect(await screen.findByText('Sent to Sanding · Other')).toBeInTheDocument();
+        expect(captured.body).toEqual({
+          payload: 'BBD-000042',
+          error_payload: 'BBF-other',
+          reason_text: 'warped corner',
+        });
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+
+    it('lets Back abandon Other so the reason can be chosen again', async () => {
+      mockNoSession();
+      const captured = mockSandingErrorScan({
+        result: 'recorded',
+        part: RECORDED_PART,
+        printer: RECORDED_PRINTER,
+        archive: RECORDED_ARCHIVE,
+        reason: 'Other',
+      });
+      render(<FloorScanPage />);
+      await screen.findByText('Scan a code');
+      await scan('BBD-000042');
+      await screen.findByText('Scan a location');
+      await scan('BBS-sanding');
+      await screen.findByRole('button', { name: 'Other' });
+
+      tapReason('Other');
+      expect(await screen.findByText('Other reason selected')).toBeInTheDocument();
+
+      fireEvent.pointerDown(screen.getByRole('button', { name: 'Back to Scan' }), {
+        pointerType: 'touch',
+        button: 0,
+      });
+      expect(await screen.findByText('Scan a code')).toBeInTheDocument();
+
+      await scan('BBD-000042');
+      await screen.findByText('Scan a location');
+      await scan('BBS-sanding');
+      await screen.findByRole('button', { name: 'Other' });
+      tapReason('Other');
+
+      expect(await screen.findByText('Other reason selected')).toBeInTheDocument();
+      fireEvent.click(screen.getByRole('button', { name: 'Continue' }));
+      expect(await screen.findByText('Sent to Sanding · Other')).toBeInTheDocument();
+      expect(captured.body).toMatchObject({ payload: 'BBD-000042', error_payload: 'BBF-other' });
+    });
+
+    it('commits a part Discard from an on-screen reason button', async () => {
+      mockNoSession();
+      const captured: { body: Record<string, unknown> | null } = { body: null };
+      server.use(
+        http.post('/api/v1/floor/parts/discard', async ({ request }) => {
+          captured.body = (await request.json()) as Record<string, unknown>;
+          return HttpResponse.json({
+            result: 'recorded',
+            part: RECORDED_PART,
+            printer: RECORDED_PRINTER,
+            archive: RECORDED_ARCHIVE,
+            reason: 'Horizontal line',
+          });
+        }),
+      );
+      render(<FloorScanPage />);
+      await screen.findByText('Scan a code');
+      await scan('BBD-000042');
+      await screen.findByText('Scan a location');
+      await scan('BBX-discard');
+      await screen.findByRole('button', { name: 'Horizontal line' });
+
+      tapReason('Horizontal line');
+
+      expect(await screen.findByText('Discarded')).toBeInTheDocument();
+      expect(captured.body).toEqual({ payload: 'BBD-000042', error_payload: 'BBF-horizontal-line' });
     });
 
     it('rejects a reason scan with no part pending in Sanding or Rework', async () => {
@@ -2469,13 +2669,13 @@ describe('FloorScanPage (Phase 1b sessions)', () => {
 
     it('blocks a bin from being scanned into Sanding instead of silently abandoning the pending part', async () => {
       mockNoSession();
-      const sandingCall = mockSandingScan({ result: 'recorded', part: RECORDED_PART, printer: RECORDED_PRINTER, archive: RECORDED_ARCHIVE });
+      const sandingCall = mockSandingErrorScan({ result: 'recorded', part: RECORDED_PART, printer: RECORDED_PRINTER, archive: RECORDED_ARCHIVE });
       render(<FloorScanPage />);
       await screen.findByText('Scan a code');
       await scan('BBD-000042');
       await screen.findByText('Scan a location');
       await scan('BBS-sanding');
-      await screen.findByText('Scan an error label');
+      await screen.findByText('Select a reason');
 
       await scan('BBN-BUT-1');
 
@@ -2497,7 +2697,7 @@ describe('FloorScanPage (Phase 1b sessions)', () => {
       expect(await screen.findByText('Part must enter Production WIP before Rework')).toBeInTheDocument();
     });
 
-    it('commits WIP Rework on the reason scan after the part is In WIP', async () => {
+    it('commits WIP Rework from an on-screen reason button after the part is In WIP', async () => {
       mockNoSession();
       server.use(
         http.get('/api/v1/floor/inventory/parts/by-sticker/:stickerCode', ({ params }) => HttpResponse.json({
@@ -2518,18 +2718,24 @@ describe('FloorScanPage (Phase 1b sessions)', () => {
           latest_event_reason: null,
         })),
       );
-      const captured = mockReworkScan({ result: 'recorded', part: RECORDED_PART, printer: RECORDED_PRINTER, archive: RECORDED_ARCHIVE });
+      const captured = mockReworkErrorScan({
+        result: 'recorded',
+        part: RECORDED_PART,
+        printer: RECORDED_PRINTER,
+        archive: RECORDED_ARCHIVE,
+        reason: 'Horizontal line',
+      });
       render(<FloorScanPage />);
       await screen.findByText('Scan a code');
       await scan('BBD-000042');
       await screen.findByText('Scan a location');
       await scan('BBS-wip-rework');
-      await screen.findByText('Scan an error label');
+      await screen.findByRole('button', { name: 'Horizontal line' });
 
-      await scan('BBR-doesnt_fit');
+      tapReason('Horizontal line');
 
-      expect(await screen.findByText('Sent to Rework · doesnt_fit')).toBeInTheDocument();
-      expect(captured.body).toEqual({ payload: 'BBD-000042', reason_code: 'doesnt_fit' });
+      expect(await screen.findByText('Sent to Rework · Horizontal line')).toBeInTheDocument();
+      expect(captured.body).toEqual({ payload: 'BBD-000042', error_payload: 'BBF-horizontal-line' });
     });
 
     it('blocks a bin from interrupting a part pending at the location prompt', async () => {
@@ -3413,17 +3619,56 @@ describe('FloorScanPage (Phase 1b sessions)', () => {
       await waitFor(() => expect(input).toHaveFocus());
     });
 
-    it('has a touch-only back control that returns to /floor', async () => {
+    it('has a touch-only back control that returns to /floor from idle', async () => {
       mockNoSession();
       render(<FloorScanPage />);
       await screen.findByText('Scan a code');
 
       const back = screen.getByRole('button', { name: 'Back to Floor' });
       expect(back).toHaveAttribute('tabindex', '-1');
+      expect(back).toHaveTextContent('Floor');
 
       fireEvent.pointerDown(back, { pointerType: 'touch', button: 0 });
 
       expect(mockNavigate).toHaveBeenCalledWith('/floor');
+    });
+
+    it('returns to idle scan from a part lookup instead of leaving for /floor', async () => {
+      mockNoSession();
+      server.use(
+        http.get('/api/v1/floor/inventory/parts/by-sticker/:stickerCode', ({ params }) =>
+          HttpResponse.json({
+            id: 42,
+            sticker_code: params.stickerCode,
+            printer_id: 12,
+            printer_name: 'P1S-3',
+            archive_id: 88,
+            part_code: 'TOP',
+            section_part_id: null,
+            part_name: 'Top Housing',
+            part_source: 'Production',
+            print_name: 'bracket_v4',
+            labeled_at: '2026-08-24T10:00:00',
+            archived_at: null,
+            released_at: null,
+            latest_event_action: null,
+            latest_event_reason: null,
+          }),
+        ),
+        http.get('/api/v1/floor/inventory/parts/:partId/events', () => HttpResponse.json([])),
+      );
+      render(<FloorScanPage />);
+      await screen.findByText('Scan a code');
+      await scan('BBD-000042');
+      await screen.findByText('Scan a location');
+
+      const back = screen.getByRole('button', { name: 'Back to Scan' });
+      expect(back).toHaveTextContent('Scan');
+      fireEvent.pointerDown(back, { pointerType: 'touch', button: 0 });
+
+      expect(await screen.findByText('Scan a code')).toBeInTheDocument();
+      expect(mockNavigate).not.toHaveBeenCalled();
+      expect(screen.getByRole('button', { name: 'Back to Floor' })).toBeInTheDocument();
     });
 
     it('does not go back when a wedge scanner sends Enter at the back control', async () => {
