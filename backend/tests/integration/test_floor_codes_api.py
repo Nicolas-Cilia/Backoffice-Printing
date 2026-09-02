@@ -18,7 +18,7 @@ class TestListStations:
         assert resp.status_code == 200
 
         stations = resp.json()
-        assert len(stations) == 10
+        assert len(stations) == 11
 
         payloads = [s["payload"] for s in stations]
         assert payloads == [
@@ -26,6 +26,7 @@ class TestListStations:
             "BBS-initial-qc-pass",
             "BBS-sanding",
             "BBS-wip-rework",
+            "BBS-ready-to-ship",
             "BBS-ready-for-production-inventory",
             "BBS-production-wip",
             "BBS-bin-empty",
@@ -49,6 +50,7 @@ class TestListStations:
         assert "storage-move" not in by_slug
         # The new item→location destinations all print under the Locations tab.
         for slug in (
+            "ready-to-ship",
             "ready-for-production-inventory",
             "production-wip",
             "bin-empty",
