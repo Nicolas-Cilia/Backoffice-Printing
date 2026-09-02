@@ -400,6 +400,12 @@ export function FloorScanPage() {
   statusRef.current = status;
   const customReasonDraftRef = useRef<string | null>(null);
   const customReasonPendingRef = useRef(false);
+  useEffect(() => {
+    if (status.kind !== 'awaiting-custom-reason') {
+      customReasonPendingRef.current = false;
+      customReasonDraftRef.current = null;
+    }
+  }, [status.kind]);
 
   const focusRetryRef = useRef<number[]>([]);
 

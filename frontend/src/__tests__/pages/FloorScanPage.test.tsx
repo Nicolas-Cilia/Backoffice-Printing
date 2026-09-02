@@ -2592,6 +2592,71 @@ describe('FloorScanPage (Phase 1b sessions)', () => {
       }
     });
 
+    it('lets Back abandon Other so the reason can be chosen again', async () => {
+      mockNoSession();
+      const captured = mockSandingErrorScan({
+        result: 'recorded',
+        part: RECORDED_PART,
+        printer: RECORDED_PRINTER,
+        archive: RECORDED_ARCHIVE,
+        reason: 'Other',
+      });
+      render(<FloorScanPage />);
+      await screen.findByText('Scan a code');
+      await scan('BBD-000042');
+      await screen.findByText('Scan a location');
+      await scan('BBS-sanding');
+      await screen.findByRole('button', { name: 'Other' });
+
+      tapReason('Other');
+      expect(await screen.findByText('Other reason selected')).toBeInTheDocument();
+
+      fireEvent.pointerDown(screen.getByRole('button', { name: 'Back to Scan' }), {
+        pointerType: 'touch',
+        button: 0,
+      });
+      expect(await screen.findByText('Scan a code')).toBeInTheDocument();
+
+      await scan('BBD-000042');
+      await screen.findByText('Scan a location');
+      await scan('BBS-sanding');
+      await screen.findByRole('button', { name: 'Other' });
+      tapReason('Other');
+
+      expect(await screen.findByText('Other reason selected')).toBeInTheDocument();
+      fireEvent.click(screen.getByRole('button', { name: 'Continue' }));
+      expect(await screen.findByText('Sent to Sanding · Other')).toBeInTheDocument();
+      expect(captured.body).toMatchObject({ payload: 'BBD-000042', error_payload: 'BBF-other' });
+    });
+
+    it('commits a part Discard from an on-screen reason button', async () => {
+      mockNoSession();
+      const captured: { body: Record<string, unknown> | null } = { body: null };
+      server.use(
+        http.post('/api/v1/floor/parts/discard', async ({ request }) => {
+          captured.body = (await request.json()) as Record<string, unknown>;
+          return HttpResponse.json({
+            result: 'recorded',
+            part: RECORDED_PART,
+            printer: RECORDED_PRINTER,
+            archive: RECORDED_ARCHIVE,
+            reason: 'Horizontal line',
+          });
+        }),
+      );
+      render(<FloorScanPage />);
+      await screen.findByText('Scan a code');
+      await scan('BBD-000042');
+      await screen.findByText('Scan a location');
+      await scan('BBX-discard');
+      await screen.findByRole('button', { name: 'Horizontal line' });
+
+      tapReason('Horizontal line');
+
+      expect(await screen.findByText('Discarded')).toBeInTheDocument();
+      expect(captured.body).toEqual({ payload: 'BBD-000042', error_payload: 'BBF-horizontal-line' });
+    });
+
     it('rejects a reason scan with no part pending in Sanding or Rework', async () => {
       mockNoSession();
       render(<FloorScanPage />);
