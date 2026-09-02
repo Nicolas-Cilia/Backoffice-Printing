@@ -33,16 +33,20 @@ from backend.app.services.floor_parts import (
 from backend.app.services.floor_sessions import apply_station_scan
 from backend.app.services.floor_units import (
     LinkUnitResult,
+    ReadyUnitToShipResult,
     ReplaceUnitKitResult,
     ReplaceUnitResult,
+    ReturnUnitToReworkResult,
     UnlinkUnitResult,
     get_unit_by_part,
     get_unit_by_serial,
     link_unit,
     list_units,
     parse_serial,
+    ready_unit_to_ship,
     replace_unit,
     replace_unit_kit,
+    return_unit_to_rework,
     unlink_unit,
 )
 from backend.tests.unit.services.test_floor_kit import (
@@ -341,6 +345,71 @@ class TestUnlink:
     async def test_unlink_unknown_unit(self, db_session):
         outcome = await unlink_unit(db_session, 999999)
         assert outcome.result is UnlinkUnitResult.NOT_FOUND
+
+
+class TestReturnUnitToRework:
+    @pytest.mark.asyncio
+    async def test_return_keeps_unit_linked_and_sends_both_housings_to_rework(
+        self, db_session, printer_factory, archive_factory
+    ):
+        top = await _top_in_wip_with_kit(db_session, printer_factory, archive_factory, code="BBD-000165")
+        bottom = await _bot_in_wip(db_session, printer_factory, archive_factory, code="BBD-000265")
+        await link_unit(db_session, "OEQ0AC", top.sticker_code, bottom.sticker_code)
+        await db_session.commit()
+
+        outcome = await return_unit_to_rework(db_session, "OEQ0AC", "doesnt_fit", "Customer return")
+        await db_session.commit()
+
+        assert outcome.result is ReturnUnitToReworkResult.RETURNED
+        unit = await get_unit_by_serial(db_session, "OEQ0AC")
+        assert unit is not None
+        assert unit.unit_workflow_status == "rework"
+        top_actions = [e.action for e in await list_part_events(db_session, top.id)]
+        bot_actions = [e.action for e in await list_part_events(db_session, bottom.id)]
+        assert top_actions[-1] == "rework"
+        assert bot_actions[-1] == "rework"
+
+    @pytest.mark.asyncio
+    async def test_return_unknown_serial(self, db_session):
+        outcome = await return_unit_to_rework(db_session, "XG2SNP", "doesnt_fit")
+        assert outcome.result is ReturnUnitToReworkResult.NOT_FOUND
+
+
+class TestReadyUnitToShip:
+    @pytest.mark.asyncio
+    async def test_ready_restores_both_housings_to_shipped(self, db_session, printer_factory, archive_factory):
+        top = await _top_in_wip_with_kit(db_session, printer_factory, archive_factory, code="BBD-000166")
+        bottom = await _bot_in_wip(db_session, printer_factory, archive_factory, code="BBD-000266")
+        await link_unit(db_session, "XG2SNP", top.sticker_code, bottom.sticker_code)
+        await db_session.commit()
+        await return_unit_to_rework(db_session, "XG2SNP", "other")
+        await db_session.commit()
+
+        outcome = await ready_unit_to_ship(db_session, "XG2SNP")
+        await db_session.commit()
+
+        assert outcome.result is ReadyUnitToShipResult.READY
+        unit = await get_unit_by_serial(db_session, "XG2SNP")
+        assert unit is not None
+        assert unit.unit_workflow_status == "shipped"
+        top_actions = [e.action for e in await list_part_events(db_session, top.id)]
+        bot_actions = [e.action for e in await list_part_events(db_session, bottom.id)]
+        assert top_actions[-1] == "shipped"
+        assert bot_actions[-1] == "shipped"
+
+    @pytest.mark.asyncio
+    async def test_ready_is_idempotent_when_already_shipped(self, db_session, printer_factory, archive_factory):
+        top = await _top_in_wip_with_kit(db_session, printer_factory, archive_factory, code="BBD-000167")
+        bottom = await _bot_in_wip(db_session, printer_factory, archive_factory, code="BBD-000267")
+        await link_unit(db_session, "ME2O6N", top.sticker_code, bottom.sticker_code)
+        await db_session.commit()
+        await return_unit_to_rework(db_session, "ME2O6N", "other")
+        await db_session.commit()
+        await ready_unit_to_ship(db_session, "ME2O6N")
+        await db_session.commit()
+
+        outcome = await ready_unit_to_ship(db_session, "ME2O6N")
+        assert outcome.result is ReadyUnitToShipResult.ALREADY_READY
 
 
 class TestReplace:

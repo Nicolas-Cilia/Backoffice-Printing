@@ -34,7 +34,7 @@ from backend.app.services.floor_parts import (
     parse_sticker_code,
 )
 
-BOT_BIN_MAX_MEMBERS = 20
+BOT_BIN_MAX_MEMBERS = 18
 BOT_NON_STATUS_EVENTS = frozenset(("member_added", "member_removed", "member_moved"))
 
 
@@ -44,6 +44,40 @@ class BotBinMemberInfo:
     sticker_code: str
     part_code: str | None
     added_at: datetime
+
+
+async def _member_part_ids(db: AsyncSession, batch_id: int) -> list[int]:
+    rows = (await db.execute(select(FloorBotBinMember.part_id).where(FloorBotBinMember.batch_id == batch_id))).all()
+    return [part_id for (part_id,) in rows]
+
+
+def _bot_bin_part_event_details(batch: FloorBinBatch, *, source: str, **extra: object) -> dict:
+    details: dict = {"batch_id": batch.id, "bin_payload": batch.bin_payload, "source": source}
+    details.update(extra)
+    return details
+
+
+async def _record_bot_bin_loaded(
+    db: AsyncSession,
+    batch: FloorBinBatch,
+    part: FloorLabeledPart,
+    *,
+    source: str,
+) -> None:
+    db.add(
+        FloorPartEvent(
+            part_id=part.id,
+            action="bot_bin_loaded",
+            details=_bot_bin_part_event_details(batch, source=source),
+        )
+    )
+
+
+async def _record_bot_bin_staged(db: AsyncSession, batch: FloorBinBatch, *, source: str) -> None:
+    """Mirror a BOT bin staging scan on every member so inventory last-scanned works."""
+    details = _bot_bin_part_event_details(batch, source=source)
+    for part_id in await _member_part_ids(db, batch.id):
+        db.add(FloorPartEvent(part_id=part_id, action="ready_for_production", details=details))
 
 
 async def _member_count(db: AsyncSession, batch_id: int) -> int:
@@ -164,6 +198,7 @@ async def _add_member(
     if from_batch_id is not None:
         details["from_batch_id"] = from_batch_id
     db.add(FloorBinBatchEvent(batch_id=batch.id, action="member_added", details=details))
+    await _record_bot_bin_loaded(db, batch, part, source=source)
     await db.flush()
 
 
@@ -279,15 +314,18 @@ async def scan_bot_bin_ready_for_production(
     if outcome.batch.status == "ready_for_production":
         return BinScanOutcome(result=BinScanResult.ALREADY_READY_FOR_PRODUCTION, bin=outcome.bin, batch=outcome.batch)
     if outcome.batch.status == "wip":
+        batch = await db.get(FloorBinBatch, outcome.batch.id)
+        assert batch is not None
         db.add(
             FloorBinBatchEvent(
-                batch_id=outcome.batch.id,
+                batch_id=batch.id,
                 action="ready_for_production",
                 details={"source": source},
             )
         )
+        await _record_bot_bin_staged(db, batch, source=source)
         await db.flush()
-        batch = await db.get(FloorBinBatch, outcome.batch.id)
+        batch = await db.get(FloorBinBatch, batch.id)
         assert batch is not None and outcome.bin is not None
         return BinScanOutcome(
             result=BinScanResult.READY_FOR_PRODUCTION_RECORDED,
@@ -298,16 +336,18 @@ async def scan_bot_bin_ready_for_production(
         return BinScanOutcome(result=BinScanResult.QC_REQUIRED, bin=outcome.bin, batch=outcome.batch)
     if outcome.batch.remaining_quantity <= 0:
         return BinScanOutcome(result=BinScanResult.NO_BATCH, bin=outcome.bin, batch=outcome.batch)
+    batch = await db.get(FloorBinBatch, outcome.batch.id)
+    assert batch is not None
     db.add(
         FloorBinBatchEvent(
-            batch_id=outcome.batch.id,
+            batch_id=batch.id,
             action="ready_for_production",
             details={"source": source},
         )
     )
+    await _record_bot_bin_staged(db, batch, source=source)
     await db.flush()
-    batch = await db.get(FloorBinBatch, outcome.batch.id)
-    assert batch is not None and outcome.bin is not None
+    assert outcome.bin is not None
     return BinScanOutcome(
         result=BinScanResult.READY_FOR_PRODUCTION_RECORDED,
         bin=outcome.bin,

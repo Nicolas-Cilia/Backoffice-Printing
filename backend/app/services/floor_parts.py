@@ -40,6 +40,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from backend.app.models.floor_bin import FloorBinBatch
 from backend.app.models.floor_part import FloorDismissedBuildPlate, FloorErrorLabel, FloorLabeledPart, FloorPartEvent
 from backend.app.models.floor_session import FloorStationSession
+from backend.app.models.floor_unit import FloorProductUnit
 from backend.app.models.printer import Printer
 from backend.app.models.settings import Settings
 from backend.app.services.floor_bins import (
@@ -94,7 +95,9 @@ PART_STATUS_METADATA_ACTIONS = (
 # Kit bookkeeping describes which fills a TOP drew from, not where the part sits.
 # Ignored whenever we ask for current workflow status.
 _KIT_BOOKKEEPING_ACTIONS = ("kit_assigned", "kit_reassigned")
-_NON_WORKFLOW_STATUS_ACTIONS = PART_STATUS_METADATA_ACTIONS + _KIT_BOOKKEEPING_ACTIONS
+# BOT bin bookkeeping records load/move activity without changing workflow status.
+_BOT_BIN_BOOKKEEPING_ACTIONS = ("bot_bin_loaded", "bot_bin_removed")
+_NON_WORKFLOW_STATUS_ACTIONS = PART_STATUS_METADATA_ACTIONS + _KIT_BOOKKEEPING_ACTIONS + _BOT_BIN_BOOKKEEPING_ACTIONS
 
 
 class PartStatus(StrEnum):
@@ -710,6 +713,15 @@ class LocationScanOutcome:
     kit_button_emptied: bool = False
 
 
+async def _part_is_on_linked_unit(db: AsyncSession, part_id: int) -> bool:
+    linked = await db.scalar(
+        select(FloorProductUnit.id)
+        .where((FloorProductUnit.top_part_id == part_id) | (FloorProductUnit.bottom_part_id == part_id))
+        .limit(1)
+    )
+    return linked is not None
+
+
 async def _resolve_part_for_location(
     db: AsyncSession, payload: str
 ) -> tuple[LocationScanResult, FloorLabeledPart | None]:
@@ -722,11 +734,11 @@ async def _resolve_part_for_location(
         # print link. A no-job harvest record must be matched in Part history
         # first; an unknown sticker must be enrolled at Harvest first (§9).
         return LocationScanResult.UNKNOWN_PART, None
-    # Part Assembly Linking (Wave 2): a part linked onto a product unit is
-    # shipped — every item→location commit is refused (lookup only) until the
-    # unit is unlinked. Returning the part as ``None`` makes every caller
-    # naturally skip its write, the same contract as UNKNOWN_PART above.
-    if await _part_current_status(db, part.id) == PartStatus.SHIPPED.value:
+    # Part Assembly Linking (Wave 2): a part on a linked product unit — shipped
+    # or in rework — cannot move through item→location scans until the unit is
+    # unlinked. Returning the part as ``None`` makes every caller naturally skip
+    # its write, the same contract as UNKNOWN_PART above.
+    if await _part_is_on_linked_unit(db, part.id):
         return LocationScanResult.SHIPPED, None
     return LocationScanResult.RECORDED, part
 

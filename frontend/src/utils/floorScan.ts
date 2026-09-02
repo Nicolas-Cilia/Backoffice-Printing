@@ -57,6 +57,8 @@ export const HARVEST_STATION_SLUG = 'harvest';
 export const FIT_CHECK_LOCATION_SLUG = 'fit-check';
 export const SANDING_LOCATION_SLUG = 'sanding';
 export const WIP_REWORK_LOCATION_SLUG = 'wip-rework';
+/** Linked unit in rework: scan this shelf to restore both housings to shipped. */
+export const READY_TO_SHIP_LOCATION_SLUG = 'ready-to-ship';
 /** @deprecated Use `WIP_REWORK_LOCATION_SLUG`. */
 export const REWORK_LOCATION_SLUG = WIP_REWORK_LOCATION_SLUG;
 export const FIT_CHECK_PAYLOAD = `${PREFIX_STATION}initial-qc-pass`;
@@ -64,6 +66,7 @@ export const FIT_CHECK_PAYLOAD = `${PREFIX_STATION}initial-qc-pass`;
 export const LEGACY_FIT_CHECK_PAYLOAD = `${PREFIX_STATION}${FIT_CHECK_LOCATION_SLUG}`;
 export const SANDING_PAYLOAD = `${PREFIX_STATION}${SANDING_LOCATION_SLUG}`;
 export const WIP_REWORK_PAYLOAD = `${PREFIX_STATION}${WIP_REWORK_LOCATION_SLUG}`;
+export const READY_TO_SHIP_PAYLOAD = `${PREFIX_STATION}${READY_TO_SHIP_LOCATION_SLUG}`;
 /** Pre-WIP bench labels printed as `BBS-rework` before Sanding was named. */
 export const LEGACY_SANDING_PAYLOAD = `${PREFIX_STATION}rework`;
 
@@ -87,6 +90,7 @@ export type LocationSlug =
   | 'fit-check'
   | 'sanding'
   | 'wip-rework'
+  | typeof READY_TO_SHIP_LOCATION_SLUG
   | typeof READY_FOR_PRODUCTION_LOCATION_SLUG
   | typeof PRODUCTION_WIP_LOCATION_SLUG
   | typeof BIN_EMPTY_LOCATION_SLUG
@@ -262,6 +266,8 @@ export function routeScan(
       return { action: 'location', slug: 'sanding', payload: scan.value };
     if (scan.value === WIP_REWORK_PAYLOAD)
       return { action: 'location', slug: 'wip-rework', payload: scan.value };
+    if (scan.value === READY_TO_SHIP_PAYLOAD)
+      return { action: 'location', slug: 'ready-to-ship', payload: scan.value };
     const itemLocationSlug = ITEM_LOCATION_PAYLOADS.get(scan.value);
     if (itemLocationSlug) return { action: 'location', slug: itemLocationSlug, payload: scan.value };
     return { action: 'station', payload: scan.value };

@@ -152,8 +152,10 @@ from backend.app.services.floor_sessions import (
 )
 from backend.app.services.floor_units import (
     LinkUnitResult,
+    ReadyUnitToShipResult,
     ReplaceUnitKitResult,
     ReplaceUnitResult,
+    ReturnUnitToReworkResult,
     UnitDetail,
     UnlinkUnitResult,
     get_unit_by_part,
@@ -161,8 +163,11 @@ from backend.app.services.floor_units import (
     link_unit,
     list_units,
     parse_serial,
+    ready_unit_to_ship,
     replace_unit,
     replace_unit_kit,
+    return_unit_to_rework,
+    return_unit_to_rework_error,
     unlink_unit,
 )
 from backend.app.utils.http import build_content_disposition
@@ -1839,6 +1844,7 @@ class UnitDetailResponse(BaseModel):
     knob_bin_payload: str | None = None
     button_bin_payload: str | None = None
     linked_at: datetime
+    unit_workflow_status: str
 
 
 def _to_unit_response(unit: UnitDetail) -> UnitDetailResponse:
@@ -1856,6 +1862,7 @@ def _to_unit_response(unit: UnitDetail) -> UnitDetailResponse:
         knob_bin_payload=unit.knob_bin_payload,
         button_bin_payload=unit.button_bin_payload,
         linked_at=unit.linked_at,
+        unit_workflow_status=unit.unit_workflow_status,
     )
 
 
@@ -1993,6 +2000,105 @@ async def unlink_unit_route(
         raise HTTPException(404, f"No unit: {unit_id}")
     logger.info("Unit unlink: unit_id=%s serial=%s", unit_id, outcome.serial_code)
     return UnlinkUnitResponse(result=outcome.result, unit_id=outcome.unit_id, serial_code=outcome.serial_code)
+
+
+class ReturnUnitReworkRequest(BaseModel):
+    serial: str = Field(..., min_length=1, max_length=64)
+    reason_code: str = Field(..., min_length=1, max_length=32)
+    reason_text: str | None = Field(default=None, max_length=500)
+
+
+class ReturnUnitReworkErrorRequest(BaseModel):
+    serial: str = Field(..., min_length=1, max_length=64)
+    error_payload: str = Field(..., min_length=5, max_length=80)
+    reason_text: str | None = Field(default=None, max_length=120)
+
+
+class ReturnUnitReworkResponse(BaseModel):
+    result: ReturnUnitToReworkResult
+    unit_id: int | None = None
+    serial_code: str | None = None
+    top_sticker: str | None = None
+    bottom_sticker: str | None = None
+    reason: str | None = None
+
+
+@router.post("/units/return-rework", response_model=ReturnUnitReworkResponse)
+async def return_unit_rework_route(
+    body: ReturnUnitReworkRequest,
+    db: AsyncSession = Depends(get_db),
+    _: User | None = RequirePermissionIfAuthEnabled(Permission.FLOOR_SCAN),
+) -> ReturnUnitReworkResponse:
+    """Return a shipped unit to WIP Rework by scanning its product serial."""
+    outcome = await return_unit_to_rework(db, body.serial, body.reason_code, body.reason_text)
+    await db.commit()
+    logger.info(
+        "Unit return rework: serial=%s reason=%s result=%s",
+        body.serial,
+        body.reason_code,
+        outcome.result,
+    )
+    return ReturnUnitReworkResponse(
+        result=outcome.result,
+        unit_id=outcome.unit_id,
+        serial_code=outcome.serial_code,
+        top_sticker=outcome.top_sticker,
+        bottom_sticker=outcome.bottom_sticker,
+        reason=outcome.reason,
+    )
+
+
+@router.post("/units/return-rework/error", response_model=ReturnUnitReworkResponse)
+async def return_unit_rework_error_route(
+    body: ReturnUnitReworkErrorRequest,
+    db: AsyncSession = Depends(get_db),
+    _: User | None = RequirePermissionIfAuthEnabled(Permission.FLOOR_SCAN),
+) -> ReturnUnitReworkResponse:
+    outcome = await return_unit_to_rework_error(db, body.serial, body.error_payload, body.reason_text)
+    await db.commit()
+    logger.info(
+        "Unit return rework error: serial=%s error=%s result=%s",
+        body.serial,
+        body.error_payload,
+        outcome.result,
+    )
+    return ReturnUnitReworkResponse(
+        result=outcome.result,
+        unit_id=outcome.unit_id,
+        serial_code=outcome.serial_code,
+        top_sticker=outcome.top_sticker,
+        bottom_sticker=outcome.bottom_sticker,
+        reason=outcome.reason,
+    )
+
+
+class ReadyUnitToShipRequest(BaseModel):
+    serial: str = Field(..., min_length=1, max_length=64)
+
+
+class ReadyUnitToShipResponse(BaseModel):
+    result: ReadyUnitToShipResult
+    serial_code: str | None = None
+    top_sticker: str | None = None
+    bottom_sticker: str | None = None
+
+
+@router.post("/units/ready-to-ship", response_model=ReadyUnitToShipResponse)
+async def ready_unit_to_ship_route(
+    body: ReadyUnitToShipRequest,
+    db: AsyncSession = Depends(get_db),
+    _: User | None = RequirePermissionIfAuthEnabled(Permission.FLOOR_SCAN),
+) -> ReadyUnitToShipResponse:
+    """Restore a linked unit from rework back to shipped, keeping the serial bound."""
+    outcome = await ready_unit_to_ship(db, body.serial)
+    await db.commit()
+    logger.info("Unit ready to ship: serial=%s result=%s", body.serial, outcome.result)
+    return ReadyUnitToShipResponse(
+        result=outcome.result,
+        serial_code=outcome.serial_code,
+        top_sticker=outcome.top_sticker,
+        bottom_sticker=outcome.bottom_sticker,
+    )
 
 
 @router.post("/units/{unit_id}/replace", response_model=ReplaceUnitResponse)

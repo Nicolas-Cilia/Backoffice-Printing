@@ -2697,7 +2697,7 @@ describe('FloorScanPage (Phase 1b sessions)', () => {
       await scan('BBS-production-wip');
 
       expect(
-        await screen.findByText('Part is shipped on a product serial — unlink it first'),
+        await screen.findByText('Part is linked to a product serial — unlink it first'),
       ).toBeInTheDocument();
       expect(floorSound.playScanErrorTone).toHaveBeenCalled();
     });
@@ -3001,6 +3001,7 @@ describe('FloorScanPage (Phase 1b sessions)', () => {
       knob_bin_payload: 'BBN-KNB-1',
       button_bin_payload: 'BBN-BUT-1',
       linked_at: '2026-08-28T12:00:00',
+      unit_workflow_status: 'shipped' as const,
     };
 
     /** by-serial: 404 = free (start ceremony); a unit = already linked. */
@@ -3915,6 +3916,8 @@ describe('FloorScanPage (Phase 1b sessions)', () => {
         bin_payload: 'BBN-BOT-1',
       }));
       expect(await screen.findByText('Bottom loaded into BOT bin')).toBeInTheDocument();
+      expect(screen.getByText('1 bottom loaded')).toBeInTheDocument();
+      expect(screen.queryByText('0 · Printer')).not.toBeInTheDocument();
     });
   });
 });
