@@ -1762,6 +1762,11 @@ export function FloorScanPage() {
    *  screen instead of writing immediately. */
   const applyIssueReason = useCallback(
     (reasonPayload: string) => {
+      // Same gate as handleScan: a second reason tap (or sticker) before React
+      // re-renders `busy` must not fire another Sanding / Rework / Discard write.
+      // statusRef still reads awaiting-*-reason until the in-flight commit lands.
+      if (busyRef.current) return;
+
       const current = statusRef.current;
       const isOther = isOtherReasonPayload(reasonPayload);
       const startCustom = (
@@ -2487,6 +2492,11 @@ export function FloorScanPage() {
   const isMainScanView = status.kind === 'idle';
 
   const handleBack = useCallback(() => {
+    // Don't drop to idle while a reason / Other Continue write is in flight —
+    // the request would still finish and flip idle into a confirmation, and
+    // handleScan would drop the next pistol scan until busyRef clears.
+    if (busyRef.current) return;
+
     if (status.kind === 'idle') {
       navigate('/floor');
       return;
@@ -2518,12 +2528,13 @@ export function FloorScanPage() {
           working suppression approach is found. */}
       <TouchOnlyButton
         onActivate={handleBack}
+        disabled={busy}
         aria-label={
           isMainScanView
             ? t('floor.scanBackToFloor', 'Back to Floor')
             : t('floor.scanBackToScan', 'Back to Scan')
         }
-        className="absolute left-3 top-3 z-10 inline-flex min-h-11 items-center gap-2 touch-manipulation select-none rounded-lg px-3 py-2 text-sm text-bambu-gray hover:bg-bambu-dark-secondary hover:text-white"
+        className="absolute left-3 top-3 z-10 inline-flex min-h-11 items-center gap-2 touch-manipulation select-none rounded-lg px-3 py-2 text-sm text-bambu-gray hover:bg-bambu-dark-secondary hover:text-white disabled:opacity-50"
       >
         <ArrowLeft className="h-5 w-5" aria-hidden="true" />
         {isMainScanView ? t('nav.floor', 'Floor') : t('floor.landingScanTitle', 'Scan')}
@@ -2766,6 +2777,7 @@ export function FloorScanPage() {
             customReasonDraftRef.current = reasonText;
           }}
           onSubmit={(reasonText) => {
+            if (busyRef.current) return;
             customReasonPendingRef.current = false;
             if (status.locationSlug === 'discard') {
               void submitDiscardScan(status.payload, status.reasonPayload, reasonText);

@@ -38,4 +38,18 @@ describe('TouchOnlyButton', () => {
     fireEvent.keyUp(button, { key: ' ' });
     expect(onActivate).not.toHaveBeenCalled();
   });
+
+  it('does not activate when disabled', () => {
+    const onActivate = vi.fn();
+    render(
+      <TouchOnlyButton aria-label="Tap to scan" onActivate={onActivate} disabled>
+        Tap to scan
+      </TouchOnlyButton>,
+    );
+    fireEvent.pointerDown(screen.getByRole('button', { name: 'Tap to scan' }), {
+      pointerType: 'touch',
+      button: 0,
+    });
+    expect(onActivate).not.toHaveBeenCalled();
+  });
 });
