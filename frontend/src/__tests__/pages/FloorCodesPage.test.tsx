@@ -448,6 +448,8 @@ describe('FloorCodesPage', () => {
       const lineRow = screen.getByText('BBF-horizontal-line').closest('li');
       expect(lineRow).not.toBeNull();
       expect(within(lineRow as HTMLElement).getByRole('button', { name: 'Remove' })).toBeInTheDocument();
+      expect(screen.getByRole('checkbox', { name: 'Discard' })).toBeInTheDocument();
+      expect(screen.queryByRole('checkbox', { name: 'Horizontal line' })).not.toBeInTheDocument();
     });
   });
 });
