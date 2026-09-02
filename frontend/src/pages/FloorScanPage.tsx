@@ -26,8 +26,9 @@
  *
  * Phase 9a/9b add Fit Check and Rework (§5.4a/§5.4b) — **not** stations, so
  * they add no session handling here at all. The flow is scan a part (from
- * idle, nothing open), then scan a location, and for Rework a reason after
- * that — three scans, tracked entirely as `Status` transitions on this page
+ * idle, nothing open), then scan a location. Sanding, Rework, and Discard
+ * then ask for a reason from on-screen buttons (the error-label catalog),
+ * tracked entirely as `Status` transitions on this page
  * (`awaiting-location` → `awaiting-rework-reason` → commit), never on the
  * server. Abandoning the flow needs no special code: scanning anything else
  * just replaces `status` with whatever that scan means, the same as every
@@ -50,6 +51,7 @@ import {
   type FloorRecentStoppedPrint,
   type FloorPrinterInfo,
   type FloorSession,
+  type FloorErrorLabel,
   type LocationScanResponse,
   type PartLocationSlug,
   type BinLocationSlug,
@@ -269,6 +271,23 @@ function isScanTypingStatus(kind: Status['kind']): boolean {
   );
 }
 
+function isOtherReasonPayload(payload: string): boolean {
+  return /^(bbf|bbr)-other$/i.test(payload);
+}
+
+function isBbrReasonPayload(payload: string): boolean {
+  return payload.toLowerCase().startsWith('bbr-');
+}
+
+function sortFloorErrorLabels(labels: FloorErrorLabel[]): FloorErrorLabel[] {
+  return [...labels].sort((a, b) => {
+    const aOther = a.slug === 'other' ? 1 : 0;
+    const bOther = b.slug === 'other' ? 1 : 0;
+    if (aOther !== bOther) return aOther - bOther;
+    return a.name.localeCompare(b.name);
+  });
+}
+
 function isAlreadyAtLocation(
   part: PartImageIdentity | null,
   locationSlug: 'fit-check' | 'sanding' | 'wip-rework' | 'discard',
@@ -332,6 +351,11 @@ export function FloorScanPage() {
   const navigate = useNavigate();
   const queryClient = useQueryClient();
   const { showToast } = useToast();
+  const errorLabelsQuery = useQuery({
+    queryKey: ['floor-error-labels'],
+    queryFn: () => api.getFloorErrorLabels(),
+    staleTime: 30_000,
+  });
   const inputRef = useRef<HTMLInputElement>(null);
   const [value, setValue] = useState('');
   // A USB pistol fires its whole scan (characters + Enter) far faster than a
@@ -376,6 +400,12 @@ export function FloorScanPage() {
   statusRef.current = status;
   const customReasonDraftRef = useRef<string | null>(null);
   const customReasonPendingRef = useRef(false);
+  useEffect(() => {
+    if (status.kind !== 'awaiting-custom-reason') {
+      customReasonPendingRef.current = false;
+      customReasonDraftRef.current = null;
+    }
+  }, [status.kind]);
 
   const focusRetryRef = useRef<number[]>([]);
 
@@ -1727,6 +1757,98 @@ export function FloorScanPage() {
     [applyUnitReturnReworkResponse, failScan, t],
   );
 
+  /** Commit a Sanding / Rework / Discard reason from an on-screen button, or
+   *  from a leftover `BBF-`/`BBR-` sticker. `Other` opens the optional note
+   *  screen instead of writing immediately. */
+  const applyIssueReason = useCallback(
+    (reasonPayload: string) => {
+      // Same gate as handleScan: a second reason tap (or sticker) before React
+      // re-renders `busy` must not fire another Sanding / Rework / Discard write.
+      // statusRef still reads awaiting-*-reason until the in-flight commit lands.
+      if (busyRef.current) return;
+
+      const current = statusRef.current;
+      const isOther = isOtherReasonPayload(reasonPayload);
+      const startCustom = (
+        locationSlug: 'sanding' | 'wip-rework' | 'discard' | 'unit-rework',
+        payload: string,
+        part: PartImageIdentity | null,
+        unit?: FloorProductUnit,
+      ) => {
+        if (customReasonPendingRef.current) return;
+        customReasonPendingRef.current = true;
+        customReasonDraftRef.current = null;
+        setStatus({
+          kind: 'awaiting-custom-reason',
+          locationSlug,
+          payload,
+          reasonPayload,
+          part,
+          unit,
+        });
+      };
+
+      if (current.kind === 'awaiting-sanding-reason') {
+        if (isOther) {
+          startCustom('sanding', current.payload, current.part);
+          return;
+        }
+        if (isBbrReasonPayload(reasonPayload)) {
+          void submitSandingPartScan(current.payload, reasonPayload);
+        } else {
+          void submitSandingErrorScan(current.payload, reasonPayload);
+        }
+        return;
+      }
+      if (current.kind === 'awaiting-rework-reason') {
+        if (isOther) {
+          startCustom('wip-rework', current.payload, current.part);
+          return;
+        }
+        if (isBbrReasonPayload(reasonPayload)) {
+          void submitReworkPartScan(current.payload, reasonPayload);
+        } else {
+          void submitReworkErrorScan(current.payload, reasonPayload);
+        }
+        return;
+      }
+      if (current.kind === 'awaiting-unit-rework-reason') {
+        if (isOther) {
+          startCustom('unit-rework', current.unit.serial_code, null, current.unit);
+          return;
+        }
+        if (isBbrReasonPayload(reasonPayload)) {
+          void submitUnitReturnRework(current.unit.serial_code, reasonPayload);
+        } else {
+          void submitUnitReturnReworkError(current.unit.serial_code, reasonPayload);
+        }
+        return;
+      }
+      if (current.kind === 'awaiting-discard-reason') {
+        if (isBbrReasonPayload(reasonPayload)) {
+          failScan(t('floor.reworkReasonNoPartPending', 'Scan a part into Sanding or Rework first'), reasonPayload);
+          return;
+        }
+        if (isOther) {
+          startCustom('discard', current.payload, current.part);
+          return;
+        }
+        void submitDiscardScan(current.payload, reasonPayload);
+      }
+    },
+    [
+      failScan,
+      submitDiscardScan,
+      submitReworkErrorScan,
+      submitReworkPartScan,
+      submitSandingErrorScan,
+      submitSandingPartScan,
+      submitUnitReturnRework,
+      submitUnitReturnReworkError,
+      t,
+    ],
+  );
+
   const applyReadyToShipResponse = useCallback(
     (resp: ReadyUnitToShipResponse) => {
       if (resp.result === 'invalid_serial') {
@@ -2178,56 +2300,12 @@ export function FloorScanPage() {
         return;
       }
       if (route.action === 'rework-reason') {
-        if (statusRef.current.kind === 'awaiting-sanding-reason') {
-          if (route.payload.toLowerCase() === 'bbr-other') {
-            if (customReasonPendingRef.current) return;
-            customReasonPendingRef.current = true;
-            customReasonDraftRef.current = null;
-            setStatus({
-              kind: 'awaiting-custom-reason',
-              locationSlug: 'sanding',
-              payload: statusRef.current.payload,
-              reasonPayload: route.payload,
-              part: statusRef.current.part,
-            });
-            return;
-          }
-          void submitSandingPartScan(statusRef.current.payload, route.payload);
-          return;
-        }
-        if (statusRef.current.kind === 'awaiting-rework-reason') {
-          if (route.payload.toLowerCase() === 'bbr-other') {
-            if (customReasonPendingRef.current) return;
-            customReasonPendingRef.current = true;
-            customReasonDraftRef.current = null;
-            setStatus({
-              kind: 'awaiting-custom-reason',
-              locationSlug: 'wip-rework',
-              payload: statusRef.current.payload,
-              reasonPayload: route.payload,
-              part: statusRef.current.part,
-            });
-            return;
-          }
-          void submitReworkPartScan(statusRef.current.payload, route.payload);
-          return;
-        }
-        if (statusRef.current.kind === 'awaiting-unit-rework-reason') {
-          if (route.payload.toLowerCase() === 'bbr-other') {
-            if (customReasonPendingRef.current) return;
-            customReasonPendingRef.current = true;
-            customReasonDraftRef.current = null;
-            setStatus({
-              kind: 'awaiting-custom-reason',
-              locationSlug: 'unit-rework',
-              payload: statusRef.current.unit.serial_code,
-              reasonPayload: route.payload,
-              part: null,
-              unit: statusRef.current.unit,
-            });
-            return;
-          }
-          void submitUnitReturnRework(statusRef.current.unit.serial_code, route.payload);
+        if (
+          statusRef.current.kind === 'awaiting-sanding-reason' ||
+          statusRef.current.kind === 'awaiting-rework-reason' ||
+          statusRef.current.kind === 'awaiting-unit-rework-reason'
+        ) {
+          applyIssueReason(route.payload);
           return;
         }
         failScan(t('floor.reworkReasonNoPartPending', 'Scan a part into Sanding or Rework first'), route.payload);
@@ -2275,73 +2353,13 @@ export function FloorScanPage() {
         return;
       }
       if (route.action === 'error-label') {
-        if (statusRef.current.kind === 'awaiting-sanding-reason') {
-          if (route.payload.toLowerCase() === 'bbf-other') {
-            if (customReasonPendingRef.current) return;
-            customReasonPendingRef.current = true;
-            customReasonDraftRef.current = null;
-            setStatus({
-              kind: 'awaiting-custom-reason',
-              locationSlug: 'sanding',
-              payload: statusRef.current.payload,
-              reasonPayload: route.payload,
-              part: statusRef.current.part,
-            });
-            return;
-          }
-          void submitSandingErrorScan(statusRef.current.payload, route.payload);
-          return;
-        }
-        if (statusRef.current.kind === 'awaiting-rework-reason') {
-          if (route.payload.toLowerCase() === 'bbf-other') {
-            if (customReasonPendingRef.current) return;
-            customReasonPendingRef.current = true;
-            customReasonDraftRef.current = null;
-            setStatus({
-              kind: 'awaiting-custom-reason',
-              locationSlug: 'wip-rework',
-              payload: statusRef.current.payload,
-              reasonPayload: route.payload,
-              part: statusRef.current.part,
-            });
-            return;
-          }
-          void submitReworkErrorScan(statusRef.current.payload, route.payload);
-          return;
-        }
-        if (statusRef.current.kind === 'awaiting-unit-rework-reason') {
-          if (route.payload.toLowerCase() === 'bbf-other') {
-            if (customReasonPendingRef.current) return;
-            customReasonPendingRef.current = true;
-            customReasonDraftRef.current = null;
-            setStatus({
-              kind: 'awaiting-custom-reason',
-              locationSlug: 'unit-rework',
-              payload: statusRef.current.unit.serial_code,
-              reasonPayload: route.payload,
-              part: null,
-              unit: statusRef.current.unit,
-            });
-            return;
-          }
-          void submitUnitReturnReworkError(statusRef.current.unit.serial_code, route.payload);
-          return;
-        }
-        if (statusRef.current.kind === 'awaiting-discard-reason') {
-          if (route.payload.toLowerCase() === 'bbf-other') {
-            if (customReasonPendingRef.current) return;
-            customReasonPendingRef.current = true;
-            customReasonDraftRef.current = null;
-            setStatus({
-              kind: 'awaiting-custom-reason',
-              locationSlug: 'discard',
-              payload: statusRef.current.payload,
-              reasonPayload: route.payload,
-              part: statusRef.current.part,
-            });
-            return;
-          }
-          void submitDiscardScan(statusRef.current.payload, route.payload);
+        if (
+          statusRef.current.kind === 'awaiting-sanding-reason' ||
+          statusRef.current.kind === 'awaiting-rework-reason' ||
+          statusRef.current.kind === 'awaiting-unit-rework-reason' ||
+          statusRef.current.kind === 'awaiting-discard-reason'
+        ) {
+          applyIssueReason(route.payload);
           return;
         }
         failScan(t('floor.errorReasonNoPartPending', 'Scan a part, then Sanding, Rework, or Discard first'), route.payload);
@@ -2365,6 +2383,9 @@ export function FloorScanPage() {
       submitPartLocation,
       submitPartScan,
       submitFitCheckPartScan,
+      applyIssueReason,
+      submitSandingPartScan,
+      submitSandingErrorScan,
       submitReworkPartScan,
       submitReworkErrorScan,
       submitDiscardScan,
@@ -2465,6 +2486,31 @@ export function FloorScanPage() {
 
   const isError = status.kind === 'error';
   const isLocked = status.kind === 'locked';
+  // Nested scan screens (part lookup, printer info, unit ceremony, …) live
+  // on this same `/floor/scan` URL as `status.kind`. The top-left control
+  // pops those back to idle; only idle itself leaves for the Floor landing.
+  const isMainScanView = status.kind === 'idle';
+
+  const handleBack = useCallback(() => {
+    // Don't drop to idle while a reason / Other Continue write is in flight —
+    // the request would still finish and flip idle into a confirmation, and
+    // handleScan would drop the next pistol scan until busyRef clears.
+    if (busyRef.current) return;
+
+    if (status.kind === 'idle') {
+      navigate('/floor');
+      return;
+    }
+    if (status.kind === 'printer') {
+      // Printer Done also closes a harvest lock claimed from this panel
+      // (§5.6 entry #2). Reuse that so Back does not dump the operator onto
+      // the Harvest station screen.
+      void dismissPrinterView();
+      return;
+    }
+    setPartFeedback(null);
+    setStatus({ kind: 'idle' });
+  }, [dismissPrinterView, navigate, status.kind]);
 
   return (
     <div className="fixed inset-0 z-50 flex flex-col items-center justify-center overflow-y-auto bg-bambu-dark px-6 text-center">
@@ -2481,12 +2527,17 @@ export function FloorScanPage() {
           keyboard popping up is a known, accepted rough edge until a
           working suppression approach is found. */}
       <TouchOnlyButton
-        onActivate={() => navigate('/floor')}
-        aria-label={t('floor.scanBackToFloor', 'Back to Floor')}
-        className="absolute left-3 top-3 z-10 inline-flex min-h-11 items-center gap-2 touch-manipulation select-none rounded-lg px-3 py-2 text-sm text-bambu-gray hover:bg-bambu-dark-secondary hover:text-white"
+        onActivate={handleBack}
+        disabled={busy}
+        aria-label={
+          isMainScanView
+            ? t('floor.scanBackToFloor', 'Back to Floor')
+            : t('floor.scanBackToScan', 'Back to Scan')
+        }
+        className="absolute left-3 top-3 z-10 inline-flex min-h-11 items-center gap-2 touch-manipulation select-none rounded-lg px-3 py-2 text-sm text-bambu-gray hover:bg-bambu-dark-secondary hover:text-white disabled:opacity-50"
       >
         <ArrowLeft className="h-5 w-5" aria-hidden="true" />
-        {t('nav.floor', 'Floor')}
+        {isMainScanView ? t('nav.floor', 'Floor') : t('floor.landingScanTitle', 'Scan')}
       </TouchOnlyButton>
 
       <input
@@ -2668,13 +2719,54 @@ export function FloorScanPage() {
           t={t}
         />
       ) : status.kind === 'awaiting-sanding-reason' ? (
-        <AwaitingReasonScreen payload={status.payload} part={status.part} location="sanding" t={t} />
+        <AwaitingReasonScreen
+          payload={status.payload}
+          part={status.part}
+          location="sanding"
+          labels={errorLabelsQuery.data ?? []}
+          loading={errorLabelsQuery.isLoading}
+          failed={errorLabelsQuery.isError}
+          busy={busy}
+          onSelect={applyIssueReason}
+          onRetry={() => void errorLabelsQuery.refetch()}
+          t={t}
+        />
       ) : status.kind === 'awaiting-rework-reason' ? (
-        <AwaitingReasonScreen payload={status.payload} part={status.part} location="wip-rework" t={t} />
+        <AwaitingReasonScreen
+          payload={status.payload}
+          part={status.part}
+          location="wip-rework"
+          labels={errorLabelsQuery.data ?? []}
+          loading={errorLabelsQuery.isLoading}
+          failed={errorLabelsQuery.isError}
+          busy={busy}
+          onSelect={applyIssueReason}
+          onRetry={() => void errorLabelsQuery.refetch()}
+          t={t}
+        />
       ) : status.kind === 'awaiting-unit-rework-reason' ? (
-        <AwaitingUnitReworkReasonScreen unit={status.unit} t={t} />
+        <AwaitingUnitReworkReasonScreen
+          unit={status.unit}
+          labels={errorLabelsQuery.data ?? []}
+          loading={errorLabelsQuery.isLoading}
+          failed={errorLabelsQuery.isError}
+          busy={busy}
+          onSelect={applyIssueReason}
+          onRetry={() => void errorLabelsQuery.refetch()}
+          t={t}
+        />
       ) : status.kind === 'awaiting-discard-reason' ? (
-        <AwaitingDiscardReasonScreen payload={status.payload} part={status.part} t={t} />
+        <AwaitingDiscardReasonScreen
+          payload={status.payload}
+          part={status.part}
+          labels={errorLabelsQuery.data ?? []}
+          loading={errorLabelsQuery.isLoading}
+          failed={errorLabelsQuery.isError}
+          busy={busy}
+          onSelect={applyIssueReason}
+          onRetry={() => void errorLabelsQuery.refetch()}
+          t={t}
+        />
       ) : status.kind === 'awaiting-custom-reason' ? (
         <AwaitingCustomReasonScreen
           payload={status.payload}
@@ -2685,6 +2777,7 @@ export function FloorScanPage() {
             customReasonDraftRef.current = reasonText;
           }}
           onSubmit={(reasonText) => {
+            if (busyRef.current) return;
             customReasonPendingRef.current = false;
             if (status.locationSlug === 'discard') {
               void submitDiscardScan(status.payload, status.reasonPayload, reasonText);
@@ -4547,15 +4640,77 @@ function UnitLinkedScreen({
   );
 }
 
+type IssueReasonScreenProps = {
+  labels: FloorErrorLabel[];
+  loading: boolean;
+  failed: boolean;
+  busy: boolean;
+  onSelect: (payload: string) => void;
+  onRetry: () => void;
+  t: ReturnType<typeof useTranslation>['t'];
+};
+
+function ReasonButtonGrid({
+  labels,
+  loading,
+  failed,
+  busy,
+  accentClass,
+  onSelect,
+  onRetry,
+  t,
+}: IssueReasonScreenProps & { accentClass: string }) {
+  if (loading) {
+    return (
+      <div className="mt-6 flex items-center gap-2 text-bambu-gray">
+        <Loader2 className="h-5 w-5 animate-spin" aria-hidden="true" />
+        {t('common.loading', 'Loading…')}
+      </div>
+    );
+  }
+  if (failed) {
+    return (
+      <div className="mt-6 flex flex-col items-center gap-3">
+        <p className="text-lg text-bambu-gray">{t('floor.reasonsLoadError', 'Could not load reasons')}</p>
+        <TouchOnlyButton
+          aria-label={t('common.retry', 'Retry')}
+          onActivate={onRetry}
+          className="rounded-lg bg-bambu-dark-secondary px-6 py-3 text-lg text-white"
+        >
+          {t('common.retry', 'Retry')}
+        </TouchOnlyButton>
+      </div>
+    );
+  }
+  return (
+    <div className="mt-6 grid w-full max-w-xl grid-cols-1 gap-3 sm:grid-cols-2">
+      {sortFloorErrorLabels(labels).map((label) => (
+        <TouchOnlyButton
+          key={label.id}
+          aria-label={label.name}
+          disabled={busy}
+          onActivate={() => onSelect(label.payload)}
+          className={`min-h-16 rounded-xl border border-bambu-dark-tertiary bg-bambu-dark-secondary px-4 py-4 text-xl font-semibold text-white transition-colors hover:border-current disabled:opacity-50 ${accentClass}`}
+        >
+          {label.name}
+        </TouchOnlyButton>
+      ))}
+    </div>
+  );
+}
+
 /** A linked product serial waiting for the rework reason that sends both
  *  housings back from shipped to WIP Rework. */
 function AwaitingUnitReworkReasonScreen({
   unit,
+  labels,
+  loading,
+  failed,
+  busy,
+  onSelect,
+  onRetry,
   t,
-}: {
-  unit: FloorProductUnit;
-  t: ReturnType<typeof useTranslation>['t'];
-}) {
+}: IssueReasonScreenProps & { unit: FloorProductUnit }) {
   return (
     <div className="flex max-h-full w-full max-w-2xl flex-col items-center overflow-y-auto py-6">
       <ScanLine className="w-16 h-16 mb-6 text-orange-500 shrink-0" aria-hidden="true" />
@@ -4563,7 +4718,17 @@ function AwaitingUnitReworkReasonScreen({
       <p className="text-4xl font-bold text-white font-mono">{unit.serial_code}</p>
       <p className="mt-2 text-lg text-bambu-gray-light font-mono">{unit.top_sticker}</p>
       <p className="text-lg text-bambu-gray-light font-mono">{unit.bottom_sticker}</p>
-      <p className="mt-3 text-2xl text-orange-500">{t('floor.reworkScanReason', 'Scan an error label')}</p>
+      <p className="mt-3 text-2xl text-orange-500">{t('floor.selectReason', 'Select a reason')}</p>
+      <ReasonButtonGrid
+        labels={labels}
+        loading={loading}
+        failed={failed}
+        busy={busy}
+        accentClass="text-orange-500"
+        onSelect={onSelect}
+        onRetry={onRetry}
+        t={t}
+      />
     </div>
   );
 }
@@ -4575,12 +4740,17 @@ function AwaitingReasonScreen({
   payload,
   part,
   location,
+  labels,
+  loading,
+  failed,
+  busy,
+  onSelect,
+  onRetry,
   t,
-}: {
+}: IssueReasonScreenProps & {
   payload: string;
   part: PartImageIdentity | null;
   location: 'sanding' | 'wip-rework';
-  t: ReturnType<typeof useTranslation>['t'];
 }) {
   const label = location === 'sanding'
     ? t('floor.locationSanding', 'Sanding')
@@ -4592,13 +4762,33 @@ function AwaitingReasonScreen({
       <PartSourceLabel part={part} t={t} />
       <p className="text-3xl font-bold text-white font-mono">{payload}</p>
       <p className="mt-1 text-lg text-orange-500">{label}</p>
-      <p className="mt-3 text-2xl text-orange-500">{t('floor.reworkScanReason', 'Scan an error label')}</p>
+      <p className="mt-3 text-2xl text-orange-500">{t('floor.selectReason', 'Select a reason')}</p>
+      <ReasonButtonGrid
+        labels={labels}
+        loading={loading}
+        failed={failed}
+        busy={busy}
+        accentClass="text-orange-500"
+        onSelect={onSelect}
+        onRetry={onRetry}
+        t={t}
+      />
       <PartScanHistorySection part={part} />
     </div>
   );
 }
 
-function AwaitingDiscardReasonScreen({ payload, part, t }: { payload: string; part: PartImageIdentity | null; t: ReturnType<typeof useTranslation>['t'] }) {
+function AwaitingDiscardReasonScreen({
+  payload,
+  part,
+  labels,
+  loading,
+  failed,
+  busy,
+  onSelect,
+  onRetry,
+  t,
+}: IssueReasonScreenProps & { payload: string; part: PartImageIdentity | null }) {
   return (
     <div className="flex max-h-full w-full max-w-2xl flex-col items-center overflow-y-auto py-6">
       <ScanLine className="w-16 h-16 mb-6 text-red-500 shrink-0" aria-hidden="true" />
@@ -4606,7 +4796,17 @@ function AwaitingDiscardReasonScreen({ payload, part, t }: { payload: string; pa
       <PartSourceLabel part={part} t={t} />
       <p className="text-3xl font-bold text-white font-mono">{payload}</p>
       <p className="mt-1 text-lg text-bambu-gray">{t('floor.discard', 'Discard')}</p>
-      <p className="mt-3 text-2xl text-bambu-gray">{t('floor.discardScanReason', 'Scan an error label')}</p>
+      <p className="mt-3 text-2xl text-bambu-gray">{t('floor.selectReason', 'Select a reason')}</p>
+      <ReasonButtonGrid
+        labels={labels}
+        loading={loading}
+        failed={failed}
+        busy={busy}
+        accentClass="text-red-500"
+        onSelect={onSelect}
+        onRetry={onRetry}
+        t={t}
+      />
       <PartScanHistorySection part={part} />
     </div>
   );
@@ -4630,25 +4830,31 @@ function AwaitingCustomReasonScreen({
   const [description, setDescription] = useState('');
   const [showDescription, setShowDescription] = useState(false);
   const [secondsRemaining, setSecondsRemaining] = useState(10);
+  const [typingPaused, setTypingPaused] = useState(false);
   const descriptionRef = useRef('');
   const onSubmitRef = useRef(onSubmit);
+  const submittedRef = useRef(false);
   useEffect(() => {
     onSubmitRef.current = onSubmit;
   }, [onSubmit]);
   useEffect(() => {
+    if (typingPaused || submittedRef.current) return undefined;
     const timer = window.setInterval(() => {
-      setSecondsRemaining((seconds) => {
-        if (seconds <= 1) {
-          window.clearInterval(timer);
-          onSubmitRef.current(descriptionRef.current.trim() || null);
-          return 0;
-        }
-        return seconds - 1;
-      });
+      setSecondsRemaining((seconds) => Math.max(0, seconds - 1));
     }, 1000);
     return () => window.clearInterval(timer);
-  }, []);
+  }, [typingPaused]);
+  useEffect(() => {
+    if (secondsRemaining > 0 || typingPaused || submittedRef.current) return;
+    submittedRef.current = true;
+    onSubmitRef.current(descriptionRef.current.trim() || null);
+  }, [secondsRemaining, typingPaused]);
   const accent = locationSlug === 'discard' ? 'text-red-500' : 'text-orange-500';
+  const submitNow = () => {
+    if (submittedRef.current) return;
+    submittedRef.current = true;
+    onSubmit(descriptionRef.current.trim() || null);
+  };
 
   return (
     <div className="flex max-h-full w-full max-w-2xl flex-col items-center overflow-y-auto py-6">
@@ -4670,29 +4876,49 @@ function AwaitingCustomReasonScreen({
         <input
           autoFocus
           value={description}
+          onFocus={() => setTypingPaused(true)}
+          onBlur={() => setTypingPaused(false)}
           onChange={(event) => {
             const value = event.target.value.slice(0, 120);
             descriptionRef.current = value;
             setDescription(value);
             onDraftChange(value);
+            setTypingPaused(true);
           }}
           placeholder={t('floor.otherReasonPlaceholder', 'Short description (optional)')}
           maxLength={120}
           className="mt-4 w-72 rounded-lg border border-bambu-dark-tertiary bg-bambu-dark-secondary px-3 py-2 text-sm text-white placeholder:text-bambu-gray focus:border-bambu-green focus:outline-none"
         />
       )}
-      <div className="mt-5 flex items-center gap-3">
+      <div className="mt-5 flex flex-wrap items-center justify-center gap-3">
         <button
           type="button"
-          onClick={() => setShowDescription((visible) => !visible)}
+          onClick={() => {
+            if (showDescription) {
+              setShowDescription(false);
+              setTypingPaused(false);
+            } else {
+              setShowDescription(true);
+              setTypingPaused(true);
+            }
+          }}
           className="rounded-lg bg-bambu-dark-secondary px-4 py-2 text-sm text-bambu-gray-light transition-colors hover:text-white"
         >
           {showDescription
             ? t('floor.otherReasonHideDescription', 'Hide description')
             : t('floor.otherReasonAddDescription', 'Add short description')}
         </button>
+        <button
+          type="button"
+          onClick={submitNow}
+          className="rounded-lg bg-bambu-green px-4 py-2 text-sm font-medium text-white transition-colors hover:bg-bambu-green-light"
+        >
+          {t('floor.otherReasonContinue', 'Continue')}
+        </button>
         <span className="text-sm text-bambu-gray">
-          {t('floor.otherReasonAutoContinue', 'Continuing in {{seconds}}s', { seconds: secondsRemaining })}
+          {typingPaused
+            ? t('floor.otherReasonPaused', 'Paused while typing')
+            : t('floor.otherReasonAutoContinue', 'Continuing in {{seconds}}s', { seconds: secondsRemaining })}
         </span>
       </div>
       <PartScanHistorySection part={part} />

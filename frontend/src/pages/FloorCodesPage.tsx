@@ -6,8 +6,10 @@
  * used at a desk, not with a pistol in hand.
  *
  * The page groups the printable floor codes by use: stations/locations,
- * printers, reusable KNB/BUT bins, and error labels. Bin labels are generated
+ * printers, reusable KNB/BUT bins, and Discard. Bin labels are generated
  * from the current printer catalog so each printer gets one QR per part type.
+ * Sanding/Rework/Discard reasons are managed here as an on-screen catalog,
+ * not printed as QR codes.
  *
  * The QR shown per station is rendered client-side purely as a *preview*; the
  * printed artefact is the server-rendered PDF, whose payload comes from the
@@ -136,14 +138,7 @@ export function FloorCodesPage() {
     if (tab === 'stations') return stations.map((s) => ({ payload: s.payload, title: s.name, subtitle: s.description }));
     if (tab === 'locations') return locations.map((s) => ({ payload: s.payload, title: s.name, subtitle: s.description }));
     if (tab === 'errors') return [
-      { payload: 'BBX-discard', title: 'Discard', subtitle: 'Then scan an error label.' },
-      ...errors.map((error) => ({
-        payload: error.payload,
-        title: error.name,
-        subtitle: 'Rework and discard reason',
-        id: error.id,
-        isProtected: error.is_protected || error.slug === 'other',
-      })),
+      { payload: 'BBX-discard', title: 'Discard', subtitle: 'Then select a reason on screen.' },
     ];
     if (tab === 'bins') return bins.map((bin) => ({
       payload: bin.payload,
@@ -155,11 +150,12 @@ export function FloorCodesPage() {
       title: p.name,
       subtitle: [p.model, p.location].filter(Boolean).join(' · ') || '—',
     }));
-  }, [tab, stations, locations, printers, bins, errors]);
+  }, [tab, stations, locations, printers, bins]);
 
   // Locations shares the station catalog query — it's the same data, split
-  // by `category` client-side, not a second fetch.
-  const activeQuery = tab === 'printers' ? printersQuery : tab === 'bins' ? binsQuery : tab === 'errors' ? errorsQuery : stationsQuery;
+  // by `category` client-side, not a second fetch. Error labels are not
+  // printed (they are on-screen buttons); Discard is hardcoded on that tab.
+  const activeQuery = tab === 'printers' ? printersQuery : tab === 'bins' ? binsQuery : stationsQuery;
 
   const [selected, setSelected] = useState<Set<string>>(new Set());
   const [size, setSize] = useState<StoredSize>(() => loadStoredSize());
@@ -329,7 +325,7 @@ export function FloorCodesPage() {
                       'Initial QC Pass and Rework. Scanning one opens that checkpoint on the scan page, same as a station QR.',
                     )
                   : tab === 'errors'
-                    ? t('floor.codesErrorsHint', 'Scan an error label after Rework or Discard. Add or remove reasons as needed.')
+                    ? t('floor.codesErrorsHint', 'Print Discard. Reasons appear as on-screen buttons after Sanding, Rework, or Discard — add or remove them below.')
                   : tab === 'bins'
                     ? t('floor.codesBinsHint', 'Print three shared reusable KNB bins, three shared reusable BUT bins, and three shared reusable BOT bins.')
                   : t(
@@ -353,12 +349,12 @@ export function FloorCodesPage() {
           )}
         </div>
 
-        {activeQuery.isLoading ? (
+        {tab !== 'errors' && activeQuery.isLoading ? (
           <div className="flex items-center justify-center py-16 text-bambu-gray">
             <Loader2 className="w-5 h-5 animate-spin mr-2" />
             {t('common.loading', 'Loading…')}
           </div>
-        ) : activeQuery.isError ? (
+        ) : tab !== 'errors' && activeQuery.isError ? (
           <div className="text-center py-16 px-4">
             <QrCode className="w-10 h-10 text-bambu-gray mx-auto mb-3" />
             <p className="text-white font-medium">
@@ -400,12 +396,6 @@ export function FloorCodesPage() {
                 subtitle={item.subtitle}
                 checked={selected.has(item.payload)}
                 onToggle={() => toggle(item.payload)}
-                action={tab === 'errors' && 'id' in item && !('isProtected' in item && item.isProtected) ? (
-                  <Button size="sm" variant="danger" className="w-full md:w-auto" onClick={() => setDeleteTarget({ id: Number(item.id), name: item.title })}>
-                    <Trash2 className="h-4 w-4" />
-                    Remove
-                  </Button>
-                ) : undefined}
               />
             ))}
           </ul>
@@ -414,7 +404,44 @@ export function FloorCodesPage() {
 
       {tab === 'errors' && (
         <section className="bg-bambu-dark-secondary rounded-lg p-4 space-y-3">
-          <h2 className="text-white font-semibold">Manage error labels</h2>
+          <h2 className="text-white font-semibold">{t('floor.codesReasonsHeading', 'On-screen reasons')}</h2>
+          <p className="text-xs text-bambu-gray">
+            {t(
+              'floor.codesReasonsHint',
+              'These appear as buttons after scanning Sanding, Rework, or Discard. They are not printed as QR codes.',
+            )}
+          </p>
+          {errorsQuery.isLoading ? (
+            <div className="flex items-center py-4 text-bambu-gray">
+              <Loader2 className="w-5 h-5 animate-spin mr-2" />
+              {t('common.loading', 'Loading…')}
+            </div>
+          ) : errorsQuery.isError ? (
+            <div className="py-2">
+              <p className="text-sm text-white">{t('floor.reasonsLoadError', 'Could not load reasons')}</p>
+              <Button className="mt-3" variant="secondary" onClick={() => errorsQuery.refetch()}>
+                {t('common.retry', 'Retry')}
+              </Button>
+            </div>
+          ) : (
+            <ul className="divide-y divide-bambu-dark-tertiary rounded-lg border border-bambu-dark-tertiary">
+              {errors.map((error) => (
+                <li key={error.id} className="flex flex-wrap items-center justify-between gap-3 px-3 py-3">
+                  <div className="min-w-0">
+                    <p className="text-white font-medium">{error.name}</p>
+                    <p className="text-xs text-bambu-gray font-mono">{error.payload}</p>
+                  </div>
+                  {!(error.is_protected || error.slug === 'other') && (
+                    <Button size="sm" variant="danger" className="w-full md:w-auto" onClick={() => setDeleteTarget({ id: error.id, name: error.name })}>
+                      <Trash2 className="h-4 w-4" />
+                      Remove
+                    </Button>
+                  )}
+                </li>
+              ))}
+            </ul>
+          )}
+          <h3 className="text-white font-semibold pt-2">{t('floor.codesReasonsAddHeading', 'Add a reason')}</h3>
           <div className="flex flex-wrap gap-2">
             <input value={errorName} onChange={(e) => setErrorName(e.target.value)} placeholder="Label name" className="rounded-lg border border-bambu-dark-tertiary bg-bambu-dark px-3 py-2 text-sm text-white" />
             <label className="flex items-center rounded-lg border border-bambu-dark-tertiary bg-bambu-dark text-sm text-white focus-within:border-bambu-green">
@@ -524,7 +551,7 @@ export function FloorCodesPage() {
       {deleteTarget && (
         <ConfirmModal
           title="Remove error label?"
-          message={`This permanently removes ${deleteTarget.name} from future scans and printing. Existing part history keeps the recorded reason. This cannot be undone.`}
+          message={`This permanently removes ${deleteTarget.name} from on-screen reason buttons. Existing part history keeps the recorded reason. This cannot be undone.`}
           confirmText="Remove permanently"
           variant="danger"
           isLoading={deletePending}
@@ -556,14 +583,12 @@ function CodeRow({
   subtitle,
   checked,
   onToggle,
-  action,
 }: {
   payload: string;
   title: string;
   subtitle: string;
   checked: boolean;
   onToggle: () => void;
-  action?: React.ReactNode;
 }) {
   return (
     <li className="flex flex-col gap-3 px-4 py-3 md:flex-row md:items-center md:gap-4">
@@ -593,7 +618,6 @@ function CodeRow({
           </code>
         </div>
       </div>
-      {action}
     </li>
   );
 }
