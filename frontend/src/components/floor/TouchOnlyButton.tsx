@@ -28,6 +28,7 @@ export function TouchOnlyButton({
   ...rest
 }: TouchOnlyButtonProps) {
   const activateFromPointer = (event: PointerEvent<HTMLButtonElement>) => {
+    if (event.currentTarget.disabled) return;
     if (!isPointerActivation(event)) return;
     // Keep focus off this control so a following pistol Enter cannot "press" it.
     event.preventDefault();

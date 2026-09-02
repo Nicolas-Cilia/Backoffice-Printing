@@ -2529,6 +2529,87 @@ describe('FloorScanPage (Phase 1b sessions)', () => {
       expect(captured.body).toEqual({ payload: 'BBD-000042', error_payload: 'BBF-horizontal-line' });
     });
 
+    it('ignores a second reason tap while the first commit is in flight', async () => {
+      mockNoSession();
+      let release!: () => void;
+      const gate = new Promise<void>((resolve) => {
+        release = resolve;
+      });
+      let callCount = 0;
+      server.use(
+        http.post('/api/v1/floor/locations/sanding/error', async ({ request }) => {
+          callCount += 1;
+          await request.json();
+          await gate;
+          return HttpResponse.json({
+            result: 'recorded',
+            part: RECORDED_PART,
+            printer: RECORDED_PRINTER,
+            archive: RECORDED_ARCHIVE,
+            reason: 'Horizontal line',
+          });
+        }),
+      );
+      render(<FloorScanPage />);
+      await screen.findByText('Scan a code');
+      await scan('BBD-000042');
+      await screen.findByText('Scan a location');
+      await scan('BBS-sanding');
+      await screen.findByRole('button', { name: 'Horizontal line' });
+
+      tapReason('Horizontal line');
+      tapReason('Vertical line');
+      tapReason('Horizontal line');
+
+      await waitFor(() => {
+        expect(callCount).toBe(1);
+      });
+      release();
+      expect(await screen.findByText('Sent to Sanding · Horizontal line')).toBeInTheDocument();
+      expect(callCount).toBe(1);
+    });
+
+    it('keeps Back on the reason screen while a commit is in flight', async () => {
+      mockNoSession();
+      let release!: () => void;
+      const gate = new Promise<void>((resolve) => {
+        release = resolve;
+      });
+      server.use(
+        http.post('/api/v1/floor/locations/sanding/error', async () => {
+          await gate;
+          return HttpResponse.json({
+            result: 'recorded',
+            part: RECORDED_PART,
+            printer: RECORDED_PRINTER,
+            archive: RECORDED_ARCHIVE,
+            reason: 'Horizontal line',
+          });
+        }),
+      );
+      render(<FloorScanPage />);
+      await screen.findByText('Scan a code');
+      await scan('BBD-000042');
+      await screen.findByText('Scan a location');
+      await scan('BBS-sanding');
+      await screen.findByRole('button', { name: 'Horizontal line' });
+
+      tapReason('Horizontal line');
+      await waitFor(() => {
+        expect(screen.getByRole('button', { name: 'Back to Scan' })).toBeDisabled();
+      });
+
+      fireEvent.pointerDown(screen.getByRole('button', { name: 'Back to Scan' }), {
+        pointerType: 'touch',
+        button: 0,
+      });
+      expect(screen.getByText('Select a reason')).toBeInTheDocument();
+      expect(screen.queryByText('Scan a code')).not.toBeInTheDocument();
+
+      release();
+      expect(await screen.findByText('Sent to Sanding · Horizontal line')).toBeInTheDocument();
+    });
+
     it('still commits Sanding from a leftover BBR reason sticker', async () => {
       mockNoSession();
       const captured = mockSandingScan({ result: 'recorded', part: RECORDED_PART, printer: RECORDED_PRINTER, archive: RECORDED_ARCHIVE });
