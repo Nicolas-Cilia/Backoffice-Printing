@@ -431,19 +431,22 @@ async def record_plate_print_failure(
             reason_text=record.reason_text,
         )
 
-    # Clear awaiting_plate_clear so the bed is not stuck after scrap
-    # (same flag the office Clear Bed action releases).
-    try:
-        from backend.app.services.plate_turnaround import record_plate_clear_confirmed
-        from backend.app.services.printer_manager import printer_manager
+    # Clear awaiting_plate_clear only if this archive is the printer's most
+    # recent completed print (the one actually on the bed). An older plate
+    # from the backlog should not release a gate raised by a newer finish.
+    latest = await get_last_finished_print(db, archive.printer_id)
+    if latest is not None and latest.archive_id == archive.id:
+        try:
+            from backend.app.services.plate_turnaround import record_plate_clear_confirmed
+            from backend.app.services.printer_manager import printer_manager
 
-        printer_manager.set_awaiting_plate_clear(archive.printer_id, False)
-        await record_plate_clear_confirmed(archive.printer_id)
-    except Exception:
-        logger.exception(
-            "Failed to clear awaiting_plate_clear after plate failure for printer %s",
-            archive.printer_id,
-        )
+            printer_manager.set_awaiting_plate_clear(archive.printer_id, False)
+            await record_plate_clear_confirmed(archive.printer_id)
+        except Exception:
+            logger.exception(
+                "Failed to clear awaiting_plate_clear after plate failure for printer %s",
+                archive.printer_id,
+            )
 
     return result
 

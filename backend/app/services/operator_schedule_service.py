@@ -162,16 +162,23 @@ async def replace_schedule(db: AsyncSession, shifts: list[ScheduleShiftIn]) -> l
 
 
 async def within_staffed_hours(db: AsyncSession, when: datetime | None) -> bool | None:
-    """Whether ``when`` falls inside a staffed shift; stub fallback if none enabled."""
+    """Whether ``when`` falls inside a staffed shift; stub fallback if none enabled.
+
+    Shift ``HH:MM`` values are interpreted in the Stats 2 **global** timezone
+    (not each row's possibly-stale ``timezone`` field). This matches the
+    behavior of ``get_staffed_windows_context`` so turnaround, lead-time, and
+    capacity explanations always agree.
+    """
     if when is None:
         return None
+    globals_ = await get_stats2_globals(db)
+    global_tz = resolve_timezone_name((globals_.timezone or DEFAULT_TIMEZONE).strip() or DEFAULT_TIMEZONE)
     shifts = (await db.execute(select(OperatorSchedule).where(OperatorSchedule.enabled.is_(True)))).scalars().all()
     if not shifts:
-        globals_ = await get_stats2_globals(db)
-        return stub_within_staffed_hours(_local_when(when, globals_.timezone))
+        return stub_within_staffed_hours(_local_when(when, global_tz))
 
+    local = _local_when(when, global_tz)
     for shift in shifts:
-        local = _local_when(when, shift.timezone)
         if local.weekday() != shift.day_of_week:
             continue
         start = hhmm_to_minutes(shift.start_time)
@@ -337,6 +344,16 @@ async def get_effective_schedule(
     windows = [{"start_time": minutes_to_hhmm(s), "end_time": minutes_to_hhmm(e)} for s, e in merged]
     total_staffed = sum(e - s for s, e in merged)
 
+    # When using the default stub (no enabled shifts), fill in the Mon-Fri
+    # 08:00-17:00 windows so the effective endpoint agrees with capacity.
+    using_stub = not any_enabled
+    if using_stub and weekday < 5:
+        stub_start = _STUB_START_HOUR * 60
+        stub_end = _STUB_END_HOUR * 60
+        windows = [{"start_time": minutes_to_hhmm(stub_start), "end_time": minutes_to_hhmm(stub_end)}]
+        total_staffed = stub_end - stub_start
+        peak_operators = 1
+
     globals_ = await get_stats2_globals(db)
     reference = now or datetime.now(timezone.utc)
     staffed_now = await within_staffed_hours(db, reference)
@@ -344,7 +361,7 @@ async def get_effective_schedule(
     return EffectiveSchedule(
         date=on_date.isoformat(),
         day_of_week=weekday,
-        is_staffed=len(shifts_out) > 0,
+        is_staffed=len(shifts_out) > 0 or (using_stub and weekday < 5),
         shifts=shifts_out,
         windows=windows,
         peak_operator_count=peak_operators,
@@ -355,5 +372,5 @@ async def get_effective_schedule(
         expected_plate_clear_minutes=globals_.expected_plate_clear_minutes,
         pre_line_buffer_minutes=globals_.pre_line_buffer_minutes,
         timezone=globals_.timezone,
-        using_default_stub=not any_enabled,
+        using_default_stub=using_stub,
     )

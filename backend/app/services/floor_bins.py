@@ -1062,6 +1062,14 @@ async def relink_bin(db: AsyncSession, batch_id: int, archive_id: int) -> BinSca
     old_printer_id = batch.printer_id
     batch.archive_id = archive.id
     batch.printer_id = archive.printer_id
+
+    # Compute and apply the harvest variance snapshot for the newly linked archive
+    # so Stats 2 metrics include this fill in harvest-yield samples.
+    from backend.app.services.harvest_variance import apply_snapshot_to_batch, snapshot_for_archive
+
+    variance_snap = await snapshot_for_archive(db, archive.id, batch.quantity)
+    apply_snapshot_to_batch(batch, variance_snap)
+
     db.add(
         FloorBinBatchEvent(
             batch_id=batch.id,
@@ -1073,6 +1081,7 @@ async def relink_bin(db: AsyncSession, batch_id: int, archive_id: int) -> BinSca
                 "archive_id": archive.id,
                 "printer_id": archive.printer_id,
                 "restored_status": previous_status,
+                **variance_snap.as_event_details(),
             },
         )
     )
