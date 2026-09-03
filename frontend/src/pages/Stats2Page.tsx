@@ -5,7 +5,7 @@
  * gutters, soft section cards, airy hero, compact confidence callout, and a
  * recharts quality hub. No drag grips, no hide/minimize chrome.
  */
-import { useMemo, useState, type ReactNode } from 'react';
+import { useLayoutEffect, useMemo, useRef, useState, type ComponentProps, type ReactNode } from 'react';
 import { keepPreviousData, useQuery } from '@tanstack/react-query';
 import { useTranslation } from 'react-i18next';
 import { Link } from 'react-router-dom';
@@ -30,6 +30,7 @@ import { ScrollFadeContainer } from '../components/ScrollFadeContainer';
 import { Stats2CapacityConfigCard } from '../components/Stats2CapacityConfigCard';
 import { useTheme } from '../contexts/ThemeContext';
 import { getCurrencySymbol } from '../utils/currency';
+import { RING_GAP_ANGLE, ringCornerRadiusForSlice } from './filamentTrackingChart';
 import {
   GANTT_AXIS_END,
   GANTT_AXIS_START,
@@ -45,11 +46,16 @@ import { yieldWhereUnitsWent } from './stats2Yield';
 type QualityTab = 'print' | 'discard' | 'rework';
 
 const ACCENT = '#07bcec';
-const PIE_COLORS = ['#fb7185', '#f59e0b', '#38bdf8', '#a78bfa', '#34d399', '#f472b6', '#94a3b8', '#facc15'];
+/** Quality category palette — saturated enough to read on dark charts (avoid pale rose/sky). */
+const QUALITY_PASSED = '#22c55e';
+const QUALITY_PRINT = '#ef4444';
+const QUALITY_DISCARD = '#f59e0b';
+const QUALITY_REWORK = '#3b82f6';
+const PIE_COLORS = [QUALITY_PRINT, QUALITY_DISCARD, QUALITY_REWORK, '#a78bfa', QUALITY_PASSED, '#ec4899', '#94a3b8', '#eab308'];
 const TAB_COLORS: Record<QualityTab, string> = {
-  print: '#fb7185',
-  discard: '#f59e0b',
-  rework: '#38bdf8',
+  print: QUALITY_PRINT,
+  discard: QUALITY_DISCARD,
+  rework: QUALITY_REWORK,
 };
 
 type ChartTheme = {
@@ -135,6 +141,10 @@ type QualityResp = {
     printer_name?: string;
     count: number;
   }>;
+  by_part?: Array<{
+    part_code?: string;
+    count: number;
+  }>;
   daily?: Array<{ date: string; total: number }>;
 };
 
@@ -196,9 +206,9 @@ type Tone = 'neutral' | 'warning' | 'danger' | 'info' | 'success' | 'accent';
 const TONE_PILL: Record<Tone, string> = {
   neutral: 'bg-bambu-dark-tertiary text-bambu-gray-light',
   warning: 'bg-amber-100 text-amber-800 dark:bg-amber-500/20 dark:text-amber-200',
-  danger: 'bg-rose-100 text-rose-800 dark:bg-rose-500/20 dark:text-rose-200',
-  info: 'bg-sky-100 text-sky-800 dark:bg-sky-500/20 dark:text-sky-200',
-  success: 'bg-emerald-100 text-emerald-800 dark:bg-emerald-500/20 dark:text-emerald-200',
+  danger: 'bg-red-100 text-red-800 dark:bg-red-500/20 dark:text-red-200',
+  info: 'bg-blue-100 text-blue-800 dark:bg-blue-500/20 dark:text-blue-200',
+  success: 'bg-green-100 text-green-800 dark:bg-green-500/20 dark:text-green-200',
   accent: 'bg-bambu-green/20 text-bambu-green',
 };
 
@@ -228,10 +238,10 @@ function TogglePill({ active, onClick, children }: { active: boolean; onClick: (
 
 const STAT_TONE: Record<Tone, string> = {
   neutral: 'text-white',
-  warning: 'text-amber-700 dark:text-amber-300',
-  danger: 'text-rose-700 dark:text-rose-300',
-  info: 'text-sky-700 dark:text-sky-300',
-  success: 'text-emerald-700 dark:text-emerald-300',
+  warning: 'text-amber-600 dark:text-amber-400',
+  danger: 'text-red-600 dark:text-red-400',
+  info: 'text-blue-600 dark:text-blue-400',
+  success: 'text-green-600 dark:text-green-400',
   accent: 'text-bambu-green',
 };
 
@@ -249,10 +259,10 @@ const CALLOUT_TONE: Record<Tone, string> = {
   warning:
     'border-amber-300 bg-amber-50 text-amber-900 dark:border-amber-500/40 dark:bg-amber-500/10 dark:text-amber-100',
   danger:
-    'border-rose-300 bg-rose-50 text-rose-900 dark:border-rose-500/40 dark:bg-rose-500/10 dark:text-rose-100',
-  info: 'border-sky-300 bg-sky-50 text-sky-900 dark:border-sky-500/40 dark:bg-sky-500/10 dark:text-sky-100',
+    'border-red-300 bg-red-50 text-red-900 dark:border-red-500/40 dark:bg-red-500/10 dark:text-red-100',
+  info: 'border-blue-300 bg-blue-50 text-blue-900 dark:border-blue-500/40 dark:bg-blue-500/10 dark:text-blue-100',
   success:
-    'border-emerald-300 bg-emerald-50 text-emerald-900 dark:border-emerald-500/40 dark:bg-emerald-500/10 dark:text-emerald-100',
+    'border-green-300 bg-green-50 text-green-900 dark:border-green-500/40 dark:bg-green-500/10 dark:text-green-100',
   accent: 'border-bambu-green/40 bg-bambu-green/10 text-bambu-green',
 };
 
@@ -376,50 +386,130 @@ function BarByCategory({
   );
 }
 
-function ReasonPie({ data }: { data: Array<{ reason: string; count: number }> }) {
-  const rows = data.slice(0, 8);
-  const total = rows.reduce((s, r) => s + r.count, 0);
+function ReasonSliceTooltip({
+  active,
+  payload,
+}: {
+  active?: boolean;
+  payload?: Array<{ payload?: { reason: string; count: number; fill?: string } }>;
+}) {
+  const row = payload?.[0]?.payload;
+  if (!active || !row) return null;
   return (
-    <div className="flex items-stretch gap-4 min-h-[200px]">
-      <div className="relative size-[10.5rem] shrink-0 self-center overflow-visible">
-        <ResponsiveContainer width="100%" height="100%">
-          <PieChart margin={{ top: 4, right: 4, bottom: 4, left: 4 }}>
-            <Pie
-              data={rows}
-              dataKey="count"
-              nameKey="reason"
-              cx="50%"
-              cy="50%"
-              innerRadius="58%"
-              outerRadius="92%"
-              paddingAngle={2}
-              isAnimationActive={false}
-            >
-              {rows.map((_, i) => (
-                <Cell key={i} fill={PIE_COLORS[i % PIE_COLORS.length]} stroke="transparent" />
-              ))}
-            </Pie>
-            <Tooltip content={<ChartTooltip />} />
-          </PieChart>
-        </ResponsiveContainer>
+    <div className="rounded-lg border border-bambu-dark-tertiary bg-bambu-dark px-3 py-2 shadow-lg">
+      <div className="flex items-center gap-2">
+        {row.fill ? (
+          <span className="h-2.5 w-2.5 shrink-0 rounded-full" style={{ backgroundColor: row.fill }} />
+        ) : null}
+        <span className="text-sm font-medium text-white">{row.reason}</span>
       </div>
-      <ul className="flex min-w-0 flex-1 flex-col justify-center gap-1.5 overflow-y-auto py-1 pr-1 max-h-[200px]">
-        {rows.map((row, i) => (
-          <li key={`${row.reason}-${i}`} className="flex items-start gap-2 text-xs leading-snug min-w-0">
-            <span
-              className="mt-1 h-2.5 w-2.5 shrink-0 rounded-sm"
-              style={{ backgroundColor: PIE_COLORS[i % PIE_COLORS.length] }}
-            />
-            <span className="min-w-0 flex-1 text-white break-words" title={row.reason}>
-              {row.reason}
-            </span>
-            <span className="shrink-0 tabular-nums text-bambu-gray">
-              {row.count}
-              {total > 0 ? ` · ${Math.round((row.count / total) * 100)}%` : ''}
-            </span>
-          </li>
-        ))}
-      </ul>
+      <div className="mt-0.5 text-xs text-bambu-gray">{row.count}</div>
+    </div>
+  );
+}
+
+/** Same ring geometry as Filament Tracking's printer-share donut. */
+function ReasonPie({ data }: { data: Array<{ reason: string; count: number }> }) {
+  const [hoveredReason, setHoveredReason] = useState<string | null>(null);
+  const rows = data.filter((r) => r.count > 0);
+  const total = rows.reduce((s, r) => s + r.count, 0);
+  const pieRows = rows.map((row, i) => ({
+    ...row,
+    fill: PIE_COLORS[i % PIE_COLORS.length],
+  }));
+
+  return (
+    // Center the block when short; donut stays put and only the legend scrolls when tall.
+    <div className="flex h-full min-h-0 flex-col justify-center overflow-hidden">
+      <div className="grid max-h-full min-h-0 w-full grid-rows-[auto_minmax(0,1fr)] gap-5 overflow-hidden">
+        <div
+          className="printer-share-chart relative mx-auto size-[10.5rem] shrink-0 overflow-visible"
+          role="img"
+          aria-label={
+            total > 0
+              ? pieRows.map((row) => `${row.reason} ${row.count}`).join(', ')
+              : 'No reason data'
+          }
+        >
+          {pieRows.length > 0 && (
+            <ResponsiveContainer width="100%" height="100%">
+              <PieChart>
+                <Pie
+                  data={pieRows}
+                  dataKey="count"
+                  nameKey="reason"
+                  cx="50%"
+                  cy="50%"
+                  innerRadius="62%"
+                  outerRadius="95%"
+                  paddingAngle={pieRows.length > 1 ? RING_GAP_ANGLE : 0}
+                  cornerRadius={0}
+                  startAngle={90}
+                  endAngle={-270}
+                  stroke="none"
+                  isAnimationActive={false}
+                  onMouseEnter={(entry) => {
+                    const reason = (entry as { reason?: string } | undefined)?.reason;
+                    setHoveredReason(reason ?? null);
+                  }}
+                  onMouseLeave={() => setHoveredReason(null)}
+                >
+                  {pieRows.map((row) => {
+                    // Recharts honors Cell cornerRadius at runtime; typings omit it.
+                    const cellProps = {
+                      key: row.reason,
+                      fill: row.fill,
+                      cornerRadius: ringCornerRadiusForSlice(row.count, total, pieRows.length),
+                      style: { cursor: 'pointer' as const, outline: 'none' },
+                    };
+                    return <Cell {...(cellProps as ComponentProps<typeof Cell>)} />;
+                  })}
+                </Pie>
+                <Tooltip
+                  content={<ReasonSliceTooltip />}
+                  isAnimationActive={false}
+                  animationDuration={0}
+                  allowEscapeViewBox={{ x: true, y: true }}
+                  wrapperStyle={{ zIndex: 30, outline: 'none', pointerEvents: 'none', transition: 'none' }}
+                />
+              </PieChart>
+            </ResponsiveContainer>
+          )}
+          <div className="pointer-events-none absolute inset-0 flex flex-col items-center justify-center text-center">
+            <div className="text-lg font-bold leading-none text-white">{total}</div>
+            <div className="mt-1 text-[11px] text-bambu-gray">events</div>
+          </div>
+        </div>
+        <ScrollFadeContainer
+          className="overflow-y-auto pr-1"
+          fadeFromClassName="from-bambu-dark-secondary"
+        >
+          <ul className="grid grid-cols-2 gap-x-4 gap-y-2.5">
+            {pieRows.map((row) => (
+              <li
+                key={row.reason}
+                className={`flex min-w-0 items-start gap-2.5 transition-opacity ${
+                  hoveredReason != null && hoveredReason !== row.reason ? 'opacity-40' : ''
+                }`}
+              >
+                <span
+                  className="mt-1.5 h-2.5 w-2.5 shrink-0 rounded-full"
+                  style={{ backgroundColor: row.fill }}
+                />
+                <div className="min-w-0 flex-1">
+                  <div className="text-sm leading-snug text-white" title={row.reason}>
+                    {row.reason}
+                  </div>
+                  <div className="mt-0.5 text-xs tabular-nums text-bambu-gray">
+                    {row.count}
+                    {total > 0 ? ` · ${Math.round((row.count / total) * 100)}%` : ''}
+                  </div>
+                </div>
+              </li>
+            ))}
+          </ul>
+        </ScrollFadeContainer>
+      </div>
     </div>
   );
 }
@@ -433,10 +523,13 @@ function GanttDay({
   day: Stats2PrintPlan['days'][0];
   priorDays: Stats2PrintPlan['days'];
 }) {
+  // Hooks must run unconditionally (early returns for empty/unstaffed days below).
+  const lanesRef = useRef<HTMLDivElement>(null);
+  const [lineHeightPx, setLineHeightPx] = useState(0);
+
   const axisStart = GANTT_AXIS_START;
   const axisEnd = GANTT_AXIS_END;
   const span = axisEnd - axisStart;
-  const lineMin = minuteOfDay(day.line_start_at);
   const staffedStart = day.staffed_windows?.length
     ? (() => {
         const [h, m] = day.staffed_windows[0].start_time.split(':').map(Number);
@@ -449,6 +542,37 @@ function GanttDay({
         return h * 60 + m;
       })()
     : 17 * 60;
+
+  const sortedLanes = [...day.lanes].sort((a, b) => {
+    const ah = a.hypothetical ? 1 : 0;
+    const bh = b.hypothetical ? 1 : 0;
+    if (ah !== bh) return ah - bh;
+    const am = a.printer_model.localeCompare(b.printer_model);
+    if (am !== 0) return am;
+    return a.printer_name.localeCompare(b.printer_name);
+  });
+
+  // Only mount ScrollFadeContainer when nested scrolling is on. Its
+  // overscroll-behavior:contain would otherwise trap page wheel events even
+  // with ≤15 lanes (no height cap / no inner scroll).
+  const nestScroll = sortedLanes.length > 15;
+  const showTimeline = day.staffed_minutes > 0 && day.lanes.length > 0;
+
+  // Measure the real lane stack height. `inset-y-0` alone can end up sizing to the
+  // scrollport (not content) when a parent has overflow, which truncates the guide mid-row.
+  useLayoutEffect(() => {
+    if (!showTimeline) {
+      setLineHeightPx(0);
+      return;
+    }
+    const el = lanesRef.current;
+    if (!el) return;
+    const sync = () => setLineHeightPx(el.scrollHeight);
+    sync();
+    const ro = new ResizeObserver(sync);
+    ro.observe(el);
+    return () => ro.disconnect();
+  }, [showTimeline, sortedLanes.length, day.date, day.line_start_at, nestScroll]);
 
   if (day.staffed_minutes <= 0) {
     return (
@@ -482,137 +606,181 @@ function GanttDay({
         }
       : null;
 
-  const sortedLanes = [...day.lanes].sort((a, b) => {
-    const ah = a.hypothetical ? 1 : 0;
-    const bh = b.hypothetical ? 1 : 0;
-    if (ah !== bh) return ah - bh;
-    const am = a.printer_model.localeCompare(b.printer_model);
-    if (am !== 0) return am;
-    return a.printer_name.localeCompare(b.printer_name);
+  const lineMin = minuteOfDay(day.line_start_at);
+  const showLineStart = lineMin >= axisStart && lineMin <= axisEnd;
+  const lineLeftPct = ((lineMin - axisStart) / span) * 100;
+  const lineStartTitle = `Line start ${hhmm(day.line_start_at)} — ready-for-assembly deadline`;
+
+  const laneRows = sortedLanes.map((lane) => {
+    const hyp = Boolean(lane.hypothetical);
+    const priorJobs = priorJobsForContinuation(priorDays, lane.printer_id, day.date, axisStart);
+    const segments = [
+      ...priorJobs.flatMap((job, idx) =>
+        buildContinuationSegments(job, day.date, axisStart, axisEnd, span, idx),
+      ),
+      ...lane.jobs.flatMap((job, idx) =>
+        buildJobSegments(job, day.date, axisStart, axisEnd, span, idx),
+      ),
+    ];
+    return (
+      <div key={lane.printer_id} className="flex h-8 items-center gap-3">
+        <div className="w-24 shrink-0 overflow-hidden text-xs leading-tight">
+          <div
+            className={`truncate font-medium ${hyp ? 'text-bambu-gray-light' : 'text-white'}`}
+            title={lane.printer_name}
+          >
+            {lane.printer_name}
+          </div>
+          <div className="truncate text-bambu-gray">
+            {lane.printer_model}
+            {hyp ? (
+              <span className="ml-1 text-[10px] uppercase tracking-wide text-bambu-green/80">
+                what-if
+              </span>
+            ) : null}
+          </div>
+        </div>
+        <div
+          className={`relative h-8 min-w-0 flex-1 overflow-hidden rounded-md bg-bambu-dark ${
+            hyp
+              ? 'border border-dashed border-bambu-green/40'
+              : 'border border-bambu-dark-tertiary'
+          }`}
+        >
+          {hatchLeft ? (
+            <div
+              className="absolute inset-y-0 bg-[repeating-linear-gradient(-45deg,transparent,transparent_4px,rgba(128,128,128,0.18)_4px,rgba(128,128,128,0.18)_8px)]"
+              style={{ left: `${hatchLeft.left}%`, width: `${hatchLeft.width}%` }}
+            />
+          ) : null}
+          {hatchRight ? (
+            <div
+              className="absolute inset-y-0 bg-[repeating-linear-gradient(-45deg,transparent,transparent_4px,rgba(128,128,128,0.18)_4px,rgba(128,128,128,0.18)_8px)]"
+              style={{ left: `${hatchRight.left}%`, width: `${hatchRight.width}%` }}
+            />
+          ) : null}
+          {(lane.time_blocks || []).map((block, bi) => {
+            const [sh, sm] = block.start_time.split(':').map(Number);
+            const [eh, em] = block.end_time.split(':').map(Number);
+            const bStart = Math.max(axisStart, sh * 60 + sm);
+            const bEnd = Math.min(axisEnd, eh * 60 + em);
+            if (bEnd <= bStart) return null;
+            return (
+              <div
+                key={`tb-${lane.printer_id}-${bi}`}
+                className="absolute inset-y-0 z-[2] bg-rose-500/25 ring-1 ring-inset ring-rose-400/40"
+                style={{
+                  left: `${((bStart - axisStart) / span) * 100}%`,
+                  width: `${((bEnd - bStart) / span) * 100}%`,
+                }}
+                title={
+                  block.label
+                    ? `Reserved: ${block.label} (${block.start_time}–${block.end_time})`
+                    : `Reserved / must be free (${block.start_time}–${block.end_time})`
+                }
+              />
+            );
+          })}
+          {segments.map((seg) => (
+            <div
+              key={seg.key}
+              className={`absolute top-1 bottom-1 z-[1] flex items-center px-1.5 text-[10px] text-white ${
+                PART_COLORS[seg.partCode] || 'bg-slate-500'
+              } ${seg.rounded} ${seg.wrap ? 'opacity-90 ring-1 ring-inset ring-white/25' : ''} ${
+                hyp ? 'opacity-85' : ''
+              }`}
+              style={{
+                left: `${seg.leftPct}%`,
+                width: `${Math.min(seg.widthPct, 100 - seg.leftPct)}%`,
+              }}
+              title={seg.title}
+            >
+              {seg.showLabel ? <span className="truncate">{seg.label}</span> : null}
+            </div>
+          ))}
+        </div>
+      </div>
+    );
   });
+
+  const lanesBody = (
+    <div ref={lanesRef} className="relative flex flex-col gap-2.5">
+      {showLineStart && lineHeightPx > 0 ? (
+        <div
+          className="pointer-events-none absolute top-0 z-20"
+          style={{ left: 'calc(6rem + 0.75rem)', right: 0, height: lineHeightPx }}
+          title={lineStartTitle}
+          aria-hidden
+        >
+          <div
+            className="absolute top-0 w-1 -translate-x-1/2 bg-blue-400/40"
+            style={{ left: `${lineLeftPct}%`, height: lineHeightPx }}
+          />
+        </div>
+      ) : null}
+      {laneRows}
+    </div>
+  );
 
   return (
     <div className="space-y-2.5">
-      <div className="relative flex justify-between overflow-x-auto px-24 text-[10px] text-bambu-gray">
+      <div className="flex justify-between overflow-x-auto px-24 text-[10px] text-bambu-gray">
         {ganttAxisLabels().map((label) => (
           <span key={label}>{label}</span>
         ))}
       </div>
-      <div className={sortedLanes.length > 15 ? 'h-[min(39rem,70vh)] min-h-0' : undefined}>
-        <ScrollFadeContainer
-          className="space-y-2.5 overflow-x-auto pr-1"
-          fadeFromClassName="from-bambu-dark"
-        >
-          {sortedLanes.map((lane) => {
-          const hyp = Boolean(lane.hypothetical);
-          const priorJobs = priorJobsForContinuation(priorDays, lane.printer_id, day.date, axisStart);
-          const segments = [
-            ...priorJobs.flatMap((job, idx) =>
-              buildContinuationSegments(job, day.date, axisStart, axisEnd, span, idx),
-            ),
-            ...lane.jobs.flatMap((job, idx) =>
-              buildJobSegments(job, day.date, axisStart, axisEnd, span, idx),
-            ),
-          ];
-          return (
-            <div key={lane.printer_id} className="flex items-center gap-3">
-              <div className="w-24 shrink-0 text-xs">
-                <div
-                  className={`truncate font-medium ${hyp ? 'text-bambu-gray-light' : 'text-white'}`}
-                  title={lane.printer_name}
-                >
-                  {lane.printer_name}
-                </div>
-                <div className="text-bambu-gray">
-                  {lane.printer_model}
-                  {hyp ? (
-                    <span className="ml-1 text-[10px] uppercase tracking-wide text-bambu-green/80">
-                      what-if
-                    </span>
-                  ) : null}
-                </div>
-              </div>
-              <div
-                className={`relative h-8 flex-1 overflow-hidden rounded-md bg-bambu-dark ${
-                  hyp
-                    ? 'border border-dashed border-bambu-green/40'
-                    : 'border border-bambu-dark-tertiary'
-                }`}
-              >
-                {hatchLeft ? (
-                  <div
-                    className="absolute inset-y-0 bg-[repeating-linear-gradient(-45deg,transparent,transparent_4px,rgba(128,128,128,0.18)_4px,rgba(128,128,128,0.18)_8px)]"
-                    style={{ left: `${hatchLeft.left}%`, width: `${hatchLeft.width}%` }}
-                  />
-                ) : null}
-                {hatchRight ? (
-                  <div
-                    className="absolute inset-y-0 bg-[repeating-linear-gradient(-45deg,transparent,transparent_4px,rgba(128,128,128,0.18)_4px,rgba(128,128,128,0.18)_8px)]"
-                    style={{ left: `${hatchRight.left}%`, width: `${hatchRight.width}%` }}
-                  />
-                ) : null}
-                {(lane.time_blocks || []).map((block, bi) => {
-                  const [sh, sm] = block.start_time.split(':').map(Number);
-                  const [eh, em] = block.end_time.split(':').map(Number);
-                  const bStart = Math.max(axisStart, sh * 60 + sm);
-                  const bEnd = Math.min(axisEnd, eh * 60 + em);
-                  if (bEnd <= bStart) return null;
-                  return (
-                    <div
-                      key={`tb-${lane.printer_id}-${bi}`}
-                      className="absolute inset-y-0 z-[2] bg-rose-500/25 ring-1 ring-inset ring-rose-400/40"
-                      style={{
-                        left: `${((bStart - axisStart) / span) * 100}%`,
-                        width: `${((bEnd - bStart) / span) * 100}%`,
-                      }}
-                      title={
-                        block.label
-                          ? `Reserved: ${block.label} (${block.start_time}–${block.end_time})`
-                          : `Reserved / must be free (${block.start_time}–${block.end_time})`
-                      }
-                    />
-                  );
-                })}
-                {lineMin >= axisStart && lineMin <= axisEnd ? (
-                  <div
-                    className="absolute inset-y-0 z-10 w-0.5 bg-bambu-green"
-                    style={{ left: `${((lineMin - axisStart) / span) * 100}%` }}
-                    title={`Line start ${hhmm(day.line_start_at)}`}
-                  />
-                ) : null}
-                {segments.map((seg) => (
-                  <div
-                    key={seg.key}
-                    className={`absolute top-1 bottom-1 z-[1] flex items-center px-1.5 text-[10px] text-white ${
-                      PART_COLORS[seg.partCode] || 'bg-slate-500'
-                    } ${seg.rounded} ${seg.wrap ? 'opacity-90 ring-1 ring-inset ring-white/25' : ''} ${
-                      hyp ? 'opacity-85' : ''
-                    }`}
-                    style={{
-                      left: `${seg.leftPct}%`,
-                      width: `${Math.min(seg.widthPct, 100 - seg.leftPct)}%`,
-                    }}
-                    title={seg.title}
-                  >
-                    {seg.showLabel ? <span className="truncate">{seg.label}</span> : null}
-                  </div>
-                ))}
-              </div>
-            </div>
-          );
-        })}
-        </ScrollFadeContainer>
-      </div>
-      <div className="flex flex-wrap items-center gap-x-4 gap-y-1 pt-1 text-[10px] text-bambu-gray">
+      {nestScroll ? (
+        <div className="h-[min(39rem,70vh)] min-h-0">
+          <ScrollFadeContainer className="overflow-x-auto pr-1" fadeFromClassName="from-bambu-dark">
+            {lanesBody}
+          </ScrollFadeContainer>
+        </div>
+      ) : (
+        <div className="overflow-x-auto pr-1">{lanesBody}</div>
+      )}
+      <div className="flex flex-wrap items-center gap-x-4 gap-y-2 pt-1 text-[10px] text-bambu-gray">
         {(['TOP', 'BOT', 'KNB', 'BUT'] as const).map((part) => (
           <span key={part} className="flex items-center gap-1.5">
             <span className={`inline-block h-2.5 w-2.5 rounded-sm ${PART_COLORS[part]}`} />
             {part}
           </span>
         ))}
-        <span>
-          1a→12a · accent = line start · hatch = unstaffed · rose = reserved / must be free · left ring =
-          overnight continuation from a prior day · dashed = what-if printer
+        <span className="hidden h-3 w-px bg-bambu-dark-tertiary sm:inline-block" aria-hidden />
+        <span className="flex items-center gap-1.5">
+          <span className="inline-block h-3 w-1 bg-blue-400/40" aria-hidden />
+          Line start ({hhmm(day.line_start_at)}) — ready for assembly
+        </span>
+        <span className="flex items-center gap-1.5">
+          <span
+            className="inline-block h-2.5 w-4 rounded-sm border border-bambu-dark-tertiary bg-[repeating-linear-gradient(-45deg,transparent,transparent_2px,rgba(128,128,128,0.35)_2px,rgba(128,128,128,0.35)_4px)]"
+            aria-hidden
+          />
+          Unstaffed hours
+        </span>
+        <span className="flex items-center gap-1.5">
+          <span
+            className="inline-block h-2.5 w-4 rounded-sm bg-rose-500/25 ring-1 ring-inset ring-rose-400/40"
+            aria-hidden
+          />
+          Reserved / must be free
+        </span>
+        <span className="flex items-center gap-1.5">
+          <span className="flex items-center gap-0.5" aria-hidden>
+            {(['TOP', 'BOT', 'KNB', 'BUT'] as const).map((part) => (
+              <span
+                key={part}
+                className={`inline-block h-2.5 w-2 rounded-sm opacity-90 ring-1 ring-inset ring-white/25 ${PART_COLORS[part]}`}
+              />
+            ))}
+          </span>
+          Overnight from prior day (ringed)
+        </span>
+        <span className="flex items-center gap-1.5">
+          <span
+            className="inline-block h-2.5 w-4 rounded-sm border border-dashed border-bambu-green/40 bg-bambu-dark"
+            aria-hidden
+          />
+          What-if printer
         </span>
       </div>
     </div>
@@ -637,47 +805,55 @@ function PrinterReliabilityTable({ printers }: { printers: ReliabilityPrinter[] 
   // Optimistic: assume overflow until ScrollFadeContainer measures (avoids a flash).
   const [hasMoreBelow, setHasMoreBelow] = useState(scrollable);
 
+  const table = (
+    <table className="w-full border-collapse text-xs">
+      <thead className={scrollable ? 'sticky top-0 z-10 bg-bambu-dark-secondary' : undefined}>
+        <tr className="border-b border-bambu-dark-tertiary">
+          <th className={TH}>Printer</th>
+          <th className={`${TH} text-right`}>Jobs</th>
+          <th className={`${TH} text-right`}>Success</th>
+          <th className={`${TH} text-right`}>Rank</th>
+        </tr>
+      </thead>
+      <tbody>
+        {printers.map((p, i) => (
+          <tr key={p.printer_id} className="border-b border-bambu-dark-tertiary/50">
+            <td className={`${TD} ${i === 0 ? 'text-emerald-700 dark:text-emerald-300' : ''}`}>
+              {p.printer_name}
+            </td>
+            <td className={`${TD} text-right`}>{p.jobs}</td>
+            <td className={`${TD} text-right`}>
+              {p.job_success != null ? `${Math.round(Number(p.job_success) * 100)}%` : '—'}
+            </td>
+            <td className={`${TD} text-right text-bambu-gray`}>#{i + 1}</td>
+          </tr>
+        ))}
+        {!printers.length && (
+          <tr>
+            <td colSpan={4} className="py-3 text-center text-bambu-gray">
+              No reliability data in range.
+            </td>
+          </tr>
+        )}
+      </tbody>
+    </table>
+  );
+
   return (
     <div className="space-y-2">
-      <div className={scrollable ? 'h-72' : undefined}>
-        <ScrollFadeContainer
-          className="pr-1"
-          fadeFromClassName="from-bambu-dark-secondary"
-          onHasMoreChange={setHasMoreBelow}
-        >
-          <table className="w-full border-collapse text-xs">
-            <thead className="sticky top-0 z-10 bg-bambu-dark-secondary">
-              <tr className="border-b border-bambu-dark-tertiary">
-                <th className={TH}>Printer</th>
-                <th className={`${TH} text-right`}>Jobs</th>
-                <th className={`${TH} text-right`}>Success</th>
-                <th className={`${TH} text-right`}>Rank</th>
-              </tr>
-            </thead>
-            <tbody>
-              {printers.map((p, i) => (
-                <tr key={p.printer_id} className="border-b border-bambu-dark-tertiary/50">
-                  <td className={`${TD} ${i === 0 ? 'text-emerald-700 dark:text-emerald-300' : ''}`}>
-                    {p.printer_name}
-                  </td>
-                  <td className={`${TD} text-right`}>{p.jobs}</td>
-                  <td className={`${TD} text-right`}>
-                    {p.job_success != null ? `${Math.round(Number(p.job_success) * 100)}%` : '—'}
-                  </td>
-                  <td className={`${TD} text-right text-bambu-gray`}>#{i + 1}</td>
-                </tr>
-              ))}
-              {!printers.length && (
-                <tr>
-                  <td colSpan={4} className="py-3 text-center text-bambu-gray">
-                    No reliability data in range.
-                  </td>
-                </tr>
-              )}
-            </tbody>
-          </table>
-        </ScrollFadeContainer>
-      </div>
+      {scrollable ? (
+        <div className="h-72">
+          <ScrollFadeContainer
+            className="pr-1"
+            fadeFromClassName="from-bambu-dark-secondary"
+            onHasMoreChange={setHasMoreBelow}
+          >
+            {table}
+          </ScrollFadeContainer>
+        </div>
+      ) : (
+        table
+      )}
       {scrollable && hasMoreBelow && (
         <p className="flex items-center justify-center gap-1 text-[11px] text-bambu-gray">
           <ChevronDown className="size-3.5 shrink-0 opacity-70" aria-hidden />
@@ -974,6 +1150,7 @@ export function Stats2Page() {
 
     const activeQ = qualityTab === 'print' ? qPrint : qualityTab === 'discard' ? qDiscard : qRework;
     const activeByPrinter = activeQ?.by_printer || [];
+    const activeByPart = activeQ?.by_part || [];
     const activeReasons = (activeQ?.reasons || []).slice(0, 8);
     const activeTotal = activeQ?.total ?? 0;
     const hotPrinter = activeByPrinter[0];
@@ -1259,10 +1436,9 @@ export function Stats2Page() {
           )}
           {day && day.lanes.length > 0 && day.staffed_minutes > 0 && timelineMode === 'capacity' && (
             <Callout tone="info" title={`Ready before line start (${hhmm(day.line_start_at)})`}>
-              Timeline is 1a→12a. Overnight prints run to the right edge with a → cue, then continue on the next day from
-              the left (ringed) until they finish. Packing hits the daily ask first, then prefers expected good parts
-              per printer-minute (yield-aware — parallel short plates when they finish the ask sooner than one dense
-              plate). Accent = line start; hatch = unstaffed.
+              Schedule runs 1am–midnight. The blue guide is when parts should be ready for assembly. Overnight prints
+              continue onto the next day (ringed bars on the left). Packing hits the daily ask first, then prefers
+              expected good parts per printer-minute.
             </Callout>
           )}
           {day ? (
@@ -1597,9 +1773,9 @@ export function Stats2Page() {
                 <YAxis stroke={chartTheme.axis} fontSize={11} tickLine={false} axisLine={false} allowDecimals={false} />
                 <Tooltip content={<ChartTooltip />} />
                 <Legend wrapperStyle={{ fontSize: 11, color: chartTheme.axis }} />
-                <Line type="monotone" dataKey="theoretical" name="Theoretical" stroke="#94a3b8" strokeWidth={2} dot={false} isAnimationActive={false} />
-                <Line type="monotone" dataKey="realistic" name="Realistic" stroke={chartTheme.accent} strokeWidth={2} dot={false} isAnimationActive={false} />
-                <Line type="monotone" dataKey="shipped" name="Actually shipped" stroke="#f59e0b" strokeWidth={2} dot={false} isAnimationActive={false} />
+                <Line type="monotone" dataKey="theoretical" name="Theoretical" stroke="#a78bfa" strokeWidth={2} dot={false} isAnimationActive={false} />
+                <Line type="monotone" dataKey="realistic" name="Realistic" stroke="#22d3ee" strokeWidth={2} dot={false} isAnimationActive={false} />
+                <Line type="monotone" dataKey="shipped" name="Actually shipped" stroke="#fb923c" strokeWidth={2} dot={false} isAnimationActive={false} />
               </LineChart>
             </ResponsiveContainer>
           ) : (
@@ -1736,9 +1912,9 @@ export function Stats2Page() {
               leftLabel="Loss mix (all categories)"
               rightLabel={`${lossTotal} events`}
               segments={[
-                { id: 'print', value: printTotal, className: 'bg-rose-400', label: 'Print failures' },
-                { id: 'discard', value: discardTotal, className: 'bg-amber-400', label: 'Discards' },
-                { id: 'rework', value: reworkTotal, className: 'bg-sky-400', label: 'Rework' },
+                { id: 'print', value: printTotal, className: 'bg-red-500', label: 'Print failures' },
+                { id: 'discard', value: discardTotal, className: 'bg-amber-500', label: 'Discards' },
+                { id: 'rework', value: reworkTotal, className: 'bg-blue-500', label: 'Rework' },
               ]}
             />
           )}
@@ -1770,23 +1946,39 @@ export function Stats2Page() {
           )}
 
           {activeTotal > 0 && (
-            <div className="grid grid-cols-1 gap-5 md:grid-cols-2">
-              {activeByPrinter.length > 0 && (
-                <div className="space-y-2">
-                  <div className="text-xs font-semibold text-white">By printer (originating machine)</div>
-                  <BarByCategory
-                    categories={activeByPrinter.map((p) => p.printer_name || 'unknown')}
-                    data={activeByPrinter.map((p) => p.count)}
-                    color={TAB_COLORS[qualityTab]}
-                    maxBars={10}
-                    otherLabel="Other printers"
-                  />
-                </div>
-              )}
+            <div className="grid grid-cols-1 gap-5 lg:grid-cols-[minmax(0,1fr)_minmax(18rem,28rem)] lg:items-stretch">
+              <div className="space-y-5">
+                {activeByPrinter.length > 0 && (
+                  <div className="space-y-2">
+                    <div className="text-xs font-semibold text-white">By printer (originating machine)</div>
+                    <BarByCategory
+                      categories={activeByPrinter.map((p) => p.printer_name || 'unknown')}
+                      data={activeByPrinter.map((p) => p.count)}
+                      color={TAB_COLORS[qualityTab]}
+                      maxBars={10}
+                      otherLabel="Other printers"
+                    />
+                  </div>
+                )}
+                {activeByPart.length > 0 && (
+                  <div className="space-y-2">
+                    <div className="text-xs font-semibold text-white">By part (TOP / BOT / KNB / BUT)</div>
+                    <BarByCategory
+                      categories={activeByPart.map((p) => p.part_code || 'unknown')}
+                      data={activeByPart.map((p) => p.count)}
+                      color={TAB_COLORS[qualityTab]}
+                      maxBars={8}
+                      otherLabel="Other parts"
+                    />
+                  </div>
+                )}
+              </div>
               {activeReasons.length > 0 && (
-                <div className="space-y-2">
-                  <div className="text-xs font-semibold text-white">By reason</div>
-                  <ReasonPie data={activeReasons} />
+                <div className="flex min-h-0 flex-col gap-2 self-stretch overflow-hidden lg:h-auto">
+                  <div className="shrink-0 text-xs font-semibold text-white">By reason</div>
+                  <div className="min-h-0 flex-1">
+                    <ReasonPie data={activeReasons} />
+                  </div>
                 </div>
               )}
             </div>
@@ -1802,10 +1994,10 @@ export function Stats2Page() {
                   <YAxis stroke={chartTheme.axis} fontSize={11} tickLine={false} axisLine={false} allowDecimals={false} />
                   <Tooltip content={<ChartTooltip />} />
                   <Legend wrapperStyle={{ fontSize: 11, color: chartTheme.axis }} />
-                  <Line type="monotone" dataKey="passed" name="QC passed" stroke="#34d399" strokeWidth={2} dot={false} isAnimationActive={false} />
-                  <Line type="monotone" dataKey="print" name="Print failures" stroke="#fb7185" strokeWidth={2} dot={false} isAnimationActive={false} />
-                  <Line type="monotone" dataKey="discard" name="Discards" stroke="#f59e0b" strokeWidth={2} dot={false} isAnimationActive={false} />
-                  <Line type="monotone" dataKey="rework" name="Rework" stroke="#38bdf8" strokeWidth={2} dot={false} isAnimationActive={false} />
+                  <Line type="monotone" dataKey="passed" name="QC passed" stroke={QUALITY_PASSED} strokeWidth={2} dot={false} isAnimationActive={false} />
+                  <Line type="monotone" dataKey="print" name="Print failures" stroke={QUALITY_PRINT} strokeWidth={2} dot={false} isAnimationActive={false} />
+                  <Line type="monotone" dataKey="discard" name="Discards" stroke={QUALITY_DISCARD} strokeWidth={2} dot={false} isAnimationActive={false} />
+                  <Line type="monotone" dataKey="rework" name="Rework" stroke={QUALITY_REWORK} strokeWidth={2} dot={false} isAnimationActive={false} />
                 </LineChart>
               </ResponsiveContainer>
             </div>
@@ -1813,6 +2005,7 @@ export function Stats2Page() {
 
           <p className="text-xs text-bambu-gray">
             QC passed = initial fit check (sanding is rework). Printer = machine that printed the part.
+            Part codes come from the labeled part, or from the print name for plate failures.
             Drill down via hover or Export.
           </p>
         </div>

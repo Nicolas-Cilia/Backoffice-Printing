@@ -1016,15 +1016,25 @@ async def list_bin_job_candidates(
 
 
 async def relink_bin(db: AsyncSession, batch_id: int, archive_id: int) -> BinScanOutcome | None:
-    """Restore an unlinked fill's printer/job association."""
+    """Attach a completed job to a bin fill that needs matching.
+
+    Covers two cases:
+    - ``unlinked`` fills that were released from a prior job (restore prior QC status)
+    - Active fills harvested/assigned with ``archive_id is None`` (never matched)
+    """
     from backend.app.models.archive import PrintArchive
 
     batch = await db.get(FloorBinBatch, batch_id)
     archive = await db.get(PrintArchive, archive_id)
     if batch is None:
         return None
-    status = await _latest_bin_event(db, batch.id)
-    if status != "unlinked" or archive is None or archive.status != "completed":
+    if batch.archived_at is not None:
+        return None
+    status = await _latest_bin_event(db, batch.id) or "harvested"
+    never_matched = batch.archive_id is None and status not in BIN_FREE_STATUSES
+    if status != "unlinked" and not never_matched:
+        return None
+    if archive is None or archive.status != "completed":
         return None
     info = await _resolve_bin(db, batch.bin_payload)
     if info is None:
@@ -1033,20 +1043,21 @@ async def relink_bin(db: AsyncSession, batch_id: int, archive_id: int) -> BinSca
     if archive_summary is not None and archive_summary.part_code not in (None, info.part_code):
         return None
 
-    previous_status = "harvested"
-    events = (
-        await db.execute(
-            select(FloorBinBatchEvent.action, FloorBinBatchEvent.details)
-            .where(FloorBinBatchEvent.batch_id == batch.id)
-            .order_by(FloorBinBatchEvent.occurred_at.desc(), FloorBinBatchEvent.id.desc())
-        )
-    ).all()
-    for action, details in events:
-        if action == "unlinked":
-            candidate = details.get("previous_status") if isinstance(details, dict) else None
-            if isinstance(candidate, str) and candidate:
-                previous_status = candidate
-            break
+    previous_status = status if never_matched else "harvested"
+    if status == "unlinked":
+        events = (
+            await db.execute(
+                select(FloorBinBatchEvent.action, FloorBinBatchEvent.details)
+                .where(FloorBinBatchEvent.batch_id == batch.id)
+                .order_by(FloorBinBatchEvent.occurred_at.desc(), FloorBinBatchEvent.id.desc())
+            )
+        ).all()
+        for action, details in events:
+            if action == "unlinked":
+                candidate = details.get("previous_status") if isinstance(details, dict) else None
+                if isinstance(candidate, str) and candidate:
+                    previous_status = candidate
+                break
     old_archive_id = batch.archive_id
     old_printer_id = batch.printer_id
     batch.archive_id = archive.id

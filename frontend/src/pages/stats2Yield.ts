@@ -39,11 +39,11 @@ const SEGMENT_META: Record<
   YieldWhereSegment['id'],
   { label: string; className: string }
 > = {
-  shipped: { label: 'Shipped', className: 'bg-emerald-400' },
-  still_wip: { label: 'Still in WIP', className: 'bg-sky-400' },
-  awaiting_wip: { label: 'QC passed, awaiting WIP', className: 'bg-violet-400' },
-  qc_scrap: { label: 'QC scrap', className: 'bg-amber-400' },
-  shortfall: { label: 'Short of expected', className: 'bg-slate-500' },
+  shipped: { label: 'Shipped', className: 'bg-green-500' },
+  still_wip: { label: 'Still in WIP', className: 'bg-blue-500' },
+  awaiting_wip: { label: 'QC passed, awaiting WIP', className: 'bg-violet-500' },
+  qc_scrap: { label: 'QC scrap', className: 'bg-amber-500' },
+  shortfall: { label: 'Short of expected', className: 'bg-slate-400' },
 };
 
 /**

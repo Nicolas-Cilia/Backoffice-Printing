@@ -87,19 +87,30 @@ async def get_slot_metrics_map(
         )
         rows = (
             await db.execute(
-                select(PrintLogEntry.id, PrintLogEntry.status, PrintArchive.library_file_id)
+                select(
+                    PrintLogEntry.id,
+                    PrintLogEntry.status,
+                    PrintArchive.library_file_id,
+                    PrintLogEntry.failure_dismissed_at,
+                )
                 .outerjoin(PrintArchive, PrintLogEntry.archive_id == PrintArchive.id)
                 .where(PrintArchive.library_file_id.in_(file_ids))
                 .where(PrintLogEntry.created_at >= since)
             )
         ).all()
-        for log_id, status, library_file_id in rows:
+        for log_id, status, library_file_id, dismissed_at in rows:
             if library_file_id is None:
                 continue
             sid = file_to_slot.get(int(library_file_id))
             if sid is None:
                 continue
             st = (status or "").strip().lower()
+            if dismissed_at is not None:
+                # Discarded floor reason: completed plate scrap reverts to success;
+                # mid-print failures are omitted from slot job rates.
+                if st in _SUCCESS_STATUSES:
+                    job_ok[sid] += 1
+                continue
             if st in _SUCCESS_STATUSES:
                 if log_id in plate_fail_log_ids:
                     job_fail[sid] += 1

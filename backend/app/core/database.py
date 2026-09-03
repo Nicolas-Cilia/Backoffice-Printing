@@ -3823,6 +3823,19 @@ async def run_migrations(conn):
         conn, "CREATE INDEX IF NOT EXISTS ix_print_log_entries_archive_id ON print_log_entries (archive_id)"
     )
 
+    # Floor discard of a print-failure reason must also drop the run from Stats 2.
+    if is_sqlite():
+        await _safe_execute(conn, "ALTER TABLE print_log_entries ADD COLUMN failure_dismissed_at DATETIME")
+    else:
+        await _safe_execute(
+            conn, "ALTER TABLE print_log_entries ADD COLUMN IF NOT EXISTS failure_dismissed_at TIMESTAMP"
+        )
+    await _safe_execute(
+        conn,
+        "CREATE INDEX IF NOT EXISTS ix_print_log_entries_failure_dismissed_at "
+        "ON print_log_entries (failure_dismissed_at)",
+    )
+
     # Backfill PrintLogEntry → PrintArchive linkage and per-event cost/energy
     # for pre-#1378 rows the column-add migration left NULL (#1390).
     #

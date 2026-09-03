@@ -167,7 +167,72 @@ FLOOR_STOP_REASON_CODES = (
     "filament_issue",
     "other",
 )
+# Human labels for Stats 2 / print-log (match floor UI English fallbacks).
+# Storage still uses the snake_case codes above; only the display string changes.
+_FLOOR_STOP_REASON_LABELS = {
+    "first_layer_issue": "First layer issue",
+    "warping": "Warping",
+    "layer_lines": "Layer lines",
+    "filament_issue": "Filament issue",
+    "other": "Other",
+}
 RECENT_STOP_LOOKBACK = timedelta(hours=6)
+# PrintLogEntry.failure_reason / PrintArchive.failure_reason column width.
+_FAILURE_REASON_MAX_LEN = 100
+
+
+def format_floor_stop_reason(reason_code: str | None, reason_text: str | None = None) -> str:
+    """Human-readable label for Stats 2 / print-log mirroring.
+
+    Known scanner codes map to floor UI labels. ``other`` with free text keeps
+    the operator's wording. Unknown codes stay as-is (may be auto-derived).
+    """
+    code = reason_code.strip() if isinstance(reason_code, str) and reason_code.strip() else ""
+    text = reason_text.strip() if isinstance(reason_text, str) and reason_text.strip() else ""
+    if not code:
+        return "Unclassified"
+    if code == "other" and text:
+        return text[:_FAILURE_REASON_MAX_LEN]
+    label = _FLOOR_STOP_REASON_LABELS.get(code, code)
+    return label[:_FAILURE_REASON_MAX_LEN]
+
+
+async def _mirror_floor_stop_reason_to_print_log(
+    db: AsyncSession,
+    print_log_id: int,
+    reason_code: str,
+    reason_text: str | None,
+) -> None:
+    """Copy the operator scanner reason onto PrintLogEntry (and archive if linked).
+
+    Stats 2 prefers FloorPrintStopReason when present; mirroring keeps Failure
+    Analysis / print-log views in sync and backfills empty auto-derived reasons.
+    Re-classifying also clears a prior Part-history discard so the run counts
+    again in Stats 2.
+    """
+    entry = await db.get(PrintLogEntry, print_log_id)
+    if entry is None:
+        return
+    label = format_floor_stop_reason(reason_code, reason_text)
+    entry.failure_reason = label
+    entry.failure_dismissed_at = None
+    if entry.archive_id is not None:
+        archive = await db.get(PrintArchive, entry.archive_id)
+        if archive is not None:
+            archive.failure_reason = label
+
+
+async def _clear_mirrored_floor_stop_reason(db: AsyncSession, print_log_id: int) -> None:
+    """Undo scanner mirroring and mark the run excluded from Stats 2 failures."""
+    entry = await db.get(PrintLogEntry, print_log_id)
+    if entry is None:
+        return
+    entry.failure_reason = None
+    entry.failure_dismissed_at = datetime.now()
+    if entry.archive_id is not None:
+        archive = await db.get(PrintArchive, entry.archive_id)
+        if archive is not None:
+            archive.failure_reason = None
 
 
 async def get_printer(db: AsyncSession, printer_id: int) -> Printer | None:
@@ -268,6 +333,7 @@ async def record_floor_stop_reason(
     )
     db.add(record)
     await db.flush()
+    await _mirror_floor_stop_reason_to_print_log(db, recent.print_log_id, reason_code, normalized_text)
     return RecentStoppedPrint(
         print_log_id=recent.print_log_id,
         archive_id=recent.archive_id,
@@ -352,6 +418,7 @@ async def record_plate_print_failure(
         )
         db.add(record)
         await db.flush()
+        await _mirror_floor_stop_reason_to_print_log(db, log_entry.id, reason_code, normalized_text)
         await dismiss_build_plate(db, archive_id)
         result = RecentStoppedPrint(
             print_log_id=record.print_log_id,
@@ -445,6 +512,7 @@ async def update_floor_stop_reason(
     record.reason_code = reason_code
     record.reason_text = normalized_text
     await db.flush()
+    await _mirror_floor_stop_reason_to_print_log(db, record.print_log_id, reason_code, normalized_text)
     row = (
         await db.execute(
             select(FloorPrintStopReason, Printer.name)
@@ -467,11 +535,18 @@ async def update_floor_stop_reason(
 
 
 async def delete_floor_stop_reason(db: AsyncSession, reason_id: int) -> bool:
-    """Remove an operator-classified stop/failure reason."""
+    """Remove an operator-classified stop/failure reason.
+
+    Also excludes the underlying print-log run from Stats 2 quality / reliability
+    failure counts (Part history discard = not a tracked failure anymore).
+    """
     record = await db.get(FloorPrintStopReason, reason_id)
     if record is None:
         return False
+    print_log_id = record.print_log_id
     await db.delete(record)
+    await db.flush()
+    await _clear_mirrored_floor_stop_reason(db, print_log_id)
     await db.flush()
     return True
 
@@ -664,6 +739,7 @@ __all__ = [
     "RecentStoppedPrint",
     "FloorStopReasonRecord",
     "FLOOR_STOP_REASON_CODES",
+    "format_floor_stop_reason",
     "get_live_status",
     "get_printer",
     "get_recent_stopped_print",

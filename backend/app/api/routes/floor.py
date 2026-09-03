@@ -1407,7 +1407,7 @@ async def relink_inventory_bin(
 ) -> BinScanResponse:
     outcome = await relink_bin(db, batch_id, body.archive_id)
     if outcome is None:
-        raise HTTPException(404, "Unlinked bin batch or completed job not found")
+        raise HTTPException(404, "Bin batch or completed job not found")
     await db.commit()
     return _to_bin_scan_response(outcome)
 

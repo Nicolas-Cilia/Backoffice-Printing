@@ -233,6 +233,251 @@ async def test_quality_reasons_includes_completed_plate_stop_reason(db_session, 
 
 
 @pytest.mark.asyncio
+async def test_quality_reasons_prefers_scanner_stop_over_empty_failure_reason(db_session, printer_factory):
+    """Failed/stopped PrintLogEntry rows must use FloorPrintStopReason when present.
+
+    Auto HMS labeling often leaves failure_reason null ("unclassified" in the pie).
+    Operators still classify those stops on the scanner — that reason must win.
+    """
+    printer = await printer_factory(model="X1C")
+    now = datetime.utcnow()
+    empty = PrintLogEntry(
+        printer_id=printer.id,
+        printer_name=printer.name,
+        print_name="TOP x2",
+        status="failed",
+        failure_reason=None,
+        created_at=now,
+        completed_at=now,
+    )
+    auto = PrintLogEntry(
+        printer_id=printer.id,
+        printer_name=printer.name,
+        print_name="BOT x1",
+        status="stopped",
+        failure_reason="User cancelled",
+        created_at=now,
+        completed_at=now,
+    )
+    still_empty = PrintLogEntry(
+        printer_id=printer.id,
+        printer_name=printer.name,
+        print_name="KNB x1",
+        status="failed",
+        failure_reason=None,
+        created_at=now,
+        completed_at=now,
+    )
+    db_session.add_all([empty, auto, still_empty])
+    await db_session.flush()
+    db_session.add(
+        FloorPrintStopReason(
+            print_log_id=empty.id,
+            printer_id=printer.id,
+            print_name="TOP x2",
+            part_code="TOP",
+            reason_code="warping",
+            stopped_at=now,
+        )
+    )
+    db_session.add(
+        FloorPrintStopReason(
+            print_log_id=auto.id,
+            printer_id=printer.id,
+            print_name="BOT x1",
+            part_code="BOT",
+            reason_code="first_layer_issue",
+            stopped_at=now,
+        )
+    )
+    await db_session.commit()
+
+    print_hub = await compute_quality_reasons(db_session, category="print")
+    reasons = {r["reason"]: r["count"] for r in print_hub["reasons"]}
+    assert reasons.get("Warping") == 1
+    assert reasons.get("First layer issue") == 1
+    assert reasons.get("Unclassified") == 1
+    assert "User cancelled" not in reasons
+    assert print_hub["total"] == 3
+
+    reliability = await compute_printer_reliability(db_session)
+    row = next(p for p in reliability["printers"] if p["printer_id"] == printer.id)
+    top = {r["reason"]: r["count"] for r in row["top_failure_reasons"]}
+    assert top.get("Warping") == 1
+    assert top.get("First layer issue") == 1
+    assert top.get("Unclassified") == 1
+
+
+@pytest.mark.asyncio
+async def test_quality_reasons_other_stop_uses_reason_text(db_session, printer_factory):
+    printer = await printer_factory(model="X1C")
+    now = datetime.utcnow()
+    entry = PrintLogEntry(
+        printer_id=printer.id,
+        printer_name=printer.name,
+        print_name="TOP x1",
+        status="failed",
+        failure_reason=None,
+        created_at=now,
+        completed_at=now,
+    )
+    db_session.add(entry)
+    await db_session.flush()
+    db_session.add(
+        FloorPrintStopReason(
+            print_log_id=entry.id,
+            printer_id=printer.id,
+            print_name="TOP x1",
+            part_code="TOP",
+            reason_code="other",
+            reason_text="nozzle crash into clip",
+            stopped_at=now,
+        )
+    )
+    await db_session.commit()
+
+    print_hub = await compute_quality_reasons(db_session, category="print")
+    reasons = {r["reason"]: r["count"] for r in print_hub["reasons"]}
+    assert reasons.get("nozzle crash into clip") == 1
+    assert "other" not in reasons
+    assert "Other" not in reasons
+    assert "unclassified" not in reasons
+    assert "Unclassified" not in reasons
+
+
+@pytest.mark.asyncio
+async def test_quality_reasons_skips_dismissed_print_failures(db_session, printer_factory):
+    """Discarding a floor failure reason must drop the run from Stats 2 counts."""
+    from backend.app.services.floor_printers import delete_floor_stop_reason
+
+    printer = await printer_factory(model="X1C")
+    now = datetime.utcnow()
+    kept = PrintLogEntry(
+        printer_id=printer.id,
+        printer_name=printer.name,
+        print_name="TOP x1",
+        status="failed",
+        failure_reason=None,
+        created_at=now,
+        completed_at=now,
+    )
+    dismissed = PrintLogEntry(
+        printer_id=printer.id,
+        printer_name=printer.name,
+        print_name="BOT x1",
+        status="failed",
+        failure_reason="warping",
+        created_at=now,
+        completed_at=now,
+    )
+    db_session.add_all([kept, dismissed])
+    await db_session.flush()
+    db_session.add(
+        FloorPrintStopReason(
+            print_log_id=kept.id,
+            printer_id=printer.id,
+            print_name="TOP x1",
+            part_code="TOP",
+            reason_code="filament_issue",
+            stopped_at=now,
+        )
+    )
+    stop = FloorPrintStopReason(
+        print_log_id=dismissed.id,
+        printer_id=printer.id,
+        print_name="BOT x1",
+        part_code="BOT",
+        reason_code="warping",
+        stopped_at=now,
+    )
+    db_session.add(stop)
+    await db_session.commit()
+
+    assert await delete_floor_stop_reason(db_session, stop.id) is True
+    await db_session.commit()
+    await db_session.refresh(dismissed)
+    assert dismissed.failure_dismissed_at is not None
+    assert dismissed.failure_reason is None
+
+    print_hub = await compute_quality_reasons(db_session, category="print")
+    reasons = {r["reason"]: r["count"] for r in print_hub["reasons"]}
+    assert reasons.get("Filament issue") == 1
+    assert "warping" not in reasons
+    assert "Warping" not in reasons
+    assert "unclassified" not in reasons
+    assert "Unclassified" not in reasons
+    assert print_hub["total"] == 1
+
+    reliability = await compute_printer_reliability(db_session)
+    row = next(p for p in reliability["printers"] if p["printer_id"] == printer.id)
+    assert row["failed"] == 1
+    assert row["jobs"] == 1
+
+
+@pytest.mark.asyncio
+async def test_quality_reasons_skips_stale_reconnect_failures(db_session, printer_factory):
+    """Reconnect/stale auto-labels must not appear in the By-reason hub."""
+    printer = await printer_factory(model="X1C")
+    now = datetime.utcnow()
+    db_session.add(
+        PrintLogEntry(
+            printer_id=printer.id,
+            printer_name=printer.name,
+            print_name="TOP x1",
+            status="failed",
+            failure_reason="Stale - reconciled after reconnect, end time unknown",
+            created_at=now,
+            completed_at=now,
+        )
+    )
+    db_session.add(
+        PrintLogEntry(
+            printer_id=printer.id,
+            printer_name=printer.name,
+            print_name="BOT x1",
+            status="failed",
+            failure_reason="Stale - print likely cancelled or failed without status update",
+            created_at=now,
+            completed_at=now,
+        )
+    )
+    kept = PrintLogEntry(
+        printer_id=printer.id,
+        printer_name=printer.name,
+        print_name="KNB x1",
+        status="failed",
+        failure_reason=None,
+        created_at=now,
+        completed_at=now,
+    )
+    db_session.add(kept)
+    await db_session.flush()
+    db_session.add(
+        FloorPrintStopReason(
+            print_log_id=kept.id,
+            printer_id=printer.id,
+            print_name="KNB x1",
+            part_code="KNB",
+            reason_code="layer_lines",
+            stopped_at=now,
+        )
+    )
+    await db_session.commit()
+
+    print_hub = await compute_quality_reasons(db_session, category="print")
+    reasons = {r["reason"]: r["count"] for r in print_hub["reasons"]}
+    assert reasons == {"Layer lines": 1}
+    assert print_hub["total"] == 1
+    assert not any(str(r["reason"]).startswith("Stale -") for r in print_hub["reasons"])
+
+    reliability = await compute_printer_reliability(db_session)
+    row = next(p for p in reliability["printers"] if p["printer_id"] == printer.id)
+    assert row["failed"] == 1
+    assert row["jobs"] == 1
+    assert row["top_failure_reasons"] == [{"reason": "Layer lines", "count": 1}]
+
+
+@pytest.mark.asyncio
 async def test_quality_reasons_print_and_discard(db_session, printer_factory):
     printer = await printer_factory(model="X1C")
     now = datetime.utcnow()
@@ -277,6 +522,8 @@ async def test_quality_reasons_print_and_discard(db_session, printer_factory):
     assert "adhesionFailure" in reasons
     assert "userCancelled" in reasons
     assert print_hub["by_printer"][0]["printer_id"] == printer.id
+    assert print_hub["by_part"][0]["part_code"] == "TOP"
+    assert print_hub["by_part"][0]["count"] == 2
     assert print_hub["daily"]
     assert print_hub["daily"][0]["date"] == now.date().isoformat()
     assert print_hub["daily"][0]["total"] == 2
@@ -284,6 +531,7 @@ async def test_quality_reasons_print_and_discard(db_session, printer_factory):
     discard_hub = await compute_quality_reasons(db_session, category="discard")
     assert discard_hub["total"] == 1
     assert discard_hub["reasons"][0]["reason"] == "BBR-crack"
+    assert discard_hub["by_part"][0]["part_code"] == "TOP"
 
     all_hub = await compute_quality_reasons(db_session, category="all", include_rows=True)
     assert all_hub["total"] == 3
@@ -311,6 +559,79 @@ async def test_quality_reasons_print_and_discard(db_session, printer_factory):
     assert (await compute_quality_reasons(db_session, category="all"))["total"] == 4
     alias_hub = await compute_quality_reasons(db_session, category="qc_passed")
     assert alias_hub["total"] == 1
+
+
+@pytest.mark.asyncio
+async def test_quality_reasons_use_error_label_button_names(db_session, printer_factory):
+    """On-screen BBF error-label buttons store error_name, not reason_code."""
+    printer = await printer_factory(model="X1C")
+    now = datetime.utcnow()
+    discard_part = FloorLabeledPart(sticker_code="BBD-EL1", printer_id=printer.id, part_code="TOP")
+    sanding_part = FloorLabeledPart(sticker_code="BBD-EL2", printer_id=printer.id, part_code="BOT")
+    rework_part = FloorLabeledPart(sticker_code="BBD-EL3", printer_id=printer.id, part_code="KNB")
+    db_session.add_all([discard_part, sanding_part, rework_part])
+    await db_session.flush()
+    db_session.add(
+        FloorPartEvent(
+            part_id=discard_part.id,
+            action="discarded",
+            details={
+                "error_label_id": 12,
+                "error_payload": "BBF-horizontal-line",
+                "error_name": "Horizontal line",
+                "reason_text": None,
+            },
+            occurred_at=now,
+        )
+    )
+    db_session.add(
+        FloorPartEvent(
+            part_id=sanding_part.id,
+            action="sanding",
+            details={
+                "error_label_id": 3,
+                "error_payload": "BBF-other",
+                "error_name": "Other",
+                "reason_text": "sharp edge",
+            },
+            occurred_at=now,
+        )
+    )
+    db_session.add(
+        FloorPartEvent(
+            part_id=rework_part.id,
+            action="rework",
+            details={
+                "error_label_id": 7,
+                "error_payload": "BBF-doesnt-fit",
+                "error_name": "Doesn't fit",
+                "reason_text": None,
+            },
+            occurred_at=now,
+        )
+    )
+    await db_session.commit()
+
+    discard_hub = await compute_quality_reasons(db_session, category="discard")
+    assert discard_hub["total"] == 1
+    assert discard_hub["reasons"][0]["reason"] == "Horizontal line"
+
+    rework_hub = await compute_quality_reasons(db_session, category="rework_sanding")
+    reasons = {r["reason"]: r["count"] for r in rework_hub["reasons"]}
+    assert reasons == {"Other · sharp edge": 1, "Doesn't fit": 1}
+    assert rework_hub["total"] == 2
+    by_part = {p["part_code"]: p["count"] for p in rework_hub["by_part"]}
+    assert by_part == {"BOT": 1, "KNB": 1}
+
+
+def test_infer_part_code_from_print_names():
+    from backend.app.services.stats2_quality import infer_part_code_from_names
+
+    assert infer_part_code_from_names("TOP x4 - 1.13.2 - X1C") == "TOP"
+    assert infer_part_code_from_names("BUT x47") == "BUT"
+    assert infer_part_code_from_names("TOPPER plate") == "unknown"
+    assert infer_part_code_from_names("TOP and BOT mix") == "unknown"
+    assert infer_part_code_from_names(None, "") == "unknown"
 
 
 @pytest.mark.asyncio

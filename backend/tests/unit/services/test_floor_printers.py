@@ -12,9 +12,32 @@ import pytest
 
 from backend.app.services.floor_printers import (
     PRINTER_PREFIX,
+    format_floor_stop_reason,
     printer_id_for_payload,
     printer_payload,
 )
+
+
+class TestFormatFloorStopReason:
+    def test_known_codes_are_human_readable(self):
+        assert format_floor_stop_reason("warping") == "Warping"
+        assert format_floor_stop_reason("layer_lines") == "Layer lines"
+        assert format_floor_stop_reason("first_layer_issue") == "First layer issue"
+        assert format_floor_stop_reason("filament_issue") == "Filament issue"
+
+    def test_other_prefers_free_text(self):
+        assert format_floor_stop_reason("other", "nozzle crash") == "nozzle crash"
+
+    def test_other_without_text_stays_other(self):
+        assert format_floor_stop_reason("other", None) == "Other"
+
+    def test_empty_is_unclassified(self):
+        assert format_floor_stop_reason(None) == "Unclassified"
+        assert format_floor_stop_reason("  ") == "Unclassified"
+
+    def test_truncates_to_print_log_column_width(self):
+        long = "x" * 150
+        assert len(format_floor_stop_reason("other", long)) == 100
 
 
 class TestPrinterPayload:

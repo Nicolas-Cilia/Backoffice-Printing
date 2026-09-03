@@ -215,6 +215,267 @@ function isActiveBin(bin: FloorBinManagement) {
   return status !== "empty" && status !== "empty_override" && status !== "unlinked";
 }
 
+function partLatestAction(
+  part: FloorInventoryPart,
+  latestEventActions: Map<number, string>,
+) {
+  return latestEventActions.get(part.id) ?? part.latest_event_action ?? null;
+}
+
+function isStagedForProduction(action: string | null | undefined) {
+  return action === "ready_for_production";
+}
+
+function isReworkAction(action?: string | null) {
+  return action === "rework" || action === "sanding";
+}
+
+/** Remaining count on staged KNB/BUT fills (same basis as Stats 2 readiness). */
+function stagedBinRemaining(
+  bins: FloorBinManagement[],
+  partCode: "KNB" | "BUT",
+) {
+  return bins.reduce((sum, bin) => {
+    const batch = bin.batch;
+    if (!batch || isArchivedBin(bin)) return sum;
+    if ((batch.part_code || bin.part_code) !== partCode) return sum;
+    if (batch.status !== "ready_for_production") return sum;
+    return sum + Math.max(0, batch.remaining_quantity ?? 0);
+  }, 0);
+}
+
+/** Every whitespace token must match at least one search value (AND). */
+function matchesSearch(values: string[], term: string) {
+  const tokens = term
+    .trim()
+    .toLowerCase()
+    .split(/\s+/)
+    .filter(Boolean);
+  if (tokens.length === 0) return true;
+  return tokens.every((token) => values.some((value) => value.includes(token)));
+}
+
+/** Structured Part history filters — status × part_code (pipeline-compatible). */
+type InventoryPartCodeFilter = "all" | "TOP" | "BOT" | "BUT" | "KNB";
+type InventoryStatusFilter =
+  | "all"
+  | "needs_matching"
+  | "fit_checked"
+  | "visual_qc"
+  | "rework"
+  | "support_removed"
+  | "overhang_removed"
+  | "hot_air_removed"
+  | "cleanup"
+  | "ready_for_production"
+  | "wip"
+  | "shipped"
+  | "discarded"
+  | "failed";
+
+const INVENTORY_PART_CODE_OPTIONS: InventoryPartCodeFilter[] = [
+  "all",
+  "TOP",
+  "BOT",
+  "BUT",
+  "KNB",
+];
+
+const INVENTORY_STATUS_FILTER_OPTIONS: Array<{
+  value: InventoryStatusFilter;
+  labelKey: string;
+  fallback: string;
+}> = [
+  { value: "all", labelKey: "floor.inventoryStatusFilterAll", fallback: "Any status" },
+  { value: "needs_matching", labelKey: "floor.inventoryFilterAttention", fallback: "Needs matching" },
+  { value: "fit_checked", labelKey: "floor.inventoryStatusFitCheckPass", fallback: "Fit Check Pass" },
+  { value: "visual_qc", labelKey: "floor.inventoryStatusVisualQcPass", fallback: "Visual QC pass" },
+  { value: "rework", labelKey: "floor.inventoryStatusRework", fallback: "Rework" },
+  { value: "support_removed", labelKey: "floor.inventoryStatusSupportRemoved", fallback: "Support Removed" },
+  { value: "overhang_removed", labelKey: "floor.inventoryStatusOverhangRemoved", fallback: "Overhang Removed" },
+  { value: "hot_air_removed", labelKey: "floor.inventoryStatusHotAirRemoved", fallback: "Hot Air Removed" },
+  { value: "cleanup", labelKey: "floor.inventoryStatusCleanupPass", fallback: "Cleanup Pass" },
+  {
+    value: "ready_for_production",
+    labelKey: "floor.inventoryStatusStagedForProduction",
+    fallback: "Staged for Production",
+  },
+  { value: "wip", labelKey: "floor.inventoryStatusWip", fallback: "In WIP" },
+  { value: "shipped", labelKey: "floor.inventoryStatusShipped", fallback: "Shipped" },
+  { value: "discarded", labelKey: "floor.inventoryStatusDiscarded", fallback: "Discarded" },
+  { value: "failed", labelKey: "floor.inventoryStatusFailed", fallback: "Failed" },
+];
+
+/**
+ * Which part codes can hold each status in the floor pipeline.
+ * Finishing benches are TOP-only; Visual QC is kit-bin-only; rework/sanding are housings.
+ */
+const STATUS_COMPATIBLE_PARTS: Record<
+  InventoryStatusFilter,
+  readonly InventoryPartCodeFilter[] | "any"
+> = {
+  all: "any",
+  needs_matching: ["TOP", "BOT", "BUT", "KNB"],
+  fit_checked: ["TOP", "BOT"],
+  visual_qc: ["BUT", "KNB"],
+  rework: ["TOP", "BOT"],
+  support_removed: ["TOP"],
+  overhang_removed: ["TOP"],
+  hot_air_removed: ["TOP"],
+  cleanup: ["TOP", "BOT"],
+  ready_for_production: ["TOP", "BOT", "BUT", "KNB"],
+  wip: ["TOP", "BOT", "BUT", "KNB"],
+  shipped: ["TOP", "BOT"],
+  discarded: ["TOP", "BOT"],
+  failed: ["TOP", "BOT", "BUT", "KNB"],
+};
+
+function partCodesForStatus(status: InventoryStatusFilter): InventoryPartCodeFilter[] {
+  const allowed = STATUS_COMPATIBLE_PARTS[status];
+  if (allowed === "any") return INVENTORY_PART_CODE_OPTIONS;
+  return ["all", ...allowed];
+}
+
+function statusesForPartCode(partCode: InventoryPartCodeFilter): InventoryStatusFilter[] {
+  return INVENTORY_STATUS_FILTER_OPTIONS.map((option) => option.value).filter((status) => {
+    if (status === "all" || partCode === "all") return true;
+    const allowed = STATUS_COMPATIBLE_PARTS[status];
+    return allowed === "any" || allowed.includes(partCode);
+  });
+}
+
+function partMatchesInventoryStatus(
+  part: FloorInventoryPart,
+  latestEventAction: string | null | undefined,
+  statusFilter: InventoryStatusFilter,
+): boolean {
+  if (statusFilter === "all") return true;
+  if (statusFilter === "failed") return false;
+
+  const action = latestEventAction ?? part.latest_event_action ?? null;
+  const code = (part.part_code ?? "").trim().toUpperCase();
+
+  switch (statusFilter) {
+    case "needs_matching":
+      return isAttention(part, action);
+    case "fit_checked":
+      return (
+        (action === "fit_check" || action === "fit_checked") &&
+        code !== "BUT" &&
+        code !== "KNB"
+      );
+    case "visual_qc":
+      return (
+        (action === "fit_check" || action === "fit_checked") &&
+        (code === "BUT" || code === "KNB")
+      );
+    case "rework":
+      return isReworkAction(action);
+    case "support_removed":
+      return action === "support_removed";
+    case "overhang_removed":
+      return action === "overhang_removed";
+    case "hot_air_removed":
+      return action === "hot_air_removed";
+    case "cleanup":
+      return action === "cleanup" || action === "cleaned_up";
+    case "ready_for_production":
+      return action === "ready_for_production";
+    case "wip":
+      return action === "wip" || action === "in_wip";
+    case "shipped":
+      return action === "shipped";
+    case "discarded":
+      return action === "discarded";
+    default:
+      return true;
+  }
+}
+
+function binMatchesInventoryStatus(
+  bin: FloorBinManagement,
+  statusFilter: InventoryStatusFilter,
+): boolean {
+  if (statusFilter === "all") return true;
+  const status = bin.batch?.status;
+  switch (statusFilter) {
+    case "visual_qc":
+      return status === "visual_qc_passed";
+    case "ready_for_production":
+      return status === "ready_for_production";
+    case "wip":
+      return status === "wip";
+    // Unmatched harvest fills (no completed job yet) — same as the Needs matching tab.
+    case "needs_matching":
+      return (
+        bin.batch?.archive_id == null &&
+        !isFulfilledBin(bin) &&
+        !isArchivedBin(bin)
+      );
+    case "fit_checked":
+    case "rework":
+    case "support_removed":
+    case "overhang_removed":
+    case "hot_air_removed":
+    case "cleanup":
+    case "shipped":
+    case "discarded":
+    case "failed":
+      return false;
+    default:
+      return false;
+  }
+}
+
+function matchesPartCodeFilter(
+  partCode: string | null | undefined,
+  partCodeFilter: InventoryPartCodeFilter,
+) {
+  if (partCodeFilter === "all") return true;
+  return (partCode ?? "").trim().toUpperCase() === partCodeFilter;
+}
+
+function partMatchesStructuredFilters(
+  part: FloorInventoryPart,
+  latestEventAction: string | null | undefined,
+  partCodeFilter: InventoryPartCodeFilter,
+  statusFilter: InventoryStatusFilter,
+) {
+  if (!matchesPartCodeFilter(part.part_code, partCodeFilter)) return false;
+  return partMatchesInventoryStatus(part, latestEventAction, statusFilter);
+}
+
+function binMatchesStructuredFilters(
+  bin: FloorBinManagement,
+  partCodeFilter: InventoryPartCodeFilter,
+  statusFilter: InventoryStatusFilter,
+) {
+  const code = bin.batch?.part_code || bin.part_code;
+  if (!matchesPartCodeFilter(code, partCodeFilter)) return false;
+  return binMatchesInventoryStatus(bin, statusFilter);
+}
+
+/** Unit row matches when any housing satisfies the structured filters. */
+function unitMatchesStructuredFilters(
+  parts: FloorInventoryPart[],
+  partCodeFilter: InventoryPartCodeFilter,
+  statusFilter: InventoryStatusFilter,
+  latestEventActions: Map<number, string>,
+) {
+  // Kit bins are separate rows — serial rows are TOP/BOT housings only.
+  if (partCodeFilter === "BUT" || partCodeFilter === "KNB") return false;
+  if (statusFilter === "failed") return false;
+  if (partCodeFilter === "all" && statusFilter === "all") return true;
+  return parts.some((part) =>
+    partMatchesStructuredFilters(
+      part,
+      latestEventActions.get(part.id),
+      partCodeFilter,
+      statusFilter,
+    ),
+  );
+}
+
 // Part Assembly Linking — Part history serial collapse.
 //
 // A product unit ties a TOP + BOT housing together under one product serial.
@@ -233,10 +494,6 @@ function unitAllShipped(
     parts.length > 0 &&
     parts.every((part) => isFulfilledPart(part, latestEventActions.get(part.id)))
   );
-}
-
-function isReworkAction(action?: string | null) {
-  return action === "rework" || action === "sanding";
 }
 
 type UnitRowStatus = "shipped" | "rework" | "linked";
@@ -465,7 +722,10 @@ export function FloorInventoryPage() {
   const [filter, setFilter] = useState<PartFilter>("linked");
   const [sort, setSort] = useState<PartHistorySort>("last_scanned_desc");
   const [search, setSearch] = useState("");
+  const [partCodeFilter, setPartCodeFilter] = useState<InventoryPartCodeFilter>("all");
+  const [statusFilter, setStatusFilter] = useState<InventoryStatusFilter>("all");
   const [searchFocused, setSearchFocused] = useState(false);
+  const searchInputRef = useRef<HTMLInputElement>(null);
   const [selectedId, setSelectedId] = useState<number | null>(null);
   const [selectedBinId, setSelectedBinId] = useState<number | null>(null);
   const [selectedFailure, setSelectedFailure] = useState<FloorPrintFailureReason | null>(null);
@@ -481,6 +741,47 @@ export function FloorInventoryPage() {
       setFilter("all");
     }
   };
+  const activateStructuredFilters = () => {
+    setFilter("all");
+  };
+  const handlePartCodeFilterChange = (value: InventoryPartCodeFilter) => {
+    setPartCodeFilter(value);
+    if (value !== "all" || statusFilter !== "all") activateStructuredFilters();
+    if (
+      value !== "all" &&
+      statusFilter !== "all" &&
+      !statusesForPartCode(value).includes(statusFilter)
+    ) {
+      setStatusFilter("all");
+    }
+  };
+  const handleStatusFilterChange = (value: InventoryStatusFilter) => {
+    setStatusFilter(value);
+    if (value !== "all" || partCodeFilter !== "all") activateStructuredFilters();
+    if (
+      value !== "all" &&
+      partCodeFilter !== "all" &&
+      !partCodesForStatus(value).includes(partCodeFilter)
+    ) {
+      setPartCodeFilter("all");
+    }
+  };
+  const clearStructuredFilters = () => {
+    setPartCodeFilter("all");
+    setStatusFilter("all");
+  };
+  /** Tab / summary quick filters — drop Part+Status so the view isn't empty. */
+  const focusPartFilter = (next: PartFilter) => {
+    setFilter(next);
+    setSearch("");
+    clearStructuredFilters();
+    setSelectedFailure(null);
+  };
+  const availablePartCodeOptions = partCodesForStatus(statusFilter);
+  const availableStatusOptions = INVENTORY_STATUS_FILTER_OPTIONS.filter((option) =>
+    statusesForPartCode(partCodeFilter).includes(option.value),
+  );
+  const hasStructuredFilters = partCodeFilter !== "all" || statusFilter !== "all";
   const filters: Array<{ id: PartFilter; label: string }> = [
     { id: "linked", label: t("floor.inventoryFilterLinked", "Registered Parts") },
     { id: "fulfilled", label: t("floor.inventoryFilterFulfilled", "Fulfilled") },
@@ -594,7 +895,14 @@ export function FloorInventoryPage() {
       setSelectedId(null);
       setSelectedBinId(null);
       setSelectedFailure(updated);
-      await queryClient.invalidateQueries({ queryKey: ["floor-print-failure-reasons"] });
+      await Promise.all([
+        queryClient.invalidateQueries({ queryKey: ["floor-print-failure-reasons"] }),
+        queryClient.invalidateQueries({ queryKey: ["stats2-quality"] }),
+        queryClient.invalidateQueries({ queryKey: ["stats2-reliability"] }),
+        queryClient.invalidateQueries({ queryKey: ["stats2-overview"] }),
+        queryClient.invalidateQueries({ queryKey: ["stats2-print-plan"] }),
+        queryClient.invalidateQueries({ queryKey: ["stats2-capacity-history"] }),
+      ]);
       showToast(t("floor.printFailureLogUpdated", "Failure reason updated"), "success");
     },
   });
@@ -603,7 +911,14 @@ export function FloorInventoryPage() {
     onSuccess: async () => {
       setSelectedFailure(null);
       setSelectedBinId(null);
-      await queryClient.invalidateQueries({ queryKey: ["floor-print-failure-reasons"] });
+      await Promise.all([
+        queryClient.invalidateQueries({ queryKey: ["floor-print-failure-reasons"] }),
+        queryClient.invalidateQueries({ queryKey: ["stats2-quality"] }),
+        queryClient.invalidateQueries({ queryKey: ["stats2-reliability"] }),
+        queryClient.invalidateQueries({ queryKey: ["stats2-overview"] }),
+        queryClient.invalidateQueries({ queryKey: ["stats2-print-plan"] }),
+        queryClient.invalidateQueries({ queryKey: ["stats2-capacity-history"] }),
+      ]);
       showToast(t("floor.printFailureLogDiscarded", "Failure reason discarded"), "success");
     },
   });
@@ -963,9 +1278,33 @@ export function FloorInventoryPage() {
       archived:
         records.filter((part) => part.archived_at).length +
         historyBins.filter((bin) => isArchivedBin(bin)).length,
+      // Sticker parts (TOP/BOT) — do not also sum BOT bin remaining (double-count).
+      topsStaged: records.filter(
+        (part) =>
+          !part.archived_at &&
+          part.part_code === "TOP" &&
+          isStagedForProduction(partLatestAction(part, latestEventActions)),
+      ).length,
+      bottomsStaged: records.filter(
+        (part) =>
+          !part.archived_at &&
+          part.part_code === "BOT" &&
+          isStagedForProduction(partLatestAction(part, latestEventActions)),
+      ).length,
+      // Kit bins — remaining qty on fills already staged for production.
+      buttonsStaged: stagedBinRemaining(historyBins, "BUT"),
+      knobsStaged: stagedBinRemaining(historyBins, "KNB"),
     }),
     [historyBins, latestEventActions, records],
   );
+  const focusStagedInventory = (partCode: InventoryPartCodeFilter) => {
+    setFilter("all");
+    setSearch("");
+    setPartCodeFilter(partCode);
+    setStatusFilter("ready_for_production");
+    setSelectedFailure(null);
+    setSelectedBinId(null);
+  };
   const discardedParts = useMemo(
     () =>
       activeRecords.filter((part) =>
@@ -992,13 +1331,16 @@ export function FloorInventoryPage() {
               : Boolean(part.archived_at);
       return (
         included &&
-        (!term ||
-          partSearchValues(part, latestEventActions.get(part.id)).some((value) =>
-            value.includes(term),
-          ))
+        partMatchesStructuredFilters(
+          part,
+          latestEventActions.get(part.id),
+          partCodeFilter,
+          statusFilter,
+        ) &&
+        matchesSearch(partSearchValues(part, latestEventActions.get(part.id)), term)
       );
     });
-  }, [filter, latestEventActions, records, search, unitMemberPartIds]);
+  }, [filter, latestEventActions, partCodeFilter, records, search, statusFilter, unitMemberPartIds]);
   const sortedVisibleParts = useMemo(
     () => [...visibleParts].sort((left, right) => compareInventoryParts(left, right, sort)),
     [visibleParts, sort],
@@ -1016,14 +1358,27 @@ export function FloorInventoryPage() {
       .filter(({ unit, parts }) => {
         if (parts.length === 0) return false;
         if (!unitMatchesFilter(parts, filter, latestEventActions)) return false;
-        return (
-          !term ||
-          unitSearchValues(unit, parts, latestEventActions).some((value) =>
-            value.includes(term),
+        if (
+          !unitMatchesStructuredFilters(
+            parts,
+            partCodeFilter,
+            statusFilter,
+            latestEventActions,
           )
-        );
+        ) {
+          return false;
+        }
+        return matchesSearch(unitSearchValues(unit, parts, latestEventActions), term);
       });
-  }, [partUnitsQuery.data, records, filter, search, latestEventActions]);
+  }, [
+    partUnitsQuery.data,
+    records,
+    filter,
+    search,
+    latestEventActions,
+    partCodeFilter,
+    statusFilter,
+  ]);
   const sortedVisibleUnitRows = useMemo(
     () => [...visibleUnitRows].sort((left, right) => compareUnitRows(left, right, sort)),
     [visibleUnitRows, sort],
@@ -1047,11 +1402,11 @@ export function FloorInventoryPage() {
                   : false;
       return (
         included &&
-        (!term ||
-          binSearchValues(bin).some((value) => value.includes(term)))
+        binMatchesStructuredFilters(bin, partCodeFilter, statusFilter) &&
+        matchesSearch(binSearchValues(bin), term)
       );
     });
-  }, [historyBins, filter, search]);
+  }, [historyBins, filter, partCodeFilter, search, statusFilter]);
   const sortedVisibleBins = useMemo(() => {
     const rows = [...visibleBins];
     rows.sort((left, right) => {
@@ -1066,21 +1421,26 @@ export function FloorInventoryPage() {
   }, [visibleBins, sort]);
   const visibleFailureRecords = useMemo(() => {
     if (filter !== "all") return [];
+    if (statusFilter !== "all" && statusFilter !== "failed") return [];
     const term = search.trim().toLowerCase();
-    return (failureReasonsQuery.data ?? []).filter((record) =>
-      !term ||
-      [
-        record.part_code,
-        record.print_name,
-        record.printer_name,
-        record.reason_text,
-        "failed",
-        "failure",
-        printFailureReasonLabel(record.reason_code, record.reason_text, t),
-      ]
-        .some((value) => value?.toLowerCase().includes(term)),
-    );
-  }, [failureReasonsQuery.data, filter, search, t]);
+    return (failureReasonsQuery.data ?? []).filter((record) => {
+      if (!matchesPartCodeFilter(record.part_code, partCodeFilter)) return false;
+      return matchesSearch(
+        [
+          record.part_code,
+          record.print_name,
+          record.printer_name,
+          record.reason_text,
+          "failed",
+          "failure",
+          printFailureReasonLabel(record.reason_code, record.reason_text, t),
+        ]
+          .filter((value): value is string => Boolean(value))
+          .map((value) => value.toLowerCase()),
+        term,
+      );
+    });
+  }, [failureReasonsQuery.data, filter, partCodeFilter, search, statusFilter, t]);
   const visibleRecordCount =
     visibleParts.length +
     visibleUnitRows.length +
@@ -1093,6 +1453,7 @@ export function FloorInventoryPage() {
     !partsQuery.isLoading &&
     !partsQuery.isError &&
     !search.trim() &&
+    !hasStructuredFilters &&
     records.length + historyBins.length + (failureReasonsQuery.data?.length ?? 0) > 0 &&
     visibleRecordCount === 0;
   const saveError =
@@ -1142,98 +1503,194 @@ export function FloorInventoryPage() {
             )}
           </p>
         </div>
-        <div
-          className="relative w-full lg:w-80"
-          onBlur={(event) => {
-            const nextTarget = event.relatedTarget as Node | null;
-            if (!nextTarget || !event.currentTarget.contains(nextTarget)) {
-              setSearchFocused(false);
-            }
-          }}
-        >
-          <label className="relative block">
-            <span className="sr-only">
-              {t("floor.inventorySearchLabel", "Search part history")}
-            </span>
-            <Search
-              className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-bambu-gray"
-              aria-hidden="true"
-            />
-            <input
-              className="w-full rounded-lg border border-bambu-dark-tertiary bg-bambu-dark-secondary py-2.5 pl-9 pr-9 text-sm text-white placeholder:text-bambu-gray focus:border-bambu-green focus:outline-none"
-              placeholder={t(
-                "floor.inventorySearchPlaceholder",
-                "Search sticker, job, printer, or status",
-              )}
-              value={search}
-              onFocus={() => setSearchFocused(true)}
-              onChange={(event) => handleSearchChange(event.target.value)}
-            />
-            {search && (
+        <div className="flex w-full flex-col gap-2 lg:w-[24rem]">
+          <div className="flex flex-wrap gap-2">
+            <label className="relative min-w-[7.5rem] flex-1">
+              <span className="sr-only">
+                {t("floor.inventoryPartFilterLabel", "Filter by part")}
+              </span>
+              <select
+                value={partCodeFilter}
+                onChange={(event) =>
+                  handlePartCodeFilterChange(event.target.value as InventoryPartCodeFilter)
+                }
+                className="w-full appearance-none rounded-lg border border-bambu-dark-tertiary bg-bambu-dark-secondary py-2.5 pl-3 pr-8 text-sm text-white focus:border-bambu-green focus:outline-none"
+                aria-label={t("floor.inventoryPartFilterLabel", "Filter by part")}
+              >
+                {availablePartCodeOptions.map((code) => (
+                  <option key={code} value={code}>
+                    {code === "all"
+                      ? t("floor.inventoryPartFilterAll", "Any part")
+                      : code === "TOP"
+                        ? t("floor.inventoryPartFilterTop", "Tops")
+                        : code === "BOT"
+                          ? t("floor.inventoryPartFilterBottom", "Bottoms")
+                          : code === "BUT"
+                            ? t("floor.inventoryPartFilterButton", "Buttons")
+                            : t("floor.inventoryPartFilterKnob", "Knobs")}
+                  </option>
+                ))}
+              </select>
+              <ChevronDown
+                className="pointer-events-none absolute right-2.5 top-1/2 h-4 w-4 -translate-y-1/2 text-bambu-gray"
+                aria-hidden="true"
+              />
+            </label>
+            <label className="relative min-w-[10rem] flex-[1.4]">
+              <span className="sr-only">
+                {t("floor.inventoryStatusFilterLabel", "Filter by status")}
+              </span>
+              <select
+                value={statusFilter}
+                onChange={(event) =>
+                  handleStatusFilterChange(event.target.value as InventoryStatusFilter)
+                }
+                className="w-full appearance-none rounded-lg border border-bambu-dark-tertiary bg-bambu-dark-secondary py-2.5 pl-3 pr-8 text-sm text-white focus:border-bambu-green focus:outline-none"
+                aria-label={t("floor.inventoryStatusFilterLabel", "Filter by status")}
+              >
+                {availableStatusOptions.map((option) => (
+                  <option key={option.value} value={option.value}>
+                    {t(option.labelKey, option.fallback)}
+                  </option>
+                ))}
+              </select>
+              <ChevronDown
+                className="pointer-events-none absolute right-2.5 top-1/2 h-4 w-4 -translate-y-1/2 text-bambu-gray"
+                aria-hidden="true"
+              />
+            </label>
+            {hasStructuredFilters && (
               <button
                 type="button"
-                aria-label={t("common.clearSearch", "Clear search")}
-                className="absolute right-2 top-1/2 -translate-y-1/2 rounded p-1 text-bambu-gray transition-colors hover:text-white focus:outline-none focus:ring-2 focus:ring-bambu-green"
-                onMouseDown={(event) => event.preventDefault()}
-                onClick={() => handleSearchChange("")}
+                onClick={clearStructuredFilters}
+                className="inline-flex items-center gap-1 rounded-lg border border-bambu-dark-tertiary px-2.5 py-2 text-sm text-bambu-gray transition-colors hover:border-bambu-gray hover:text-white"
+                aria-label={t("floor.inventoryClearPartStatusFilters", "Clear part and status filters")}
               >
-                <X className="h-4 w-4" aria-hidden="true" />
+                <X className="h-3.5 w-3.5" aria-hidden="true" />
+                {t("common.clear", "Clear")}
               </button>
             )}
-          </label>
-          {searchFocused && (
-            <div className="absolute inset-x-0 top-full z-30 mt-2 overflow-hidden rounded-lg border border-bambu-dark-tertiary bg-bambu-dark-secondary shadow-xl shadow-black/30">
-              <div className="border-b border-bambu-dark-tertiary px-3 py-2">
-                <p className="text-xs font-semibold text-white">
-                  {t("floor.inventorySearchSuggestions", "Suggested status filters")}
-                </p>
-                <p className="mt-0.5 text-xs text-bambu-gray">
-                  {t("floor.inventorySearchSuggestionHint", "Search by status or choose a shortcut.")}
-                </p>
+          </div>
+          <div
+            className="relative w-full"
+            onBlur={(event) => {
+              const nextTarget = event.relatedTarget as Node | null;
+              if (!nextTarget || !event.currentTarget.contains(nextTarget)) {
+                setSearchFocused(false);
+              }
+            }}
+          >
+            <label className="relative block">
+              <span className="sr-only">
+                {t("floor.inventorySearchLabel", "Search part history")}
+              </span>
+              <Search
+                className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-bambu-gray"
+                aria-hidden="true"
+              />
+              <input
+                ref={searchInputRef}
+                className="w-full rounded-lg border border-bambu-dark-tertiary bg-bambu-dark-secondary py-2.5 pl-9 pr-9 text-sm text-white placeholder:text-bambu-gray focus:border-bambu-green focus:outline-none"
+                placeholder={t(
+                  "floor.inventorySearchPlaceholder",
+                  "Search sticker, job, printer, or status",
+                )}
+                value={search}
+                onFocus={() => setSearchFocused(true)}
+                onChange={(event) => handleSearchChange(event.target.value)}
+              />
+              {search && (
+                <button
+                  type="button"
+                  aria-label={t("common.clearSearch", "Clear search")}
+                  className="absolute right-2 top-1/2 -translate-y-1/2 rounded p-1 text-bambu-gray transition-colors hover:text-white focus:outline-none focus:ring-2 focus:ring-bambu-green"
+                  onMouseDown={(event) => event.preventDefault()}
+                  onClick={() => {
+                    handleSearchChange("");
+                    setSearchFocused(true);
+                    searchInputRef.current?.focus();
+                  }}
+                >
+                  <X className="h-4 w-4" aria-hidden="true" />
+                </button>
+              )}
+            </label>
+            {searchFocused && (
+              <div className="absolute inset-x-0 top-full z-30 mt-2 overflow-hidden rounded-lg border border-bambu-dark-tertiary bg-bambu-dark-secondary shadow-xl shadow-black/30">
+                <div className="border-b border-bambu-dark-tertiary px-3 py-2">
+                  <p className="text-xs font-semibold text-white">
+                    {t("floor.inventorySearchSuggestions", "Suggested status filters")}
+                  </p>
+                  <p className="mt-0.5 text-xs text-bambu-gray">
+                    {t(
+                      "floor.inventorySearchSuggestionHint",
+                      "Use Part + Status above, or search by status shortcut.",
+                    )}
+                  </p>
+                </div>
+                <div className="max-h-80 overflow-y-auto p-1.5">
+                  {STATUS_SEARCH_SHORTCUTS.map((shortcut) => (
+                    <button
+                      key={shortcut.query}
+                      type="button"
+                      onMouseDown={(event) => event.preventDefault()}
+                      onClick={() => {
+                        handleSearchChange(shortcut.query);
+                        setSearchFocused(false);
+                      }}
+                      className="flex w-full items-center justify-between rounded-md px-3 py-2 text-left text-sm text-bambu-gray-light transition-colors hover:bg-bambu-dark-tertiary hover:text-white"
+                    >
+                      <span>{shortcut.label}</span>
+                      <span className="font-mono text-xs text-bambu-gray">{shortcut.query}</span>
+                    </button>
+                  ))}
+                </div>
               </div>
-              <div className="max-h-80 overflow-y-auto p-1.5">
-                {STATUS_SEARCH_SHORTCUTS.map((shortcut) => (
-                  <button
-                    key={shortcut.query}
-                    type="button"
-                    onMouseDown={(event) => event.preventDefault()}
-                    onClick={() => {
-                      handleSearchChange(shortcut.query);
-                      setSearchFocused(false);
-                    }}
-                    className="flex w-full items-center justify-between rounded-md px-3 py-2 text-left text-sm text-bambu-gray-light transition-colors hover:bg-bambu-dark-tertiary hover:text-white"
-                  >
-                    <span>{shortcut.label}</span>
-                    <span className="font-mono text-xs text-bambu-gray">{shortcut.query}</span>
-                  </button>
-                ))}
-              </div>
-            </div>
-          )}
+            )}
+          </div>
         </div>
       </div>
-      <div className="grid max-w-3xl grid-cols-1 gap-3 sm:grid-cols-3">
-        <SummaryCard
-          label={t("floor.inventoryFilterAttention", "Needs matching")}
-          count={counts.attention}
-          accent="amber"
-          onClick={() => setFilter("attention")}
-        />
-        <SummaryCard
-          label={t("floor.inventoryActiveLinked", "Actively registered parts")}
-          count={counts.active}
-          accent="green"
-          onClick={() => setFilter("linked")}
-        />
-        <SummaryCard
-          label={t("floor.inventoryArchivedRecords", "Archived records")}
-          count={counts.archived}
-          accent="gray"
-          onClick={() => setFilter("archived")}
-        />
-      </div>
       <div className="grid gap-6 lg:grid-cols-[minmax(0,1fr)_24rem] lg:items-start">
-        <section className="min-w-0 overflow-hidden rounded-lg border border-bambu-dark-tertiary bg-bambu-dark-secondary">
+        <div className="min-w-0 space-y-3">
+          <div className="grid grid-cols-2 gap-3 sm:grid-cols-3 xl:grid-cols-6">
+            <SummaryCard
+              label={t("floor.inventoryActiveLinked", "Actively registered parts")}
+              count={counts.active}
+              accent="green"
+              onClick={() => focusPartFilter("linked")}
+            />
+            <SummaryCard
+              label={t("floor.inventoryTopsStaged", "Tops staged for prod")}
+              count={counts.topsStaged}
+              accent="cyan"
+              onClick={() => focusStagedInventory("TOP")}
+            />
+            <SummaryCard
+              label={t("floor.inventoryBottomsStaged", "Bottoms staged for prod")}
+              count={counts.bottomsStaged}
+              accent="cyan"
+              onClick={() => focusStagedInventory("BOT")}
+            />
+            <SummaryCard
+              label={t("floor.inventoryButtonsStaged", "Buttons")}
+              count={counts.buttonsStaged}
+              accent="cyan"
+              onClick={() => focusStagedInventory("BUT")}
+            />
+            <SummaryCard
+              label={t("floor.inventoryKnobsStaged", "Knobs")}
+              count={counts.knobsStaged}
+              accent="cyan"
+              onClick={() => focusStagedInventory("KNB")}
+            />
+            <SummaryCard
+              label={t("floor.inventoryFilterAttention", "Needs matching")}
+              count={counts.attention}
+              accent="amber"
+              onClick={() => focusPartFilter("attention")}
+            />
+          </div>
+          <section className="min-w-0 overflow-hidden rounded-lg border border-bambu-dark-tertiary bg-bambu-dark-secondary">
           <div className="space-y-3 border-b border-bambu-dark-tertiary p-4">
             <HorizontalScrollFade className="w-full" fadeFromClassName="from-bambu-dark-secondary">
               <div className="inline-flex min-w-full flex-nowrap gap-1 rounded-lg bg-bambu-dark p-1 md:min-w-0">
@@ -1241,7 +1698,7 @@ export function FloorInventoryPage() {
                   <button
                     key={item.id}
                     type="button"
-                    onClick={() => setFilter(item.id)}
+                    onClick={() => focusPartFilter(item.id)}
                     className={`shrink-0 whitespace-nowrap rounded-md px-3 py-2.5 text-sm transition-colors md:py-1.5 ${filter === item.id ? "bg-bambu-green text-white" : "text-bambu-gray hover:text-white"}`}
                   >
                     {item.label}
@@ -1279,7 +1736,7 @@ export function FloorInventoryPage() {
               <div className="flex flex-wrap items-center gap-3">
                 <button
                   type="button"
-                  onClick={() => setFilter("archived")}
+                  onClick={() => focusPartFilter("archived")}
                   className={`whitespace-nowrap rounded-md border px-3 py-1.5 text-sm transition-colors ${filter === "archived" ? "border-bambu-green bg-bambu-green text-white" : "border-bambu-dark-tertiary bg-bambu-dark-tertiary text-white hover:border-bambu-gray hover:bg-bambu-dark hover:text-white"}`}
                 >
                   {t("floor.inventoryShowArchived", "Show archived")}
@@ -1359,7 +1816,7 @@ export function FloorInventoryPage() {
                       <Button
                         variant="secondary"
                         size="sm"
-                        onClick={() => setFilter("linked")}
+                        onClick={() => focusPartFilter("linked")}
                       >
                         {t("floor.inventoryShowLinked", "Show linked parts")}
                       </Button>
@@ -1368,7 +1825,7 @@ export function FloorInventoryPage() {
                       <Button
                         variant="secondary"
                         size="sm"
-                        onClick={() => setFilter("archived")}
+                        onClick={() => focusPartFilter("archived")}
                       >
                         {t("floor.inventoryShowArchived", "Show archived")}
                       </Button>
@@ -1376,7 +1833,7 @@ export function FloorInventoryPage() {
                     <Button
                       variant="secondary"
                       size="sm"
-                      onClick={() => setFilter("all")}
+                      onClick={() => focusPartFilter("all")}
                     >
                       {t("floor.inventoryShowAll", "Show all active")}
                     </Button>
@@ -1432,6 +1889,7 @@ export function FloorInventoryPage() {
                 />
               )}
         </section>
+        </div>
         {selectedFailure ? (
           <PrintFailureDetail
             record={selectedFailure}
@@ -2166,7 +2624,10 @@ function PrintFailureDetail({
         {discardOpen && (
           <div className="space-y-3">
             <p className="text-sm text-white">
-              {t("floor.printFailureDiscardConfirm", "Discard this failure reason? This removes it from Part history.")}
+              {t(
+                "floor.printFailureDiscardConfirm",
+                "Discard this failure reason? This removes it from Part history and Stats 2 quality counts.",
+              )}
             </p>
             <div className="flex justify-end gap-2">
               <Button size="sm" variant="secondary" onClick={() => setDiscardOpen(false)}>
@@ -2354,7 +2815,9 @@ function printFailureReasonLabel(
 function partSearchValues(part: FloorInventoryPart, latestEventAction: string | null | undefined) {
   const statusTerms = part.archived_at
     ? ["archived"]
-    : ["registered", "registered parts", "linked", "linked parts", "active"];
+    : part.archive_id === null
+      ? ["active"]
+      : ["registered", "registered parts", "linked", "linked parts", "active"];
   const action = latestEventAction ?? part.latest_event_action ?? null;
   const actionTerms = partStatusSearchTerms(part.part_code, action, part.archive_id);
   return [
@@ -2374,6 +2837,12 @@ function partStatusSearchTerms(
   action: string | null,
   archiveId: number | null,
 ) {
+  if (action === "discarded") return ["discarded", "discard"];
+  // Unmatched stickers are Needs matching regardless of enrolled / other
+  // non-workflow noise on the event stream.
+  if (archiveId === null) {
+    return ["needs matching", "matching", "attention", "unmatched"];
+  }
   if (action === "fit_check" || action === "fit_checked") {
     return partCode === "BUT" || partCode === "KNB"
       ? ["visual", "visual qc", "visual qc pass", "initial qc pass", "qc"]
@@ -2385,14 +2854,13 @@ function partStatusSearchTerms(
     return ["staged", "staged for production", "ready for production", "ready_for_production"];
   }
   if (action === "shipped") return ["shipped", "shipping", "fulfilled"];
-  if (action === "discarded") return ["discarded", "discard"];
   if (action === "cleanup" || action === "cleaned_up") return ["cleanup", "cleanup pass"];
   if (action === "support_removed") return ["support", "support removed", "support removal"];
   if (action === "overhang_removed") return ["overhang", "overhang removed", "overhang removal"];
   if (action === "hot_air_removed") return ["hot air", "hot air removed", "hot air removal"];
   if (action === "needs_matching") return ["needs matching", "matching", "attention", "unmatched"];
   if (action) return [action, formatCustomStatus(action)];
-  return archiveId === null ? ["needs matching", "matching", "attention", "unmatched"] : [];
+  return [];
 }
 
 function binBatchLabel(bin: FloorBinManagement): string {
@@ -2405,8 +2873,11 @@ function binBatchLabel(bin: FloorBinManagement): string {
 function binSearchValues(bin: FloorBinManagement) {
   const batch = bin.batch;
   if (!batch) return [];
-  const statusTerms =
-    batch.status === "visual_qc_passed"
+  const needsMatching =
+    batch.archive_id === null && !isFulfilledBin(bin) && !isArchivedBin(bin);
+  const statusTerms = needsMatching
+    ? ["needs matching", "matching", "attention", "unmatched"]
+    : batch.status === "visual_qc_passed"
       ? ["visual", "visual qc", "visual qc pass", "initial qc pass", "qc"]
       : batch.status === "ready_for_production"
         ? ["staged", "staged for production", "ready for production", "ready_for_production"]
@@ -2429,8 +2900,8 @@ function binSearchValues(bin: FloorBinManagement) {
     "depleted",
     "manually cleared",
     "bin",
-    "button",
-    "knob",
+    bin.part_code === "BUT" ? "button" : null,
+    bin.part_code === "KNB" ? "knob" : null,
     ...statusTerms,
   ]
     .filter((value): value is string => Boolean(value))
@@ -2563,13 +3034,14 @@ function SummaryCard({
 }: {
   label: string;
   count: number;
-  accent: "amber" | "green" | "gray";
+  accent: "amber" | "green" | "gray" | "cyan";
   onClick: () => void;
 }) {
   const colors = {
     amber: "border-amber-500/30 hover:border-amber-400/60",
     green: "border-bambu-green/30 hover:border-bambu-green/60",
     gray: "border-bambu-dark-tertiary hover:border-bambu-gray",
+    cyan: "border-cyan-500/30 hover:border-cyan-400/60",
   };
   return (
     <button
@@ -2608,6 +3080,10 @@ function BinDetail({
   const [clearOpen, setClearOpen] = useState(false);
   const [unlinkOpen, setUnlinkOpen] = useState(false);
   const [deleteOpen, setDeleteOpen] = useState(false);
+  const [candidateId, setCandidateId] = useState("");
+  const [matchPrinterId, setMatchPrinterId] = useState<number | null>(
+    batch?.printer_id ?? null,
+  );
 
   useEffect(() => {
     setHistoryAtBottom(true);
@@ -2615,7 +3091,29 @@ function BinDetail({
     setClearOpen(false);
     setUnlinkOpen(false);
     setDeleteOpen(false);
-  }, [batch?.id, batch?.remaining_quantity, batch?.archived_at]);
+    setCandidateId("");
+    setMatchPrinterId(batch?.printer_id ?? null);
+  }, [batch?.id, batch?.remaining_quantity, batch?.archived_at, batch?.printer_id]);
+
+  const needsMatching =
+    Boolean(batch) &&
+    !batch!.archived_at &&
+    (batch!.archive_id === null ||
+      batch!.status === "unlinked" ||
+      bin.status === "unlinked");
+
+  const printersQuery = useQuery({
+    queryKey: ["floor-printers"],
+    queryFn: api.getFloorPrinters,
+    enabled: needsMatching,
+    staleTime: 60_000,
+  });
+
+  const binCandidatesQuery = useQuery({
+    queryKey: ["floor-bin-job-candidates", batch?.id ?? null, matchPrinterId],
+    queryFn: () => api.getFloorBinJobCandidates(batch!.id, matchPrinterId!),
+    enabled: needsMatching && batch != null && matchPrinterId != null,
+  });
 
   const refreshBinData = () =>
     Promise.all([
@@ -2625,6 +3123,26 @@ function BinDetail({
         queryKey: ["floor-bin-batch-events", batch?.id ?? null],
       }),
     ]);
+
+  const relinkMutation = useMutation({
+    mutationFn: (archiveId: number) => api.relinkFloorBin(batch!.id, archiveId),
+    onSuccess: async () => {
+      setCandidateId("");
+      await refreshBinData();
+      showToast(
+        t("floor.inventoryBinMatched", "Bin matched to completed job"),
+        "success",
+      );
+    },
+    onError: () =>
+      showToast(
+        t(
+          "floor.inventoryBinMatchFailed",
+          "Could not match this bin to that job. Check the part code matches.",
+        ),
+        "error",
+      ),
+  });
 
   const overrideMutation = useMutation({
     mutationFn: (remaining_quantity: number) =>
@@ -2740,7 +3258,8 @@ function BinDetail({
     overrideMutation.isPending ||
     unlinkMutation.isPending ||
     deleteMutation.isPending ||
-    archiveMutation.isPending;
+    archiveMutation.isPending ||
+    relinkMutation.isPending;
   const canManage = !depleted && !archived;
   const batchLabel = binBatchLabel(bin);
 
@@ -2813,6 +3332,30 @@ function BinDetail({
             </dd>
           </div>
         </dl>
+
+        {needsMatching && (
+          <MatchJob
+            key={`bin-match-${batch.id}`}
+            candidates={binCandidatesQuery.data ?? []}
+            loading={binCandidatesQuery.isLoading || binCandidatesQuery.isFetching}
+            pending={relinkMutation.isPending}
+            candidateId={candidateId}
+            onChange={setCandidateId}
+            onMatch={(archiveId) => relinkMutation.mutate(archiveId)}
+            printers={printersQuery.data ?? []}
+            printersLoading={printersQuery.isLoading}
+            selectedPrinterId={matchPrinterId}
+            onPrinterChange={setMatchPrinterId}
+            recentHint={t(
+              "floor.inventoryBinMatchHint",
+              "Pick a printer to browse its completed jobs, or search every job by name. Only jobs that match this bin’s part code can be linked.",
+            )}
+            recentEmptyLabel={t(
+              "floor.inventoryBinCandidatesEmpty",
+              "No completed jobs for this printer match this bin’s part code.",
+            )}
+          />
+        )}
 
         {canManage && (
           <div className="space-y-3 border-t border-bambu-dark-tertiary pt-4">
@@ -3786,13 +4329,26 @@ function MatchJob({
   candidateId,
   onChange,
   onMatch,
+  printers,
+  printersLoading,
+  selectedPrinterId,
+  onPrinterChange,
+  recentEmptyLabel,
+  recentHint,
 }: {
-  candidates: FloorPartJobCandidate[];
+  candidates: Array<{ id: number; print_name: string; completed_at: string | null }>;
   loading: boolean;
   pending: boolean;
   candidateId: string;
   onChange: (value: string) => void;
   onMatch: (archiveId: number) => void;
+  /** When set, "Recent" mode starts with a printer picker (bins / deleted printer). */
+  printers?: Array<{ id: number; name: string }>;
+  printersLoading?: boolean;
+  selectedPrinterId?: number | null;
+  onPrinterChange?: (printerId: number | null) => void;
+  recentEmptyLabel?: string;
+  recentHint?: string;
 }) {
   const { t } = useTranslation();
   const [mode, setMode] = useState<MatchMode>("recent");
@@ -3809,6 +4365,7 @@ function MatchJob({
     enabled: mode === "search" && trimmedTerm.length > 0,
   });
   const searchResults: JobSearchResult[] = searchQuery.data ?? [];
+  const browseByPrinter = typeof onPrinterChange === "function";
   return (
     <section className="rounded-lg border border-amber-500/30 bg-amber-500/10 p-3">
       <div className="flex gap-2">
@@ -3818,10 +4375,11 @@ function MatchJob({
             {t("floor.inventoryMatchHeading", "Match to completed job")}
           </h3>
           <p className="mt-1 text-xs text-amber-100/70">
-            {t(
-              "floor.inventoryMatchHint",
-              "Candidates are completed jobs from this printer. Use the label time above to confirm the right one.",
-            )}
+            {recentHint ??
+              t(
+                "floor.inventoryMatchHint",
+                "Candidates are completed jobs from this printer. Use the label time above to confirm the right one.",
+              )}
           </p>
         </div>
       </div>
@@ -3831,7 +4389,9 @@ function MatchJob({
           onClick={() => setMode("recent")}
           className={`shrink-0 whitespace-nowrap rounded-md px-2 py-1 transition-colors ${mode === "recent" ? "bg-bambu-green text-white" : "text-bambu-gray hover:text-white"}`}
         >
-          {t("floor.inventoryMatchModeRecent", "Recent on this printer")}
+          {browseByPrinter
+            ? t("floor.inventoryMatchModeBrowse", "Browse by printer")
+            : t("floor.inventoryMatchModeRecent", "Recent on this printer")}
         </button>
         <button
           type="button"
@@ -3842,51 +4402,90 @@ function MatchJob({
         </button>
       </div>
       {mode === "recent" ? (
-        loading ? (
-          <p className="mt-3 text-sm text-bambu-gray">
-            {t("floor.inventoryCandidatesLoading", "Loading candidates…")}
-          </p>
-        ) : candidates.length === 0 ? (
-          <p className="mt-3 text-sm text-bambu-gray">
-            {t(
-              "floor.inventoryCandidatesEmpty",
-              "No completed jobs are available for this printer.",
-            )}
-          </p>
-        ) : (
-          <div className="mt-3 flex gap-2">
-            <select
-              aria-label={t("floor.inventoryCompletedJob", "Completed job")}
-              value={candidateId}
-              onChange={(event) => onChange(event.target.value)}
-              className="min-w-0 flex-1 rounded-lg border border-amber-500/30 bg-bambu-dark px-2 py-2 text-sm text-white focus:border-bambu-green focus:outline-none"
-            >
-              <option value="">
-                {t("floor.inventoryChooseJob", "Choose a completed job")}
-              </option>
-              {candidates.map((candidate) => (
-                <option key={candidate.id} value={candidate.id}>
-                  {candidate.print_name}
-                  {candidate.completed_at
-                    ? ` · ${formatFloorDate(candidate.completed_at, { dateStyle: "short", timeStyle: "short" })}`
-                    : ""}
+        <div className="mt-3 space-y-2">
+          {browseByPrinter && (
+            <div className="relative">
+              <select
+                aria-label={t("inventory.binRelinkPrinter", "Printer")}
+                value={selectedPrinterId != null ? String(selectedPrinterId) : ""}
+                disabled={printersLoading || pending}
+                onChange={(event) => {
+                  onChange("");
+                  onPrinterChange?.(event.target.value ? Number(event.target.value) : null);
+                }}
+                className="w-full appearance-none rounded-lg border border-amber-500/30 bg-bambu-dark px-2 py-2 pr-10 text-sm text-white focus:border-bambu-green focus:outline-none"
+              >
+                <option value="">
+                  {printersLoading
+                    ? t("common.loading", "Loading…")
+                    : t("inventory.binChoosePrinter", "Choose a printer")}
                 </option>
-              ))}
-            </select>
-            <Button
-              size="sm"
-              disabled={!candidateId || pending}
-              onClick={() => onMatch(Number(candidateId))}
-            >
-              {pending ? (
-                <Loader2 className="h-4 w-4 animate-spin" />
-              ) : (
-                <CheckCircle2 className="h-4 w-4" />
+                {(printers ?? []).map((printer) => (
+                  <option key={printer.id} value={printer.id}>
+                    {printer.name}
+                  </option>
+                ))}
+              </select>
+              <ChevronDown
+                aria-hidden="true"
+                className="pointer-events-none absolute right-3 top-1/2 h-4 w-4 -translate-y-1/2 text-bambu-gray"
+              />
+            </div>
+          )}
+          {browseByPrinter && selectedPrinterId == null ? (
+            <p className="text-sm text-bambu-gray">
+              {t(
+                "floor.inventoryMatchPickPrinter",
+                "Choose a printer to see its recent completed jobs.",
               )}
-              {t("floor.inventoryMatchAction", "Match")}
-            </Button>
-          </div>
-        )
+            </p>
+          ) : loading ? (
+            <p className="text-sm text-bambu-gray">
+              {t("floor.inventoryCandidatesLoading", "Loading candidates…")}
+            </p>
+          ) : candidates.length === 0 ? (
+            <p className="text-sm text-bambu-gray">
+              {recentEmptyLabel ??
+                t(
+                  "floor.inventoryCandidatesEmpty",
+                  "No completed jobs are available for this printer.",
+                )}
+            </p>
+          ) : (
+            <div className="flex gap-2">
+              <select
+                aria-label={t("floor.inventoryCompletedJob", "Completed job")}
+                value={candidateId}
+                onChange={(event) => onChange(event.target.value)}
+                className="min-w-0 flex-1 rounded-lg border border-amber-500/30 bg-bambu-dark px-2 py-2 text-sm text-white focus:border-bambu-green focus:outline-none"
+              >
+                <option value="">
+                  {t("floor.inventoryChooseJob", "Choose a completed job")}
+                </option>
+                {candidates.map((candidate) => (
+                  <option key={candidate.id} value={candidate.id}>
+                    {candidate.print_name}
+                    {candidate.completed_at
+                      ? ` · ${formatFloorDate(candidate.completed_at, { dateStyle: "short", timeStyle: "short" })}`
+                      : ""}
+                  </option>
+                ))}
+              </select>
+              <Button
+                size="sm"
+                disabled={!candidateId || pending}
+                onClick={() => onMatch(Number(candidateId))}
+              >
+                {pending ? (
+                  <Loader2 className="h-4 w-4 animate-spin" />
+                ) : (
+                  <CheckCircle2 className="h-4 w-4" />
+                )}
+                {t("floor.inventoryMatchAction", "Match")}
+              </Button>
+            </div>
+          )}
+        </div>
       ) : (
         <div className="mt-3 space-y-2">
           <input
@@ -4349,7 +4948,7 @@ function FloorSerialsSection({
             )}
           </p>
         </div>
-        <div className="relative w-full lg:w-80">
+        <div className="relative w-full lg:w-[24rem]">
           <label className="relative block">
             <span className="sr-only">{t("floor.serialsSearchLabel", "Search serials")}</span>
             <Search

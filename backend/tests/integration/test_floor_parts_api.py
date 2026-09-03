@@ -1237,6 +1237,51 @@ class TestReusableBinFlow:
         )
         assert conflict.status_code == 409
 
+    async def test_inventory_can_match_never_linked_bin_to_a_completed_job(
+        self, async_client, printer_factory, archive_factory
+    ):
+        """Manual assign / harvest without a job must still be matchable from Part history."""
+        printer = await printer_factory(name="Bench Match")
+        assigned = await async_client.post(
+            "/api/v1/floor/inventory/bins/assign",
+            json={"payload": "BBN-KNB-2", "printer_id": printer.id, "quantity": 12},
+        )
+        assert assigned.status_code == 200
+        batch_id = assigned.json()["batch"]["id"]
+        assert assigned.json()["batch"]["archive_id"] is None
+
+        job = await archive_factory(
+            printer_id=printer.id,
+            print_name="KNB H2D Test Print",
+            quantity=12,
+        )
+        wrong = await archive_factory(
+            printer_id=printer.id,
+            print_name="TOP H2D Test Print",
+            quantity=4,
+        )
+
+        candidates = await async_client.get(
+            f"/api/v1/floor/inventory/bins/batches/{batch_id}/job-candidates",
+            params={"printer_id": printer.id},
+        )
+        assert candidates.status_code == 200
+        assert any(row["id"] == job.id for row in candidates.json())
+        assert all(row["id"] != wrong.id for row in candidates.json())
+
+        linked = await async_client.post(
+            f"/api/v1/floor/inventory/bins/batches/{batch_id}/relink",
+            json={"archive_id": job.id},
+        )
+        assert linked.status_code == 200
+        assert linked.json()["batch"]["archive_id"] == job.id
+        assert linked.json()["batch"]["status"] == "harvested"
+        assert linked.json()["batch"]["printer_name"] == "Bench Match"
+
+        listed = await async_client.get("/api/v1/floor/inventory/bins")
+        current = next(item for item in listed.json() if item["payload"] == "BBN-KNB-2")
+        assert current["batch"]["archive_id"] == job.id
+
     async def test_harvest_summary_reports_bins_instead_of_zero_parts(
         self, async_client, printer_factory, archive_factory
     ):

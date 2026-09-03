@@ -150,7 +150,7 @@ class TestPrinterInfo:
         assert last["has_labeled_parts"] is False
 
     async def test_exposes_and_records_a_recent_stopped_print_reason(
-        self, async_client, printer_factory, archive_factory
+        self, async_client, printer_factory, archive_factory, db_session
     ):
         printer = await printer_factory(name="Bench A")
         await archive_factory(
@@ -177,6 +177,20 @@ class TestPrinterInfo:
         log = await async_client.get("/api/v1/floor/inventory/print-failures")
         assert log.json()[0]["printer_id"] == printer.id
         assert log.json()[0]["reason_code"] == "warping"
+
+        from sqlalchemy import select
+
+        from backend.app.models.print_log import PrintLogEntry
+
+        mirrored = (
+            await db_session.execute(
+                select(PrintLogEntry)
+                .where(PrintLogEntry.printer_id == printer.id)
+                .order_by(PrintLogEntry.id.desc())
+                .limit(1)
+            )
+        ).scalar_one()
+        assert mirrored.failure_reason == "Warping"
 
     async def test_requires_text_for_other_stopped_print_reason(self, async_client, printer_factory, archive_factory):
         printer = await printer_factory()
