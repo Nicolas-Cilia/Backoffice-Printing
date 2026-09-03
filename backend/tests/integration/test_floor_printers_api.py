@@ -199,6 +199,86 @@ class TestPrinterInfo:
 
         assert response.json()["recent_stopped_print"]["status"] == "failed"
 
+    async def test_records_plate_failure_for_a_completed_unlabeled_print(
+        self, async_client, printer_factory, archive_factory, db_session
+    ):
+        from backend.app.models.settings import Settings
+        from backend.app.services.printer_manager import printer_manager
+
+        db_session.add(
+            Settings(
+                key="floor_part_tracking_started_at",
+                value=(datetime.now() - timedelta(hours=1)).isoformat(),
+            )
+        )
+        await db_session.commit()
+
+        printer = await printer_factory(name="Bench Scrap", awaiting_plate_clear=True)
+        archive = await archive_factory(
+            printer_id=printer.id,
+            print_name="Warped TOP",
+            completed_at=datetime.now(),
+        )
+        printer_manager.set_awaiting_plate_clear(printer.id, True)
+
+        before = await async_client.get("/api/v1/floor/parts/unlabeled-build-plates")
+        assert any(plate["id"] == archive.id for plate in before.json())
+
+        saved = await async_client.post(
+            f"/api/v1/floor/printers/{printer.id}/plate-failure",
+            json={"reason_code": "warping"},
+        )
+
+        assert saved.status_code == 200
+        body = saved.json()
+        assert body["reason_code"] == "warping"
+        assert body["status"] == "failed"
+        assert body["archive_id"] == archive.id
+        assert body["print_name"] == "Warped TOP"
+
+        after = await async_client.get("/api/v1/floor/parts/unlabeled-build-plates")
+        assert not any(plate["id"] == archive.id for plate in after.json())
+        dismissed = await async_client.get("/api/v1/floor/parts/dismissed-build-plates")
+        assert any(plate["id"] == archive.id for plate in dismissed.json())
+        log = await async_client.get("/api/v1/floor/inventory/print-failures")
+        assert log.json()[0]["archive_id"] == archive.id
+        assert log.json()[0]["reason_code"] == "warping"
+        assert printer_manager.is_awaiting_plate_clear(printer.id) is False
+
+    async def test_plate_failure_requires_text_for_other(self, async_client, printer_factory, archive_factory):
+        printer = await printer_factory()
+        await archive_factory(printer_id=printer.id, print_name="Other fail")
+
+        response = await async_client.post(
+            f"/api/v1/floor/printers/{printer.id}/plate-failure",
+            json={"reason_code": "other"},
+        )
+
+        assert response.status_code == 422
+
+    async def test_plate_failure_rejects_when_parts_are_already_labeled(
+        self, async_client, printer_factory, archive_factory, db_session
+    ):
+        from backend.app.models.floor_part import FloorLabeledPart
+
+        printer = await printer_factory()
+        archive = await archive_factory(printer_id=printer.id, print_name="Already labeled")
+        db_session.add(
+            FloorLabeledPart(
+                sticker_code="BBD-009901",
+                printer_id=printer.id,
+                archive_id=archive.id,
+            )
+        )
+        await db_session.commit()
+
+        response = await async_client.post(
+            f"/api/v1/floor/printers/{printer.id}/plate-failure",
+            json={"reason_code": "layer_lines"},
+        )
+
+        assert response.status_code == 400
+
     async def test_picks_the_most_recently_completed_not_the_newest_row(
         self, async_client, printer_factory, archive_factory
     ):

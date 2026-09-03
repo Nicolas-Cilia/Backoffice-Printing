@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from datetime import datetime
 
-from sqlalchemy import JSON, DateTime, ForeignKey, Index, Integer, String, UniqueConstraint, func
+from sqlalchemy import JSON, DateTime, ForeignKey, Index, Integer, String, Text, UniqueConstraint, func
 from sqlalchemy.orm import Mapped, mapped_column
 
 from backend.app.core.database import Base
@@ -33,6 +33,18 @@ class FloorBinBatch(Base):
     # An archived fill is skipped by `_latest_batch`, so the physical bin QR
     # is free to harvest again without destroying the record.
     archived_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+
+    # Stats 2 (Phase 2) silent expected-quantity variance snapshot. Resolved at
+    # harvest time from the source production filename (or a fallback) and
+    # frozen on the row — measurement only, never blocks the harvest. See
+    # ``services/expected_quantity.py`` and ``services/harvest_variance.py``.
+    expected_quantity: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    # Where ``expected_quantity`` came from: "filename" | "production_slot" | "default".
+    expected_quantity_source: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    # harvested quantity − expected_quantity (signed). NULL when expected unknown.
+    quantity_variance: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    # Optional, skippable operator note explaining a variance. Never required.
+    variance_reason: Mapped[str | None] = mapped_column(Text, nullable=True)
 
 
 class FloorBinBatchEvent(Base):

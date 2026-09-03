@@ -52,6 +52,7 @@ export const defaultNavItems: NavItem[] = [
   { id: 'profiles', to: '/profiles', icon: Cloud, labelKey: 'nav.profiles' },
   { id: 'maintenance', to: '/maintenance', icon: Wrench, labelKey: 'nav.maintenance' },
   { id: 'stats', to: '/stats', icon: BarChart3, labelKey: 'nav.stats' },
+  { id: 'stats2', to: '/stats2', icon: BarChart3, labelKey: 'nav.stats2' },
   // User-account feature: gated in isHidden() on advanced auth + user_notifications
   // + the notifications:user_email permission. Kept adjacent to Settings
   // intentionally. Do not drop this entry — without it the /notifications page
@@ -287,6 +288,7 @@ export function Layout() {
     const navPermissions: Record<string, Permission | Permission[]> = {
       queue: ['queue:read', 'queue:read_own', 'queue:read_all'],
       stats: 'stats:read',
+      stats2: 'stats:read',
       profiles: 'kprofiles:read',
       maintenance: 'maintenance:read',
       // Floor parts inventory (/inventory) is a floor endpoint → floor:scan.

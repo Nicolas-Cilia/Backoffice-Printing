@@ -4,6 +4,7 @@ from backend.app.models.api_key import APIKey
 from backend.app.models.archive import PrintArchive
 from backend.app.models.auth_ephemeral import AuthEphemeralToken, AuthRateLimitEvent
 from backend.app.models.color_catalog import ColorCatalogEntry
+from backend.app.models.device_recipe import DeviceRecipe, DeviceRecipeLine
 from backend.app.models.filament import Filament
 from backend.app.models.filament_tracking import (
     FilamentColorBucket,
@@ -31,12 +32,14 @@ from backend.app.models.maintenance import MaintenanceHistory, MaintenanceType, 
 from backend.app.models.notification import NotificationLog
 from backend.app.models.notification_template import NotificationTemplate
 from backend.app.models.oidc_provider import OIDCProvider, UserOIDCLink
+from backend.app.models.operator_schedule import OperatorSchedule
 from backend.app.models.orca_base_cache import OrcaBaseProfile
 from backend.app.models.pending_upload import PendingUpload
 from backend.app.models.pipeline_run import PipelineJob, PipelineRun
 from backend.app.models.print_batch import PrintBatch
 from backend.app.models.printer import Printer
 from backend.app.models.printer_sensor_history import PrinterSensorHistory
+from backend.app.models.printer_time_block import PrinterTimeBlock
 from backend.app.models.production import (
     ProductionPart,
     ProductionPartInstance,
@@ -59,6 +62,7 @@ from backend.app.models.spool_catalog import SpoolCatalogEntry
 from backend.app.models.spool_k_profile import SpoolKProfile
 from backend.app.models.spool_usage_history import SpoolUsageHistory
 from backend.app.models.spoolbuddy_device import SpoolBuddyDevice
+from backend.app.models.stats_events import PlateTurnaroundEvent, QueueLifecycleEvent
 from backend.app.models.user import User
 from backend.app.models.user_email_pref import UserEmailPreference
 from backend.app.models.user_otp_code import UserOTPCode
@@ -126,6 +130,12 @@ __all__ = [
     "SpoolUsageHistory",
     "ColorCatalogEntry",
     "SpoolBuddyDevice",
+    "PlateTurnaroundEvent",
+    "QueueLifecycleEvent",
+    "OperatorSchedule",
+    "PrinterTimeBlock",
+    "DeviceRecipe",
+    "DeviceRecipeLine",
     "SponsorToastState",
     "UserEmailPreference",
     "UserOTPCode",

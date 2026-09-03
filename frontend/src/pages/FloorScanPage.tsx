@@ -72,6 +72,8 @@ import {
 } from '../api/client';
 import { StartPrintModal } from '../components/StartPrintModal';
 import { ConfirmModal } from '../components/ConfirmModal';
+import { FloorStopReasonEditor } from '../components/FloorStopReasonEditor';
+import { floorStopReasonLabel } from '../components/floorStopReasons';
 import { ScanPartHistory } from '../components/floor/ScanPartHistory';
 import { TouchOnlyButton } from '../components/floor/TouchOnlyButton';
 import { useAuth } from '../contexts/AuthContext';
@@ -249,18 +251,6 @@ function isInWipBinLookup(status: Status): boolean {
   return status.kind === 'awaiting-bin-location' && status.batch.status === 'wip';
 }
 
-const FLOOR_STOP_REASON_OPTIONS: Array<{
-  value: FloorStopReasonCode;
-  key: string;
-  fallback: string;
-}> = [
-  { value: 'first_layer_issue', key: 'floor.stopReasonFirstLayer', fallback: 'First layer issue' },
-  { value: 'warping', key: 'floor.stopReasonWarping', fallback: 'Warping' },
-  { value: 'layer_lines', key: 'floor.stopReasonLayerLines', fallback: 'Layer lines' },
-  { value: 'filament_issue', key: 'floor.stopReasonFilament', fallback: 'Filament issue' },
-  { value: 'other', key: 'floor.stopReasonOther', fallback: 'Other' },
-];
-
 /** Screens with their own text field. Restoring the hidden scan input here
  *  would steal keystrokes from quantity / custom-reason entry. */
 function isScanTypingStatus(kind: Status['kind']): boolean {
@@ -350,10 +340,26 @@ export function FloorScanPage() {
   const { t } = useTranslation();
   const navigate = useNavigate();
   const queryClient = useQueryClient();
-  const { showToast } = useToast();
-  const errorLabelsQuery = useQuery({
-    queryKey: ['floor-error-labels'],
-    queryFn: () => api.getFloorErrorLabels(),
+  const { showToast, setDispatchToastSuppressed } = useToast();
+  // Keep local scan feedback toasts, but hide the corner "Starting prints"
+  // dispatch popup while operators are on this page.
+  useEffect(() => {
+    setDispatchToastSuppressed(true);
+    return () => setDispatchToastSuppressed(false);
+  }, [setDispatchToastSuppressed]);
+  const sandingLabelsQuery = useQuery({
+    queryKey: ['floor-error-labels', 'sanding'],
+    queryFn: () => api.getFloorErrorLabels('sanding'),
+    staleTime: 30_000,
+  });
+  const reworkLabelsQuery = useQuery({
+    queryKey: ['floor-error-labels', 'rework'],
+    queryFn: () => api.getFloorErrorLabels('rework'),
+    staleTime: 30_000,
+  });
+  const discardLabelsQuery = useQuery({
+    queryKey: ['floor-error-labels', 'discard'],
+    queryFn: () => api.getFloorErrorLabels('discard'),
     staleTime: 30_000,
   });
   const inputRef = useRef<HTMLInputElement>(null);
@@ -2574,6 +2580,10 @@ export function FloorScanPage() {
           scanError={status.scanError ?? null}
           onDismiss={() => void dismissPrinterView()}
           onRestoreScanFocus={restoreScanFocus}
+          onInfoRefresh={async () => {
+            const fresh = await api.getFloorPrinterInfo(status.info.payload);
+            setStatus({ kind: 'printer', info: fresh });
+          }}
           t={t}
         />
       ) : isLocked && status.kind === 'locked' ? (
@@ -2723,12 +2733,12 @@ export function FloorScanPage() {
           payload={status.payload}
           part={status.part}
           location="sanding"
-          labels={errorLabelsQuery.data ?? []}
-          loading={errorLabelsQuery.isLoading}
-          failed={errorLabelsQuery.isError}
+          labels={sandingLabelsQuery.data ?? []}
+          loading={sandingLabelsQuery.isLoading}
+          failed={sandingLabelsQuery.isError}
           busy={busy}
           onSelect={applyIssueReason}
-          onRetry={() => void errorLabelsQuery.refetch()}
+          onRetry={() => void sandingLabelsQuery.refetch()}
           t={t}
         />
       ) : status.kind === 'awaiting-rework-reason' ? (
@@ -2736,35 +2746,35 @@ export function FloorScanPage() {
           payload={status.payload}
           part={status.part}
           location="wip-rework"
-          labels={errorLabelsQuery.data ?? []}
-          loading={errorLabelsQuery.isLoading}
-          failed={errorLabelsQuery.isError}
+          labels={reworkLabelsQuery.data ?? []}
+          loading={reworkLabelsQuery.isLoading}
+          failed={reworkLabelsQuery.isError}
           busy={busy}
           onSelect={applyIssueReason}
-          onRetry={() => void errorLabelsQuery.refetch()}
+          onRetry={() => void reworkLabelsQuery.refetch()}
           t={t}
         />
       ) : status.kind === 'awaiting-unit-rework-reason' ? (
         <AwaitingUnitReworkReasonScreen
           unit={status.unit}
-          labels={errorLabelsQuery.data ?? []}
-          loading={errorLabelsQuery.isLoading}
-          failed={errorLabelsQuery.isError}
+          labels={reworkLabelsQuery.data ?? []}
+          loading={reworkLabelsQuery.isLoading}
+          failed={reworkLabelsQuery.isError}
           busy={busy}
           onSelect={applyIssueReason}
-          onRetry={() => void errorLabelsQuery.refetch()}
+          onRetry={() => void reworkLabelsQuery.refetch()}
           t={t}
         />
       ) : status.kind === 'awaiting-discard-reason' ? (
         <AwaitingDiscardReasonScreen
           payload={status.payload}
           part={status.part}
-          labels={errorLabelsQuery.data ?? []}
-          loading={errorLabelsQuery.isLoading}
-          failed={errorLabelsQuery.isError}
+          labels={discardLabelsQuery.data ?? []}
+          loading={discardLabelsQuery.isLoading}
+          failed={discardLabelsQuery.isError}
           busy={busy}
           onSelect={applyIssueReason}
-          onRetry={() => void errorLabelsQuery.refetch()}
+          onRetry={() => void discardLabelsQuery.refetch()}
           t={t}
         />
       ) : status.kind === 'awaiting-custom-reason' ? (
@@ -3117,6 +3127,7 @@ function PrinterInfoPanel({
   scanError,
   onDismiss,
   onRestoreScanFocus,
+  onInfoRefresh,
   t,
 }: {
   info: FloorPrinterInfo;
@@ -3127,6 +3138,8 @@ function PrinterInfoPanel({
   scanError: { message: string; detail?: string } | null;
   onDismiss: () => void;
   onRestoreScanFocus: () => void;
+  /** Refetch printer info after plate failure so harvest/clear state updates. */
+  onInfoRefresh: () => Promise<void>;
   t: ReturnType<typeof useTranslation>['t'];
 }) {
   const last = info.last_print;
@@ -3136,9 +3149,13 @@ function PrinterInfoPanel({
   const [maintenanceOpen, setMaintenanceOpen] = useState(false);
   const [sendPrintOpen, setSendPrintOpen] = useState(false);
   const [stopReasonOpen, setStopReasonOpen] = useState(false);
+  const [plateFailureOpen, setPlateFailureOpen] = useState(false);
   const [selectedStopReason, setSelectedStopReason] = useState<FloorStopReasonCode | null>(null);
   const [stopReasonText, setStopReasonText] = useState('');
+  const [selectedPlateReason, setSelectedPlateReason] = useState<FloorStopReasonCode | null>(null);
+  const [plateReasonText, setPlateReasonText] = useState('');
   const [recordedStop, setRecordedStop] = useState<FloorRecentStoppedPrint | null>(null);
+  const [plateFailureLogged, setPlateFailureLogged] = useState(false);
   const recentStop = recordedStop ?? info.recent_stopped_print;
   const recentStopIsFailure = recentStop?.status === 'failed';
   const stopReasonMutation = useMutation({
@@ -3156,6 +3173,22 @@ function PrinterInfoPanel({
       setStopReasonText('');
     },
   });
+  const plateFailureMutation = useMutation({
+    mutationFn: () => {
+      if (!selectedPlateReason) throw new Error('Choose a failure reason');
+      return api.recordFloorPrinterPlateFailure(info.id, {
+        reason_code: selectedPlateReason,
+        reason_text: selectedPlateReason === 'other' ? plateReasonText : null,
+      });
+    },
+    onSuccess: async () => {
+      setPlateFailureOpen(false);
+      setSelectedPlateReason(null);
+      setPlateReasonText('');
+      setPlateFailureLogged(true);
+      await onInfoRefresh();
+    },
+  });
 
   // A finished job still on the bed is exactly "there is something here to
   // harvest", so it leads rather than sitting among the stats.
@@ -3165,7 +3198,7 @@ function PrinterInfoPanel({
   // the screen would tell an operator to clear a bed mid-print. Live state
   // wins over a stored flag when the two disagree.
   const readyToHarvest =
-    info.awaiting_plate_clear && last !== null && !last.has_labeled_parts && !isPrinting;
+    info.awaiting_plate_clear && last !== null && !last.has_labeled_parts && !isPrinting && !plateFailureLogged;
 
   // These two can both be true for different events on the same bed: a
   // finished job still sitting there, and a later reprint attempt on top of
@@ -3256,6 +3289,46 @@ function PrinterInfoPanel({
               ? t('floor.printerReadyToHarvestBinHint', 'Scan the matching {{code}} bin, then enter the harvested quantity.', { code: last.part_code })
               : t('floor.printerReadyToHarvestHint', 'Scan part stickers to label this job.')}
           </p>
+          {!plateFailureOpen ? (
+            <button
+              type="button"
+              onClick={() => setPlateFailureOpen(true)}
+              className="mt-3 rounded-lg border border-red-500/50 bg-red-500/15 px-3 py-2 text-xs font-medium text-red-300 transition-colors hover:border-red-400 hover:bg-red-500/25 hover:text-white"
+            >
+              {t('floor.reportPlateFailed', 'Report plate failed')}
+            </button>
+          ) : (
+            <FloorStopReasonEditor
+              isFailure
+              questionKey="floor.plateFailureQuestion"
+              questionFallback="Why did this plate fail?"
+              selectedReason={selectedPlateReason}
+              reasonText={plateReasonText}
+              busy={plateFailureMutation.isPending}
+              onSelect={(reason) => {
+                setSelectedPlateReason(reason);
+                if (reason !== 'other') setPlateReasonText('');
+              }}
+              onReasonTextChange={setPlateReasonText}
+              onCancel={() => {
+                if (!plateFailureMutation.isPending) {
+                  setPlateFailureOpen(false);
+                  setSelectedPlateReason(null);
+                  setPlateReasonText('');
+                }
+              }}
+              onSave={() => plateFailureMutation.mutate()}
+              t={t}
+            />
+          )}
+        </div>
+      )}
+
+      {plateFailureLogged && !showReadyToHarvest && (
+        <div className="mb-4 rounded-lg border border-bambu-green/40 bg-bambu-green/10 px-4 py-3">
+          <p className="text-bambu-green font-semibold">
+            {t('floor.plateFailureLogged', 'Plate marked as failed')}
+          </p>
         </div>
       )}
 
@@ -3294,11 +3367,12 @@ function PrinterInfoPanel({
           </div>
           {recentStop.reason_code && (
             <p className="mt-2 text-xs text-bambu-gray-light">
-              {t('floor.stopReasonLabel', 'Reason')}: {stopReasonLabel(recentStop.reason_code, recentStop.reason_text, t)}
+              {t('floor.stopReasonLabel', 'Reason')}:{' '}
+              {floorStopReasonLabel(recentStop.reason_code, recentStop.reason_text, t)}
             </p>
           )}
           {stopReasonOpen && !recentStop.reason_code && (
-            <StoppedPrintReasonEditor
+            <FloorStopReasonEditor
               isFailure={recentStopIsFailure}
               selectedReason={selectedStopReason}
               reasonText={stopReasonText}
@@ -3455,100 +3529,6 @@ function harvestSummaryHeadline(
     return t('floor.harvestCompleteCountBins', '{{count}} bins collected', { count: bins });
   }
   return t('floor.harvestCompleteCount', '{{count}} parts linked', { count: parts });
-}
-
-function stopReasonLabel(
-  reasonCode: FloorStopReasonCode,
-  reasonText: string | null,
-  t: ReturnType<typeof useTranslation>['t'],
-) {
-  if (reasonCode === 'other') return reasonText || t('floor.stopReasonOther', 'Other');
-  const option = FLOOR_STOP_REASON_OPTIONS.find((candidate) => candidate.value === reasonCode);
-  return option ? t(option.key, option.fallback) : reasonCode;
-}
-
-function StoppedPrintReasonEditor({
-  isFailure,
-  selectedReason,
-  reasonText,
-  busy,
-  onSelect,
-  onReasonTextChange,
-  onCancel,
-  onSave,
-  t,
-}: {
-  isFailure: boolean;
-  selectedReason: FloorStopReasonCode | null;
-  reasonText: string;
-  busy: boolean;
-  onSelect: (reason: FloorStopReasonCode) => void;
-  onReasonTextChange: (text: string) => void;
-  onCancel: () => void;
-  onSave: () => void;
-  t: ReturnType<typeof useTranslation>['t'];
-}) {
-  const canSave = selectedReason !== null && (selectedReason !== 'other' || reasonText.trim().length > 0);
-
-  return (
-    <div className="mt-4 border-t border-bambu-dark-tertiary pt-4">
-      <p className="text-sm font-semibold text-white">
-        {isFailure
-          ? t('floor.failureReasonQuestion', 'Why did this print fail?')
-          : t('floor.stopReasonQuestion', 'Why was this print stopped?')}
-      </p>
-      <div className="mt-3 grid grid-cols-2 gap-2 sm:grid-cols-3">
-        {FLOOR_STOP_REASON_OPTIONS.map((option) => (
-          <button
-            key={option.value}
-            type="button"
-            aria-pressed={selectedReason === option.value}
-            onClick={() => onSelect(option.value)}
-            className={`rounded-lg border px-3 py-2 text-left text-xs transition-colors ${
-              selectedReason === option.value
-                ? 'border-bambu-green bg-bambu-green/10 text-bambu-green'
-                : 'border-bambu-dark-tertiary bg-bambu-dark text-bambu-gray-light hover:border-bambu-green/50 hover:text-white'
-            }`}
-          >
-            {t(option.key, option.fallback)}
-          </button>
-        ))}
-      </div>
-      {selectedReason === 'other' && (
-        <textarea
-          value={reasonText}
-          onChange={(event) => onReasonTextChange(event.target.value)}
-          rows={3}
-          maxLength={500}
-          autoFocus
-          placeholder={
-            isFailure
-              ? t('floor.failureReasonOtherPlaceholder', 'Describe why the print failed…')
-              : t('floor.stopReasonOtherPlaceholder', 'Describe why the print was stopped…')
-          }
-          className="mt-3 w-full resize-y rounded-lg border border-bambu-dark-tertiary bg-bambu-dark px-3 py-2 text-sm text-white placeholder:text-bambu-gray focus:border-bambu-green focus:outline-none"
-        />
-      )}
-      <div className="mt-3 flex justify-end gap-2">
-        <button
-          type="button"
-          onClick={onCancel}
-          disabled={busy}
-          className="rounded-lg bg-bambu-dark-tertiary px-3 py-2 text-xs text-white hover:bg-bambu-dark disabled:opacity-50"
-        >
-          {t('common.cancel', 'Cancel')}
-        </button>
-        <button
-          type="button"
-          onClick={onSave}
-          disabled={!canSave || busy}
-          className="rounded-lg bg-bambu-green px-3 py-2 text-xs font-medium text-white hover:bg-bambu-green-light disabled:cursor-not-allowed disabled:opacity-50"
-        >
-          {busy ? t('common.saving', 'Saving…') : t('common.save', 'Save')}
-        </button>
-      </div>
-    </div>
-  );
 }
 
 function PrinterMaintenanceModal({

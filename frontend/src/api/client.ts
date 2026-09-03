@@ -824,6 +824,288 @@ export interface ArchiveStats {
   energy_data_warming_up?: boolean;
 }
 
+export interface Stats2ScheduleShift {
+  id?: number | null;
+  day_of_week: number;
+  start_time: string;
+  end_time: string;
+  operator_count: number;
+  timezone: string;
+  enabled: boolean;
+}
+
+export interface Stats2Globals {
+  expected_plate_clear_minutes: number;
+  production_line_start_time: string;
+  pre_line_buffer_minutes: number;
+  timezone: string;
+  /** Min ready-on-hand per part for the buffer timeline (BUT 80, KNB 50 by default). */
+  ready_buffer_targets?: Record<string, number> | null;
+}
+
+export interface Stats2ScheduleResponse {
+  shifts: Stats2ScheduleShift[];
+  globals: Stats2Globals;
+}
+
+export interface Stats2SchedulePutRequest {
+  shifts: Stats2ScheduleShift[];
+  globals?: Stats2Globals | null;
+}
+
+export interface Stats2EffectiveSchedule {
+  date: string;
+  timezone: string;
+  shifts: Stats2ScheduleShift[];
+  line_start_time: string;
+  pre_line_buffer_minutes: number;
+  ready_deadline_time: string;
+  expected_plate_clear_minutes: number;
+  is_staffed: boolean;
+  day_of_week?: number;
+  windows?: { start_time: string; end_time: string }[];
+  peak_operator_count?: number;
+  total_staffed_minutes?: number;
+  staffed_now?: boolean | null;
+  using_default_stub?: boolean;
+}
+
+export interface Stats2DiscoveredSlot {
+  slot_id: number;
+  printer_model: string;
+  quantity: number;
+  print_time_seconds?: number | null;
+  filename?: string | null;
+  version: string;
+  recommended?: boolean;
+}
+
+export interface Stats2DeviceRecipeLine {
+  id: number;
+  part_id: number;
+  part_code: string;
+  part_name: string;
+  qty_per_device: number;
+  preferred_slot_id?: number | null;
+  recommended_slot_id?: number | null;
+  recommended_filename?: string | null;
+  discovered_slots: Stats2DiscoveredSlot[];
+}
+
+export interface Stats2DeviceRecipe {
+  id: number;
+  name: string;
+  lines: Stats2DeviceRecipeLine[];
+}
+
+export interface Stats2DeviceRecipeLineIn {
+  part_code: string;
+  qty_per_device: number;
+  preferred_slot_id?: number | null;
+}
+
+export interface Stats2YieldDragStage {
+  stage: string;
+  label: string;
+  devices_lost: number;
+  devices_after: number;
+  binding_part?: string | null;
+}
+
+export interface Stats2YieldDragPart {
+  part_code: string;
+  qty_per_device: number;
+  print_job_success: number;
+  harvest_yield: number;
+  qc_yield: number;
+  devices_theoretical: number;
+  devices_expected: number;
+  is_binding?: boolean;
+}
+
+export interface Stats2YieldDrag {
+  devices_lost_total: number;
+  devices_theoretical_whole?: number;
+  devices_expected_whole?: number;
+  devices_after_print: number;
+  devices_after_harvest: number;
+  devices_after_qc: number;
+  lost_print: number;
+  lost_harvest: number;
+  lost_qc: number;
+  binding_part?: string | null;
+  stages: Stats2YieldDragStage[];
+  parts: Stats2YieldDragPart[];
+}
+
+export interface Stats2Overview {
+  capacity: {
+    devices_per_day_theoretical: number;
+    devices_per_day_realistic: number;
+    devices_per_day_theoretical_unconstrained?: number;
+    devices_per_day_realistic_unconstrained?: number;
+    binding_part?: string | null;
+    fleet_by_model?: Record<string, number>;
+    staffed_minutes?: number;
+    expected_plate_clear_minutes?: number;
+    using_default_schedule_stub?: boolean;
+    yield_drag?: Stats2YieldDrag | null;
+  };
+  readiness: {
+    devices_buildable_now: number;
+    binding_part?: string | null;
+    line_start_at?: string;
+    ready_deadline_at?: string;
+  };
+  components: Array<Record<string, unknown>>;
+}
+
+export interface Stats2ReadinessPart {
+  part_code: string;
+  part_name: string;
+  qty_per_device: number;
+  in_wip: number;
+  staged_for_prod: number;
+  initial_qc_finished: number;
+  rework_sanding: number;
+  linked: number;
+  ready_now: number;
+  upstream: number;
+  devices_covered: number;
+  is_binding?: boolean;
+}
+
+export interface Stats2Readiness {
+  as_of: string;
+  line_start_at: string;
+  ready_deadline_at: string;
+  devices_buildable_now: number;
+  binding_part?: string | null;
+  parts: Stats2ReadinessPart[];
+}
+
+export interface Stats2BuildPlan {
+  devices_per_day_realistic: number;
+  devices_per_day_theoretical: number;
+  binding_part?: string | null;
+  rows: Array<{
+    part_code: string;
+    part_name: string;
+    qty_per_device: number;
+    recommended_slot_id?: number | null;
+    recommended_filename?: string | null;
+    quantity_per_plate: number;
+    printer_model?: string | null;
+    active_printers: number;
+    plates_per_day: number;
+    parts_per_day: number;
+    devices_per_day: number;
+    is_binding?: boolean;
+    incomplete?: boolean;
+    warning?: string | null;
+  }>;
+}
+
+export interface Stats2PrintPlan {
+  week_start: string;
+  timeline_mode?: 'capacity' | 'buffer' | string;
+  target_devices: number;
+  capacity_devices_realistic?: number;
+  capacity_devices_theoretical?: number;
+  devices_achievable?: number;
+  feasible?: boolean;
+  plates_needed?: Record<string, number>;
+  plates_packed?: Record<string, number>;
+  parts_needed?: Record<string, number>;
+  parts_packed?: Record<string, number>;
+  scenario_rows?: Array<{
+    part_code: string;
+    qty_per_device: number;
+    quantity_per_plate: number;
+    plates_needed: number;
+    parts_needed: number;
+  }>;
+  short_parts?: Array<{
+    part_code: string;
+    parts_needed: number;
+    parts_packed: number;
+    devices_needed?: number;
+    devices_packed?: number;
+    eligible_models?: string[];
+    eligible_printers?: number;
+    min_extra_printers?: number;
+  }>;
+  binding_readiness_part?: string | null;
+  binding_print_part?: string | null;
+  buffer_targets?: Record<string, number>;
+  buffer_ready?: Record<string, number>;
+  buffer_debt?: Record<string, number>;
+  buffer_debt_remaining?: Record<string, number>;
+  hypothetical_fleet?: boolean;
+  hypothetical_added?: Record<string, number>;
+  as_of: string;
+  days: Array<{
+    date: string;
+    day_of_week: number;
+    line_start_at: string;
+    ready_deadline_at: string;
+    staffed_windows: Array<{ start_time: string; end_time: string }>;
+    staffed_minutes: number;
+    using_default_stub?: boolean;
+    lanes: Array<{
+      printer_id: number;
+      printer_name: string;
+      printer_model: string;
+      hypothetical?: boolean;
+      time_blocks?: Array<{
+        start_time: string;
+        end_time: string;
+        label?: string | null;
+      }>;
+      jobs: Array<{
+        start_at: string;
+        end_at: string;
+        clear_until?: string;
+        ready_by_estimate?: string;
+        for_line_date?: string;
+        slot_id?: number;
+        filename?: string | null;
+        part_code: string;
+        quantity_per_plate?: number;
+        priority?: number;
+        rationale?: string;
+        est_good_parts?: number;
+      }>;
+    }>;
+  }>;
+}
+
+export interface Stats2PrinterTimeBlock {
+  id?: number | null;
+  printer_id: number;
+  printer_name?: string | null;
+  printer_model?: string | null;
+  day_of_week: number;
+  start_time: string;
+  end_time: string;
+  label?: string | null;
+  enabled?: boolean;
+}
+
+export interface Stats2PrinterTimeBlocksResponse {
+  blocks: Stats2PrinterTimeBlock[];
+}
+
+export interface Stats2PrinterTimeBlockPutRequest {
+  blocks: Array<{
+    day_of_week: number;
+    start_time: string;
+    end_time: string;
+    label?: string | null;
+    enabled?: boolean;
+  }>;
+}
+
 export interface TagInfo {
   name: string;
   count: number;
@@ -1269,12 +1551,18 @@ export interface FloorStation {
   category: 'station' | 'location';
 }
 
+export type FloorErrorLabelSection = 'sanding' | 'rework' | 'discard';
+
 export interface FloorErrorLabel {
   id: number;
   name: string;
   slug: string;
   payload: string;
   is_protected: boolean;
+  show_on_sanding: boolean;
+  show_on_rework: boolean;
+  show_on_discard: boolean;
+  sort_order: number;
 }
 
 /** An open (or just-closed) claim on a floor station (docs/floor-plan.md §2.4).
@@ -4896,6 +5184,128 @@ export const api = {
     const qs = params.toString();
     return request<ArchiveStats>(`/archives/stats${qs ? `?${qs}` : ''}`);
   },
+
+  // Stats 2 Phase 2 config (schedule + device recipe)
+  getStats2Schedule: () => request<Stats2ScheduleResponse>('/stats2/schedule'),
+  putStats2Schedule: (body: Stats2SchedulePutRequest) =>
+    request<Stats2ScheduleResponse>('/stats2/schedule', {
+      method: 'PUT',
+      body: JSON.stringify(body),
+    }),
+  getStats2ScheduleEffective: (date?: string) => {
+    const qs = date ? `?date=${encodeURIComponent(date)}` : '';
+    return request<Stats2EffectiveSchedule>(`/stats2/schedule/effective${qs}`);
+  },
+  getStats2DeviceRecipe: () => request<Stats2DeviceRecipe>('/stats2/device-recipe'),
+  putStats2DeviceRecipe: (body: { lines: Stats2DeviceRecipeLineIn[] }) =>
+    request<Stats2DeviceRecipe>('/stats2/device-recipe', {
+      method: 'PUT',
+      body: JSON.stringify(body),
+    }),
+  getStats2DiscoveredSlots: (partCode: string) =>
+    request<Stats2DiscoveredSlot[]>(
+      `/stats2/device-recipe/discovered-slots?part_code=${encodeURIComponent(partCode)}`,
+    ),
+  getStats2Overview: (date?: string) => {
+    const qs = date ? `?date=${encodeURIComponent(date)}` : '';
+    return request<Stats2Overview>(`/stats2/overview${qs}`);
+  },
+  getStats2Capacity: (date?: string) => {
+    const qs = date ? `?date=${encodeURIComponent(date)}` : '';
+    return request<Record<string, unknown>>(`/stats2/capacity${qs}`);
+  },
+  getStats2CapacityHistory: (days = 14) =>
+    request<{ days: number; points: Array<Record<string, unknown>> }>(
+      `/stats2/capacity/history?days=${days}`,
+    ),
+  getStats2Readiness: (date?: string) => {
+    const qs = date ? `?date=${encodeURIComponent(date)}` : '';
+    return request<Stats2Readiness>(`/stats2/readiness${qs}`);
+  },
+  getStats2BuildPlan: (date?: string) => {
+    const qs = date ? `?date=${encodeURIComponent(date)}` : '';
+    return request<Stats2BuildPlan>(`/stats2/device-recipe/build-plan${qs}`);
+  },
+  getStats2VariantCompare: (partCode: string) =>
+    request<Record<string, unknown>>(
+      `/stats2/device-recipe/variant-compare?part_code=${encodeURIComponent(partCode)}`,
+    ),
+  getStats2PrintPlan: (opts?: {
+    weekStart?: string;
+    targetDevices?: number;
+    timelineMode?: 'capacity' | 'buffer';
+    schedulableCeiling?: number;
+  }) => {
+    const params = new URLSearchParams();
+    if (opts?.weekStart) params.set('week_start', opts.weekStart);
+    if (opts?.targetDevices != null) params.set('target_devices', String(opts.targetDevices));
+    if (opts?.timelineMode) params.set('timeline_mode', opts.timelineMode);
+    if (opts?.schedulableCeiling != null && Number.isFinite(opts.schedulableCeiling)) {
+      params.set('schedulable_ceiling', String(opts.schedulableCeiling));
+    }
+    const qs = params.toString();
+    return request<Stats2PrintPlan>(`/stats2/schedule/print-plan${qs ? `?${qs}` : ''}`);
+  },
+  getStats2PrinterTimeBlocks: () =>
+    request<Stats2PrinterTimeBlocksResponse>('/stats2/printer-time-blocks'),
+  putStats2PrinterTimeBlocks: (printerId: number, body: Stats2PrinterTimeBlockPutRequest) =>
+    request<Stats2PrinterTimeBlocksResponse>(`/stats2/printer-time-blocks/${printerId}`, {
+      method: 'PUT',
+      body: JSON.stringify(body),
+    }),
+  getStats2Yield: (lookbackDays = 30, partCode?: string) => {
+    const params = new URLSearchParams({ lookback_days: String(lookbackDays) });
+    if (partCode) params.set('part_code', partCode);
+    return request<Record<string, unknown>>(`/stats2/yield?${params}`);
+  },
+  getStats2Funnel: (lookbackDays = 30) =>
+    request<Record<string, unknown>>(`/stats2/funnel?lookback_days=${lookbackDays}`),
+  getStats2Losses: (lookbackDays = 30) =>
+    request<Record<string, unknown>>(`/stats2/losses?lookback_days=${lookbackDays}`),
+  getStats2QualityReasons: (opts?: {
+    category?: string;
+    printerId?: number;
+    lookbackDays?: number;
+    includeRows?: boolean;
+  }) => {
+    const params = new URLSearchParams();
+    params.set('category', opts?.category ?? 'all');
+    params.set('lookback_days', String(opts?.lookbackDays ?? 30));
+    if (opts?.printerId != null) params.set('printer_id', String(opts.printerId));
+    if (opts?.includeRows) params.set('include_rows', 'true');
+    return request<Record<string, unknown>>(`/stats2/quality-reasons?${params}`);
+  },
+  getStats2PrinterReliability: (lookbackDays = 30) =>
+    request<Record<string, unknown>>(`/stats2/printers/reliability?lookback_days=${lookbackDays}`),
+  getStats2PlateFeedback: (lookbackDays = 30) =>
+    request<Record<string, unknown>>(`/stats2/plate-turnaround/feedback?lookback_days=${lookbackDays}`),
+  getStats2Filament: (lookbackDays = 30) =>
+    request<Record<string, unknown>>(`/stats2/filament?lookback_days=${lookbackDays}`),
+  getStats2LeadTimes: (lookbackDays = 30) =>
+    request<Record<string, unknown>>(`/stats2/lead-times?lookback_days=${lookbackDays}`),
+  exportStats2: async (opts?: { format?: 'csv' | 'xlsx'; lookbackDays?: number }): Promise<{ blob: Blob; filename: string }> => {
+    const format = opts?.format ?? 'csv';
+    const lookbackDays = opts?.lookbackDays ?? 30;
+    const params = new URLSearchParams({
+      format,
+      lookback_days: String(lookbackDays),
+    });
+    const headers: Record<string, string> = {};
+    if (authToken) {
+      headers['Authorization'] = `Bearer ${authToken}`;
+    }
+    const response = await fetch(`${API_BASE}/stats2/export?${params}`, { headers });
+    if (!response.ok) {
+      const error = await response.json().catch(() => ({}));
+      throw new Error((error as { detail?: string }).detail || `HTTP ${response.status}`);
+    }
+    const disposition = response.headers.get('Content-Disposition') || '';
+    const match = /filename="?([^";]+)"?/i.exec(disposition);
+    const filename = match?.[1] || `stats2_export.${format}`;
+    const blob = await response.blob();
+    return { blob, filename };
+  },
+
   // Tag management
   getTags: () => request<TagInfo[]>('/archives/tags'),
   renameTag: (oldName: string, newName: string) =>
@@ -6107,9 +6517,33 @@ export const api = {
     }),
   // ── Floor codes (docs/floor-plan.md §3.3) ──────────────────────────────
   getFloorStations: () => request<FloorStation[]>('/floor/stations'),
-  getFloorErrorLabels: () => request<FloorErrorLabel[]>('/floor/error-labels'),
-  createFloorErrorLabel: (data: { name: string; slug: string }) =>
+  getFloorErrorLabels: (section?: FloorErrorLabelSection) =>
+    request<FloorErrorLabel[]>(
+      section ? `/floor/error-labels?for=${encodeURIComponent(section)}` : '/floor/error-labels',
+    ),
+  createFloorErrorLabel: (data: {
+    name: string;
+    slug: string;
+    show_on_sanding?: boolean;
+    show_on_rework?: boolean;
+    show_on_discard?: boolean;
+    sort_order?: number;
+  }) =>
     request<FloorErrorLabel>('/floor/error-labels', { method: 'POST', body: JSON.stringify(data) }),
+  updateFloorErrorLabel: (
+    labelId: number,
+    data: {
+      name?: string;
+      show_on_sanding?: boolean;
+      show_on_rework?: boolean;
+      show_on_discard?: boolean;
+      sort_order?: number;
+    },
+  ) =>
+    request<FloorErrorLabel>(`/floor/error-labels/${labelId}`, {
+      method: 'PATCH',
+      body: JSON.stringify(data),
+    }),
   deleteFloorErrorLabel: (labelId: number) => request<void>(`/floor/error-labels/${labelId}`, { method: 'DELETE' }),
   printFloorStationLabels: async (data: {
     payloads: string[];
@@ -6185,6 +6619,15 @@ export const api = {
     request<FloorPrinterInfo>(`/floor/printers/${encodeURIComponent(payload)}/info`),
   recordFloorPrinterStopReason: (printerId: number, data: { reason_code: FloorStopReasonCode; reason_text?: string | null }) =>
     request<FloorRecentStoppedPrint>(`/floor/printers/${printerId}/stopped-print/reason`, {
+      method: 'POST',
+      body: JSON.stringify(data),
+    }),
+  /** Mark the printer's latest finished unlabeled plate as failed (no stickers). */
+  recordFloorPrinterPlateFailure: (
+    printerId: number,
+    data: { reason_code: FloorStopReasonCode; reason_text?: string | null },
+  ) =>
+    request<FloorRecentStoppedPrint>(`/floor/printers/${printerId}/plate-failure`, {
       method: 'POST',
       body: JSON.stringify(data),
     }),
@@ -6447,6 +6890,15 @@ export const api = {
     request<FloorUnlabeledBuildPlate[]>(`/floor/parts/unlabeled-build-plates?limit=${limit}`),
   dismissFloorUnlabeledBuildPlate: (archiveId: number) =>
     request<{ status: string }>(`/floor/parts/unlabeled-build-plates/${archiveId}/dismiss`, { method: 'POST' }),
+  /** Mark an unlabeled completed plate as failed (reason required) and hide it. */
+  failFloorUnlabeledBuildPlate: (
+    archiveId: number,
+    data: { reason_code: FloorStopReasonCode; reason_text?: string | null },
+  ) =>
+    request<FloorRecentStoppedPrint>(`/floor/parts/unlabeled-build-plates/${archiveId}/fail`, {
+      method: 'POST',
+      body: JSON.stringify(data),
+    }),
   getFloorDismissedBuildPlates: (limit = 50) =>
     request<FloorDismissedBuildPlate[]>(`/floor/parts/dismissed-build-plates?limit=${limit}`),
   restoreFloorDismissedBuildPlate: (archiveId: number) =>

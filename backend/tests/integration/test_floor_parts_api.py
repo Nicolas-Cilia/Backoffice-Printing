@@ -1666,3 +1666,88 @@ class TestDismissedBuildPlates:
 
         unlabeled = await async_client.get("/api/v1/floor/parts/unlabeled-build-plates")
         assert not any(plate["id"] == archive.id for plate in unlabeled.json())
+
+
+@pytest.mark.asyncio
+@pytest.mark.integration
+class TestFailUnlabeledBuildPlate:
+    async def test_fails_an_unlabeled_plate_with_reason_and_hides_it(
+        self, async_client, db_session, printer_factory, archive_factory
+    ):
+        from backend.app.services.printer_manager import printer_manager
+
+        archive = await _seed_completed_archive(
+            async_client, db_session, printer_factory, archive_factory, print_name="Scrap plate"
+        )
+        printer_manager.set_awaiting_plate_clear(archive.printer_id, True)
+
+        failed = await async_client.post(
+            f"/api/v1/floor/parts/unlabeled-build-plates/{archive.id}/fail",
+            json={"reason_code": "first_layer_issue"},
+        )
+
+        assert failed.status_code == 200
+        body = failed.json()
+        assert body["reason_code"] == "first_layer_issue"
+        assert body["status"] == "failed"
+        assert body["archive_id"] == archive.id
+        assert printer_manager.is_awaiting_plate_clear(archive.printer_id) is False
+
+        unlabeled = await async_client.get("/api/v1/floor/parts/unlabeled-build-plates")
+        assert not any(plate["id"] == archive.id for plate in unlabeled.json())
+        dismissed = await async_client.get("/api/v1/floor/parts/dismissed-build-plates")
+        assert any(plate["id"] == archive.id for plate in dismissed.json())
+        log = await async_client.get("/api/v1/floor/inventory/print-failures")
+        assert log.json()[0]["archive_id"] == archive.id
+        assert log.json()[0]["reason_code"] == "first_layer_issue"
+
+    async def test_fail_requires_text_for_other(self, async_client, db_session, printer_factory, archive_factory):
+        archive = await _seed_completed_archive(async_client, db_session, printer_factory, archive_factory)
+
+        response = await async_client.post(
+            f"/api/v1/floor/parts/unlabeled-build-plates/{archive.id}/fail",
+            json={"reason_code": "other"},
+        )
+
+        assert response.status_code == 422
+
+    async def test_dismiss_still_hides_without_a_failure_reason(
+        self, async_client, db_session, printer_factory, archive_factory
+    ):
+        archive = await _seed_completed_archive(async_client, db_session, printer_factory, archive_factory)
+
+        dismissed = await async_client.post(f"/api/v1/floor/parts/unlabeled-build-plates/{archive.id}/dismiss")
+        assert dismissed.status_code == 200
+
+        log = await async_client.get("/api/v1/floor/inventory/print-failures")
+        assert not any(row["archive_id"] == archive.id for row in log.json())
+
+    async def test_fail_rejects_a_plate_that_already_has_labeled_parts(
+        self, async_client, db_session, printer_factory, archive_factory
+    ):
+        from backend.app.models.floor_part import FloorLabeledPart
+
+        archive = await _seed_completed_archive(async_client, db_session, printer_factory, archive_factory)
+        db_session.add(
+            FloorLabeledPart(
+                sticker_code="BBD-009902",
+                printer_id=archive.printer_id,
+                archive_id=archive.id,
+            )
+        )
+        await db_session.commit()
+
+        response = await async_client.post(
+            f"/api/v1/floor/parts/unlabeled-build-plates/{archive.id}/fail",
+            json={"reason_code": "filament_issue"},
+        )
+
+        assert response.status_code == 400
+
+    async def test_fail_of_unknown_archive_is_404(self, async_client):
+        response = await async_client.post(
+            "/api/v1/floor/parts/unlabeled-build-plates/999999/fail",
+            json={"reason_code": "warping"},
+        )
+
+        assert response.status_code == 404

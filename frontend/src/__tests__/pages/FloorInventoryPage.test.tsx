@@ -1493,6 +1493,7 @@ const UNITS = [
     knob_bin_payload: "BBN-KNB-1",
     button_bin_payload: "BBN-BUT-1",
     linked_at: "2026-08-27T10:00:00",
+    unit_workflow_status: "shipped" as const,
   },
   {
     id: 901,
@@ -1508,6 +1509,7 @@ const UNITS = [
     knob_bin_payload: "BBN-KNB-2",
     button_bin_payload: "BBN-BUT-2",
     linked_at: "2026-08-26T09:00:00",
+    unit_workflow_status: "rework" as const,
   },
 ];
 
@@ -1535,6 +1537,55 @@ describe("FloorInventoryPage — Serials tab", () => {
     expect(screen.getByText("BBD-000201")).toBeInTheDocument();
     expect(screen.getAllByText("BBN-KNB-1").length).toBeGreaterThan(0);
     expect(screen.getAllByText("BBN-BUT-1").length).toBeGreaterThan(0);
+  });
+
+  it("shows shipped / rework status on each serial row and the assembly card", async () => {
+    const user = userEvent.setup();
+    mockPartHistory();
+    mockUnits();
+    render(<FloorInventoryPage />);
+
+    await user.click(screen.getByRole("button", { name: "Serials" }));
+
+    const shippedRow = (await screen.findByText("XG2SNP")).closest("tr");
+    const reworkRow = screen.getByText("8TBDT9").closest("tr");
+    expect(shippedRow).not.toBeNull();
+    expect(reworkRow).not.toBeNull();
+    expect(within(shippedRow as HTMLElement).getByText("Shipped")).toBeInTheDocument();
+    expect(within(reworkRow as HTMLElement).getByText("Rework")).toBeInTheDocument();
+
+    await user.click(shippedRow as HTMLElement);
+    expect(await screen.findByRole("heading", { name: "XG2SNP" })).toBeInTheDocument();
+    expect(
+      within(screen.getByLabelText("Assembly detail")).getByText("Shipped"),
+    ).toBeInTheDocument();
+  });
+
+  it("sorts serials with the same last-scanned / labeled options as Part history", async () => {
+    const user = userEvent.setup();
+    mockPartHistory();
+    mockUnits();
+    render(<FloorInventoryPage />);
+
+    await user.click(screen.getByRole("button", { name: "Serials" }));
+    await screen.findByText("XG2SNP");
+
+    const serialOrder = () => {
+      const newerScan = screen.getByText("XG2SNP");
+      const olderScan = screen.getByText("8TBDT9");
+      return newerScan.compareDocumentPosition(olderScan) & Node.DOCUMENT_POSITION_FOLLOWING
+        ? ["XG2SNP", "8TBDT9"]
+        : ["8TBDT9", "XG2SNP"];
+    };
+
+    // Default: last scanned newest — XG2SNP housing labeled later than 8TBDT9's.
+    expect(serialOrder()).toEqual(["XG2SNP", "8TBDT9"]);
+
+    await user.selectOptions(screen.getByLabelText("Sort by"), "labeled_asc");
+    expect(serialOrder()).toEqual(["8TBDT9", "XG2SNP"]);
+
+    await user.selectOptions(screen.getByLabelText("Sort by"), "labeled_desc");
+    expect(serialOrder()).toEqual(["XG2SNP", "8TBDT9"]);
   });
 
   it("filters serials by serial or either sticker", async () => {
@@ -1864,6 +1915,7 @@ const COLLAPSE_UNIT = {
   knob_bin_payload: "BBN-KNB-9",
   button_bin_payload: "BBN-BUT-9",
   linked_at: "2026-08-27T10:30:00",
+  unit_workflow_status: "shipped" as const,
 };
 
 const COLLAPSE_KIT_BINS = [
@@ -1974,6 +2026,64 @@ describe("FloorInventoryPage — Part history serial collapse", () => {
 
     // The unlinked, standalone housing still appears as its own part row.
     expect(screen.getByText("BBD-000701")).toBeInTheDocument();
+  });
+
+  it("shows Rework on the serial row when the unit was returned to rework (both housings)", async () => {
+    const user = userEvent.setup();
+    server.use(
+      http.get("/api/v1/floor/inventory/parts", () =>
+        HttpResponse.json(
+          COLLAPSE_PARTS.map((part) =>
+            part.id === 10 || part.id === 11
+              ? { ...part, latest_event_action: "rework" }
+              : part,
+          ),
+        ),
+      ),
+      http.get("/api/v1/floor/inventory/bins", () => HttpResponse.json(COLLAPSE_KIT_BINS)),
+      http.get("/api/v1/floor/inventory/units", () =>
+        HttpResponse.json([{ ...COLLAPSE_UNIT, unit_workflow_status: "rework" }]),
+      ),
+    );
+    render(<FloorInventoryPage />);
+
+    const serialRow = (await screen.findByText("ZK5KFG")).closest("tr");
+    expect(serialRow).not.toBeNull();
+    expect(within(serialRow as HTMLElement).getByText("Rework")).toBeInTheDocument();
+    expect(within(serialRow as HTMLElement).queryByText("Linked")).not.toBeInTheDocument();
+
+    await user.click(serialRow as HTMLElement);
+    // Only TOP/BOT housings go to rework — kit bin slots keep their bin status.
+    expect(within(screen.getByRole("row", { name: "TOP BBD-000501" })).getByText("Rework")).toBeInTheDocument();
+    expect(within(screen.getByRole("row", { name: "BOT BBD-000601" })).getByText("Rework")).toBeInTheDocument();
+    expect(within(screen.getByRole("row", { name: "KNB BBN-KNB-9 #31" })).queryByText("Rework")).not.toBeInTheDocument();
+    expect(within(screen.getByRole("row", { name: "BUT BBN-BUT-9 #32" })).queryByText("Rework")).not.toBeInTheDocument();
+  });
+
+  it("keeps Linked on the serial row when only one housing is in rework", async () => {
+    server.use(
+      http.get("/api/v1/floor/inventory/parts", () =>
+        HttpResponse.json(
+          COLLAPSE_PARTS.map((part) =>
+            part.id === 10
+              ? { ...part, latest_event_action: "rework" }
+              : part.id === 11
+                ? { ...part, latest_event_action: "shipped" }
+                : part,
+          ),
+        ),
+      ),
+      http.get("/api/v1/floor/inventory/bins", () => HttpResponse.json(COLLAPSE_KIT_BINS)),
+      http.get("/api/v1/floor/inventory/units", () =>
+        HttpResponse.json([{ ...COLLAPSE_UNIT, unit_workflow_status: "mixed" }]),
+      ),
+    );
+    render(<FloorInventoryPage />);
+
+    const serialRow = (await screen.findByText("ZK5KFG")).closest("tr");
+    expect(serialRow).not.toBeNull();
+    expect(within(serialRow as HTMLElement).getByText("Linked")).toBeInTheDocument();
+    expect(within(serialRow as HTMLElement).queryByText("Rework")).not.toBeInTheDocument();
   });
 
   it("expands the serial row into TOP, BOT, knob, and button slots without leaving Part history", async () => {

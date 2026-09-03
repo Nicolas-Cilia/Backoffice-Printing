@@ -3071,6 +3071,12 @@ async def clear_plate(
 
     printer_manager.set_awaiting_plate_clear(printer_id, False)
 
+    # Stats 2 (Phase 1): stamp the operator's plate-clear acknowledgment on the
+    # open turnaround row. Fire-and-forget — never blocks or fails the ack.
+    from backend.app.services.plate_turnaround import record_plate_clear_confirmed
+
+    await record_plate_clear_confirmed(printer_id)
+
     return {"success": True, "message": "Plate cleared, next print will start shortly"}
 
 

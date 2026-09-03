@@ -393,6 +393,11 @@ async def scan_harvest_bin(
         quantity=quantity,
         session_id=session.id,
     )
+    # Stats 2: silent expected-vs-actual snapshot (never blocks harvest).
+    from backend.app.services.harvest_variance import apply_snapshot_to_batch, snapshot_for_archive
+
+    variance = await snapshot_for_archive(db, archive_id, quantity)
+    apply_snapshot_to_batch(batch, variance)
     db.add(batch)
     await db.flush()
     db.add(
@@ -406,6 +411,7 @@ async def scan_harvest_bin(
                 "archive_id": archive_id,
                 "part_code": info.part_code,
                 "quantity": quantity,
+                **variance.as_event_details(),
             },
         )
     )

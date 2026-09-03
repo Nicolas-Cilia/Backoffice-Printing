@@ -235,6 +235,76 @@ function unitAllShipped(
   );
 }
 
+function isReworkAction(action?: string | null) {
+  return action === "rework" || action === "sanding";
+}
+
+type UnitRowStatus = "shipped" | "rework" | "linked";
+
+/** Map API unit_workflow_status → the same badges used on Part history rows. */
+function unitWorkflowRowStatus(
+  status: FloorProductUnit["unit_workflow_status"] | null | undefined,
+): UnitRowStatus {
+  if (status === "rework") return "rework";
+  if (status === "shipped") return "shipped";
+  return "linked";
+}
+
+function unitStatusPresentation(
+  rowStatus: UnitRowStatus,
+  t: (key: string, defaultValue: string) => string,
+): { className: string; label: string } {
+  if (rowStatus === "shipped") {
+    return {
+      className:
+        "border border-sky-600 bg-sky-100 text-sky-800 shadow-sm shadow-sky-500/20 dark:border-sky-400/50 dark:bg-sky-500/20 dark:text-sky-300",
+      label: t("floor.inventoryStatusShipped", "Shipped"),
+    };
+  }
+  if (rowStatus === "rework") {
+    return {
+      className:
+        "border border-orange-600 bg-orange-100 text-orange-800 shadow-sm shadow-orange-500/20 dark:border-orange-400/50 dark:bg-orange-500/20 dark:text-orange-300",
+      label: t("floor.inventoryStatusRework", "Rework"),
+    };
+  }
+  return {
+    className:
+      "border border-cyan-600 bg-cyan-100 text-cyan-800 dark:border-bambu-green/25 dark:bg-bambu-green/15 dark:text-bambu-green-light",
+    label: t("floor.inventoryStatusLinked", "Linked"),
+  };
+}
+
+/**
+ * Parent serial badge for a linked TOP+BOT unit.
+ *
+ * Serial return-to-rework moves both housings together (never KNB/BUT bins).
+ * Prefer the API's unit_workflow_status; fall back to both housing events only.
+ */
+function unitRowStatus(
+  unit: FloorProductUnit,
+  parts: FloorInventoryPart[],
+  latestEventActions: Map<number, string>,
+): UnitRowStatus {
+  // Serial return-to-rework sets unit_workflow_status from TOP+BOT only.
+  if (unit.unit_workflow_status === "rework") return "rework";
+  if (unit.unit_workflow_status === "shipped" || unitAllShipped(parts, latestEventActions)) {
+    return "shipped";
+  }
+  // Fallback when the units payload is stale/missing the field: both housings
+  // must be in rework — same rule as serial return-to-rework (not kit bins).
+  const housingActions = parts
+    .filter((part) => !part.archived_at)
+    .map((part) => latestEventActions.get(part.id) ?? part.latest_event_action ?? null);
+  if (
+    housingActions.length > 0 &&
+    housingActions.every((action) => isReworkAction(action))
+  ) {
+    return "rework";
+  }
+  return "linked";
+}
+
 function unitMatchesFilter(
   parts: FloorInventoryPart[],
   filter: PartFilter,
@@ -336,6 +406,36 @@ function compareUnitRows(left: UnitRow, right: UnitRow, sort: PartHistorySort): 
   }
   const leftTs = new Date(unitRowLastScannedAt(left)).getTime();
   const rightTs = new Date(unitRowLastScannedAt(right)).getTime();
+  return sort === "last_scanned_asc" ? leftTs - rightTs : rightTs - leftTs;
+}
+
+function unitLastScannedAt(
+  unit: FloorProductUnit,
+  partsById: Map<number, FloorInventoryPart>,
+): string {
+  const timestamps = [unit.top_part_id, unit.bottom_part_id]
+    .map((id) => partsById.get(id))
+    .filter((part): part is FloorInventoryPart => part != null)
+    .map(partLastScannedAt);
+  if (timestamps.length === 0) return unit.linked_at;
+  return timestamps.reduce((latest, value) =>
+    new Date(value).getTime() > new Date(latest).getTime() ? value : latest,
+  );
+}
+
+function compareSerialUnits(
+  left: FloorProductUnit,
+  right: FloorProductUnit,
+  sort: PartHistorySort,
+  partsById: Map<number, FloorInventoryPart>,
+): number {
+  if (sort === "labeled_desc" || sort === "labeled_asc") {
+    const leftTs = new Date(left.linked_at).getTime();
+    const rightTs = new Date(right.linked_at).getTime();
+    return sort === "labeled_desc" ? rightTs - leftTs : leftTs - rightTs;
+  }
+  const leftTs = new Date(unitLastScannedAt(left, partsById)).getTime();
+  const rightTs = new Date(unitLastScannedAt(right, partsById)).getTime();
   return sort === "last_scanned_asc" ? leftTs - rightTs : rightTs - leftTs;
 }
 
@@ -1541,13 +1641,10 @@ function InventoryHistoryTable({
             </tr>
           ))}
           {unitRows.map(({ unit, parts: unitParts }) => {
-            const allShipped = unitAllShipped(unitParts, latestEventActions);
-            const statusPillClass = allShipped
-              ? "border border-sky-600 bg-sky-100 text-sky-800 shadow-sm shadow-sky-500/20 dark:border-sky-400/50 dark:bg-sky-500/20 dark:text-sky-300"
-              : "border border-cyan-600 bg-cyan-100 text-cyan-800 dark:border-bambu-green/25 dark:bg-bambu-green/15 dark:text-bambu-green-light";
-            const statusText = allShipped
-              ? t("floor.inventoryStatusShipped", "Shipped")
-              : t("floor.inventoryStatusLinked", "Linked");
+            const { className: statusPillClass, label: statusText } = unitStatusPresentation(
+              unitRowStatus(unit, unitParts, latestEventActions),
+              t,
+            );
             const partCodeSummary = [
               unit.top_part_code ?? "TOP",
               unit.bottom_part_code ?? "BOT",
@@ -4136,6 +4233,7 @@ function FloorSerialsSection({
   const queryClient = useQueryClient();
   const [searchParams, setSearchParams] = useSearchParams();
   const [search, setSearch] = useState("");
+  const [sort, setSort] = useState<PartHistorySort>("last_scanned_desc");
   const selectedUnitIdRaw = searchParams.get("unit");
   const selectedUnitId =
     selectedUnitIdRaw != null && selectedUnitIdRaw !== "" && Number.isFinite(Number(selectedUnitIdRaw))
@@ -4154,7 +4252,18 @@ function FloorSerialsSection({
     queryFn: () => api.listUnits(),
     refetchOnMount: "always",
   });
+  // Housing last-scan times for the same sort options as Part history.
+  const partsQuery = useQuery({
+    queryKey: ["floor-inventory-parts"],
+    queryFn: () => api.getFloorInventoryParts(true),
+    staleTime: 30_000,
+  });
   const units = useMemo(() => unitsQuery.data ?? [], [unitsQuery.data]);
+  const partsById = useMemo(() => {
+    const map = new Map<number, FloorInventoryPart>();
+    for (const part of partsQuery.data ?? []) map.set(part.id, part);
+    return map;
+  }, [partsQuery.data]);
   const selectedUnit = units.find((unit) => unit.id === selectedUnitId) ?? null;
   const unitDeepLinkMissing =
     selectedUnitId != null && unitsQuery.isSuccess && selectedUnit == null;
@@ -4212,17 +4321,16 @@ function FloorSerialsSection({
   });
 
   const term = search.trim().toLowerCase();
-  const visibleUnits = useMemo(
-    () =>
-      term
-        ? units.filter((unit) =>
-            [unit.serial_code, unit.top_sticker, unit.bottom_sticker].some((value) =>
-              value.toLowerCase().includes(term),
-            ),
-          )
-        : units,
-    [term, units],
-  );
+  const visibleUnits = useMemo(() => {
+    const filtered = term
+      ? units.filter((unit) =>
+          [unit.serial_code, unit.top_sticker, unit.bottom_sticker].some((value) =>
+            value.toLowerCase().includes(term),
+          ),
+        )
+      : units;
+    return [...filtered].sort((left, right) => compareSerialUnits(left, right, sort, partsById));
+  }, [term, units, sort, partsById]);
 
   return (
     <div className="space-y-6">
@@ -4269,10 +4377,35 @@ function FloorSerialsSection({
       </div>
       <div className="grid gap-6 lg:grid-cols-[minmax(0,1fr)_24rem] lg:items-start">
         <section className="min-w-0 overflow-hidden rounded-lg border border-bambu-dark-tertiary bg-bambu-dark-secondary">
-          <div className="flex items-center justify-between border-b border-bambu-dark-tertiary p-4">
-            <h2 className="text-sm font-semibold text-white">
-              {t("floor.serialsListTitle", "Linked units")}
-            </h2>
+          <div className="flex flex-wrap items-center justify-between gap-3 border-b border-bambu-dark-tertiary p-4">
+            <div className="flex min-w-0 flex-wrap items-center gap-3">
+              <h2 className="text-sm font-semibold text-white">
+                {t("floor.serialsListTitle", "Linked units")}
+              </h2>
+              <label className="inline-flex min-w-0 items-center gap-1 rounded-lg bg-bambu-dark p-1">
+                <span className="shrink-0 pl-2 text-sm text-bambu-gray">
+                  {t("floor.inventorySortLabel", "Sort by")}
+                </span>
+                <div className="relative min-w-0">
+                  <select
+                    value={sort}
+                    onChange={(event) => setSort(event.target.value as PartHistorySort)}
+                    className="w-full min-w-[12rem] appearance-none rounded-md bg-bambu-dark-secondary py-1.5 pl-2.5 pr-8 text-sm text-white transition-colors hover:text-white focus:border-bambu-green focus:outline-none focus:ring-1 focus:ring-bambu-green sm:min-w-[14rem]"
+                    aria-label={t("floor.inventorySortLabel", "Sort by")}
+                  >
+                    {PART_HISTORY_SORT_OPTIONS.map((option) => (
+                      <option key={option.id} value={option.id}>
+                        {t(option.labelKey, option.fallback)}
+                      </option>
+                    ))}
+                  </select>
+                  <ChevronDown
+                    className="pointer-events-none absolute right-2 top-1/2 h-4 w-4 -translate-y-1/2 text-bambu-gray"
+                    aria-hidden="true"
+                  />
+                </div>
+              </label>
+            </div>
             <p className="text-sm text-bambu-gray">
               {visibleUnits.length === 1
                 ? t("floor.inventoryRecordCountOne", "{{count}} record", { count: visibleUnits.length })
@@ -4305,6 +4438,9 @@ function FloorSerialsSection({
                 <thead className={INVENTORY_THEAD_CLASS}>
                   <tr>
                     <th className="px-4 py-3 font-medium">{t("floor.serialsColSerial", "Serial")}</th>
+                    <th className="whitespace-nowrap px-4 py-3 font-medium">
+                      {t("floor.inventoryColStatus", "Status")}
+                    </th>
                     <th className="px-4 py-3 font-medium">{t("floor.serialsColTop", "Top")}</th>
                     <th className="px-4 py-3 font-medium">{t("floor.serialsColBottom", "Bottom")}</th>
                     <th className="px-4 py-3 font-medium">{t("floor.serialsColKnob", "Knob bin")}</th>
@@ -4313,7 +4449,12 @@ function FloorSerialsSection({
                   </tr>
                 </thead>
                 <tbody>
-                  {visibleUnits.map((unit) => (
+                  {visibleUnits.map((unit) => {
+                    const { className: statusPillClass, label: statusText } = unitStatusPresentation(
+                      unitWorkflowRowStatus(unit.unit_workflow_status),
+                      t,
+                    );
+                    return (
                     <tr
                       key={unit.id}
                       tabIndex={0}
@@ -4324,6 +4465,9 @@ function FloorSerialsSection({
                       className={`cursor-pointer ${INVENTORY_ROW_CLASS} transition-colors hover:bg-bambu-dark-tertiary/60 focus:bg-bambu-dark-tertiary/60 focus:outline-none ${selectedUnitId === unit.id ? "bg-bambu-dark-tertiary/60" : ""}`}
                     >
                       <td className={`${INVENTORY_CELL_CLASS} break-all font-mono font-medium text-white`}>{unit.serial_code}</td>
+                      <td className={`${INVENTORY_CELL_CLASS} md:whitespace-nowrap`}>
+                        <span className={`${STATUS_PILL_CLASS} ${statusPillClass}`}>{statusText}</span>
+                      </td>
                       <td className={`${INVENTORY_CELL_CLASS} break-all font-mono text-bambu-gray-light`}>{unit.top_sticker}</td>
                       <td className={`${INVENTORY_CELL_CLASS} break-all font-mono text-bambu-gray-light`}>{unit.bottom_sticker}</td>
                       <td className={`${INVENTORY_CELL_CLASS} font-mono text-bambu-gray-light`}>
@@ -4336,7 +4480,8 @@ function FloorSerialsSection({
                         {formatFloorDate(unit.linked_at, { dateStyle: "medium", timeStyle: "short" })}
                       </td>
                     </tr>
-                  ))}
+                    );
+                  })}
                 </tbody>
               </table>
             </div>
@@ -4452,6 +4597,11 @@ function UnitAssemblyCard({
     onOpenBin(batchId, payload ?? null, unit);
   };
 
+  const { className: statusPillClass, label: statusText } = unitStatusPresentation(
+    unitWorkflowRowStatus(unit.unit_workflow_status),
+    t,
+  );
+
   return (
     <aside
       className="rounded-lg border border-bambu-dark-tertiary bg-bambu-dark-secondary lg:sticky lg:top-6 lg:flex lg:max-h-[calc(100vh-3rem)] lg:flex-col lg:overflow-hidden"
@@ -4462,7 +4612,10 @@ function UnitAssemblyCard({
           <p className="text-xs uppercase tracking-wide text-bambu-green">
             {t("floor.serialAssemblyEyebrow", "Product serial")}
           </p>
-          <h2 className="mt-1 font-mono text-lg font-semibold text-white">{unit.serial_code}</h2>
+          <div className="mt-1 flex flex-wrap items-center gap-2">
+            <h2 className="font-mono text-lg font-semibold text-white">{unit.serial_code}</h2>
+            <span className={`${STATUS_PILL_CLASS} ${statusPillClass}`}>{statusText}</span>
+          </div>
         </div>
         <button
           type="button"
