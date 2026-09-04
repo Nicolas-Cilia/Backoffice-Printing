@@ -1,0 +1,4 @@
+# One hostname or IP per line. Any Bash command containing one of these is denied
+# by guard_bash.py (standing rule: Claude never touches the warehouse Mac).
+# Copy to protected-hosts.txt (gitignored) and add the Mac's LAN address.
+warehouse-mac

@@ -3,6 +3,23 @@
 Changes made in this fork on top of upstream Bambuddy. Upstream's own release notes stay
 in `CHANGELOG.md`. Planned work lives in `FORK_PLAN.md`.
 
+## 2026-09-04: Claude Code project rules, mechanical safeguards, CI on `dev` PRs
+
+`CLAUDE.md` (previously gitignored) now carries the fork's core rules for Claude Code
+sessions: the shipping SOP (branch from `dev`, PR to `dev`, Gaspi reviews, `dev` → `main`
+when stable, humans deploy), the quality bar, repo gotchas, and the never-touch-the-Mac
+rule. `.claude/settings.json` wires hooks that the harness runs regardless of what the
+model remembers: a PreToolUse guard that denies pushes to `main`, force-pushes to
+`main`/`dev`, `gh pr create` without `--base dev`, commits that include `static/`, and any
+command naming a protected host (the host list is gitignored); a PostToolUse hook that
+requests `gasparhabif` as reviewer after `gh pr create` and verifies it landed; and
+prompt/compact hooks that re-inject the rules so they survive long contexts. Hooks are
+Python (no jq on Windows) and run only inside Claude Code — no effect on the app.
+
+`ci.yml` now also triggers on pushes and pull requests to `dev`. Before this, a PR
+against `dev` only ran the security scans, so the "CI green before merge" step of the
+SOP had nothing behind it.
+
 ## 2026-08-23: Filament tracking donut rings keep rounded caps on small slices
 
 User-reported bug from a full-project audit: on Filament Tracking's "Consumption by
