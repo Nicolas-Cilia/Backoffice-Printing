@@ -637,6 +637,7 @@ export const handlers = [
   }),
   // Floor: idle BBD scans try by-part first; default free housing → item→location.
   http.get('/api/v1/floor/units/by-part/:sticker', () => new HttpResponse(null, { status: 404 })),
+  http.get('/api/v1/floor/units/:unitId/events', () => HttpResponse.json([])),
   http.get('/api/v1/floor/error-labels', () =>
     HttpResponse.json([
       {
