@@ -32,7 +32,7 @@ from dataclasses import dataclass
 from datetime import datetime
 from enum import StrEnum
 
-from sqlalchemy import select
+from sqlalchemy import func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from backend.app.models.floor_bin import FloorBinBatch
@@ -44,6 +44,7 @@ from backend.app.services.floor_parts import (
     PRODUCTION_WIP_ACTION,
     TOP_PART_CODE,
     KitReassignResult,
+    PartEvent,
     PartStatus,
     _error_label_for_payload,
     _get_part_by_code,
@@ -51,6 +52,9 @@ from backend.app.services.floor_parts import (
     parse_sticker_code,
     reassign_kit_by_batch_id,
 )
+
+# Housing events that describe the serial's own workflow (not pre-link finishing).
+_UNIT_TIMELINE_ACTIONS = frozenset({"unit_linked", "unit_unlinked", "shipped", "rework"})
 
 # §4: six alphanumeric, no hyphen, at least one letter — after strip + upper.
 _SERIAL_PATTERN = re.compile(r"^[A-Z0-9]{6}$")
@@ -352,6 +356,88 @@ async def list_units(db: AsyncSession) -> list[UnitDetail]:
         .all()
     )
     return [await _detail_from_unit(db, unit) for unit in units]
+
+
+def _event_matches_unit(event: FloorPartEvent, *, unit_id: int, serial_code: str) -> bool:
+    """True when a housing audit row is about this serial, not component-only work."""
+    if event.action not in _UNIT_TIMELINE_ACTIONS:
+        return False
+    details = event.details or {}
+    event_unit_id = details.get("unit_id")
+    event_serial = details.get("serial_code")
+    matches_unit = event_unit_id == unit_id or (
+        isinstance(event_serial, str) and event_serial.strip().upper() == serial_code
+    )
+    if not matches_unit:
+        return False
+    # Individual housing rework (pre-link) is not serial history — only serial return.
+    if event.action == PartStatus.REWORK.value:
+        return details.get("source") == "serial_return"
+    return True
+
+
+def _unit_event_dedupe_key(event: FloorPartEvent) -> tuple:
+    """Collapse TOP+BOT mirror writes (same action / second) into one timeline row.
+
+    Housing-replace events keep ``role`` in the key so a dual TOP+BOT swap does
+    not collapse into a single row.
+    """
+    details = event.details or {}
+    occurred = event.occurred_at.replace(microsecond=0) if event.occurred_at is not None else None
+    role = details.get("role") if details.get("source") == "unit_replace" else None
+    return (
+        event.action,
+        details.get("unit_id"),
+        (details.get("serial_code") or "").strip().upper() if isinstance(details.get("serial_code"), str) else None,
+        details.get("source"),
+        details.get("reason_code"),
+        details.get("error_payload"),
+        details.get("error_label_id"),
+        (details.get("reason_text") or "").strip() if isinstance(details.get("reason_text"), str) else None,
+        role,
+        occurred,
+    )
+
+
+async def list_unit_events(db: AsyncSession, unit_id: int) -> list[PartEvent] | None:
+    """Serial workflow history for a linked unit, oldest first.
+
+    Unit actions are written onto housing ``floor_part_events`` rows (including
+    housings later swapped off the unit). This finds events by ``unit_id`` /
+    ``serial_code`` in details, keeps only serial-scoped actions (link / ship /
+    rework / unlink / housing replace), and dedupes mirrored TOP+BOT pairs.
+    """
+    unit = await db.get(FloorProductUnit, unit_id)
+    if unit is None:
+        return None
+
+    result = await db.execute(
+        select(FloorPartEvent)
+        .where(
+            FloorPartEvent.action.in_(tuple(_UNIT_TIMELINE_ACTIONS)),
+            or_(
+                func.json_extract(FloorPartEvent.details, "$.unit_id") == unit.id,
+                func.json_extract(FloorPartEvent.details, "$.serial_code") == unit.serial_code,
+            ),
+        )
+        .order_by(FloorPartEvent.occurred_at.asc(), FloorPartEvent.id.asc())
+    )
+    events = [
+        event
+        for event in result.scalars().all()
+        if _event_matches_unit(event, unit_id=unit.id, serial_code=unit.serial_code)
+    ]
+
+    deduped: list[FloorPartEvent] = []
+    seen: set[tuple] = set()
+    for event in events:
+        key = _unit_event_dedupe_key(event)
+        if key in seen:
+            continue
+        seen.add(key)
+        deduped.append(event)
+
+    return [PartEvent(e.id, e.action, e.details, e.occurred_at) for e in deduped]
 
 
 async def unlink_unit(db: AsyncSession, unit_id: int) -> UnlinkUnitOutcome:
@@ -819,6 +905,7 @@ __all__ = [
     "get_unit_by_serial",
     "get_unit_by_part",
     "list_units",
+    "list_unit_events",
     "unlink_unit",
     "replace_unit",
     "replace_unit_kit",

@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
-import { act, screen, waitFor, fireEvent } from '@testing-library/react';
+import { act, screen, waitFor, fireEvent, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { http, HttpResponse } from 'msw';
 import { render } from '../utils';
@@ -3348,6 +3348,14 @@ describe('FloorScanPage (Phase 1b sessions)', () => {
       );
     }
 
+    function mockUnitEvents(
+      events: Array<{ id: number; action: string; details: Record<string, unknown> | null; occurred_at: string }>,
+    ) {
+      server.use(
+        http.get('/api/v1/floor/units/:unitId/events', () => HttpResponse.json(events)),
+      );
+    }
+
     /** by-sticker part lookup keyed on the sticker → its TOP/BOT code. */
     function mockParts(codesBySticker: Record<string, string>) {
       server.use(
@@ -3506,7 +3514,69 @@ describe('FloorScanPage (Phase 1b sessions)', () => {
 
       expect(await screen.findByText('BBD-000100')).toBeInTheDocument();
       expect(screen.getByText('BBD-000200')).toBeInTheDocument();
+      expect(screen.getByTestId('unit-workflow-status')).toHaveTextContent('Shipped');
       expect(screen.queryByText('Scan a top or a bottom')).not.toBeInTheDocument();
+    });
+
+    it('shows Rework status when a serial-linked unit is in rework', async () => {
+      mockNoSession();
+      mockBySerial({ ...UNIT, unit_workflow_status: 'rework' as const });
+      render(<FloorScanPage />);
+      await screen.findByText('Scan a code');
+
+      await scan('XG2SNP');
+
+      expect(await screen.findByTestId('unit-workflow-status')).toHaveTextContent('Rework');
+      expect(screen.getByText('Scan the Ready to Ship shelf')).toBeInTheDocument();
+    });
+
+    it('shows serial history on the linked-unit card without component finishing steps', async () => {
+      mockNoSession();
+      mockBySerial(UNIT);
+      mockUnitEvents([
+        {
+          id: 1,
+          action: 'unit_linked',
+          details: { unit_id: 7, serial_code: 'XG2SNP' },
+          occurred_at: '2026-08-28T12:00:00',
+        },
+        {
+          id: 2,
+          action: 'shipped',
+          details: { unit_id: 7, serial_code: 'XG2SNP' },
+          occurred_at: '2026-08-28T12:00:01',
+        },
+        {
+          id: 3,
+          action: 'rework',
+          details: {
+            unit_id: 7,
+            serial_code: 'XG2SNP',
+            source: 'serial_return',
+            reason_code: 'doesnt_fit',
+            reason_text: 'Customer return',
+          },
+          occurred_at: '2026-08-29T09:00:00',
+        },
+        {
+          id: 4,
+          action: 'shipped',
+          details: { unit_id: 7, serial_code: 'XG2SNP', source: 'serial_ready_to_ship' },
+          occurred_at: '2026-08-29T15:00:00',
+        },
+      ]);
+      render(<FloorScanPage />);
+      await screen.findByText('Scan a code');
+
+      await scan('XG2SNP');
+
+      const timeline = await screen.findByTestId('unit-history-timeline');
+      expect(within(timeline).getByText('Linked')).toBeInTheDocument();
+      expect(within(timeline).getByText('Shipped')).toBeInTheDocument();
+      expect(within(timeline).getByText(/Sent to Rework/)).toBeInTheDocument();
+      expect(within(timeline).getByText('Ready to Ship')).toBeInTheDocument();
+      expect(within(timeline).queryByText('Support Removed')).not.toBeInTheDocument();
+      expect(within(timeline).queryByText('In WIP')).not.toBeInTheDocument();
     });
 
     it('opens the same linked-unit card when an already-linked housing sticker is scanned at idle', async () => {
@@ -3519,6 +3589,7 @@ describe('FloorScanPage (Phase 1b sessions)', () => {
 
       expect(await screen.findByText('Linked unit')).toBeInTheDocument();
       expect(screen.getByText('XG2SNP')).toBeInTheDocument();
+      expect(screen.getByTestId('unit-workflow-status')).toHaveTextContent('Shipped');
       expect(screen.getByText('BBD-000200')).toBeInTheDocument();
       expect(screen.queryByText('Scan a location')).not.toBeInTheDocument();
     });

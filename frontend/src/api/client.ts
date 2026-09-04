@@ -6741,6 +6741,9 @@ export const api = {
    *  serial (start the ceremony) from a linked one (read-only card). */
   getUnitBySerial: (code: string) =>
     request<FloorProductUnit>(`/floor/units/by-serial/${encodeURIComponent(code)}`),
+  /** Serial workflow timeline (deduped TOP+BOT housing events for this unit). */
+  getUnitEvents: (unitId: number) =>
+    request<FloorInventoryPartEvent[]>(`/floor/units/${unitId}/events`),
   /** Look up the unit a TOP/BOT sticker belongs to (idle part scan), or 404. */
   getUnitByPart: (sticker: string) =>
     request<FloorProductUnit>(`/floor/units/by-part/${encodeURIComponent(sticker)}`),
