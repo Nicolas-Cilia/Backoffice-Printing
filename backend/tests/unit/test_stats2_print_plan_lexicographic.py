@@ -437,8 +437,12 @@ async def test_dense_plate_preferred_on_single_printer_with_large_ask(db_session
 
 
 @pytest.mark.asyncio
-async def test_low_success_dense_plate_loses_to_reliable_short(db_session, printer_factory, monkeypatch):
-    """x4 with poor success loses to x1 with high success on a single printer."""
+async def test_low_success_dense_plate_still_packed_for_theoretical(db_session, printer_factory, monkeypatch):
+    """Imperfect yield must not steer the schedule off the denser plate.
+
+    Theoretical packing aims at physical max; yields only shrink expected good
+    parts on the packed jobs.
+    """
     await set_stats2_globals(db_session, expected_plate_clear_minutes=10)
     await get_or_create_default_recipe(db_session)
     x4 = await _seed_slot(
@@ -474,4 +478,81 @@ async def test_low_success_dense_plate_loses_to_reliable_short(db_session, print
     monday = plan["days"][0]
     top_jobs = [j for j in monday["lanes"][0]["jobs"] if j["part_code"] == "TOP"]
     assert top_jobs
-    assert top_jobs[0]["quantity_per_plate"] == 1
+    assert top_jobs[0]["quantity_per_plate"] == 4
+    assert top_jobs[0]["est_good_parts"] == pytest.approx(1.0)  # 4 * 0.25
+
+
+@pytest.mark.asyncio
+async def test_bot_qc_yield_does_not_steal_x1c_from_top(db_session, printer_factory, monkeypatch):
+    """Prod regression: H2S BOT x5 with qc=0.75 must not beat denser physical pack.
+
+    Yield-adjusted placement preferred X1C BOT (eff 4) over H2S x5 (eff 3.75),
+    pulling shared X1Cs onto BOT and starving TOP.
+    """
+    await set_stats2_globals(db_session, expected_plate_clear_minutes=10)
+    await get_or_create_default_recipe(db_session)
+
+    h2s_x5 = await _seed_slot(
+        db_session,
+        part_code="BOT",
+        model="H2S",
+        quantity=5,
+        print_time=8 * 3600 + 3300,
+        filename="BOT x5 - 1.8.2 - H2S.gcode.3mf",
+    )
+    await _seed_slot(
+        db_session,
+        part_code="BOT",
+        model="X1C",
+        quantity=4,
+        print_time=7 * 3600,
+        filename="BOT x4 - 1.8.2 - X1C.gcode.3mf",
+    )
+    await _seed_slot(
+        db_session,
+        part_code="TOP",
+        model="A1",
+        quantity=2,
+        print_time=14 * 3600,
+        filename="TOP x2 - 1.0.0 - A1.3mf",
+    )
+    await _seed_slot(
+        db_session,
+        part_code="TOP",
+        model="X1C",
+        quantity=3,
+        print_time=8 * 3600,
+        filename="TOP x3 - 1.0.0 - X1C.3mf",
+    )
+    for code in ("KNB", "BUT"):
+        await _seed_slot(
+            db_session,
+            part_code=code,
+            model="A1",
+            quantity=1,
+            print_time=1800,
+            filename=f"{code}.3mf",
+        )
+
+    await printer_factory(name="H2S-Ricardo", model="H2S")
+    for i in range(3):
+        await printer_factory(name=f"X1C-{i}", model="X1C")
+    for i in range(4):
+        await printer_factory(name=f"A1-{i}", model="A1")
+    await db_session.commit()
+
+    _patch_metrics(monkeypatch, {h2s_x5.id: _metrics(h2s_x5.id, qc=0.75)})
+
+    # Leftover ask after X1C BOT x4×2 = 8 → H2S should still take x5 (physical),
+    # not lose the lane to yield-adjusted rate math.
+    plan = await compute_print_plan(db_session, week_start=_MONDAY, target_devices=14.0)
+    monday = next(d for d in plan["days"] if float(d.get("staffed_minutes") or 0) > 0)
+    h2s = next(ln for ln in monday["lanes"] if ln["printer_model"] == "H2S")
+    assert h2s["jobs"], "H2S should receive BOT work"
+    assert h2s["jobs"][0]["quantity_per_plate"] == 5
+    assert h2s["jobs"][0]["est_good_parts"] == pytest.approx(3.75)
+
+    x1c_top = [
+        j for ln in monday["lanes"] if ln["printer_model"] == "X1C" for j in ln["jobs"] if j["part_code"] == "TOP"
+    ]
+    assert x1c_top, "X1Cs must still have room for TOP when H2S carries dense BOT"
