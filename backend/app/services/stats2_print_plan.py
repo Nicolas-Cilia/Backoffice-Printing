@@ -280,6 +280,23 @@ def _printers_used_for_part(days_out: list[dict] | None, part_code: str) -> tupl
     return len(used), models
 
 
+def _capacity_ceiling_for_extras(
+    *,
+    schedulable_ceiling: float | None,
+    devices_achievable: float,
+) -> float:
+    """Denominator for min_extra_printers: schedulable devices/day, not unconstrained.
+
+    Unconstrained dedicated-fleet rates often exceed the shared-fleet pack
+    ceiling. Using them in ``max(...)`` makes ask/ceiling < 1 for mild
+    over-asks and reports 0 extra printers while parts are still short.
+    """
+    sched = float(schedulable_ceiling or 0.0)
+    if sched > 0:
+        return sched
+    return max(float(devices_achievable or 0.0), 1.0)
+
+
 def _short_parts_from_pack(
     *,
     part_qty: dict[str, int],
@@ -1194,13 +1211,13 @@ async def compute_print_plan(
     # A boosted pass must not recurse again.
     if fleet_boost is None and not feasible and target > 0:
         # Prefer the shop's measured schedulable ceiling (from overview / query)
-        # so extras match "Capacity ~N/day". Fall back to unconstrained / packed.
-        capacity_ceiling = max(
-            float(schedulable_ceiling or 0.0),
-            float(devices_achievable or 0.0),
-            float(capacity_theoretical or 0.0),
-            float(capacity_realistic or 0.0),
-            1.0,
+        # so extras match "Capacity ~N/day". Never max with unconstrained
+        # dedicated-fleet rates — those overstate shared capacity and make
+        # ask/ceiling < 1 for mild over-asks (e.g. 28 vs ~26), yielding
+        # "0 printers needed" while parts are still short.
+        capacity_ceiling = _capacity_ceiling_for_extras(
+            schedulable_ceiling=schedulable_ceiling,
+            devices_achievable=devices_achievable,
         )
         short_parts = _short_parts_from_pack(
             part_qty=part_qty,

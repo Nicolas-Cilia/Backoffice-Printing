@@ -616,12 +616,24 @@ async def test_quality_reasons_use_error_label_button_names(db_session, printer_
     assert discard_hub["total"] == 1
     assert discard_hub["reasons"][0]["reason"] == "Horizontal line"
 
-    rework_hub = await compute_quality_reasons(db_session, category="rework_sanding")
-    reasons = {r["reason"]: r["count"] for r in rework_hub["reasons"]}
+    combined = await compute_quality_reasons(db_session, category="rework_sanding")
+    reasons = {r["reason"]: r["count"] for r in combined["reasons"]}
     assert reasons == {"Other · sharp edge": 1, "Doesn't fit": 1}
-    assert rework_hub["total"] == 2
-    by_part = {p["part_code"]: p["count"] for p in rework_hub["by_part"]}
+    assert combined["total"] == 2
+    by_part = {p["part_code"]: p["count"] for p in combined["by_part"]}
     assert by_part == {"BOT": 1, "KNB": 1}
+
+    sanding_hub = await compute_quality_reasons(db_session, category="sanding", include_rows=True)
+    assert sanding_hub["total"] == 1
+    assert sanding_hub["reasons"][0]["reason"] == "Other · sharp edge"
+    assert sanding_hub["rows"][0]["category"] == "sanding"
+    assert sanding_hub["rows"][0]["action"] == "sanding"
+
+    rework_hub = await compute_quality_reasons(db_session, category="rework", include_rows=True)
+    assert rework_hub["total"] == 1
+    assert rework_hub["reasons"][0]["reason"] == "Doesn't fit"
+    assert rework_hub["rows"][0]["category"] == "rework"
+    assert rework_hub["rows"][0]["action"] == "rework"
 
 
 def test_infer_part_code_from_print_names():

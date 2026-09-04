@@ -126,10 +126,11 @@ async def compute_quality_reasons(
     lookback_days: int = _DEFAULT_LOOKBACK,
     include_rows: bool = False,
 ) -> dict:
-    """Unified hub: print failures, discards, rework/sanding, QC passed.
+    """Unified hub: print failures, discards, rework, sanding, QC passed.
 
-    ``category="all"`` is the loss mix only (print + discard + rework). QC
-    passed is a separate category so export totals stay loss-reason counts.
+    ``category="all"`` is the loss mix only (print + discard + rework +
+    sanding). ``rework_sanding`` remains a combined alias. QC passed is a
+    separate category so export totals stay loss-reason counts.
     """
     since = datetime.now(timezone.utc).replace(tzinfo=None) - timedelta(days=max(1, lookback_days))
     cat = (category or "all").strip().lower()
@@ -295,11 +296,16 @@ async def compute_quality_reasons(
                 },
             )
 
-    if cat in {"rework_sanding", "all"}:
+    rework_actions: list[str] = []
+    if cat in {"rework", "rework_sanding", "all"}:
+        rework_actions.append("rework")
+    if cat in {"sanding", "rework_sanding", "all"}:
+        rework_actions.append("sanding")
+    if rework_actions:
         q = (
             select(FloorPartEvent, FloorLabeledPart)
             .join(FloorLabeledPart, FloorPartEvent.part_id == FloorLabeledPart.id)
-            .where(FloorPartEvent.action.in_(("rework", "sanding")))
+            .where(FloorPartEvent.action.in_(rework_actions))
             .where(FloorPartEvent.occurred_at >= since)
         )
         if printer_id is not None:
@@ -307,13 +313,16 @@ async def compute_quality_reasons(
         for event, part in (await db.execute(q)).all():
             reason = _floor_event_reason(event.details, fallback=event.action)
             part_code = resolve_part_code(explicit=part.part_code, known_codes=known_codes)
+            # Prefer the concrete action so separate tabs / export can split;
+            # keep the combined alias when the caller asked for rework_sanding.
+            row_category = "rework_sanding" if cat == "rework_sanding" else event.action
             _count_event(
                 reason=reason,
                 printer_id_value=part.printer_id,
                 part_code=part_code,
                 when=event.occurred_at,
                 row={
-                    "category": "rework_sanding",
+                    "category": row_category,
                     "action": event.action,
                     "reason": reason,
                     "printer_id": part.printer_id,
