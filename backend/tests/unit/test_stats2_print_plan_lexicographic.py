@@ -69,9 +69,31 @@ def test_placement_sort_key_progress_beats_earlier_start():
 
 
 def test_placement_sort_key_equal_start_progress_prefers_sooner_wave():
+    """Shared fleets: free the lane sooner so it can switch parts (BOT → TOP)."""
     a = placement_sort_key(progress=4.0, rate=0.002, clear_end=500, qty=1, wave_time=360, start=100)
     b = placement_sort_key(progress=4.0, rate=0.003, clear_end=2000, qty=4, wave_time=1440, start=100)
     assert a > b
+
+
+def test_placement_sort_key_uncapped_dense_progress_beats_sparse():
+    """Dedicated H2S path: pass uncapped plate progress so x5 beats x2 at leftover=2."""
+    sparse = placement_sort_key(
+        progress=2.0,
+        rate=2 / 229,
+        clear_end=709,
+        qty=2,
+        wave_time=229,
+        start=480,
+    )
+    dense = placement_sort_key(
+        progress=5.0,  # uncapped (not min(2, 5))
+        rate=5 / 546,
+        clear_end=1026,
+        qty=5,
+        wave_time=546,
+        start=480,
+    )
+    assert dense > sparse
 
 
 def test_placement_sort_key_equal_progress_and_wave_prefers_higher_rate():
@@ -257,6 +279,77 @@ def _patch_metrics(monkeypatch, by_slot: dict[int, SlotMetrics]):
     monkeypatch.setattr(
         "backend.app.services.stats2_print_plan.get_slot_metrics_map",
         AsyncMock(side_effect=_fake),
+    )
+
+
+@pytest.mark.asyncio
+async def test_dedicated_h2s_prefers_dense_bot_when_ask_leftover_is_small(db_session, printer_factory, monkeypatch):
+    """X1Cs cover most of the BOT ask; H2S must still take BOT x5, not x2.
+
+    Regression: equal capped progress + sooner-wave ranking picked H2S BOT x2,
+    finished by ~11:40, then left Ricardo idle — and having x2 available *lowered*
+    schedulable capacity vs x5-only.
+    """
+    await set_stats2_globals(db_session, expected_plate_clear_minutes=10)
+    await get_or_create_default_recipe(db_session)
+
+    await _seed_slot(
+        db_session,
+        part_code="BOT",
+        model="H2S",
+        quantity=2,
+        print_time=3 * 3600 + 2190,  # ~3.65h like prod BOT x2
+        filename="BOT x2 - 1.8.2 - H2S.gcode.3mf",
+    )
+    await _seed_slot(
+        db_session,
+        part_code="BOT",
+        model="H2S",
+        quantity=5,
+        print_time=8 * 3600 + 3300,  # ~8.92h like prod BOT x5
+        filename="BOT x5 - 1.8.2 - H2S.gcode.3mf",
+    )
+    await _seed_slot(
+        db_session,
+        part_code="BOT",
+        model="X1C",
+        quantity=4,
+        print_time=7 * 3600,
+        filename="BOT x4 - 1.8.2 - X1C.gcode.3mf",
+    )
+    # TOP on A1 so complete devices are BOT-limited and X1Cs stay on BOT.
+    await _seed_slot(
+        db_session,
+        part_code="TOP",
+        model="A1",
+        quantity=2,
+        print_time=14 * 3600,
+        filename="TOP x2 - 1.0.0 - A1.3mf",
+    )
+    for code in ("KNB", "BUT"):
+        await _seed_slot(
+            db_session,
+            part_code=code,
+            model="A1",
+            quantity=1,
+            print_time=1800,
+            filename=f"{code}.3mf",
+        )
+
+    await printer_factory(name="H2S-Ricardo", model="H2S")
+    for i in range(3):
+        await printer_factory(name=f"X1C-{i}", model="X1C")
+    for i in range(4):
+        await printer_factory(name=f"A1-{i}", model="A1")
+    await db_session.commit()
+
+    # target=14 → three X1C×4 = 12, leftover 2 on H2S (the prod failure mode).
+    plan = await compute_print_plan(db_session, week_start=_MONDAY, target_devices=14.0)
+    monday = next(d for d in plan["days"] if float(d.get("staffed_minutes") or 0) > 0)
+    h2s = next(ln for ln in monday["lanes"] if ln["printer_model"] == "H2S")
+    assert h2s["jobs"], "H2S should receive BOT work"
+    assert h2s["jobs"][0]["quantity_per_plate"] == 5, (
+        f"dedicated H2S must prefer BOT x5 over x2 when leftover ask is 2; got {h2s['jobs'][0]}"
     )
 
 

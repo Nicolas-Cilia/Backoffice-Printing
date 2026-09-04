@@ -107,6 +107,7 @@ class PartStatus(StrEnum):
     NEEDS_MATCHING = "needs_matching"
     WIP = "wip"
     FIT_CHECKED = "fit_checked"
+    SANDING = "sanding"
     REWORK = "rework"
     SUPPORT_REMOVED = "support_removed"
     OVERHANG_REMOVED = "overhang_removed"
