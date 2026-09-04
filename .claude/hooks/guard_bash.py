@@ -5,7 +5,7 @@ Denies (before the command runs):
   * git push that targets main (explicit refspec, or implicit while on main)
   * git push --force to main or dev
   * gh pr create whose base is not dev (the repo default is main, so a missing
-    --base means main)
+    --base means main); the dev -> main promotion PR is the one exception
   * git commit that would include the tracked built UI under static/
 
 Reads the hook JSON on stdin, prints a PreToolUse decision on stdout.
@@ -160,19 +160,30 @@ def check_push(toks: list[str], cwd: str, raw: list[str]) -> None:
         )
 
 
-def check_pr_create(toks: list[str]) -> None:
-    base = None
+def check_pr_create(toks: list[str], cwd: str) -> None:
+    base = head = None
     for i, t in enumerate(toks):
         if t in ("--base", "-B") and i + 1 < len(toks):
             base = toks[i + 1]
         elif t.startswith("--base="):
             base = t.split("=", 1)[1]
-    if base != REQUIRED_PR_BASE:
-        shown = base if base else "(none, which defaults to main)"
-        deny(
-            f"BLOCKED: gh pr create must use --base {REQUIRED_PR_BASE}; got {shown}. "
-            "PRs target dev, never main (CLAUDE.md > Git and PRs)."
-        )
+        elif t in ("--head", "-H") and i + 1 < len(toks):
+            head = toks[i + 1]
+        elif t.startswith("--head="):
+            head = t.split("=", 1)[1]
+    if base == REQUIRED_PR_BASE:
+        return
+    # The only PR allowed against main is the dev -> main promotion (Gaspi reviews it).
+    if base in PROTECTED_PUSH:
+        if head is None:
+            head = git(["rev-parse", "--abbrev-ref", "HEAD"], cwd)
+        if head.split(":")[-1] == REQUIRED_PR_BASE:
+            return
+    shown = base if base else "(none, which defaults to main)"
+    deny(
+        f"BLOCKED: gh pr create must use --base {REQUIRED_PR_BASE}; got {shown}. "
+        "Work PRs target dev; only the dev -> main promotion PR may target main (CLAUDE.md > Git and PRs)."
+    )
 
 
 def check_commit(toks: list[str], cwd: str) -> None:
@@ -222,7 +233,7 @@ def main() -> None:
             elif sub == "commit" and is_this_repo(raw, here):
                 check_commit(toks, here)
         elif prog in ("gh", "gh.exe") and len(toks) >= 3 and toks[1] == "pr" and toks[2] == "create":
-            check_pr_create(toks)
+            check_pr_create(toks, here)
 
 
 if __name__ == "__main__":

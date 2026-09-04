@@ -1,9 +1,10 @@
 #!/usr/bin/env python3
 """PostToolUse hook for Bash: after `gh pr create`, request Gaspi as reviewer.
 
-Standing rule (Wes, 2026-09-04): every PR gets gasparhabif as a reviewer.
-GitHub silently drops reviewer requests for non-collaborators, so this hook
-verifies the request landed and reports loudly when it did not.
+Standing rule (Wes, 2026-09-04): PRs to main get gasparhabif as a reviewer;
+PRs to dev do not. GitHub silently drops reviewer requests for
+non-collaborators, so this hook verifies the request landed and reports
+loudly when it did not.
 """
 
 import json
@@ -14,6 +15,7 @@ import subprocess
 import sys
 
 REVIEWER = "gasparhabif"
+REVIEW_BASE = "main"
 PR_URL_RE = re.compile(r"https://github\.com/([\w.-]+)/([\w.-]+)/pull/(\d+)")
 
 
@@ -85,12 +87,16 @@ def main() -> None:
     owner, repo, num = m.groups()
     url = m.group(0)
 
+    base = gh(["pr", "view", url, "--json", "baseRefName", "-q", ".baseRefName"]).stdout.strip()
+    if base != REVIEW_BASE:
+        # Wes 2026-09-04: Gaspi reviews promotions to main only, not dev PRs.
+        emit(f"PR-reviewer hook: {url} targets '{base}', so no reviewer requested ({REVIEWER} reviews PRs to {REVIEW_BASE} only).")
+        return
+
     res = gh(["pr", "edit", url, "--add-reviewer", REVIEWER])
     check = gh(["api", f"repos/{owner}/{repo}/pulls/{num}/requested_reviewers", "-q", ".users[].login"])
     logins = {line.strip() for line in check.stdout.splitlines() if line.strip()}
-
-    base = gh(["pr", "view", url, "--json", "baseRefName", "-q", ".baseRefName"]).stdout.strip()
-    base_note = "" if base == "dev" else f" WARNING: PR base is '{base}', rule says dev."
+    base_note = ""
 
     if REVIEWER in logins:
         emit(f"PR-reviewer hook: {REVIEWER} requested as reviewer on {url}.{base_note}")

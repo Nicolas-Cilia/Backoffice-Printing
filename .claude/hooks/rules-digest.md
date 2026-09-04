@@ -1,6 +1,6 @@
 - Only implement what FORK_PLAN.md lists; move shipped work to its Done table and add a FORK_CHANGELOG.md entry.
 - Branch from dev. PRs target dev, never main. Never push to main.
-- Every PR: `gh pr edit <n> --add-reviewer gasparhabif`. CI fully green before review.
+- Gaspi (`gasparhabif`) reviews PRs to main only (dev -> main promotion); dev PRs need no reviewer. CI green first.
 - Done = ./test_all.sh green + frontend build; ruff, eslint, tsc, i18n parity clean.
 - Never commit static/ (tracked built UI). Local DB and .env are local state.
 - NEVER touch the warehouse Mac (:8484): no HTTP, SSH, backup, deploy, or read. Wes/Gaspi only.

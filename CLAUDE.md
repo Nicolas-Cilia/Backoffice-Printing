@@ -21,9 +21,10 @@ Read this file first; details live in the linked docs, don't duplicate them here
 - `origin` is Nico's repo, `Nicolas-Cilia/Backoffice-Printing` (Wes has push; Gaspi is a
   collaborator; the Mac pulls its GHCR image). Wes's fork `wes-commits01/Backoffice-Printing`
   is the `fork` remote, kept only as a scratch mirror.
-- **Every PR gets `gasparhabif` (Gaspi) as a reviewer**: run
-  `gh pr edit <n> --add-reviewer gasparhabif` right after creating it. Gaspi owns the Mac deploy and is AI-nervous, so CI
-  must be fully green before you ask for review.
+- **Gaspi (`gasparhabif`) reviews PRs to `main` only** (the `dev` -> `main` promotion).
+  PRs to `dev` need no reviewer. The hook requests him automatically when the base is
+  `main`; by hand: `gh pr edit <n> --add-reviewer gasparhabif`. Gaspi owns the Mac deploy
+  and is AI-nervous, so CI must be fully green before that promotion PR goes up.
 - The `GH_TOKEN` in `~/.claude/CLAUDE.md` may be dead. If git or `gh` returns 401,
   use the keyring: `env -u GH_TOKEN gh ...` and
   `env -u GH_TOKEN git -c credential.helper= -c 'credential.helper=!gh auth git-credential' <push|pull>`.
@@ -40,8 +41,10 @@ Read this file first; details live in the linked docs, don't duplicate them here
    floor app, Claude extracts `bambuddy.db` into `data/` (see Local run), restarts the
    backend, reproduces the bug before the fix and confirms it after, in the browser pane.
 6. Commit as Wes, push the branch, `gh pr create --base dev`. The hooks enforce the
-   base and request `gasparhabif`. Tick the test plan in the PR body honestly.
-7. Wait for CI. Wes merges into `dev`. Wes decides when `dev` is stable and merges to `main`.
+   base. Tick the test plan in the PR body honestly. No reviewer needed on `dev`.
+7. Wait for CI. Wes merges into `dev`. When `dev` is stable, the promotion PR
+   `gh pr create --base main --head dev` goes up; the hook requests `gasparhabif`, and
+   only after his review does it merge.
 8. Image publish is still manual (`docker-publish.sh`, Nico's way; a workflow is pending).
    Wes or Gaspi then runs `docker compose pull && docker compose up -d` on the Mac. Claude never does.
 

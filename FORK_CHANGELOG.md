@@ -12,7 +12,8 @@ rule. `.claude/settings.json` wires hooks that the harness runs regardless of wh
 model remembers: a PreToolUse guard that denies pushes to `main`, force-pushes to
 `main`/`dev`, `gh pr create` without `--base dev`, commits that include `static/`, and any
 command naming a protected host (the host list is gitignored); a PostToolUse hook that
-requests `gasparhabif` as reviewer after `gh pr create` and verifies it landed; and
+requests `gasparhabif` as reviewer after `gh pr create` when the base is `main` (the
+`dev` → `main` promotion; `dev` PRs need no reviewer) and verifies it landed; and
 prompt/compact hooks that re-inject the rules so they survive long contexts. Hooks are
 Python (no jq on Windows) and run only inside Claude Code — no effect on the app.
 
