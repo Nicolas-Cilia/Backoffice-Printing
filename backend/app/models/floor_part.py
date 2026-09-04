@@ -35,7 +35,7 @@ from __future__ import annotations
 
 from datetime import datetime
 
-from sqlalchemy import JSON, DateTime, ForeignKey, Index, Integer, String, func
+from sqlalchemy import JSON, Boolean, DateTime, ForeignKey, Index, Integer, String, func
 from sqlalchemy.orm import Mapped, mapped_column
 
 from backend.app.core.database import Base
@@ -141,9 +141,14 @@ class FloorPrintStopReason(Base):
 # Rework and discard, so that row cannot be removed from the catalog.
 PROTECTED_ERROR_LABEL_SLUGS = frozenset({"other"})
 
+# On-screen reason buttons after Sanding / Rework / Discard. ``other`` is always
+# included; at most five custom labels may be enabled per section (6 total).
+ERROR_LABEL_SECTIONS = ("sanding", "rework", "discard")
+MAX_CUSTOM_ERROR_LABELS_PER_SECTION = 5
+
 
 class FloorErrorLabel(Base):
-    """A user-managed ``BBF-…`` label used for both Rework and discard."""
+    """A user-managed ``BBF-…`` label used for Sanding, Rework, and discard."""
 
     __tablename__ = "floor_error_labels"
 
@@ -151,6 +156,11 @@ class FloorErrorLabel(Base):
     # The suffix only; the printable/scannable value is always ``BBF-{slug}``.
     slug: Mapped[str] = mapped_column(String(64), unique=True, index=True)
     name: Mapped[str] = mapped_column(String(120), unique=True)
+    show_on_sanding: Mapped[bool] = mapped_column(Boolean, default=True, server_default="1")
+    show_on_rework: Mapped[bool] = mapped_column(Boolean, default=True, server_default="1")
+    show_on_discard: Mapped[bool] = mapped_column(Boolean, default=True, server_default="1")
+    # Lower first among custom labels. ``other`` is always rendered last regardless.
+    sort_order: Mapped[int] = mapped_column(Integer, default=0, server_default="0")
     created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
 
     @property

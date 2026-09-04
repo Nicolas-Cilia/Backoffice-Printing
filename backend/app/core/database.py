@@ -258,6 +258,7 @@ async def init_db():
         archive,
         auth_ephemeral,
         color_catalog,
+        device_recipe,
         external_link,
         filament,
         filament_sku_settings,
@@ -276,6 +277,7 @@ async def init_db():
         notification,
         notification_template,
         oidc_provider,
+        operator_schedule,
         orca_base_cache,
         pending_upload,
         pipeline_run,
@@ -284,6 +286,7 @@ async def init_db():
         print_queue,
         printer,
         printer_sensor_history,
+        printer_time_block,
         profile_part,
         settings,
         shopping_list,
@@ -299,6 +302,7 @@ async def init_db():
         spoolbuddy_device,
         spoolman_k_profile,
         spoolman_slot_assignment,
+        stats_events,
         user,
         user_email_pref,
         user_otp_code,
@@ -366,11 +370,26 @@ async def _seed_floor_error_labels() -> None:
 
     from backend.app.models.floor_part import FloorErrorLabel
 
-    defaults = (("horizontal-line", "Horizontal line"), ("vertical-line", "Vertical line"), ("other", "Other"))
+    defaults = (
+        ("horizontal-line", "Horizontal line", 0),
+        ("vertical-line", "Vertical line", 1),
+        ("other", "Other", 1000),
+    )
     async with async_session() as db:
         existing = set((await db.execute(select(FloorErrorLabel.slug))).scalars())
-        db.add_all(FloorErrorLabel(slug=slug, name=name) for slug, name in defaults if slug not in existing)
-        if {slug for slug, _ in defaults} - existing:
+        db.add_all(
+            FloorErrorLabel(
+                slug=slug,
+                name=name,
+                sort_order=sort_order,
+                show_on_sanding=True,
+                show_on_rework=True,
+                show_on_discard=True,
+            )
+            for slug, name, sort_order in defaults
+            if slug not in existing
+        )
+        if {slug for slug, _, _ in defaults} - existing:
             await db.commit()
 
 
@@ -1283,6 +1302,147 @@ async def run_migrations(conn):
     await _safe_execute(
         conn, "CREATE INDEX IF NOT EXISTS ix_floor_product_units_bottom_part_id ON floor_product_units(bottom_part_id)"
     )
+
+    # Stats 2 (Phase 1): plate-turnaround + queue-lifecycle analytics event tables.
+    # Brand-new tables, so create_all already builds them on a fresh DB; these
+    # CREATE TABLE IF NOT EXISTS statements cover existing installs. Measurement
+    # only — never a capacity input. See models/stats_events.py.
+    await _safe_execute(
+        conn,
+        """
+        CREATE TABLE IF NOT EXISTS plate_turnaround_events (
+            id INTEGER PRIMARY KEY,
+            printer_id INTEGER NOT NULL REFERENCES printers(id) ON DELETE CASCADE,
+            archive_id INTEGER REFERENCES print_archives(id) ON DELETE SET NULL,
+            print_finished_at DATETIME,
+            plate_clear_requested_at DATETIME,
+            plate_clear_confirmed_at DATETIME,
+            next_print_started_at DATETIME,
+            within_staffed_hours BOOLEAN,
+            source VARCHAR(16) DEFAULT 'live',
+            created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+        )
+        """,
+    )
+    await _safe_execute(
+        conn,
+        "ALTER TABLE plate_turnaround_events ADD COLUMN source VARCHAR(16) DEFAULT 'live'",
+    )
+    await _safe_execute(
+        conn,
+        "CREATE INDEX IF NOT EXISTS ix_plate_turnaround_printer_open "
+        "ON plate_turnaround_events(printer_id, next_print_started_at)",
+    )
+    await _safe_execute(
+        conn,
+        "CREATE INDEX IF NOT EXISTS ix_plate_turnaround_finished_at ON plate_turnaround_events(print_finished_at)",
+    )
+    await _safe_execute(
+        conn,
+        """
+        CREATE TABLE IF NOT EXISTS queue_lifecycle_events (
+            id INTEGER PRIMARY KEY,
+            queue_item_id INTEGER NOT NULL,
+            created_at DATETIME,
+            dispatched_at DATETIME,
+            started_at DATETIME,
+            recorded_at DATETIME DEFAULT CURRENT_TIMESTAMP
+        )
+        """,
+    )
+    await _safe_execute(
+        conn,
+        "CREATE UNIQUE INDEX IF NOT EXISTS ix_queue_lifecycle_item ON queue_lifecycle_events(queue_item_id)",
+    )
+    await _safe_execute(
+        conn,
+        "CREATE INDEX IF NOT EXISTS ix_queue_lifecycle_created_at ON queue_lifecycle_events(created_at)",
+    )
+
+    # Stats 2 (Phase 2): operator weekly schedule + device recipe BOM tables,
+    # and the silent expected-quantity variance snapshot on harvested bins.
+    # Brand-new tables — create_all builds them on a fresh DB; these
+    # CREATE TABLE / ADD COLUMN statements cover existing installs.
+    await _safe_execute(
+        conn,
+        """
+        CREATE TABLE IF NOT EXISTS operator_schedules (
+            id INTEGER PRIMARY KEY,
+            day_of_week INTEGER NOT NULL,
+            start_time VARCHAR(5) NOT NULL,
+            end_time VARCHAR(5) NOT NULL,
+            operator_count INTEGER NOT NULL DEFAULT 1,
+            timezone VARCHAR(64) NOT NULL DEFAULT 'UTC',
+            enabled BOOLEAN NOT NULL DEFAULT 1,
+            created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+            updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
+        )
+        """,
+    )
+    await _safe_execute(
+        conn,
+        "CREATE INDEX IF NOT EXISTS ix_operator_schedules_day ON operator_schedules(day_of_week)",
+    )
+    await _safe_execute(
+        conn,
+        """
+        CREATE TABLE IF NOT EXISTS printer_time_blocks (
+            id INTEGER PRIMARY KEY,
+            printer_id INTEGER NOT NULL,
+            day_of_week INTEGER NOT NULL,
+            start_time VARCHAR(5) NOT NULL,
+            end_time VARCHAR(5) NOT NULL,
+            label VARCHAR(128),
+            enabled BOOLEAN NOT NULL DEFAULT 1,
+            created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+            updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+            FOREIGN KEY(printer_id) REFERENCES printers(id)
+        )
+        """,
+    )
+    await _safe_execute(
+        conn,
+        "CREATE INDEX IF NOT EXISTS ix_printer_time_blocks_printer ON printer_time_blocks(printer_id)",
+    )
+    await _safe_execute(
+        conn,
+        "CREATE INDEX IF NOT EXISTS ix_printer_time_blocks_day ON printer_time_blocks(day_of_week)",
+    )
+    await _safe_execute(
+        conn,
+        """
+        CREATE TABLE IF NOT EXISTS device_recipes (
+            id INTEGER PRIMARY KEY,
+            name VARCHAR(128) NOT NULL DEFAULT 'Default Device',
+            created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+            updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
+        )
+        """,
+    )
+    await _safe_execute(
+        conn,
+        """
+        CREATE TABLE IF NOT EXISTS device_recipe_lines (
+            id INTEGER PRIMARY KEY,
+            recipe_id INTEGER NOT NULL REFERENCES device_recipes(id) ON DELETE CASCADE,
+            part_id INTEGER NOT NULL REFERENCES production_parts(id) ON DELETE CASCADE,
+            qty_per_device INTEGER NOT NULL DEFAULT 1,
+            preferred_slot_id INTEGER REFERENCES production_slots(id) ON DELETE SET NULL,
+            created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+            updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
+        )
+        """,
+    )
+    await _safe_execute(
+        conn,
+        "CREATE UNIQUE INDEX IF NOT EXISTS uq_device_recipe_line_recipe_part "
+        "ON device_recipe_lines(recipe_id, part_id)",
+    )
+    # Silent variance snapshot columns on the reusable-bin harvest row.
+    await _safe_execute(conn, "ALTER TABLE floor_bin_batches ADD COLUMN expected_quantity INTEGER")
+    await _safe_execute(conn, "ALTER TABLE floor_bin_batches ADD COLUMN expected_quantity_source VARCHAR(32)")
+    await _safe_execute(conn, "ALTER TABLE floor_bin_batches ADD COLUMN quantity_variance INTEGER")
+    await _safe_execute(conn, "ALTER TABLE floor_bin_batches ADD COLUMN variance_reason TEXT")
 
     # Migration: Add parent_run_id column to pipeline_runs (#1425 PR C).
     # Links a retry-failed run back to its parent so the dashboard can show
@@ -3663,6 +3823,19 @@ async def run_migrations(conn):
         conn, "CREATE INDEX IF NOT EXISTS ix_print_log_entries_archive_id ON print_log_entries (archive_id)"
     )
 
+    # Floor discard of a print-failure reason must also drop the run from Stats 2.
+    if is_sqlite():
+        await _safe_execute(conn, "ALTER TABLE print_log_entries ADD COLUMN failure_dismissed_at DATETIME")
+    else:
+        await _safe_execute(
+            conn, "ALTER TABLE print_log_entries ADD COLUMN IF NOT EXISTS failure_dismissed_at TIMESTAMP"
+        )
+    await _safe_execute(
+        conn,
+        "CREATE INDEX IF NOT EXISTS ix_print_log_entries_failure_dismissed_at "
+        "ON print_log_entries (failure_dismissed_at)",
+    )
+
     # Backfill PrintLogEntry → PrintArchive linkage and per-event cost/energy
     # for pre-#1378 rows the column-add migration left NULL (#1390).
     #
@@ -4256,6 +4429,21 @@ async def run_migrations(conn):
     )
     await _safe_execute(conn, "ALTER TABLE floor_labeled_parts ADD COLUMN archived_at DATETIME")
     await _safe_execute(conn, "ALTER TABLE floor_labeled_parts ADD COLUMN released_at DATETIME")
+
+    # Per-section on-screen reason buttons (Sanding / Rework / Discard). Defaults
+    # keep today's behavior: every custom label shows on every section. ``other``
+    # is forced on for all three after the columns exist.
+    await _safe_execute(conn, "ALTER TABLE floor_error_labels ADD COLUMN show_on_sanding BOOLEAN DEFAULT 1 NOT NULL")
+    await _safe_execute(conn, "ALTER TABLE floor_error_labels ADD COLUMN show_on_rework BOOLEAN DEFAULT 1 NOT NULL")
+    await _safe_execute(conn, "ALTER TABLE floor_error_labels ADD COLUMN show_on_discard BOOLEAN DEFAULT 1 NOT NULL")
+    await _safe_execute(conn, "ALTER TABLE floor_error_labels ADD COLUMN sort_order INTEGER DEFAULT 0 NOT NULL")
+    async with conn.begin_nested():
+        await conn.execute(
+            text(
+                "UPDATE floor_error_labels SET show_on_sanding = 1, show_on_rework = 1, show_on_discard = 1 "
+                "WHERE slug = 'other'"
+            )
+        )
 
 
 _SECTION_PART_DEFAULT_ORDER = ("TOP", "BOT", "KNB", "BUT")

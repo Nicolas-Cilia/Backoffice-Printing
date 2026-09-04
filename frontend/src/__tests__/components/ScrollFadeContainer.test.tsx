@@ -1,4 +1,4 @@
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, vi } from 'vitest';
 import { fireEvent, screen } from '@testing-library/react';
 import { render } from '../utils';
 import { ScrollFadeContainer } from '../../components/ScrollFadeContainer';
@@ -53,5 +53,26 @@ describe('ScrollFadeContainer', () => {
     mockScrollerOverflow(scroller, { scrollHeight: 800, clientHeight: 400, scrollTop: 0 });
     fireEvent(window, new Event('resize'));
     expect(fade).toHaveClass('opacity-100');
+  });
+
+  it('notifies onHasMoreChange when overflow below changes', () => {
+    const onHasMoreChange = vi.fn();
+    render(
+      <ScrollFadeContainer onHasMoreChange={onHasMoreChange}>
+        <div>section one</div>
+        <div>section two</div>
+      </ScrollFadeContainer>,
+    );
+
+    const scroller = screen.getByTestId('scroll-fade-scroller');
+    onHasMoreChange.mockClear();
+
+    mockScrollerOverflow(scroller, { scrollHeight: 800, clientHeight: 400, scrollTop: 0 });
+    fireEvent(window, new Event('resize'));
+    expect(onHasMoreChange).toHaveBeenLastCalledWith(true);
+
+    mockScrollerOverflow(scroller, { scrollHeight: 800, clientHeight: 400, scrollTop: 400 });
+    fireEvent.scroll(scroller);
+    expect(onHasMoreChange).toHaveBeenLastCalledWith(false);
   });
 });

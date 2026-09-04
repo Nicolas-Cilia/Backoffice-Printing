@@ -242,7 +242,7 @@ describe('FloorCodesPage', () => {
   });
 
   describe('locations tab', () => {
-    it('lists Initial QC Pass and Rework, not the workflow stations', async () => {
+    it('lists Initial QC Pass, not Sanding/Rework (those print under Error labels)', async () => {
       mockStationsAndCapturePrint();
       const user = userEvent.setup();
       render(<FloorCodesPage />);
@@ -251,9 +251,9 @@ describe('FloorCodesPage', () => {
       await user.click(screen.getByRole('button', { name: 'Processes' }));
 
       expect(await screen.findByText('Initial QC Pass')).toBeInTheDocument();
-      expect(screen.getByText('Rework')).toBeInTheDocument();
       expect(screen.getByText('BBS-initial-qc-pass')).toBeInTheDocument();
-      expect(screen.queryByText('Harvest')).not.toBeInTheDocument();
+      expect(screen.queryByText('Sanding')).not.toBeInTheDocument();
+      expect(screen.queryByText('Rework')).not.toBeInTheDocument();
       expect(screen.queryByText('Harvest')).not.toBeInTheDocument();
     });
 
@@ -265,8 +265,6 @@ describe('FloorCodesPage', () => {
 
       await user.click(screen.getByRole('button', { name: 'Processes' }));
       await screen.findByText('Initial QC Pass');
-      await user.click(screen.getByRole('checkbox', { name: 'Sanding' }));
-      await user.click(screen.getByRole('checkbox', { name: 'Rework' }));
       await user.click(screen.getByRole('button', { name: /Print selected \(1\)/ }));
 
       await waitFor(() => expect(captured.body).not.toBeNull());
@@ -283,7 +281,7 @@ describe('FloorCodesPage', () => {
       await user.click(screen.getByRole('button', { name: 'Processes' }));
       await screen.findByText('Initial QC Pass');
 
-      expect(screen.getByRole('button', { name: /Print selected \(3\)/ })).toBeEnabled();
+      expect(screen.getByRole('button', { name: /Print selected \(1\)/ })).toBeEnabled();
     });
   });
 
@@ -426,30 +424,137 @@ describe('FloorCodesPage', () => {
 
   describe('error labels tab', () => {
     const LABELS = [
-      { id: 1, name: 'Other', slug: 'other', payload: 'BBF-other', is_protected: true },
-      { id: 2, name: 'Horizontal line', slug: 'horizontal-line', payload: 'BBF-horizontal-line', is_protected: false },
+      {
+        id: 1,
+        name: 'Other',
+        slug: 'other',
+        payload: 'BBF-other',
+        is_protected: true,
+        show_on_sanding: true,
+        show_on_rework: true,
+        show_on_discard: true,
+        sort_order: 1000,
+      },
+      {
+        id: 2,
+        name: 'Horizontal line',
+        slug: 'horizontal-line',
+        payload: 'BBF-horizontal-line',
+        is_protected: false,
+        show_on_sanding: true,
+        show_on_rework: true,
+        show_on_discard: false,
+        sort_order: 0,
+      },
     ];
 
-    it('does not offer Remove on the built-in Other label', async () => {
+    function mockErrorLabelsTab() {
+      const captured: { body: Record<string, unknown> | null } = { body: null };
       server.use(
         http.get('/api/v1/floor/stations', () => HttpResponse.json(STATIONS)),
         http.get('/api/v1/floor/error-labels', () => HttpResponse.json(LABELS)),
+        http.post('/api/v1/floor/labels/errors', async ({ request }) => {
+          captured.body = (await request.json()) as Record<string, unknown>;
+          return new HttpResponse(new Blob([new Uint8Array([0x25, 0x50, 0x44, 0x46])]), {
+            headers: { 'Content-Type': 'application/pdf' },
+          });
+        }),
       );
+      return captured;
+    }
+
+    it('prints Sanding, Rework, and Discard on the Error labels tab', async () => {
+      const captured = mockErrorLabelsTab();
+      const user = userEvent.setup();
+      render(<FloorCodesPage />);
+      await screen.findByText('Harvest');
+      await user.click(screen.getByRole('button', { name: 'Error labels' }));
+
+      expect(await screen.findByRole('checkbox', { name: 'Sanding' })).toBeInTheDocument();
+      expect(screen.getByRole('checkbox', { name: 'Rework' })).toBeInTheDocument();
+      expect(screen.getByRole('checkbox', { name: 'Discard' })).toBeInTheDocument();
+      expect(screen.getByRole('button', { name: /Print selected \(3\)/ })).toBeEnabled();
+
+      await user.click(screen.getByRole('button', { name: /Print selected \(3\)/ }));
+      await waitFor(() => expect(captured.body).not.toBeNull());
+      expect(captured.body).toMatchObject({
+        payloads: ['BBS-sanding', 'BBS-wip-rework', 'BBX-discard'],
+      });
+    });
+
+    it('does not offer Remove on the built-in Other label', async () => {
+      mockErrorLabelsTab();
       const user = userEvent.setup();
       render(<FloorCodesPage />);
       await screen.findByText('Harvest');
       await user.click(screen.getByRole('button', { name: 'Error labels' }));
 
       expect(await screen.findByText('Other')).toBeInTheDocument();
-      const otherRow = screen.getByText('BBF-other').closest('li');
+      const otherRow = screen.getByText('Always shown').closest('li');
       expect(otherRow).not.toBeNull();
       expect(within(otherRow as HTMLElement).queryByRole('button', { name: 'Remove' })).not.toBeInTheDocument();
 
-      const lineRow = screen.getByText('BBF-horizontal-line').closest('li');
+      const lineRow = screen.getByText('Horizontal line').closest('li');
       expect(lineRow).not.toBeNull();
       expect(within(lineRow as HTMLElement).getByRole('button', { name: 'Remove' })).toBeInTheDocument();
-      expect(screen.getByRole('checkbox', { name: 'Discard' })).toBeInTheDocument();
+      expect(screen.queryByText('BBF-horizontal-line')).not.toBeInTheDocument();
       expect(screen.queryByRole('checkbox', { name: 'Horizontal line' })).not.toBeInTheDocument();
+    });
+
+    it('toggles which sections a custom reason appears on', async () => {
+      let patched: Record<string, unknown> | null = null;
+      mockErrorLabelsTab();
+      server.use(
+        http.patch('/api/v1/floor/error-labels/:id', async ({ request }) => {
+          patched = (await request.json()) as Record<string, unknown>;
+          return HttpResponse.json({ ...LABELS[1], ...patched });
+        }),
+      );
+      const user = userEvent.setup();
+      render(<FloorCodesPage />);
+      await user.click(screen.getByRole('button', { name: 'Error labels' }));
+
+      const lineRow = (await screen.findByText('Horizontal line')).closest('li') as HTMLElement;
+      expect(within(lineRow).getByRole('checkbox', { name: 'Show on Sanding' })).toBeChecked();
+      expect(within(lineRow).getByRole('checkbox', { name: 'Show on Discard' })).not.toBeChecked();
+      await user.click(within(lineRow).getByRole('checkbox', { name: 'Show on Discard' }));
+
+      await waitFor(() => expect(patched).toEqual({ show_on_discard: true }));
+
+      const otherRow = screen.getByText('Always shown').closest('li') as HTMLElement;
+      expect(within(otherRow).getByRole('checkbox', { name: 'Show on Sanding' })).toBeDisabled();
+    });
+
+    it('adds a reason from a display name only', async () => {
+      let created: Record<string, unknown> | null = null;
+      mockErrorLabelsTab();
+      server.use(
+        http.post('/api/v1/floor/error-labels', async ({ request }) => {
+          created = (await request.json()) as Record<string, unknown>;
+          return HttpResponse.json({
+            id: 9,
+            name: created.name,
+            slug: created.slug,
+            payload: `BBF-${created.slug}`,
+            is_protected: false,
+            show_on_sanding: true,
+            show_on_rework: true,
+            show_on_discard: true,
+            sort_order: created.sort_order ?? 0,
+          }, { status: 201 });
+        }),
+      );
+      const user = userEvent.setup();
+      render(<FloorCodesPage />);
+      await user.click(screen.getByRole('button', { name: 'Error labels' }));
+
+      await user.type(await screen.findByPlaceholderText('Reason name'), 'Warping');
+      await user.click(screen.getByRole('button', { name: 'Add reason' }));
+
+      await waitFor(() =>
+        expect(created).toMatchObject({ name: 'Warping', slug: 'warping' }),
+      );
+      expect(screen.queryByText('BBF-')).not.toBeInTheDocument();
     });
   });
 });

@@ -192,6 +192,11 @@ class HarvestPrinterOutcome:
     part_count: int = 0
     # Populated only on the (structurally near-unreachable) LOCKED path.
     blocking: FloorStationSession | None = None
+    # Stats 2 silent variance on plate_closed (optional; never required to act).
+    expected_quantity: int | None = None
+    expected_quantity_source: str | None = None
+    quantity_variance: int | None = None
+    parsed_stem: str | None = None
 
 
 async def _count_plate_parts(db: AsyncSession, session_id: int, printer_id: int) -> int:
@@ -407,6 +412,22 @@ async def scan_harvest_printer(db: AsyncSession, device_id: str, payload: str) -
         # a newer plate.
         part_count = await _count_plate_parts(db, session.id, printer_id)
         archive = await get_archive_summary(db, session.bound_archive_id) if session.bound_archive_id else None
+        archive_id = session.bound_archive_id
+        expected_quantity = None
+        expected_quantity_source = None
+        quantity_variance = None
+        parsed_stem = None
+        try:
+            from backend.app.services.expected_quantity import SOURCE_DEFAULT, resolve_expected_quantity
+
+            resolved = await resolve_expected_quantity(db, archive_id)
+            expected_quantity = resolved.quantity
+            expected_quantity_source = resolved.source
+            parsed_stem = resolved.parsed_stem
+            if resolved.source != SOURCE_DEFAULT:
+                quantity_variance = part_count - resolved.quantity
+        except Exception:
+            pass
         await bind_plate(db, session, printer_id=None, archive_id=None)
         return HarvestPrinterOutcome(
             result=HarvestPrinterResult.PLATE_CLOSED,
@@ -414,6 +435,10 @@ async def scan_harvest_printer(db: AsyncSession, device_id: str, payload: str) -
             printer=printer,
             archive=archive,
             part_count=part_count,
+            expected_quantity=expected_quantity,
+            expected_quantity_source=expected_quantity_source,
+            quantity_variance=quantity_variance,
+            parsed_stem=parsed_stem,
         )
 
     # A different printer — close this plate, open that one.
@@ -1215,6 +1240,112 @@ async def reassign_kit_by_batch_id(
     if target is None:
         return KitReassignOutcome(result=KitReassignResult.NO_TARGET, part=part)
     return await reassign_kit_to_batch(db, part, slot, target)
+
+
+ERROR_LABEL_SECTION_FLAGS = {
+    "sanding": "show_on_sanding",
+    "rework": "show_on_rework",
+    "discard": "show_on_discard",
+}
+
+
+def _error_label_sort_key(label: FloorErrorLabel) -> tuple[int, int, str]:
+    """Custom labels by sort_order then name; Other always last."""
+    if label.slug == "other":
+        return (1, 0, "")
+    return (0, label.sort_order, label.name.lower())
+
+
+def _section_flag_attr(section: str) -> str:
+    try:
+        return ERROR_LABEL_SECTION_FLAGS[section]
+    except KeyError as exc:
+        raise ValueError(f"Unknown error-label section: {section!r}") from exc
+
+
+async def count_custom_error_labels_for_section(
+    db: AsyncSession,
+    section: str,
+    *,
+    exclude_id: int | None = None,
+) -> int:
+    """How many non-Other labels currently show on ``section``."""
+    flag = _section_flag_attr(section)
+    statement = (
+        select(func.count())
+        .select_from(FloorErrorLabel)
+        .where(
+            FloorErrorLabel.slug != "other",
+            getattr(FloorErrorLabel, flag).is_(True),
+        )
+    )
+    if exclude_id is not None:
+        statement = statement.where(FloorErrorLabel.id != exclude_id)
+    return int(await db.scalar(statement) or 0)
+
+
+def _would_exceed_section_cap(
+    current_count: int,
+    *,
+    enabling: bool,
+    already_enabled: bool,
+) -> bool:
+    from backend.app.models.floor_part import MAX_CUSTOM_ERROR_LABELS_PER_SECTION
+
+    if not enabling or already_enabled:
+        return False
+    return current_count >= MAX_CUSTOM_ERROR_LABELS_PER_SECTION
+
+
+async def assert_error_label_section_caps(
+    db: AsyncSession,
+    *,
+    show_on_sanding: bool,
+    show_on_rework: bool,
+    show_on_discard: bool,
+    exclude_id: int | None = None,
+    previous: FloorErrorLabel | None = None,
+) -> None:
+    """Raise ``ValueError`` if enabling a section would push it past five custom labels."""
+    from backend.app.models.floor_part import MAX_CUSTOM_ERROR_LABELS_PER_SECTION
+
+    checks = (
+        ("sanding", show_on_sanding, previous.show_on_sanding if previous else False),
+        ("rework", show_on_rework, previous.show_on_rework if previous else False),
+        ("discard", show_on_discard, previous.show_on_discard if previous else False),
+    )
+    for section, enabling, already in checks:
+        count = await count_custom_error_labels_for_section(db, section, exclude_id=exclude_id)
+        if _would_exceed_section_cap(count, enabling=enabling, already_enabled=already):
+            raise ValueError(
+                f"At most {MAX_CUSTOM_ERROR_LABELS_PER_SECTION} custom reasons can show on {section} (plus Other)"
+            )
+
+
+async def list_error_labels(db: AsyncSession) -> list[FloorErrorLabel]:
+    """Full catalog for the Codes page, ordered for editing."""
+    labels = list((await db.execute(select(FloorErrorLabel))).scalars())
+    labels.sort(key=_error_label_sort_key)
+    return labels
+
+
+async def list_error_labels_for_section(db: AsyncSession, section: str) -> list[FloorErrorLabel]:
+    """Labels shown as buttons for one scan section.
+
+    Always includes Other (last). At most five custom labels with the section
+    flag enabled, ordered by ``sort_order`` then name.
+    """
+    from backend.app.models.floor_part import MAX_CUSTOM_ERROR_LABELS_PER_SECTION
+
+    flag = _section_flag_attr(section)
+    labels = list((await db.execute(select(FloorErrorLabel))).scalars())
+    other = next((label for label in labels if label.slug == "other"), None)
+    custom = [label for label in labels if label.slug != "other" and bool(getattr(label, flag))]
+    custom.sort(key=_error_label_sort_key)
+    custom = custom[:MAX_CUSTOM_ERROR_LABELS_PER_SECTION]
+    if other is not None:
+        custom.append(other)
+    return custom
 
 
 async def _error_label_for_payload(db: AsyncSession, payload: str) -> FloorErrorLabel | None:
@@ -2276,6 +2407,10 @@ __all__ = [
     "ReplaceStickerOutcome",
     "ReplaceStickerReasonCode",
     "replace_sticker_code",
+    "list_error_labels",
+    "list_error_labels_for_section",
+    "assert_error_label_section_caps",
+    "count_custom_error_labels_for_section",
     "has_labeled_parts_for_archive",
     "PartCodeOption",
     "list_part_code_options",

@@ -120,4 +120,39 @@ describe('Dispatch toast (inside ToastContext)', () => {
     fireEvent.click(screen.getByTestId('dispatch-toast-dismiss'));
     expect(screen.queryByTestId('dispatch-toast-wrapper')).toBeNull();
   });
+
+  it('hides the dispatch toast when setDispatchToastSuppressed(true) (Floor scan)', async () => {
+    const { useToast } = await import('../../contexts/ToastContext');
+    function Probe() {
+      const { showToast, setDispatchToastSuppressed } = useToast();
+      return (
+        <>
+          <button data-testid="suppress-dispatch" onClick={() => setDispatchToastSuppressed(true)} />
+          <button data-testid="show-local" onClick={() => showToast('local feedback', 'success')} />
+        </>
+      );
+    }
+
+    render(<Probe />);
+    emit({
+      type: 'queue_item_uploading',
+      queue_item_id: 1,
+      printer_id: 1,
+      printer_name: 'H2D-1',
+      file_name: 'a.3mf',
+      total_bytes: 1000,
+    });
+    expect(screen.getByTestId('dispatch-toast-wrapper')).toBeInTheDocument();
+
+    act(() => {
+      screen.getByTestId('suppress-dispatch').click();
+    });
+    expect(screen.queryByTestId('dispatch-toast-wrapper')).toBeNull();
+
+    // Local toasts still render — only the "Starting prints" popup is gated.
+    act(() => {
+      screen.getByTestId('show-local').click();
+    });
+    expect(screen.getByText('local feedback')).toBeInTheDocument();
+  });
 });

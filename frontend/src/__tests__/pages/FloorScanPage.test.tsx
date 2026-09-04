@@ -467,6 +467,45 @@ describe('FloorScanPage (Phase 1b sessions)', () => {
       await scan('BBP-12');
 
       expect(await screen.findByText('Bed ready to clear')).toBeInTheDocument();
+      expect(screen.getByRole('button', { name: 'Report plate failed' })).toBeInTheDocument();
+    });
+
+    it('reports a finished plate as failed without stickers', async () => {
+      const user = userEvent.setup();
+      mockNoSession();
+      let awaitingPlateClear = true;
+      let plateFailureBody: Record<string, unknown> | null = null;
+      server.use(
+        http.get('/api/v1/floor/printers/:payload/info', () =>
+          HttpResponse.json({ ...INFO, awaiting_plate_clear: awaitingPlateClear }),
+        ),
+        http.post('/api/v1/floor/printers/:id/plate-failure', async ({ request }) => {
+          plateFailureBody = (await request.json()) as Record<string, unknown>;
+          awaitingPlateClear = false;
+          return HttpResponse.json({
+            print_log_id: 9,
+            archive_id: 88,
+            print_name: 'Bracket v3',
+            part_code: null,
+            status: 'failed',
+            stopped_at: '2026-08-24T14:32:00',
+            reason_code: 'warping',
+            reason_text: null,
+          });
+        }),
+      );
+      render(<FloorScanPage />);
+      await screen.findByText('Scan a code');
+      await scan('BBP-12');
+
+      await user.click(await screen.findByRole('button', { name: 'Report plate failed' }));
+      expect(await screen.findByText('Why did this plate fail?')).toBeInTheDocument();
+      await user.click(screen.getByRole('button', { name: 'Warping' }));
+      await user.click(screen.getByRole('button', { name: 'Save' }));
+
+      await waitFor(() => expect(plateFailureBody).toEqual({ reason_code: 'warping', reason_text: null }));
+      expect(await screen.findByText('Plate marked as failed')).toBeInTheDocument();
+      expect(screen.queryByText('Bed ready to clear')).not.toBeInTheDocument();
     });
 
     it('does not prompt to harvest a job whose parts are already labeled', async () => {

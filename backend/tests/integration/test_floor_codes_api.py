@@ -135,6 +135,9 @@ class TestErrorLabels:
         body = created.json()
         assert body["payload"] == "BBF-other"
         assert body["is_protected"] is True
+        assert body["show_on_sanding"] is True
+        assert body["show_on_rework"] is True
+        assert body["show_on_discard"] is True
 
         deleted = await async_client.delete(f"/api/v1/floor/error-labels/{body['id']}")
         assert deleted.status_code == 400
@@ -159,3 +162,131 @@ class TestErrorLabels:
 
         remaining = await async_client.get("/api/v1/floor/error-labels")
         assert all(label["slug"] != "warping" for label in remaining.json())
+
+    @pytest.mark.asyncio
+    @pytest.mark.integration
+    async def test_for_section_filters_and_always_includes_other(self, async_client: AsyncClient):
+        other = await async_client.post(
+            "/api/v1/floor/error-labels",
+            json={"name": "Other", "slug": "other"},
+        )
+        assert other.status_code == 201
+        sanding_only = await async_client.post(
+            "/api/v1/floor/error-labels",
+            json={
+                "name": "Sanding only",
+                "slug": "sanding-only",
+                "show_on_sanding": True,
+                "show_on_rework": False,
+                "show_on_discard": False,
+            },
+        )
+        assert sanding_only.status_code == 201
+        discard_only = await async_client.post(
+            "/api/v1/floor/error-labels",
+            json={
+                "name": "Discard only",
+                "slug": "discard-only",
+                "show_on_sanding": False,
+                "show_on_rework": False,
+                "show_on_discard": True,
+            },
+        )
+        assert discard_only.status_code == 201
+
+        sanding = await async_client.get("/api/v1/floor/error-labels", params={"for": "sanding"})
+        discard = await async_client.get("/api/v1/floor/error-labels", params={"for": "discard"})
+        assert sanding.status_code == 200
+        assert discard.status_code == 200
+        sanding_slugs = [label["slug"] for label in sanding.json()]
+        discard_slugs = [label["slug"] for label in discard.json()]
+        assert "sanding-only" in sanding_slugs
+        assert "discard-only" not in sanding_slugs
+        assert "discard-only" in discard_slugs
+        assert "sanding-only" not in discard_slugs
+        assert sanding_slugs[-1] == "other"
+        assert discard_slugs[-1] == "other"
+
+    @pytest.mark.asyncio
+    @pytest.mark.integration
+    async def test_rejects_sixth_custom_reason_on_a_section(self, async_client: AsyncClient):
+        for index in range(5):
+            created = await async_client.post(
+                "/api/v1/floor/error-labels",
+                json={
+                    "name": f"Sanding reason {index}",
+                    "slug": f"sanding-reason-{index}",
+                    "show_on_sanding": True,
+                    "show_on_rework": False,
+                    "show_on_discard": False,
+                },
+            )
+            assert created.status_code == 201, created.text
+
+        sixth = await async_client.post(
+            "/api/v1/floor/error-labels",
+            json={
+                "name": "Sanding reason 5",
+                "slug": "sanding-reason-5",
+                "show_on_sanding": True,
+                "show_on_rework": False,
+                "show_on_discard": False,
+            },
+        )
+        assert sixth.status_code == 400
+        assert "At most 5" in sixth.json()["detail"]
+
+    @pytest.mark.asyncio
+    @pytest.mark.integration
+    async def test_cannot_disable_other_on_a_section(self, async_client: AsyncClient):
+        created = await async_client.post(
+            "/api/v1/floor/error-labels",
+            json={"name": "Other", "slug": "other"},
+        )
+        assert created.status_code == 201
+        other_id = created.json()["id"]
+
+        patched = await async_client.patch(
+            f"/api/v1/floor/error-labels/{other_id}",
+            json={"show_on_discard": False},
+        )
+        assert patched.status_code == 400
+        assert "always shown" in patched.json()["detail"].lower()
+
+    @pytest.mark.asyncio
+    @pytest.mark.integration
+    async def test_patch_updates_section_flags(self, async_client: AsyncClient):
+        created = await async_client.post(
+            "/api/v1/floor/error-labels",
+            json={"name": "Layer lines", "slug": "layer-lines"},
+        )
+        assert created.status_code == 201
+        label_id = created.json()["id"]
+
+        patched = await async_client.patch(
+            f"/api/v1/floor/error-labels/{label_id}",
+            json={"show_on_sanding": False, "show_on_rework": True, "show_on_discard": False, "sort_order": 3},
+        )
+        assert patched.status_code == 200
+        body = patched.json()
+        assert body["show_on_sanding"] is False
+        assert body["show_on_rework"] is True
+        assert body["show_on_discard"] is False
+        assert body["sort_order"] == 3
+
+
+class TestRenderErrorLabels:
+    @pytest.mark.asyncio
+    @pytest.mark.integration
+    async def test_prints_sanding_rework_and_discard(self, async_client: AsyncClient):
+        resp = await async_client.post(
+            "/api/v1/floor/labels/errors",
+            json={
+                "payloads": ["BBS-sanding", "BBS-wip-rework", "BBX-discard"],
+                "width_mm": 60,
+                "height_mm": 60,
+            },
+        )
+        assert resp.status_code == 200
+        assert resp.headers["content-type"] == "application/pdf"
+        assert resp.content.startswith(b"%PDF-")

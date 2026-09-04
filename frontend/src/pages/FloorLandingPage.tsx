@@ -14,12 +14,14 @@ import { useMutation, useQueries, useQuery, useQueryClient } from '@tanstack/rea
 import { ScanLine, QrCode, Loader2, AlertTriangle, ClipboardList, X } from 'lucide-react';
 import { Button } from '../components/Button';
 import { DateRangePicker } from '../components/DateRangePicker';
+import { FloorStopReasonEditor } from '../components/FloorStopReasonEditor';
 import {
   api,
   type FloorBinManagement,
   type FloorDismissedBuildPlate,
   type FloorInventoryPart,
   type FloorSession,
+  type FloorStopReasonCode,
 } from '../api/client';
 import { getDeviceId } from '../utils/floorDevice';
 import { formatElapsed } from '../utils/floorScan';
@@ -488,6 +490,9 @@ function HistoryRow({
 function UnlabeledBuildPlatesPanel({ t }: { t: ReturnType<typeof useTranslation>['t'] }) {
   const queryClient = useQueryClient();
   const [dismissedOpen, setDismissedOpen] = useState(false);
+  const [failingArchiveId, setFailingArchiveId] = useState<number | null>(null);
+  const [selectedFailReason, setSelectedFailReason] = useState<FloorStopReasonCode | null>(null);
+  const [failReasonText, setFailReasonText] = useState('');
   const partsQuery = useQuery({
     queryKey: ['floor-unlabeled-build-plates'],
     queryFn: () => api.getFloorUnlabeledBuildPlates(NEEDS_ATTENTION_LIMIT),
@@ -504,11 +509,36 @@ function UnlabeledBuildPlatesPanel({ t }: { t: ReturnType<typeof useTranslation>
   const invalidateBothLists = () => {
     queryClient.invalidateQueries({ queryKey: ['floor-unlabeled-build-plates'] });
     queryClient.invalidateQueries({ queryKey: ['floor-dismissed-build-plates'] });
+    queryClient.invalidateQueries({ queryKey: ['floor-print-failure-reasons'] });
   };
   const dismiss = useMutation({
     mutationFn: (id: number) => api.dismissFloorUnlabeledBuildPlate(id),
     onSuccess: invalidateBothLists,
   });
+  const failPlate = useMutation({
+    mutationFn: ({
+      archiveId,
+      reason_code,
+      reason_text,
+    }: {
+      archiveId: number;
+      reason_code: FloorStopReasonCode;
+      reason_text?: string | null;
+    }) => api.failFloorUnlabeledBuildPlate(archiveId, { reason_code, reason_text }),
+    onSuccess: () => {
+      setFailingArchiveId(null);
+      setSelectedFailReason(null);
+      setFailReasonText('');
+      invalidateBothLists();
+    },
+  });
+
+  const resetFailEditor = () => {
+    if (failPlate.isPending) return;
+    setFailingArchiveId(null);
+    setSelectedFailReason(null);
+    setFailReasonText('');
+  };
 
   return (
     <section className="bg-bambu-dark-secondary rounded-lg overflow-hidden w-full">
@@ -565,42 +595,83 @@ function UnlabeledBuildPlatesPanel({ t }: { t: ReturnType<typeof useTranslation>
       ) : (
         <ul className="divide-y divide-bambu-dark-tertiary">
           {parts.map((part) => (
-            <li key={part.id} className="flex flex-col gap-3 px-4 py-3 md:flex-row md:items-center md:gap-4">
-              <div className="flex min-w-0 flex-1 items-start gap-3">
-                <AlertTriangle
-                  className="mt-0.5 h-4 w-4 shrink-0 text-amber-500"
-                  aria-hidden="true"
-                />
-                <div className="min-w-0 flex-1 md:flex md:items-center md:justify-between md:gap-4">
-                  <div className="min-w-0">
-                    <div className="break-words font-medium text-white">{part.print_name}</div>
-                    <div className="text-xs text-bambu-gray">{part.printer_name}</div>
+            <li key={part.id} className="flex flex-col gap-3 px-4 py-3">
+              <div className="flex flex-col gap-3 md:flex-row md:items-center md:gap-4">
+                <div className="flex min-w-0 flex-1 items-start gap-3">
+                  <AlertTriangle
+                    className="mt-0.5 h-4 w-4 shrink-0 text-amber-500"
+                    aria-hidden="true"
+                  />
+                  <div className="min-w-0 flex-1 md:flex md:items-center md:justify-between md:gap-4">
+                    <div className="min-w-0">
+                      <div className="break-words font-medium text-white">{part.print_name}</div>
+                      <div className="text-xs text-bambu-gray">{part.printer_name}</div>
+                    </div>
+                    <span className="mt-0.5 block text-xs text-bambu-gray md:mt-0 md:shrink-0 md:whitespace-nowrap">
+                      {part.completed_at
+                        ? new Date(`${part.completed_at}Z`).toLocaleString()
+                        : t('floor.needsAttentionUnknownTime', 'Unknown time')}
+                    </span>
                   </div>
-                  <span className="mt-0.5 block text-xs text-bambu-gray md:mt-0 md:shrink-0 md:whitespace-nowrap">
-                    {part.completed_at
-                      ? new Date(`${part.completed_at}Z`).toLocaleString()
-                      : t('floor.needsAttentionUnknownTime', 'Unknown time')}
-                  </span>
+                </div>
+                <div className="flex w-full shrink-0 flex-col gap-2 sm:flex-row md:w-auto">
+                  <Button
+                    variant="secondary"
+                    className="w-full sm:w-auto"
+                    onClick={() => {
+                      if (
+                        window.confirm(
+                          t('floor.dismissBuildPlateConfirm', 'Hide {{name}} from the production backlog?', {
+                            name: part.print_name ?? t('floor.dismissBuildPlateFallback', 'this build plate'),
+                          }),
+                        )
+                      ) {
+                        dismiss.mutate(part.id);
+                      }
+                    }}
+                    disabled={dismiss.isPending || failPlate.isPending}
+                  >
+                    {t('floor.dismissBuildPlate', 'Not for production')}
+                  </Button>
+                  <Button
+                    variant="secondary"
+                    className="w-full border-red-500/40 text-red-300 hover:border-red-400 hover:text-white sm:w-auto"
+                    onClick={() => {
+                      setFailingArchiveId(part.id);
+                      setSelectedFailReason(null);
+                      setFailReasonText('');
+                    }}
+                    disabled={dismiss.isPending || failPlate.isPending}
+                  >
+                    {t('floor.printFailed', 'Print failed')}
+                  </Button>
                 </div>
               </div>
-              <Button
-                variant="secondary"
-                className="w-full shrink-0 md:w-auto"
-                onClick={() => {
-                  if (
-                    window.confirm(
-                      t('floor.dismissBuildPlateConfirm', 'Hide {{name}} from the production backlog?', {
-                        name: part.print_name ?? t('floor.dismissBuildPlateFallback', 'this build plate'),
-                      }),
-                    )
-                  ) {
-                    dismiss.mutate(part.id);
-                  }
-                }}
-                disabled={dismiss.isPending}
-              >
-                {t('floor.dismissBuildPlate', 'Not for production')}
-              </Button>
+              {failingArchiveId === part.id && (
+                <FloorStopReasonEditor
+                  isFailure
+                  questionKey="floor.plateFailureQuestion"
+                  questionFallback="Why did this plate fail?"
+                  selectedReason={selectedFailReason}
+                  reasonText={failReasonText}
+                  busy={failPlate.isPending}
+                  onSelect={(reason) => {
+                    setSelectedFailReason(reason);
+                    if (reason !== 'other') setFailReasonText('');
+                  }}
+                  onReasonTextChange={setFailReasonText}
+                  onCancel={resetFailEditor}
+                  onSave={() => {
+                    if (!selectedFailReason) return;
+                    failPlate.mutate({
+                      archiveId: part.id,
+                      reason_code: selectedFailReason,
+                      reason_text: selectedFailReason === 'other' ? failReasonText : null,
+                    });
+                  }}
+                  t={t}
+                />
+              )}
             </li>
           ))}
         </ul>
