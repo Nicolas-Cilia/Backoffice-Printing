@@ -1519,6 +1519,8 @@ class TestSetPartStatus:
             "hot_air_removed",
             "cleanup",
             "fit_checked",
+            "sanding",
+            "rework",
         ],
     )
     async def test_accepts_the_new_floor_pipeline_statuses(self, db_session, printer_factory, status):

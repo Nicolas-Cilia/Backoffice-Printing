@@ -38,6 +38,8 @@ describe('floorPartHistory pass status styling', () => {
     expect(formatCustomStatus('support_removed')).toBe('Support Removed');
     expect(formatCustomStatus('overhang_removed')).toBe('Overhang Removed');
     expect(formatCustomStatus('hot_air_removed')).toBe('Hot Air Removed');
+    expect(formatCustomStatus('sanding')).toBe('Sanding');
+    expect(formatCustomStatus('rework')).toBe('Rework');
   });
 
   it('reads the consuming TOP sticker from a consumed bin event', () => {
@@ -153,5 +155,17 @@ describe('floorPartHistory pass status styling', () => {
         t,
       ),
     ).toBe('Sent to Rework · doesnt fit · Customer return');
+    expect(
+      partEventLabel(
+        {
+          id: 4,
+          action: 'sanding',
+          details: { reason_code: 'rough_surface', reason_text: null },
+          occurred_at: '2026-08-29T10:00:00',
+        },
+        'TOP',
+        t,
+      ),
+    ).toBe('Sent to Sanding · rough surface');
   });
 });
