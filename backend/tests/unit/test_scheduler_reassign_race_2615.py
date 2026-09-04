@@ -95,9 +95,15 @@ async def test_dispatch_one_claims_then_releases_around_start_print(ctx):
         row = await db.get(PrintQueueItem, item.id)
         seen["claimed_during"] = row.dispatching_at is not None
 
+    def _noop_spawn(coro, *, name=None):
+        coro.close()
+        return AsyncMock()
+
     with (
         patch.object(scheduler_module, "async_session", ctx.sm),
         patch.object(sched, "_start_print", side_effect=fake_start_print) as sp,
+        patch("backend.app.services.print_scheduler.spawn_background_task", _noop_spawn),
+        patch("backend.app.services.print_scheduler.record_queue_dispatched", AsyncMock()),
     ):
         await sched._dispatch_one(ctx.item_id)
 
@@ -114,9 +120,15 @@ async def test_dispatch_one_skips_an_already_claimed_row(ctx):
     async with ctx.sm() as db:
         await sched._claim_for_dispatch(db, ctx.item_id)
 
+    def _noop_spawn(coro, *, name=None):
+        coro.close()
+        return AsyncMock()
+
     with (
         patch.object(scheduler_module, "async_session", ctx.sm),
         patch.object(sched, "_start_print", new=AsyncMock()) as sp,
+        patch("backend.app.services.print_scheduler.spawn_background_task", _noop_spawn),
+        patch("backend.app.services.print_scheduler.record_queue_dispatched", AsyncMock()),
     ):
         await sched._dispatch_one(ctx.item_id)
 

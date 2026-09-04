@@ -195,6 +195,11 @@ async def _scheduler_ctx(ctx, upload, job_started=None):
         patch("backend.app.services.notification_service.notification_service.on_queue_job_started", job_started),
         patch("backend.app.services.notification_service.notification_service.on_queue_job_failed", AsyncMock()),
         patch("backend.app.services.mqtt_relay.mqtt_relay.on_queue_job_started", AsyncMock()),
+        # Stats 2 queue/plate analytics open their own DB session; these tests
+        # assert upload concurrency, not lifecycle recording.
+        patch("backend.app.services.print_scheduler.record_queue_dispatched", AsyncMock()),
+        patch("backend.app.services.print_scheduler.record_queue_started", AsyncMock()),
+        patch("backend.app.services.print_scheduler.record_next_print_started", AsyncMock()),
         patch.object(scheduler, "_is_printer_idle", MagicMock(return_value=True)),
         patch.object(scheduler, "_propagate_owner_to_printer_manager", AsyncMock()),
         patch.object(scheduler, "_power_off_if_needed", AsyncMock()),
