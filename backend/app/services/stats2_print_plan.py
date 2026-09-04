@@ -4,6 +4,9 @@ Packs production slots onto every eligible printer model for each recipe part
 (A1 / A1M / X1C / H2D / H2S, …) — not a single preferred/recommended file.
 Prioritizes the readiness binding part, then the print-capacity binding part.
 Prints may run into unstaffed hours; starts (and clears) still need staff.
+
+Placement aims at theoretical (physical) max; print/harvest/QC yields are
+recorded on each job for expected/realistic capacity, not for who prints what.
 """
 
 from __future__ import annotations
@@ -166,9 +169,13 @@ def placement_sort_key(
     2. Earlier feasible start (free H2D at 10:00 beats a mid-afternoon X1C
        when progress is equal)
     3. Sooner wave finish (``-wave_time``)
-    4. Expected good parts per occupancy minute
+    4. Physical parts per occupancy minute
     5. Earlier clear on this lane
     6. Higher physical qty
+
+    Placement scores use *physical* plate qty (not yield-adjusted). Yields are
+    applied afterward on the packed jobs for expected/realistic capacity so the
+    schedule still aims at theoretical max when print/harvest/QC are imperfect.
 
     Dedicated single-part models (e.g. H2S→BOT only) pass *uncapped* plate
     progress into ``progress`` so a leftover ask of 2 cannot make BOT x2 beat
@@ -271,6 +278,23 @@ def _printers_used_for_part(days_out: list[dict] | None, part_code: str) -> tupl
         break
     models = sorted({m for m in used.values() if m})
     return len(used), models
+
+
+def _capacity_ceiling_for_extras(
+    *,
+    schedulable_ceiling: float | None,
+    devices_achievable: float,
+) -> float:
+    """Denominator for min_extra_printers: schedulable devices/day, not unconstrained.
+
+    Unconstrained dedicated-fleet rates often exceed the shared-fleet pack
+    ceiling. Using them in ``max(...)`` makes ask/ceiling < 1 for mild
+    over-asks and reports 0 extra printers while parts are still short.
+    """
+    sched = float(schedulable_ceiling or 0.0)
+    if sched > 0:
+        return sched
+    return max(float(devices_achievable or 0.0), 1.0)
 
 
 def _short_parts_from_pack(
@@ -578,8 +602,12 @@ async def measure_schedulable_devices(
     lo = 0.0
     hi = ceiling
     best_target = 0.0
+    best_physical = 0.0
     best_plan: dict | None = None
     # ~10 iterations → ~0.1% of ceiling; enough for whole devices.
+    # Packing is non-monotonic in the ask (over-asking BOT can steal TOP time),
+    # so always retain the densest *physical* pack seen — even from infeasible
+    # probes — then re-pack at that whole-device target.
     for _ in range(12):
         mid = (lo + hi) / 2.0
         if mid <= 0:
@@ -592,27 +620,19 @@ async def measure_schedulable_devices(
             capacity=capacity,
         )
         ach = float(plan.get("devices_achievable") or 0.0)
-        if bool(plan.get("feasible")) and ach + 1e-9 >= mid:
-            # Confirm BOM-limited packed devices actually reach the probe.
-            pq = {r["part_code"]: int(r["qty_per_device"]) for r in plan.get("scenario_rows") or []}
-            packed = {k: float(v) for k, v in (plan.get("parts_packed") or {}).items()}
-            packed_devs = _devices_from_parts(pq, packed) if pq else 0.0
-            if packed_devs + 1e-9 >= mid:
-                best_target = mid
-                best_plan = plan
-                lo = mid
-            else:
-                hi = mid
-                if packed_devs > best_target:
-                    best_target = packed_devs
-                    best_plan = plan
+        pq = {r["part_code"]: int(r["qty_per_device"]) for r in plan.get("scenario_rows") or []}
+        packed = {k: float(v) for k, v in (plan.get("parts_packed") or {}).items()}
+        packed_devs = _devices_from_parts(pq, packed) if pq else 0.0
+        if packed_devs > best_physical + 1e-9:
+            best_physical = packed_devs
+            best_plan = plan
+        if bool(plan.get("feasible")) and ach + 1e-9 >= mid and packed_devs + 1e-9 >= mid:
+            best_target = mid
+            lo = mid
         else:
             hi = mid
-            if best_plan is None or ach > float(best_plan.get("devices_achievable") or 0.0):
-                # Keep the densest infeasible pack as a fallback floor.
-                if ach > best_target:
-                    best_target = ach
-                    best_plan = plan
+            if ach > best_target + 1e-9:
+                best_target = ach
 
     if best_plan is None:
         best_plan = await compute_print_plan(
@@ -623,12 +643,18 @@ async def measure_schedulable_devices(
             capacity=capacity,
         )
         best_target = float(best_plan.get("devices_achievable") or 0.0)
+        pq = {r["part_code"]: int(r["qty_per_device"]) for r in best_plan.get("scenario_rows") or []}
+        packed = {k: float(v) for k, v in (best_plan.get("parts_packed") or {}).items()}
+        best_physical = _devices_from_parts(pq, packed) if pq else best_target
 
-    # Re-pack at the proven feasible target so yields/jobs match the headline.
+    # Prefer the best physical pack observed; ask at a whole-device target so the
+    # Gantt matches theoretical (yields only affect expected afterward).
+    final_target = max(best_target, best_physical, 0.0)
+    final_target = float(int(final_target + 1e-9)) if final_target > 0 else 0.0
     plan = await compute_print_plan(
         db,
         week_start=week_start,
-        target_devices=best_target,
+        target_devices=final_target if final_target > 0 else max(u_t, 1.0),
         apply_readiness_boost=False,
         capacity=capacity,
     )
@@ -637,6 +663,18 @@ async def measure_schedulable_devices(
     # Use physical BOM-limited devices from packed parts — not devices_achievable,
     # which may boost up to the ask even when multi-up rounding leaves a short part.
     theoretical = _devices_from_parts(part_qty, packed_parts) if part_qty else 0.0
+    # Non-monotonic packing: a probe may have packed denser than the final
+    # whole-device re-ask. Keep that denser plan if the re-pack underperforms.
+    if best_plan is not None:
+        bp_qty = {r["part_code"]: int(r["qty_per_device"]) for r in best_plan.get("scenario_rows") or []}
+        bp_packed = {k: float(v) for k, v in (best_plan.get("parts_packed") or {}).items()}
+        bp_theo = _devices_from_parts(bp_qty, bp_packed) if bp_qty else 0.0
+        if bp_theo > theoretical + 1e-9:
+            plan = best_plan
+            part_qty = bp_qty
+            packed_parts = bp_packed
+            theoretical = bp_theo
+
     expected_parts = _expected_good_parts_from_plan(plan)
     for code in part_qty:
         expected_parts.setdefault(code, 0.0)
@@ -975,6 +1013,7 @@ async def compute_print_plan(
                         qty_plate = max(1, int(slot.get("quantity") or 1))
                         metrics = metrics_map.get(int(slot["slot_id"])) if slot.get("slot_id") is not None else None
                         success, harvest, qc = plate_yield_rates(metrics)
+                        # Yield-adjusted parts for expected/realistic only.
                         eff = float(qty_plate) * success * harvest * qc
                         start = next_start_avoiding_blocks(
                             lane.cursor_minute,
@@ -990,7 +1029,10 @@ async def compute_print_plan(
                         end = start + print_min
                         _clear_start, clear_end = next_clear_start(end, windows, clear_minutes)
                         occupancy = max(1, int(clear_end) - int(start))
-                        rate = eff / float(occupancy)
+                        # Score placements on physical qty so imperfect QC/yield
+                        # cannot shrink the theoretical schedule (e.g. H2S BOT x5
+                        # with qc=0.75 losing to X1C BOT and capping devices at 23).
+                        rate = float(qty_plate) / float(occupancy)
 
                         n_same_wave = sum(
                             1
@@ -998,9 +1040,9 @@ async def compute_print_plan(
                             if ln.model == lane.model
                             and abs(int(ln.cursor_minute) - int(lane.cursor_minute)) <= _PARALLEL_WAVE_EPSILON_MIN
                         )
-                        plates_needed_for_ask = max(1, int((remaining + eff - 1e-9) // max(eff, 1e-9)))
+                        plates_needed_for_ask = max(1, int((remaining + qty_plate - 1e-9) // max(qty_plate, 1)))
                         starts = min(max(1, n_same_wave), plates_needed_for_ask)
-                        raw_progress = float(starts) * eff
+                        raw_progress = float(starts) * float(qty_plate)
                         # Single-printer dedicated models (H2S→BOT): do not cap
                         # progress by leftover ask. Capping made BOT x2 tie BOT x5
                         # at remaining=2, then sooner-wave picked x2 and idled the
@@ -1169,13 +1211,13 @@ async def compute_print_plan(
     # A boosted pass must not recurse again.
     if fleet_boost is None and not feasible and target > 0:
         # Prefer the shop's measured schedulable ceiling (from overview / query)
-        # so extras match "Capacity ~N/day". Fall back to unconstrained / packed.
-        capacity_ceiling = max(
-            float(schedulable_ceiling or 0.0),
-            float(devices_achievable or 0.0),
-            float(capacity_theoretical or 0.0),
-            float(capacity_realistic or 0.0),
-            1.0,
+        # so extras match "Capacity ~N/day". Never max with unconstrained
+        # dedicated-fleet rates — those overstate shared capacity and make
+        # ask/ceiling < 1 for mild over-asks (e.g. 28 vs ~26), yielding
+        # "0 printers needed" while parts are still short.
+        capacity_ceiling = _capacity_ceiling_for_extras(
+            schedulable_ceiling=schedulable_ceiling,
+            devices_achievable=devices_achievable,
         )
         short_parts = _short_parts_from_pack(
             part_qty=part_qty,
