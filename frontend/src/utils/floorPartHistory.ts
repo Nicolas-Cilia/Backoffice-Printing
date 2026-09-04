@@ -33,6 +33,8 @@ export function formatCustomStatus(status: string) {
   if (status === 'overhang_removed') return 'Overhang Removed';
   if (status === 'hot_air_removed') return 'Hot Air Removed';
   if (status === 'fit_checked' || status === 'fit_check') return 'Fit Check Pass';
+  if (status === 'sanding') return 'Sanding';
+  if (status === 'rework') return 'Rework';
   if (status === 'needs_matching') return 'Needs matching';
   if (status === 'wip' || status === 'in_wip') return 'In WIP';
   return status
@@ -89,8 +91,26 @@ export function partEventLabel(
       return partCode === 'BUT' || partCode === 'KNB'
         ? t('floor.inventoryEventVisualQcPassed', 'Visual QC pass')
         : t('floor.inventoryEventFitChecked', 'Fit Check Pass');
-    case 'rework':
     case 'sanding': {
+      const reasonCode = event.details?.reason_code;
+      const reasonText = event.details?.reason_text;
+      const errorName = event.details?.error_name;
+      const reasonLabel =
+        typeof errorName === 'string' && errorName
+          ? errorName
+          : typeof reasonCode === 'string' && reasonCode !== 'other'
+            ? reasonCode.replaceAll('_', ' ')
+            : null;
+      const description =
+        typeof reasonText === 'string' && reasonText.trim()
+          ? compactEventReason(reasonText)
+          : null;
+      const reason = [reasonLabel, description].filter(Boolean).join(' · ') || null;
+      return reason
+        ? t('floor.inventoryEventSandingWithReason', 'Sent to Sanding · {{reason}}', { reason })
+        : t('floor.inventoryEventSanding', 'Sent to Sanding');
+    }
+    case 'rework': {
       const reasonCode = event.details?.reason_code;
       const reasonText = event.details?.reason_text;
       const errorName = event.details?.error_name;
@@ -268,8 +288,26 @@ export function unitEventLabel(event: FloorInventoryPartEvent, t: PartHistoryT) 
       return details?.source === 'serial_ready_to_ship'
         ? t('floor.unitEventReadyToShip', 'Ready to Ship')
         : t('floor.inventoryEventShipped', 'Shipped');
-    case 'rework':
     case 'sanding': {
+      const reasonCode = details?.reason_code;
+      const reasonText = details?.reason_text;
+      const errorName = details?.error_name;
+      const reasonLabel =
+        typeof errorName === 'string' && errorName
+          ? errorName
+          : typeof reasonCode === 'string' && reasonCode !== 'other'
+            ? reasonCode.replaceAll('_', ' ')
+            : null;
+      const description =
+        typeof reasonText === 'string' && reasonText.trim()
+          ? compactEventReason(reasonText)
+          : null;
+      const reason = [reasonLabel, description].filter(Boolean).join(' · ') || null;
+      return reason
+        ? t('floor.inventoryEventSandingWithReason', 'Sent to Sanding · {{reason}}', { reason })
+        : t('floor.inventoryEventSanding', 'Sent to Sanding');
+    }
+    case 'rework': {
       const reasonCode = details?.reason_code;
       const reasonText = details?.reason_text;
       const errorName = details?.error_name;

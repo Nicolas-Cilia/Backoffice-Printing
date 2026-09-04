@@ -940,7 +940,7 @@ describe("FloorInventoryPage", () => {
     expect(screen.queryByText("BBD-000103")).not.toBeInTheDocument();
   });
 
-  it("shows staged-for-prod counts for tops, bottoms, buttons, and knobs", async () => {
+  it("shows WIP + staged counts for tops, bottoms, buttons, and knobs", async () => {
     const user = userEvent.setup();
     server.use(
       http.get("/api/v1/floor/inventory/parts", () =>
@@ -1094,23 +1094,24 @@ describe("FloorInventoryPage", () => {
     render(<FloorInventoryPage />);
 
     await waitFor(() => {
-      const topsCard = screen.getByRole("button", { name: /Tops staged for prod/ });
-      expect(within(topsCard).getByText("1")).toBeInTheDocument();
+      const topsCard = screen.getByRole("button", { name: /Tops in WIP \+ staged/ });
+      expect(within(topsCard).getByText("2")).toBeInTheDocument();
     });
-    const bottomsCard = screen.getByRole("button", { name: /Bottoms staged for prod/ });
-    const buttonsCard = screen.getByRole("button", { name: /Buttons/ });
-    const knobsCard = screen.getByRole("button", { name: /Knobs/ });
+    const bottomsCard = screen.getByRole("button", { name: /Bottoms in WIP \+ staged/ });
+    const buttonsCard = screen.getByRole("button", { name: /Buttons in WIP \+ staged/ });
+    const knobsCard = screen.getByRole("button", { name: /Knobs in WIP \+ staged/ });
     expect(within(bottomsCard).getByText("2")).toBeInTheDocument();
     expect(within(buttonsCard).getByText("12")).toBeInTheDocument();
-    expect(within(knobsCard).getByText("5")).toBeInTheDocument();
+    // Staged remaining 5 + WIP remaining 8
+    expect(within(knobsCard).getByText("13")).toBeInTheDocument();
 
-    await user.click(screen.getByRole("button", { name: /Tops staged for prod/ }));
+    await user.click(screen.getByRole("button", { name: /Tops in WIP \+ staged/ }));
     expect(await screen.findByText("BBD-000201")).toBeInTheDocument();
-    expect(screen.queryByText("BBD-000202")).not.toBeInTheDocument();
+    expect(await screen.findByText("BBD-000202")).toBeInTheDocument();
     expect(screen.queryByText("BBD-000203")).not.toBeInTheDocument();
     expect(screen.getByRole("combobox", { name: "Filter by part" })).toHaveValue("TOP");
     expect(screen.getByRole("combobox", { name: "Filter by status" })).toHaveValue(
-      "ready_for_production",
+      "wip_or_staged",
     );
   });
 
@@ -1121,7 +1122,7 @@ describe("FloorInventoryPage", () => {
         HttpResponse.json([
           {
             id: 1,
-            sticker_code: "BBD-TOP-REWORK",
+            sticker_code: "BBD-TOP-SANDING",
             printer_id: 4,
             printer_name: "X1 Carbon 04",
             archive_id: 31,
@@ -1141,6 +1142,19 @@ describe("FloorInventoryPage", () => {
             part_code: "BOT",
             print_name: "Bottom Housing",
             labeled_at: "2026-08-25T14:32:00",
+            archived_at: null,
+            released_at: null,
+            latest_event_action: "rework",
+          },
+          {
+            id: 5,
+            sticker_code: "BBD-TOP-REWORK",
+            printer_id: 4,
+            printer_name: "X1 Carbon 04",
+            archive_id: 35,
+            part_code: "TOP",
+            print_name: "Top Housing",
+            labeled_at: "2026-08-25T14:35:00",
             archived_at: null,
             released_at: null,
             latest_event_action: "rework",
@@ -1179,7 +1193,7 @@ describe("FloorInventoryPage", () => {
     );
     render(<FloorInventoryPage />);
 
-    await screen.findByText("BBD-TOP-REWORK");
+    await screen.findByText("BBD-TOP-SANDING");
 
     const partFilter = screen.getByRole("combobox", { name: "Filter by part" });
     const statusFilter = screen.getByRole("combobox", { name: "Filter by status" });
@@ -1188,6 +1202,7 @@ describe("FloorInventoryPage", () => {
     await user.selectOptions(statusFilter, "rework");
 
     expect(await screen.findByText("BBD-BOT-REWORK")).toBeInTheDocument();
+    expect(screen.queryByText("BBD-TOP-SANDING")).not.toBeInTheDocument();
     expect(screen.queryByText("BBD-TOP-REWORK")).not.toBeInTheDocument();
     expect(screen.queryByText("BBD-BOT-STAGED")).not.toBeInTheDocument();
     // Finishing statuses are TOP-only — not offered while Bottoms is selected.
@@ -1200,6 +1215,7 @@ describe("FloorInventoryPage", () => {
 
     expect(await screen.findByText("BBD-TOP-SUPPORT")).toBeInTheDocument();
     expect(screen.queryByText("BBD-BOT-REWORK")).not.toBeInTheDocument();
+    expect(screen.queryByText("BBD-TOP-SANDING")).not.toBeInTheDocument();
     expect(screen.queryByText("BBD-TOP-REWORK")).not.toBeInTheDocument();
     expect(
       within(partFilter).queryByRole("option", { name: "Bottoms" }),
@@ -1207,8 +1223,14 @@ describe("FloorInventoryPage", () => {
     expect(within(partFilter).getByRole("option", { name: "Tops" })).toBeInTheDocument();
 
     await user.selectOptions(partFilter, "TOP");
+    await user.selectOptions(statusFilter, "sanding");
+    expect(await screen.findByText("BBD-TOP-SANDING")).toBeInTheDocument();
+    expect(screen.queryByText("BBD-TOP-REWORK")).not.toBeInTheDocument();
+    expect(screen.queryByText("BBD-BOT-REWORK")).not.toBeInTheDocument();
+
     await user.selectOptions(statusFilter, "rework");
     expect(await screen.findByText("BBD-TOP-REWORK")).toBeInTheDocument();
+    expect(screen.queryByText("BBD-TOP-SANDING")).not.toBeInTheDocument();
     expect(screen.queryByText("BBD-BOT-REWORK")).not.toBeInTheDocument();
   });
 
@@ -1843,11 +1865,11 @@ describe("FloorInventoryPage", () => {
     );
     render(<FloorInventoryPage />);
     await screen.findByText("BBD-000101");
-    expect((await findStatusLabels("Rework")).length).toBeGreaterThan(0);
+    expect((await findStatusLabels("Sanding")).length).toBeGreaterThan(0);
     await user.click(screen.getByText("BBD-000101"));
 
     expect((await findStatusLabels("Fit Check Pass")).length).toBeGreaterThan(0);
-    await waitFor(() => expect(getStatusLabels("Rework")).toHaveLength(2));
+    await waitFor(() => expect(getStatusLabels("Sanding")).toHaveLength(2));
     const timelineItems = await screen.findAllByRole("listitem");
     expect(timelineItems[1].querySelector("span")).toHaveClass("bg-green-500");
     expect(timelineItems[2].querySelector("span")).toHaveClass("bg-orange-500");
@@ -1934,6 +1956,8 @@ describe("FloorInventoryPage", () => {
     expect(within(status).getByRole("option", { name: "Hot Air Removed" })).toBeInTheDocument();
     expect(within(status).getByRole("option", { name: "Cleanup Pass" })).toBeInTheDocument();
     expect(within(status).getByRole("option", { name: "Fit Check Pass" })).toBeInTheDocument();
+    expect(within(status).getByRole("option", { name: "Sanding" })).toBeInTheDocument();
+    expect(within(status).getByRole("option", { name: "Rework" })).toBeInTheDocument();
     await user.selectOptions(status, "shipped");
     await user.click(screen.getByRole("button", { name: "Save" }));
 

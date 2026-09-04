@@ -83,6 +83,7 @@ const STATUS_SEARCH_SHORTCUTS = [
   { label: "Initial QC Pass", query: "qc" },
   { label: "Fit Check Pass", query: "fit check" },
   { label: "Visual QC pass", query: "visual qc" },
+  { label: "Sanding", query: "sanding" },
   { label: "Reworks", query: "rework" },
   { label: "Support Removed", query: "support" },
   { label: "Overhang Removed", query: "overhang" },
@@ -99,6 +100,7 @@ const MANUAL_STATUS_OPTIONS = [
   { value: "needs_matching", label: "Needs matching" },
   { value: "linked", label: "Linked" },
   { value: "fit_checked", label: "Fit Check Pass" },
+  { value: "sanding", label: "Sanding" },
   { value: "rework", label: "Rework" },
   { value: "support_removed", label: "Support Removed" },
   { value: "overhang_removed", label: "Overhang Removed" },
@@ -226,12 +228,20 @@ function isStagedForProduction(action: string | null | undefined) {
   return action === "ready_for_production";
 }
 
-function isReworkAction(action?: string | null) {
-  return action === "rework" || action === "sanding";
+function isInWip(action: string | null | undefined) {
+  return action === "wip" || action === "in_wip";
 }
 
-/** Remaining count on staged KNB/BUT fills (same basis as Stats 2 readiness). */
-function stagedBinRemaining(
+function isWipOrStaged(action: string | null | undefined) {
+  return isInWip(action) || isStagedForProduction(action);
+}
+
+function isReworkAction(action?: string | null) {
+  return action === "rework";
+}
+
+/** Remaining qty on KNB/BUT fills that are in WIP or staged for production. */
+function wipOrStagedBinRemaining(
   bins: FloorBinManagement[],
   partCode: "KNB" | "BUT",
 ) {
@@ -239,7 +249,7 @@ function stagedBinRemaining(
     const batch = bin.batch;
     if (!batch || isArchivedBin(bin)) return sum;
     if ((batch.part_code || bin.part_code) !== partCode) return sum;
-    if (batch.status !== "ready_for_production") return sum;
+    if (batch.status !== "ready_for_production" && batch.status !== "wip") return sum;
     return sum + Math.max(0, batch.remaining_quantity ?? 0);
   }, 0);
 }
@@ -262,6 +272,7 @@ type InventoryStatusFilter =
   | "needs_matching"
   | "fit_checked"
   | "visual_qc"
+  | "sanding"
   | "rework"
   | "support_removed"
   | "overhang_removed"
@@ -269,6 +280,7 @@ type InventoryStatusFilter =
   | "cleanup"
   | "ready_for_production"
   | "wip"
+  | "wip_or_staged"
   | "shipped"
   | "discarded"
   | "failed";
@@ -290,6 +302,7 @@ const INVENTORY_STATUS_FILTER_OPTIONS: Array<{
   { value: "needs_matching", labelKey: "floor.inventoryFilterAttention", fallback: "Needs matching" },
   { value: "fit_checked", labelKey: "floor.inventoryStatusFitCheckPass", fallback: "Fit Check Pass" },
   { value: "visual_qc", labelKey: "floor.inventoryStatusVisualQcPass", fallback: "Visual QC pass" },
+  { value: "sanding", labelKey: "floor.inventoryStatusSanding", fallback: "Sanding" },
   { value: "rework", labelKey: "floor.inventoryStatusRework", fallback: "Rework" },
   { value: "support_removed", labelKey: "floor.inventoryStatusSupportRemoved", fallback: "Support Removed" },
   { value: "overhang_removed", labelKey: "floor.inventoryStatusOverhangRemoved", fallback: "Overhang Removed" },
@@ -301,6 +314,11 @@ const INVENTORY_STATUS_FILTER_OPTIONS: Array<{
     fallback: "Staged for Production",
   },
   { value: "wip", labelKey: "floor.inventoryStatusWip", fallback: "In WIP" },
+  {
+    value: "wip_or_staged",
+    labelKey: "floor.inventoryStatusWipOrStaged",
+    fallback: "In WIP + staged",
+  },
   { value: "shipped", labelKey: "floor.inventoryStatusShipped", fallback: "Shipped" },
   { value: "discarded", labelKey: "floor.inventoryStatusDiscarded", fallback: "Discarded" },
   { value: "failed", labelKey: "floor.inventoryStatusFailed", fallback: "Failed" },
@@ -318,6 +336,7 @@ const STATUS_COMPATIBLE_PARTS: Record<
   needs_matching: ["TOP", "BOT", "BUT", "KNB"],
   fit_checked: ["TOP", "BOT"],
   visual_qc: ["BUT", "KNB"],
+  sanding: ["TOP", "BOT"],
   rework: ["TOP", "BOT"],
   support_removed: ["TOP"],
   overhang_removed: ["TOP"],
@@ -325,6 +344,7 @@ const STATUS_COMPATIBLE_PARTS: Record<
   cleanup: ["TOP", "BOT"],
   ready_for_production: ["TOP", "BOT", "BUT", "KNB"],
   wip: ["TOP", "BOT", "BUT", "KNB"],
+  wip_or_staged: ["TOP", "BOT", "BUT", "KNB"],
   shipped: ["TOP", "BOT"],
   discarded: ["TOP", "BOT"],
   failed: ["TOP", "BOT", "BUT", "KNB"],
@@ -369,8 +389,10 @@ function partMatchesInventoryStatus(
         (action === "fit_check" || action === "fit_checked") &&
         (code === "BUT" || code === "KNB")
       );
+    case "sanding":
+      return action === "sanding";
     case "rework":
-      return isReworkAction(action);
+      return action === "rework";
     case "support_removed":
       return action === "support_removed";
     case "overhang_removed":
@@ -382,7 +404,9 @@ function partMatchesInventoryStatus(
     case "ready_for_production":
       return action === "ready_for_production";
     case "wip":
-      return action === "wip" || action === "in_wip";
+      return isInWip(action);
+    case "wip_or_staged":
+      return isWipOrStaged(action);
     case "shipped":
       return action === "shipped";
     case "discarded":
@@ -405,6 +429,8 @@ function binMatchesInventoryStatus(
       return status === "ready_for_production";
     case "wip":
       return status === "wip";
+    case "wip_or_staged":
+      return status === "wip" || status === "ready_for_production";
     // Unmatched harvest fills (no completed job yet) — same as the Needs matching tab.
     case "needs_matching":
       return (
@@ -413,6 +439,7 @@ function binMatchesInventoryStatus(
         !isArchivedBin(bin)
       );
     case "fit_checked":
+    case "sanding":
     case "rework":
     case "support_removed":
     case "overhang_removed":
@@ -1278,30 +1305,30 @@ export function FloorInventoryPage() {
       archived:
         records.filter((part) => part.archived_at).length +
         historyBins.filter((bin) => isArchivedBin(bin)).length,
-      // Sticker parts (TOP/BOT) — do not also sum BOT bin remaining (double-count).
-      topsStaged: records.filter(
+      // Sticker parts (TOP/BOT) — WIP + staged; do not also sum BOT bin remaining.
+      topsReady: records.filter(
         (part) =>
           !part.archived_at &&
           part.part_code === "TOP" &&
-          isStagedForProduction(partLatestAction(part, latestEventActions)),
+          isWipOrStaged(partLatestAction(part, latestEventActions)),
       ).length,
-      bottomsStaged: records.filter(
+      bottomsReady: records.filter(
         (part) =>
           !part.archived_at &&
           part.part_code === "BOT" &&
-          isStagedForProduction(partLatestAction(part, latestEventActions)),
+          isWipOrStaged(partLatestAction(part, latestEventActions)),
       ).length,
-      // Kit bins — remaining qty on fills already staged for production.
-      buttonsStaged: stagedBinRemaining(historyBins, "BUT"),
-      knobsStaged: stagedBinRemaining(historyBins, "KNB"),
+      // Kit bins — remaining qty on fills in WIP or staged for production.
+      buttonsReady: wipOrStagedBinRemaining(historyBins, "BUT"),
+      knobsReady: wipOrStagedBinRemaining(historyBins, "KNB"),
     }),
     [historyBins, latestEventActions, records],
   );
-  const focusStagedInventory = (partCode: InventoryPartCodeFilter) => {
+  const focusWipOrStagedInventory = (partCode: InventoryPartCodeFilter) => {
     setFilter("all");
     setSearch("");
     setPartCodeFilter(partCode);
-    setStatusFilter("ready_for_production");
+    setStatusFilter("wip_or_staged");
     setSelectedFailure(null);
     setSelectedBinId(null);
   };
@@ -1660,28 +1687,28 @@ export function FloorInventoryPage() {
               onClick={() => focusPartFilter("linked")}
             />
             <SummaryCard
-              label={t("floor.inventoryTopsStaged", "Tops staged for prod")}
-              count={counts.topsStaged}
+              label={t("floor.inventoryTopsReady", "Tops in WIP + staged")}
+              count={counts.topsReady}
               accent="cyan"
-              onClick={() => focusStagedInventory("TOP")}
+              onClick={() => focusWipOrStagedInventory("TOP")}
             />
             <SummaryCard
-              label={t("floor.inventoryBottomsStaged", "Bottoms staged for prod")}
-              count={counts.bottomsStaged}
+              label={t("floor.inventoryBottomsReady", "Bottoms in WIP + staged")}
+              count={counts.bottomsReady}
               accent="cyan"
-              onClick={() => focusStagedInventory("BOT")}
+              onClick={() => focusWipOrStagedInventory("BOT")}
             />
             <SummaryCard
-              label={t("floor.inventoryButtonsStaged", "Buttons")}
-              count={counts.buttonsStaged}
+              label={t("floor.inventoryButtonsReady", "Buttons in WIP + staged")}
+              count={counts.buttonsReady}
               accent="cyan"
-              onClick={() => focusStagedInventory("BUT")}
+              onClick={() => focusWipOrStagedInventory("BUT")}
             />
             <SummaryCard
-              label={t("floor.inventoryKnobsStaged", "Knobs")}
-              count={counts.knobsStaged}
+              label={t("floor.inventoryKnobsReady", "Knobs in WIP + staged")}
+              count={counts.knobsReady}
               accent="cyan"
-              onClick={() => focusStagedInventory("KNB")}
+              onClick={() => focusWipOrStagedInventory("KNB")}
             />
             <SummaryCard
               label={t("floor.inventoryFilterAttention", "Needs matching")}
@@ -2848,7 +2875,8 @@ function partStatusSearchTerms(
       ? ["visual", "visual qc", "visual qc pass", "initial qc pass", "qc"]
       : ["fit", "fit check", "fit checks", "fit check pass", "initial qc pass", "qc"];
   }
-  if (action === "rework" || action === "sanding") return ["rework", "reworks", "sanding"];
+  if (action === "sanding") return ["sanding", "sand"];
+  if (action === "rework") return ["rework", "reworks"];
   if (action === "wip" || action === "in_wip") return ["wip", "in wip", "in_wip"];
   if (action === "ready_for_production") {
     return ["staged", "staged for production", "ready for production", "ready_for_production"];
@@ -2919,7 +2947,10 @@ function statusLabel(
       ? t("floor.inventoryStatusVisualQcPass", "Visual QC pass")
       : t("floor.inventoryStatusFitCheckPass", "Fit Check Pass");
   }
-  if (latestEventAction === "rework" || latestEventAction === "sanding") {
+  if (latestEventAction === "sanding") {
+    return t("floor.inventoryStatusSanding", "Sanding");
+  }
+  if (latestEventAction === "rework") {
     return t("floor.inventoryStatusRework", "Rework");
   }
   if (latestEventAction === "discarded") return t("floor.inventoryStatusDiscarded", "Discarded");
@@ -2948,7 +2979,6 @@ function statusLabel(
 function manualStatusValue(part: FloorInventoryPart, latestEventAction: string | null) {
   const aliases: Record<string, string> = {
     fit_check: "fit_checked",
-    sanding: "rework",
     cleaned_up: "cleanup",
     in_wip: "wip",
   };
@@ -3047,10 +3077,10 @@ function SummaryCard({
     <button
       type="button"
       onClick={onClick}
-      className={`rounded-lg border bg-bambu-dark-secondary p-4 text-left transition-colors ${colors[accent]}`}
+      className={`flex h-full flex-col items-stretch justify-start rounded-lg border bg-bambu-dark-secondary p-4 text-left transition-colors ${colors[accent]}`}
     >
-      <div className="text-2xl font-semibold text-white">{count}</div>
-      <div className="mt-1 text-sm text-bambu-gray-light">{label}</div>
+      <div className="text-2xl font-semibold leading-none text-white">{count}</div>
+      <div className="mt-2 min-h-[2.5rem] text-sm leading-snug text-bambu-gray-light">{label}</div>
     </button>
   );
 }
