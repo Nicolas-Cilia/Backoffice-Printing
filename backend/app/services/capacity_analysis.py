@@ -333,24 +333,26 @@ def rank_slots_for_model(
     clear_minutes: int,
     printers: int,
 ) -> list[dict]:
-    """Slots for one model ordered by projected throughput (best first)."""
+    """Slots for one model ordered by physical throughput (best first).
+
+    Ranking ignores print/harvest/QC yields so the preferred plate is the densest
+    physical option (theoretical max). Yields still flow into
+    ``devices_from_component`` / expected after the slot is chosen.
+    ``metrics_map`` is accepted for call-site compatibility.
+    """
     if not slots:
         return []
+    _ = metrics_map  # yields applied downstream; ranking is physical-only
 
     def _score(slot: dict) -> tuple[float, int, int]:
-        metrics = metrics_map.get(int(slot["slot_id"]))
-        success = metrics.print_job_success if metrics else 1.0
-        harvest = metrics.harvest_yield if metrics else 1.0
-        qc = metrics.qc_yield if metrics else 1.0
         raw_print_time = slot.get("print_time_seconds")
         print_time = (
             _DEFAULT_PRINT_TIME_SECONDS if raw_print_time is None or int(raw_print_time) <= 0 else int(raw_print_time)
         )
         qty = max(1, int(slot.get("quantity") or 1))
         cycle = cycle_seconds(print_time, clear_minutes)
-        plates = max(0.0, min(1.0, success)) / cycle
-        eff_parts = qty * max(0.0, min(1.0, harvest)) * max(0.0, min(1.0, qc))
-        return (max(0, int(printers)) * plates * eff_parts, qty, -int(slot["slot_id"]))
+        plates = 1.0 / float(cycle)
+        return (max(0, int(printers)) * plates * qty, qty, -int(slot["slot_id"]))
 
     return sorted(slots, key=_score, reverse=True)
 
