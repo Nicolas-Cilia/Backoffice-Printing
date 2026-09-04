@@ -35,6 +35,11 @@ from backend.app.services.bambu_ftp import (
 from backend.app.services.bambu_mqtt import HMS_MQTT_VERIFY_FAILED
 from backend.app.services.filament_deficit import compute_deficit_for_queue_item
 from backend.app.services.notification_service import notification_service
+from backend.app.services.plate_turnaround import (
+    record_next_print_started,
+    record_queue_dispatched,
+    record_queue_started,
+)
 from backend.app.services.printer_manager import (
     printer_manager,
     supports_airduct,
@@ -979,6 +984,15 @@ class PrintScheduler:
                 if not item:
                     logger.info("Queue item %s vanished after claim — skipping", item_id)
                     return
+                # Stats 2 (Phase 1): record the dispatch claim for queue-wait
+                # analytics. Fire-and-forget — never blocks or fails dispatch.
+                # Stamp claim time here so a delayed background write still
+                # reflects when the CAS succeeded (not when the task ran).
+                claim_utc = datetime.now(timezone.utc).replace(tzinfo=None)
+                spawn_background_task(
+                    record_queue_dispatched(item.id, item.created_at, dispatched_at=claim_utc),
+                    name=f"queue-dispatched-{item.id}",
+                )
                 await self._start_print(item_db, item)
             finally:
                 # Undo an expected-print registration whose print command never
@@ -3649,6 +3663,21 @@ class PrintScheduler:
 
         # Clear the awaiting-plate-clear flag now that we're starting a new print
         printer_manager.set_awaiting_plate_clear(item.printer_id, False)
+
+        # Stats 2 (Phase 1): the next print starting closes the open plate-
+        # turnaround row for this printer, and stamps this queue item's start.
+        # Fire-and-forget — these swallow their own errors so stats never block
+        # or fail a dispatch. Must not await on the upload critical path or
+        # concurrent fan-out serializes behind SQLite analytics I/O.
+        spawn_background_task(
+            record_next_print_started(item.printer_id, now_utc),
+            name=f"plate-turnaround-started-{item.printer_id}",
+        )
+        spawn_background_task(
+            record_queue_started(item.id, now_utc),
+            name=f"queue-started-{item.id}",
+        )
+
         logger.info("Queue item %s: Status set to 'printing', sending print command...", item.id)
 
         # Capture state before dispatch so the watchdog can detect whether the

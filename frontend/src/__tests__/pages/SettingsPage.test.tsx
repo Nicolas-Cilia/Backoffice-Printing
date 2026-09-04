@@ -260,8 +260,11 @@ describe('SettingsPage', () => {
       vi.mocked(localStorage.setItem).mockClear();
       await user.click((await screen.findAllByLabelText('Hide page'))[0]);
 
-      expect(localStorage.setItem).toHaveBeenCalledWith(SIDEBAR_HIDDEN_SYSTEM_ITEMS_KEY, JSON.stringify(['printers']));
-      expect(screen.getByText('Hidden from sidebar')).toBeInTheDocument();
+      expect(localStorage.setItem).toHaveBeenCalledWith(
+        SIDEBAR_HIDDEN_SYSTEM_ITEMS_KEY,
+        JSON.stringify(['stats', 'notifications', 'printers']),
+      );
+      expect(screen.getAllByText('Hidden from sidebar').length).toBeGreaterThan(0);
     });
 
     it('shows a previously hidden Bambuddy sidebar page from Sidebar', async () => {
@@ -369,7 +372,21 @@ describe('SettingsPage', () => {
 
       expect(localStorage.setItem).toHaveBeenCalledWith(
         SIDEBAR_ORDER_KEY,
-        JSON.stringify(['ext-7', 'printers', 'inventory', 'filament', 'queue', 'files', 'floor', 'profiles', 'maintenance', 'stats', 'notifications', 'settings']),
+        JSON.stringify([
+          'ext-7',
+          'printers',
+          'queue',
+          'floor',
+          'stats2',
+          'inventory',
+          'filament',
+          'files',
+          'maintenance',
+          'profiles',
+          'stats',
+          'notifications',
+          'settings',
+        ]),
       );
     });
 
@@ -408,10 +425,27 @@ describe('SettingsPage', () => {
       vi.mocked(localStorage.setItem).mockClear();
       await user.click(within(card as HTMLElement).getByRole('button', { name: /reset/i }));
 
-      expect(localStorage.setItem).toHaveBeenCalledWith(SIDEBAR_HIDDEN_SYSTEM_ITEMS_KEY, JSON.stringify([]));
+      expect(localStorage.setItem).toHaveBeenCalledWith(
+        SIDEBAR_HIDDEN_SYSTEM_ITEMS_KEY,
+        JSON.stringify(['stats', 'notifications']),
+      );
       expect(localStorage.setItem).toHaveBeenCalledWith(
         SIDEBAR_ORDER_KEY,
-        JSON.stringify(['printers', 'inventory', 'filament', 'queue', 'files', 'floor', 'profiles', 'maintenance', 'stats', 'notifications', 'settings', 'ext-7']),
+        JSON.stringify([
+          'printers',
+          'queue',
+          'floor',
+          'stats2',
+          'inventory',
+          'filament',
+          'files',
+          'maintenance',
+          'profiles',
+          'stats',
+          'notifications',
+          'settings',
+          'ext-7',
+        ]),
       );
 
       const settingsRow = screen.getAllByText('Settings')
@@ -421,7 +455,7 @@ describe('SettingsPage', () => {
       expect(settingsRow).not.toBeNull();
       expect(docsRow).not.toBeNull();
       expect(settingsRow!.compareDocumentPosition(docsRow!) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
-      expect(screen.queryByText('Hidden from sidebar')).not.toBeInTheDocument();
+      expect(screen.getAllByText('Hidden from sidebar').length).toBe(2);
     });
 
     it('sets the current Sidebar order as the backend default for settings admins', async () => {
@@ -473,13 +507,14 @@ describe('SettingsPage', () => {
       expect(JSON.parse(defaultSidebarOrderPayload!)).toEqual({
         order: [
           'printers',
+          'queue',
+          'floor',
+          'stats2',
           'inventory',
           'filament',
-          'queue',
           'files',
-          'floor',
-          'profiles',
           'maintenance',
+          'profiles',
           'stats',
           'notifications',
           'settings',

@@ -26,7 +26,7 @@ import io
 import logging
 from datetime import datetime, timezone
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Query
 from fastapi.responses import FileResponse, StreamingResponse
 from pydantic import BaseModel, Field, model_validator
 from sqlalchemy import select
@@ -138,6 +138,8 @@ from backend.app.services.floor_printers import (
     printer_id_for_payload,
     printer_payload,
     record_floor_stop_reason,
+    record_plate_print_failure,
+    record_printer_plate_failure,
     update_floor_stop_reason,
 )
 from backend.app.services.floor_sessions import (
@@ -201,6 +203,18 @@ class StationLabelRequest(BaseModel):
 class ErrorLabelRequest(BaseModel):
     name: str = Field(..., min_length=1, max_length=120)
     slug: str = Field(..., min_length=1, max_length=64, pattern=r"^[a-z0-9]+(?:-[a-z0-9]+)*$")
+    show_on_sanding: bool = True
+    show_on_rework: bool = True
+    show_on_discard: bool = True
+    sort_order: int = Field(default=0, ge=0, le=10_000)
+
+
+class ErrorLabelUpdateRequest(BaseModel):
+    name: str | None = Field(default=None, min_length=1, max_length=120)
+    show_on_sanding: bool | None = None
+    show_on_rework: bool | None = None
+    show_on_discard: bool | None = None
+    sort_order: int | None = Field(default=None, ge=0, le=10_000)
 
 
 class ErrorLabelResponse(BaseModel):
@@ -209,6 +223,10 @@ class ErrorLabelResponse(BaseModel):
     slug: str
     payload: str
     is_protected: bool
+    show_on_sanding: bool
+    show_on_rework: bool
+    show_on_discard: bool
+    sort_order: int
 
 
 def _to_error_label_response(label: FloorErrorLabel) -> ErrorLabelResponse:
@@ -218,15 +236,28 @@ def _to_error_label_response(label: FloorErrorLabel) -> ErrorLabelResponse:
         slug=label.slug,
         payload=f"BBF-{label.slug}",
         is_protected=label.is_protected,
+        show_on_sanding=bool(label.show_on_sanding),
+        show_on_rework=bool(label.show_on_rework),
+        show_on_discard=bool(label.show_on_discard),
+        sort_order=int(label.sort_order or 0),
     )
 
 
 @router.get("/error-labels", response_model=list[ErrorLabelResponse])
-async def list_error_labels(
+async def list_error_labels_route(
+    for_section: str | None = Query(default=None, alias="for"),
     db: AsyncSession = Depends(get_db),
     _: User | None = RequirePermissionIfAuthEnabled(Permission.FLOOR_SCAN),
 ) -> list[ErrorLabelResponse]:
-    labels = (await db.execute(select(FloorErrorLabel).order_by(FloorErrorLabel.name))).scalars().all()
+    from backend.app.models.floor_part import ERROR_LABEL_SECTIONS
+    from backend.app.services.floor_parts import list_error_labels, list_error_labels_for_section
+
+    if for_section is None:
+        labels = await list_error_labels(db)
+    else:
+        if for_section not in ERROR_LABEL_SECTIONS:
+            raise HTTPException(422, f"for must be one of {list(ERROR_LABEL_SECTIONS)}")
+        labels = await list_error_labels_for_section(db, for_section)
     return [_to_error_label_response(label) for label in labels]
 
 
@@ -236,13 +267,91 @@ async def create_error_label(
     db: AsyncSession = Depends(get_db),
     _: User | None = RequirePermissionIfAuthEnabled(Permission.FLOOR_SCAN),
 ) -> ErrorLabelResponse:
-    label = FloorErrorLabel(name=body.name.strip(), slug=body.slug.strip().lower())
+    from backend.app.services.floor_parts import assert_error_label_section_caps
+
+    slug = body.slug.strip().lower()
+    show_on_sanding = True if slug == "other" else body.show_on_sanding
+    show_on_rework = True if slug == "other" else body.show_on_rework
+    show_on_discard = True if slug == "other" else body.show_on_discard
+    if slug != "other":
+        try:
+            await assert_error_label_section_caps(
+                db,
+                show_on_sanding=show_on_sanding,
+                show_on_rework=show_on_rework,
+                show_on_discard=show_on_discard,
+            )
+        except ValueError as exc:
+            raise HTTPException(400, str(exc)) from exc
+
+    label = FloorErrorLabel(
+        name=body.name.strip(),
+        slug=slug,
+        show_on_sanding=show_on_sanding,
+        show_on_rework=show_on_rework,
+        show_on_discard=show_on_discard,
+        sort_order=body.sort_order,
+    )
     db.add(label)
     try:
         await db.commit()
     except IntegrityError as exc:
         await db.rollback()
         raise HTTPException(409, "An error label with that name or code already exists") from exc
+    await db.refresh(label)
+    return _to_error_label_response(label)
+
+
+@router.patch("/error-labels/{label_id}", response_model=ErrorLabelResponse)
+async def update_error_label(
+    label_id: int,
+    body: ErrorLabelUpdateRequest,
+    db: AsyncSession = Depends(get_db),
+    _: User | None = RequirePermissionIfAuthEnabled(Permission.FLOOR_SCAN),
+) -> ErrorLabelResponse:
+    from backend.app.services.floor_parts import assert_error_label_section_caps
+
+    label = await db.get(FloorErrorLabel, label_id)
+    if label is None:
+        raise HTTPException(404, "Error label not found")
+
+    if body.name is not None:
+        label.name = body.name.strip()
+
+    if label.is_protected:
+        # Other is always shown on every section; refuse turning any flag off.
+        if body.show_on_sanding is False or body.show_on_rework is False or body.show_on_discard is False:
+            raise HTTPException(400, "The Other reason is always shown on every section")
+        label.show_on_sanding = True
+        label.show_on_rework = True
+        label.show_on_discard = True
+    else:
+        next_sanding = label.show_on_sanding if body.show_on_sanding is None else body.show_on_sanding
+        next_rework = label.show_on_rework if body.show_on_rework is None else body.show_on_rework
+        next_discard = label.show_on_discard if body.show_on_discard is None else body.show_on_discard
+        try:
+            await assert_error_label_section_caps(
+                db,
+                show_on_sanding=next_sanding,
+                show_on_rework=next_rework,
+                show_on_discard=next_discard,
+                exclude_id=label.id,
+                previous=label,
+            )
+        except ValueError as exc:
+            raise HTTPException(400, str(exc)) from exc
+        label.show_on_sanding = next_sanding
+        label.show_on_rework = next_rework
+        label.show_on_discard = next_discard
+
+    if body.sort_order is not None:
+        label.sort_order = body.sort_order
+
+    try:
+        await db.commit()
+    except IntegrityError as exc:
+        await db.rollback()
+        raise HTTPException(409, "An error label with that name already exists") from exc
     await db.refresh(label)
     return _to_error_label_response(label)
 
@@ -332,11 +441,17 @@ async def render_error_labels(
     db: AsyncSession = Depends(get_db),
     _: User | None = RequirePermissionIfAuthEnabled(Permission.FLOOR_SCAN),
 ) -> StreamingResponse:
+    """Print Discard plus Sanding/Rework bench QRs (and legacy BBF reason codes)."""
     labels_by_payload = {
         f"BBF-{label.slug}": CodeLabel(payload=f"BBF-{label.slug}", title=label.name)
         for label in (await db.execute(select(FloorErrorLabel))).scalars()
     }
     labels_by_payload["BBX-discard"] = CodeLabel(payload="BBX-discard", title="Discard")
+    # Sanding / Rework live on the Error labels Codes tab with Discard — same
+    # printable station payloads the Processes tab used to expose.
+    for station in FLOOR_STATIONS:
+        if station.slug in {"sanding", "wip-rework"}:
+            labels_by_payload[station.payload] = CodeLabel(payload=station.payload, title=station.name)
     labels = [labels_by_payload[payload] for payload in body.payloads if payload in labels_by_payload]
     unknown = [payload for payload in body.payloads if payload not in labels_by_payload]
     if unknown:
@@ -863,6 +978,41 @@ async def record_stopped_print_reason(
     )
 
 
+def _plate_failure_response(stopped) -> RecentStoppedPrintResponse:
+    return RecentStoppedPrintResponse(
+        print_log_id=stopped.print_log_id,
+        archive_id=stopped.archive_id,
+        print_name=stopped.print_name,
+        part_code=stopped.part_code,
+        status=stopped.status,
+        stopped_at=stopped.stopped_at,
+        reason_code=stopped.reason_code,
+        reason_text=stopped.reason_text,
+    )
+
+
+@router.post("/printers/{printer_id}/plate-failure", response_model=RecentStoppedPrintResponse)
+async def record_printer_plate_failure_route(
+    printer_id: int,
+    body: FloorStopReasonRequest,
+    db: AsyncSession = Depends(get_db),
+    _: User | None = RequirePermissionIfAuthEnabled(Permission.FLOOR_SCAN),
+) -> RecentStoppedPrintResponse:
+    """Mark the printer's latest finished unlabeled plate as failed (no stickers)."""
+    try:
+        stopped = await record_printer_plate_failure(
+            db,
+            printer_id,
+            body.reason_code,
+            body.reason_text,
+        )
+    except LookupError as exc:
+        raise HTTPException(409, str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(400, str(exc)) from exc
+    return _plate_failure_response(stopped)
+
+
 # ── Session overview (the /floor landing page's open-sessions panel) ──────
 
 
@@ -972,6 +1122,11 @@ class HarvestScanResponse(BaseModel):
     part_count: int = 0
     # Populated only on the (structurally near-unreachable) `locked` result.
     blocking: SessionResponse | None = None
+    # Stats 2: silent expected-vs-actual on plate_closed (optional display only).
+    expected_quantity: int | None = None
+    expected_quantity_source: str | None = None
+    quantity_variance: int | None = None
+    parsed_stem: str | None = None
 
 
 class PartScanRequest(BaseModel):
@@ -1252,7 +1407,7 @@ async def relink_inventory_bin(
 ) -> BinScanResponse:
     outcome = await relink_bin(db, batch_id, body.archive_id)
     if outcome is None:
-        raise HTTPException(404, "Unlinked bin batch or completed job not found")
+        raise HTTPException(404, "Bin batch or completed job not found")
     await db.commit()
     return _to_bin_scan_response(outcome)
 
@@ -1562,6 +1717,10 @@ async def scan_harvest_printer_route(
         archive=_to_plate_archive(outcome.archive),
         part_count=outcome.part_count,
         blocking=_to_session_response(outcome.blocking) if outcome.blocking else None,
+        expected_quantity=outcome.expected_quantity,
+        expected_quantity_source=outcome.expected_quantity_source,
+        quantity_variance=outcome.quantity_variance,
+        parsed_stem=outcome.parsed_stem,
     )
 
 
@@ -2749,6 +2908,31 @@ async def dismiss_unlabeled_build_plate(
         raise HTTPException(404, "Completed build plate not found")
     await db.commit()
     return {"status": "dismissed"}
+
+
+@router.post(
+    "/parts/unlabeled-build-plates/{archive_id}/fail",
+    response_model=RecentStoppedPrintResponse,
+)
+async def fail_unlabeled_build_plate(
+    archive_id: int,
+    body: FloorStopReasonRequest,
+    db: AsyncSession = Depends(get_db),
+    _: User | None = RequirePermissionIfAuthEnabled(Permission.FLOOR_SCAN),
+) -> RecentStoppedPrintResponse:
+    """Mark an unlabeled completed plate as failed and hide it from the backlog."""
+    try:
+        stopped = await record_plate_print_failure(
+            db,
+            archive_id,
+            body.reason_code,
+            body.reason_text,
+        )
+    except LookupError as exc:
+        raise HTTPException(404, str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(400, str(exc)) from exc
+    return _plate_failure_response(stopped)
 
 
 @router.get("/parts/dismissed-build-plates", response_model=list[DismissedBuildPlateResponse])

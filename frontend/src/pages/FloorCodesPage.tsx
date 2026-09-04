@@ -5,11 +5,9 @@
  * Normal app chrome (unlike the sparse `/floor/scan` shell) because this is
  * used at a desk, not with a pistol in hand.
  *
- * The page groups the printable floor codes by use: stations/locations,
- * printers, reusable KNB/BUT bins, and Discard. Bin labels are generated
- * from the current printer catalog so each printer gets one QR per part type.
- * Sanding/Rework/Discard reasons are managed here as an on-screen catalog,
- * not printed as QR codes.
+ * The page groups the printable floor codes by use: stations, other process
+ * checkpoints, printers, reusable bins, and Error labels (Sanding / Rework /
+ * Discard benches plus on-screen reason buttons).
  *
  * The QR shown per station is rendered client-side purely as a *preview*; the
  * printed artefact is the server-rendered PDF, whose payload comes from the
@@ -20,7 +18,7 @@ import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { useTranslation } from 'react-i18next';
 import { QRCodeSVG } from 'qrcode.react';
 import { Loader2, Printer, QrCode, Trash2 } from 'lucide-react';
-import { api } from '../api/client';
+import { api, type FloorErrorLabel } from '../api/client';
 import { Button } from '../components/Button';
 import { ConfirmModal } from '../components/ConfirmModal';
 import { HorizontalScrollFade } from '../components/HorizontalScrollFade';
@@ -31,9 +29,24 @@ import { openBlobInNewTab } from '../utils/file';
  *  Validated here too so a bad custom size is caught before the round trip. */
 const MIN_LABEL_MM = 20;
 const MAX_LABEL_MM = 200;
+/** Max custom (non-Other) reasons enabled per scan section. */
+const MAX_CUSTOM_REASONS_PER_SECTION = 5;
 
 const SIZE_PRESETS_MM = [40, 60, 80] as const;
 type SizeMode = '40' | '60' | '80' | 'custom';
+
+type ReasonSection = 'sanding' | 'rework' | 'discard';
+
+const REASON_SECTION_FLAGS: Array<{
+  section: ReasonSection;
+  flag: 'show_on_sanding' | 'show_on_rework' | 'show_on_discard';
+  labelKey: string;
+  labelFallback: string;
+}> = [
+  { section: 'sanding', flag: 'show_on_sanding', labelKey: 'floor.reasonShowSanding', labelFallback: 'Show on Sanding' },
+  { section: 'rework', flag: 'show_on_rework', labelKey: 'floor.reasonShowRework', labelFallback: 'Show on Rework' },
+  { section: 'discard', flag: 'show_on_discard', labelKey: 'floor.reasonShowDiscard', labelFallback: 'Show on Discard' },
+];
 
 const SIZE_STORAGE_KEY = 'floorCodeLabelSize';
 
@@ -73,8 +86,21 @@ function normalizeErrorSlug(value: string): string {
     .replace(/\s+/g, '-')
     .replace(/[^a-z0-9-]/g, '')
     .replace(/-+/g, '-')
-    .replace(/^-+/, '');
+    .replace(/^-+/, '')
+    .replace(/-+$/, '');
 }
+
+/** Pick a unique slug from a display name; operators never enter BBF codes. */
+function uniqueErrorSlug(name: string, existing: Array<{ slug: string }>): string {
+  const base = normalizeErrorSlug(name) || 'reason';
+  if (!existing.some((row) => row.slug === base)) return base;
+  let n = 2;
+  while (existing.some((row) => row.slug === `${base}-${n}`)) n += 1;
+  return `${base}-${n}`;
+}
+
+/** Bench QRs printed on the Error labels tab (with Discard), not under Processes. */
+const ERROR_TAB_PROCESS_SLUGS = new Set(['sanding', 'wip-rework']);
 
 /** Which label family is being printed. Errors land in phase 9c.
  *  `locations` is a display-only split of the same station catalog as
@@ -113,8 +139,6 @@ export function FloorCodesPage() {
     enabled: tab === 'bins',
   });
   const [errorName, setErrorName] = useState('');
-  const [errorSlug, setErrorSlug] = useState('');
-  const [errorSlugFocused, setErrorSlugFocused] = useState(false);
   const [deleteTarget, setDeleteTarget] = useState<{ id: number; name: string } | null>(null);
   const [deletePending, setDeletePending] = useState(false);
 
@@ -123,7 +147,17 @@ export function FloorCodesPage() {
     [stationsQuery.data],
   );
   const locations = useMemo(
-    () => (stationsQuery.data ?? []).filter((s) => s.category === 'location'),
+    () =>
+      (stationsQuery.data ?? []).filter(
+        (s) => s.category === 'location' && !ERROR_TAB_PROCESS_SLUGS.has(s.slug),
+      ),
+    [stationsQuery.data],
+  );
+  const errorTabProcesses = useMemo(
+    () =>
+      (stationsQuery.data ?? []).filter(
+        (s) => s.category === 'location' && ERROR_TAB_PROCESS_SLUGS.has(s.slug),
+      ),
     [stationsQuery.data],
   );
   const printers = useMemo(() => printersQuery.data ?? [], [printersQuery.data]);
@@ -137,9 +171,20 @@ export function FloorCodesPage() {
   const items = useMemo(() => {
     if (tab === 'stations') return stations.map((s) => ({ payload: s.payload, title: s.name, subtitle: s.description }));
     if (tab === 'locations') return locations.map((s) => ({ payload: s.payload, title: s.name, subtitle: s.description }));
-    if (tab === 'errors') return [
-      { payload: 'BBX-discard', title: 'Discard', subtitle: 'Then select a reason on screen.' },
-    ];
+    if (tab === 'errors') {
+      return [
+        ...errorTabProcesses.map((s) => ({
+          payload: s.payload,
+          title: s.name,
+          subtitle: s.description,
+        })),
+        {
+          payload: 'BBX-discard',
+          title: 'Discard',
+          subtitle: t('floor.codesDiscardSubtitle', 'Then select a reason on screen.'),
+        },
+      ];
+    }
     if (tab === 'bins') return bins.map((bin) => ({
       payload: bin.payload,
       title: `${bin.part_name} ${bin.bin_number}`,
@@ -150,11 +195,11 @@ export function FloorCodesPage() {
       title: p.name,
       subtitle: [p.model, p.location].filter(Boolean).join(' · ') || '—',
     }));
-  }, [tab, stations, locations, printers, bins]);
+  }, [tab, stations, locations, errorTabProcesses, printers, bins, t]);
 
   // Locations shares the station catalog query — it's the same data, split
-  // by `category` client-side, not a second fetch. Error labels are not
-  // printed (they are on-screen buttons); Discard is hardcoded on that tab.
+  // by `category` client-side, not a second fetch. Sanding / Rework / Discard
+  // printables live on the Error labels tab with the on-screen reasons.
   const activeQuery = tab === 'printers' ? printersQuery : tab === 'bins' ? binsQuery : stationsQuery;
 
   const [selected, setSelected] = useState<Set<string>>(new Set());
@@ -180,7 +225,6 @@ export function FloorCodesPage() {
       : { width: Number(size.mode), height: Number(size.mode) };
 
   const sizeValid = isValidDimension(width) && isValidDimension(height);
-  const errorSlugValid = /^[a-z0-9]+(?:-[a-z0-9]+)*$/.test(errorSlug);
   const canPrint = selected.size > 0 && sizeValid && !printing;
 
   const toggle = (payload: string) => {
@@ -228,6 +272,58 @@ export function FloorCodesPage() {
       showToast(t('floor.codesPrintError', 'Could not generate labels: {{msg}}', { msg }), 'error');
     } finally {
       setPrinting(false);
+    }
+  };
+
+  const customCountForSection = (flag: 'show_on_sanding' | 'show_on_rework' | 'show_on_discard') =>
+    errors.filter((label) => label.slug !== 'other' && label[flag]).length;
+
+  const moveErrorLabel = async (label: FloorErrorLabel, direction: -1 | 1) => {
+    const customs = errors.filter((row) => row.slug !== 'other');
+    const index = customs.findIndex((row) => row.id === label.id);
+    const swapIndex = index + direction;
+    if (index < 0 || swapIndex < 0 || swapIndex >= customs.length) return;
+    const reordered = [...customs];
+    const [moved] = reordered.splice(index, 1);
+    reordered.splice(swapIndex, 0, moved);
+    try {
+      await Promise.all(
+        reordered.map((row, sortOrder) => api.updateFloorErrorLabel(row.id, { sort_order: sortOrder })),
+      );
+      await queryClient.invalidateQueries({ queryKey: ['floor-error-labels'] });
+    } catch (err) {
+      showToast(
+        err instanceof Error ? err.message : t('floor.reasonReorderFailed', 'Could not reorder reason'),
+        'error',
+      );
+    }
+  };
+
+  const toggleErrorSection = async (
+    label: FloorErrorLabel,
+    flag: 'show_on_sanding' | 'show_on_rework' | 'show_on_discard',
+    next: boolean,
+  ) => {
+    if (label.is_protected || label.slug === 'other') return;
+    if (next && customCountForSection(flag) >= MAX_CUSTOM_REASONS_PER_SECTION && !label[flag]) {
+      showToast(
+        t(
+          'floor.reasonSectionCap',
+          'At most {{count}} custom reasons can show here (plus Other)',
+          { count: MAX_CUSTOM_REASONS_PER_SECTION },
+        ),
+        'error',
+      );
+      return;
+    }
+    try {
+      await api.updateFloorErrorLabel(label.id, { [flag]: next });
+      await queryClient.invalidateQueries({ queryKey: ['floor-error-labels'] });
+    } catch (err) {
+      showToast(
+        err instanceof Error ? err.message : t('floor.reasonUpdateFailed', 'Could not update reason'),
+        'error',
+      );
     }
   };
 
@@ -322,10 +418,13 @@ export function FloorCodesPage() {
                 : tab === 'locations'
                   ? t(
                       'floor.codesLocationsHint',
-                      'Initial QC Pass and Rework. Scanning one opens that checkpoint on the scan page, same as a station QR.',
+                      'Initial QC Pass and other process checkpoints. Scanning one opens that checkpoint on the scan page, same as a station QR.',
                     )
                   : tab === 'errors'
-                    ? t('floor.codesErrorsHint', 'Print Discard. Reasons appear as on-screen buttons after Sanding, Rework, or Discard — add or remove them below.')
+                    ? t(
+                        'floor.codesErrorsHint',
+                        'Print Sanding, Rework, and Discard. On-screen reasons below appear as buttons after those scans.',
+                      )
                   : tab === 'bins'
                     ? t('floor.codesBinsHint', 'Print three shared reusable KNB bins, three shared reusable BUT bins, and three shared reusable BOT bins.')
                   : t(
@@ -425,38 +524,115 @@ export function FloorCodesPage() {
             </div>
           ) : (
             <ul className="divide-y divide-bambu-dark-tertiary rounded-lg border border-bambu-dark-tertiary">
-              {errors.map((error) => (
-                <li key={error.id} className="flex flex-wrap items-center justify-between gap-3 px-3 py-3">
-                  <div className="min-w-0">
-                    <p className="text-white font-medium">{error.name}</p>
-                    <p className="text-xs text-bambu-gray font-mono">{error.payload}</p>
-                  </div>
-                  {!(error.is_protected || error.slug === 'other') && (
-                    <Button size="sm" variant="danger" className="w-full md:w-auto" onClick={() => setDeleteTarget({ id: error.id, name: error.name })}>
-                      <Trash2 className="h-4 w-4" />
-                      Remove
-                    </Button>
-                  )}
-                </li>
-              ))}
+              {errors.map((error) => {
+                const customs = errors.filter((row) => row.slug !== 'other');
+                const customIndex = customs.findIndex((row) => row.id === error.id);
+                const isOther = error.is_protected || error.slug === 'other';
+                return (
+                  <li key={error.id} className="flex flex-col gap-3 px-3 py-3">
+                    <div className="flex flex-wrap items-center justify-between gap-3">
+                      <div className="min-w-0">
+                        <p className="text-white font-medium">
+                          {error.name}
+                          {isOther && (
+                            <span className="ml-2 text-xs font-normal text-bambu-gray">
+                              {t('floor.reasonAlwaysShown', 'Always shown')}
+                            </span>
+                          )}
+                        </p>
+                      </div>
+                      <div className="flex flex-wrap items-center gap-2">
+                        {!isOther && (
+                          <>
+                            <Button
+                              size="sm"
+                              variant="secondary"
+                              className="w-auto"
+                              disabled={customIndex <= 0}
+                              onClick={() => void moveErrorLabel(error, -1)}
+                              aria-label={t('floor.reasonMoveUp', 'Move up')}
+                            >
+                              ↑
+                            </Button>
+                            <Button
+                              size="sm"
+                              variant="secondary"
+                              className="w-auto"
+                              disabled={customIndex < 0 || customIndex >= customs.length - 1}
+                              onClick={() => void moveErrorLabel(error, 1)}
+                              aria-label={t('floor.reasonMoveDown', 'Move down')}
+                            >
+                              ↓
+                            </Button>
+                            <Button
+                              size="sm"
+                              variant="danger"
+                              className="w-full md:w-auto"
+                              onClick={() => setDeleteTarget({ id: error.id, name: error.name })}
+                            >
+                              <Trash2 className="h-4 w-4" />
+                              Remove
+                            </Button>
+                          </>
+                        )}
+                      </div>
+                    </div>
+                    <div className="flex flex-wrap gap-3">
+                      {REASON_SECTION_FLAGS.map(({ flag, labelKey, labelFallback }) => (
+                        <label
+                          key={flag}
+                          className={`inline-flex items-center gap-2 text-sm ${
+                            isOther ? 'text-bambu-gray' : 'text-bambu-gray-light'
+                          }`}
+                        >
+                          <input
+                            type="checkbox"
+                            className="rounded border-bambu-dark-tertiary"
+                            checked={isOther ? true : Boolean(error[flag])}
+                            disabled={isOther}
+                            onChange={(event) => void toggleErrorSection(error, flag, event.target.checked)}
+                            aria-label={t(labelKey, labelFallback)}
+                          />
+                          {t(labelKey, labelFallback)}
+                        </label>
+                      ))}
+                    </div>
+                  </li>
+                );
+              })}
             </ul>
           )}
           <h3 className="text-white font-semibold pt-2">{t('floor.codesReasonsAddHeading', 'Add a reason')}</h3>
           <div className="flex flex-wrap gap-2">
-            <input value={errorName} onChange={(e) => setErrorName(e.target.value)} placeholder="Label name" className="rounded-lg border border-bambu-dark-tertiary bg-bambu-dark px-3 py-2 text-sm text-white" />
-            <label className="flex items-center rounded-lg border border-bambu-dark-tertiary bg-bambu-dark text-sm text-white focus-within:border-bambu-green">
-              <span className="pl-3 text-bambu-gray font-mono">BBF-</span>
-              <input value={errorSlug} onFocus={() => setErrorSlugFocused(true)} onBlur={() => { setErrorSlugFocused(false); setErrorSlug((value) => value.replace(/-+$/, '')); }} onChange={(e) => setErrorSlug(normalizeErrorSlug(e.target.value))} placeholder={errorSlugFocused ? '' : 'h-line'} pattern="[a-z0-9]+(?:-[a-z0-9]+)*" title="Use letters and numbers, separated by one space or hyphen." className="w-36 bg-transparent px-1 py-2 font-mono text-sm text-white outline-none" />
-            </label>
-            <Button onClick={async () => {
-              try {
-                await api.createFloorErrorLabel({ name: errorName.trim(), slug: errorSlug.trim() });
-                setErrorName(''); setErrorSlug('');
-                await queryClient.invalidateQueries({ queryKey: ['floor-error-labels'] });
-              } catch (err) { showToast(err instanceof Error ? err.message : 'Could not add error label', 'error'); }
-            }} disabled={!errorName.trim() || !errorSlugValid}>Add label</Button>
+            <input
+              value={errorName}
+              onChange={(e) => setErrorName(e.target.value)}
+              placeholder={t('floor.codesReasonNamePlaceholder', 'Reason name')}
+              className="min-w-[12rem] flex-1 rounded-lg border border-bambu-dark-tertiary bg-bambu-dark px-3 py-2 text-sm text-white"
+            />
+            <Button
+              onClick={async () => {
+                const name = errorName.trim();
+                if (!name) return;
+                try {
+                  const nextSort =
+                    Math.max(0, ...errors.filter((row) => row.slug !== 'other').map((row) => row.sort_order)) + 1;
+                  await api.createFloorErrorLabel({
+                    name,
+                    slug: uniqueErrorSlug(name, errors),
+                    sort_order: nextSort,
+                  });
+                  setErrorName('');
+                  await queryClient.invalidateQueries({ queryKey: ['floor-error-labels'] });
+                } catch (err) {
+                  showToast(err instanceof Error ? err.message : 'Could not add error label', 'error');
+                }
+              }}
+              disabled={!errorName.trim()}
+            >
+              {t('floor.codesReasonsAdd', 'Add reason')}
+            </Button>
           </div>
-          <p className="text-xs text-bambu-gray">Use letters and numbers. A single space becomes a hyphen (for example, <code>h line</code> becomes <code>h-line</code>).</p>
         </section>
       )}
 

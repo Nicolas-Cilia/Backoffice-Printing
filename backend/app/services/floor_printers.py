@@ -167,7 +167,72 @@ FLOOR_STOP_REASON_CODES = (
     "filament_issue",
     "other",
 )
+# Human labels for Stats 2 / print-log (match floor UI English fallbacks).
+# Storage still uses the snake_case codes above; only the display string changes.
+_FLOOR_STOP_REASON_LABELS = {
+    "first_layer_issue": "First layer issue",
+    "warping": "Warping",
+    "layer_lines": "Layer lines",
+    "filament_issue": "Filament issue",
+    "other": "Other",
+}
 RECENT_STOP_LOOKBACK = timedelta(hours=6)
+# PrintLogEntry.failure_reason / PrintArchive.failure_reason column width.
+_FAILURE_REASON_MAX_LEN = 100
+
+
+def format_floor_stop_reason(reason_code: str | None, reason_text: str | None = None) -> str:
+    """Human-readable label for Stats 2 / print-log mirroring.
+
+    Known scanner codes map to floor UI labels. ``other`` with free text keeps
+    the operator's wording. Unknown codes stay as-is (may be auto-derived).
+    """
+    code = reason_code.strip() if isinstance(reason_code, str) and reason_code.strip() else ""
+    text = reason_text.strip() if isinstance(reason_text, str) and reason_text.strip() else ""
+    if not code:
+        return "Unclassified"
+    if code == "other" and text:
+        return text[:_FAILURE_REASON_MAX_LEN]
+    label = _FLOOR_STOP_REASON_LABELS.get(code, code)
+    return label[:_FAILURE_REASON_MAX_LEN]
+
+
+async def _mirror_floor_stop_reason_to_print_log(
+    db: AsyncSession,
+    print_log_id: int,
+    reason_code: str,
+    reason_text: str | None,
+) -> None:
+    """Copy the operator scanner reason onto PrintLogEntry (and archive if linked).
+
+    Stats 2 prefers FloorPrintStopReason when present; mirroring keeps Failure
+    Analysis / print-log views in sync and backfills empty auto-derived reasons.
+    Re-classifying also clears a prior Part-history discard so the run counts
+    again in Stats 2.
+    """
+    entry = await db.get(PrintLogEntry, print_log_id)
+    if entry is None:
+        return
+    label = format_floor_stop_reason(reason_code, reason_text)
+    entry.failure_reason = label
+    entry.failure_dismissed_at = None
+    if entry.archive_id is not None:
+        archive = await db.get(PrintArchive, entry.archive_id)
+        if archive is not None:
+            archive.failure_reason = label
+
+
+async def _clear_mirrored_floor_stop_reason(db: AsyncSession, print_log_id: int) -> None:
+    """Undo scanner mirroring and mark the run excluded from Stats 2 failures."""
+    entry = await db.get(PrintLogEntry, print_log_id)
+    if entry is None:
+        return
+    entry.failure_reason = None
+    entry.failure_dismissed_at = datetime.now()
+    if entry.archive_id is not None:
+        archive = await db.get(PrintArchive, entry.archive_id)
+        if archive is not None:
+            archive.failure_reason = None
 
 
 async def get_printer(db: AsyncSession, printer_id: int) -> Printer | None:
@@ -232,6 +297,15 @@ async def get_recent_stopped_print(db: AsyncSession, printer_id: int) -> RecentS
     )
 
 
+def _normalize_floor_stop_reason(reason_code: str, reason_text: str | None) -> tuple[str, str | None]:
+    if reason_code not in FLOOR_STOP_REASON_CODES:
+        raise ValueError(f"Unknown floor stop reason: {reason_code!r}")
+    normalized_text = reason_text.strip() if reason_text and reason_text.strip() else None
+    if reason_code == "other" and not normalized_text:
+        raise ValueError("reason_text is required for the other floor stop reason")
+    return reason_code, normalized_text
+
+
 async def record_floor_stop_reason(
     db: AsyncSession,
     printer_id: int,
@@ -239,11 +313,7 @@ async def record_floor_stop_reason(
     reason_text: str | None = None,
 ) -> RecentStoppedPrint:
     """Persist a classification for the printer's latest recent stoppage or failure."""
-    if reason_code not in FLOOR_STOP_REASON_CODES:
-        raise ValueError(f"Unknown floor stop reason: {reason_code!r}")
-    normalized_text = reason_text.strip() if reason_text and reason_text.strip() else None
-    if reason_code == "other" and not normalized_text:
-        raise ValueError("reason_text is required for the other floor stop reason")
+    reason_code, normalized_text = _normalize_floor_stop_reason(reason_code, reason_text)
 
     recent = await get_recent_stopped_print(db, printer_id)
     if recent is None:
@@ -263,6 +333,7 @@ async def record_floor_stop_reason(
     )
     db.add(record)
     await db.flush()
+    await _mirror_floor_stop_reason_to_print_log(db, recent.print_log_id, reason_code, normalized_text)
     return RecentStoppedPrint(
         print_log_id=recent.print_log_id,
         archive_id=recent.archive_id,
@@ -273,6 +344,139 @@ async def record_floor_stop_reason(
         reason_code=record.reason_code,
         reason_text=record.reason_text,
     )
+
+
+async def record_plate_print_failure(
+    db: AsyncSession,
+    archive_id: int,
+    reason_code: str,
+    reason_text: str | None = None,
+) -> RecentStoppedPrint:
+    """Classify a completed unlabeled plate as failed and hide it from the backlog.
+
+    Used when a job finished successfully but the parts are scrap — operators
+    report the failure without labeling stickers. Writes ``FloorPrintStopReason``
+    (same failure log as stopped/cancelled/failed runs) and dismisses the plate
+    from the unlabeled linking backlog. Clears ``awaiting_plate_clear`` only
+    when this archive is the printer's most recent terminal print.
+    """
+    from backend.app.models.floor_bin import FloorBinBatch
+    from backend.app.services.floor_parts import dismiss_build_plate, has_labeled_parts_for_archive
+
+    reason_code, normalized_text = _normalize_floor_stop_reason(reason_code, reason_text)
+
+    archive = await db.get(PrintArchive, archive_id)
+    if archive is None or archive.status != "completed":
+        raise LookupError("Completed build plate not found")
+    if archive.printer_id is None:
+        raise LookupError("Completed build plate has no printer")
+    if await has_labeled_parts_for_archive(db, archive_id):
+        raise ValueError("Build plate already has labeled parts")
+    bin_batch = await db.scalar(select(FloorBinBatch.id).where(FloorBinBatch.archive_id == archive_id).limit(1))
+    if bin_batch is not None:
+        raise ValueError("Build plate already has a bin harvest")
+
+    log_entry = (
+        (
+            await db.execute(
+                select(PrintLogEntry)
+                .where(PrintLogEntry.archive_id == archive_id)
+                .order_by(PrintLogEntry.created_at.desc(), PrintLogEntry.id.desc())
+                .limit(1)
+            )
+        )
+        .scalars()
+        .first()
+    )
+    if log_entry is None:
+        raise LookupError("No print log entry found for this build plate")
+
+    existing = await db.scalar(select(FloorPrintStopReason).where(FloorPrintStopReason.print_log_id == log_entry.id))
+    if existing is not None:
+        await dismiss_build_plate(db, archive_id)
+        result = RecentStoppedPrint(
+            print_log_id=existing.print_log_id,
+            archive_id=existing.archive_id,
+            print_name=existing.print_name,
+            part_code=existing.part_code,
+            status="failed",
+            stopped_at=existing.stopped_at,
+            reason_code=existing.reason_code,
+            reason_text=existing.reason_text,
+        )
+    else:
+        print_name = archive.print_name or archive.filename
+        stopped_at = archive.completed_at or log_entry.completed_at or log_entry.created_at
+        record = FloorPrintStopReason(
+            print_log_id=log_entry.id,
+            printer_id=archive.printer_id,
+            archive_id=archive.id,
+            print_name=print_name,
+            part_code=await _floor_part_code_for_archive(db, archive.id),
+            reason_code=reason_code,
+            reason_text=normalized_text,
+            stopped_at=stopped_at,
+        )
+        db.add(record)
+        await db.flush()
+        await _mirror_floor_stop_reason_to_print_log(db, log_entry.id, reason_code, normalized_text)
+        await dismiss_build_plate(db, archive_id)
+        result = RecentStoppedPrint(
+            print_log_id=record.print_log_id,
+            archive_id=record.archive_id,
+            print_name=record.print_name,
+            part_code=record.part_code,
+            status="failed",
+            stopped_at=record.stopped_at,
+            reason_code=record.reason_code,
+            reason_text=record.reason_text,
+        )
+
+    # Clear awaiting_plate_clear only if this archive is the printer's most
+    # recent terminal print (the one actually on the bed). An older plate
+    # from the backlog must not release a gate raised by a newer finish —
+    # including failed / aborted / cancelled runs, which also raise the gate
+    # and which get_last_finished_print (completed-only) never sees.
+    latest_terminal_id = await _get_last_terminal_archive_id(db, archive.printer_id)
+    if latest_terminal_id is not None and latest_terminal_id == archive.id:
+        try:
+            from backend.app.services.plate_turnaround import record_plate_clear_confirmed
+            from backend.app.services.printer_manager import printer_manager
+
+            printer_manager.set_awaiting_plate_clear(archive.printer_id, False)
+            await record_plate_clear_confirmed(archive.printer_id)
+        except Exception:
+            logger.exception(
+                "Failed to clear awaiting_plate_clear after plate failure for printer %s",
+                archive.printer_id,
+            )
+
+    return result
+
+
+async def record_printer_plate_failure(
+    db: AsyncSession,
+    printer_id: int,
+    reason_code: str,
+    reason_text: str | None = None,
+) -> RecentStoppedPrint:
+    """Classify the printer's latest finished unlabeled plate as failed.
+
+    Clears ``awaiting_plate_clear`` via ``record_plate_print_failure``.
+    Refuses when a later failed / aborted / cancelled run is the plate on
+    the bed — that job is not a completed unlabeled plate, and classifying
+    an older completed row would point at the wrong physical plate.
+    """
+    last = await get_last_finished_print(db, printer_id)
+    if last is None:
+        raise LookupError("No finished print found for this printer")
+    latest_terminal_id = await _get_last_terminal_archive_id(db, printer_id)
+    if latest_terminal_id is not None and latest_terminal_id != last.archive_id:
+        raise LookupError("Latest plate on this printer is not a completed unlabeled print")
+    if last.has_labeled_parts:
+        raise ValueError("Build plate already has labeled parts")
+
+    return await record_plate_print_failure(db, last.archive_id, reason_code, reason_text)
 
 
 async def list_floor_stop_reasons(db: AsyncSession, limit: int = 20) -> list[FloorStopReasonRecord]:
@@ -320,6 +524,7 @@ async def update_floor_stop_reason(
     record.reason_code = reason_code
     record.reason_text = normalized_text
     await db.flush()
+    await _mirror_floor_stop_reason_to_print_log(db, record.print_log_id, reason_code, normalized_text)
     row = (
         await db.execute(
             select(FloorPrintStopReason, Printer.name)
@@ -342,11 +547,18 @@ async def update_floor_stop_reason(
 
 
 async def delete_floor_stop_reason(db: AsyncSession, reason_id: int) -> bool:
-    """Remove an operator-classified stop/failure reason."""
+    """Remove an operator-classified stop/failure reason.
+
+    Also excludes the underlying print-log run from Stats 2 quality / reliability
+    failure counts (Part history discard = not a tracked failure anymore).
+    """
     record = await db.get(FloorPrintStopReason, reason_id)
     if record is None:
         return False
+    print_log_id = record.print_log_id
     await db.delete(record)
+    await db.flush()
+    await _clear_mirrored_floor_stop_reason(db, print_log_id)
     await db.flush()
     return True
 
@@ -394,6 +606,28 @@ async def get_last_finished_print(db: AsyncSession, printer_id: int) -> LastPrin
         has_labeled_parts=await has_labeled_parts_for_archive(db, archive.id),
         part_code=await _floor_part_code_for_archive(db, archive.id),
     )
+
+
+_TERMINAL_ARCHIVE_STATUSES = ("completed", "failed", "aborted", "cancelled")
+
+
+async def _get_last_terminal_archive_id(db: AsyncSession, printer_id: int) -> int | None:
+    """The printer's most recent terminal archive id.
+
+    ``awaiting_plate_clear`` is raised for every terminal status, not just
+    ``completed``. Use this when deciding whether a given archive is the
+    plate currently on the bed.
+    """
+    result = await db.execute(
+        select(PrintArchive.id)
+        .where(
+            PrintArchive.printer_id == printer_id,
+            PrintArchive.status.in_(_TERMINAL_ARCHIVE_STATUSES),
+        )
+        .order_by(PrintArchive.completed_at.desc().nullslast(), PrintArchive.id.desc())
+        .limit(1)
+    )
+    return result.scalar_one_or_none()
 
 
 async def get_archive_summary(db: AsyncSession, archive_id: int) -> LastPrint | None:
@@ -539,10 +773,13 @@ __all__ = [
     "RecentStoppedPrint",
     "FloorStopReasonRecord",
     "FLOOR_STOP_REASON_CODES",
+    "format_floor_stop_reason",
     "get_live_status",
     "get_printer",
     "get_recent_stopped_print",
     "record_floor_stop_reason",
+    "record_plate_print_failure",
+    "record_printer_plate_failure",
     "list_floor_stop_reasons",
     "update_floor_stop_reason",
     "delete_floor_stop_reason",

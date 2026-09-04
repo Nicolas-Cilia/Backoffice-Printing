@@ -42,6 +42,19 @@ const PARTS = [
   },
 ];
 
+/** Part/status filter <option>s reuse badge labels — ignore options in assertions. */
+function getStatusLabels(text: string) {
+  return screen.getAllByText(text).filter((element) => element.tagName !== "OPTION");
+}
+
+async function findStatusLabels(text: string) {
+  return waitFor(() => {
+    const labels = getStatusLabels(text);
+    expect(labels.length).toBeGreaterThan(0);
+    return labels;
+  });
+}
+
 function mockPartHistory() {
   server.use(
     http.get("/api/v1/floor/inventory/parts", () => HttpResponse.json(PARTS)),
@@ -188,8 +201,8 @@ describe("FloorInventoryPage", () => {
 
     expect(await screen.findByText("BBN-KNB-1 #101")).toBeInTheDocument();
     expect(screen.getByText("BBN-BUT-2 #102")).toBeInTheDocument();
-    expect(screen.getByText("Visual QC pass")).toBeInTheDocument();
-    expect(screen.getByText("In WIP")).toBeInTheDocument();
+    expect(getStatusLabels("Visual QC pass").length).toBeGreaterThan(0);
+    expect(getStatusLabels("In WIP").length).toBeGreaterThan(0);
     expect(screen.getByText("(8/12)")).toBeInTheDocument();
 
     await user.click(screen.getByText("BBN-KNB-1 #101"));
@@ -283,6 +296,101 @@ describe("FloorInventoryPage", () => {
     await user.click(screen.getByRole("button", { name: "Unlink" }));
     await user.click(screen.getByRole("button", { name: "Unlink bin" }));
     await waitFor(() => expect(unlinkBody).toEqual({ payload: "BBN-KNB-1" }));
+  });
+
+  it("lets a needs-matching bin browse printers and match a completed job", async () => {
+    const user = userEvent.setup();
+    mockPartHistory();
+    let matched: unknown = null;
+    server.use(
+      http.get("/api/v1/floor/inventory/bins", () =>
+        HttpResponse.json([
+          {
+            payload: "BBN-BOT-1",
+            bin_number: 1,
+            part_code: "BOT",
+            part_name: "Bot bin",
+            status: "harvested",
+            batch: {
+              id: 88,
+              payload: "BBN-BOT-1",
+              bin_number: 1,
+              printer_id: null,
+              printer_name: null,
+              archive_id: null,
+              print_name: null,
+              part_code: "BOT",
+              quantity: 0,
+              qc_passed_quantity: null,
+              remaining_quantity: 0,
+              status: "harvested",
+              harvested_at: "2026-09-02T15:04:00",
+            },
+          },
+        ]),
+      ),
+      http.get("/api/v1/floor/inventory/bins/batches/:batchId/events", () =>
+        HttpResponse.json([
+          {
+            id: 1,
+            action: "harvested",
+            details: { quantity: 0 },
+            occurred_at: "2026-09-02T15:04:00",
+          },
+        ]),
+      ),
+      http.get("/api/v1/floor/printers", () =>
+        HttpResponse.json([
+          { id: 9, name: "P1S 09", payload: "BBP-9", model: "P1S", serial_number: "ABC" },
+        ]),
+      ),
+      http.get("/api/v1/floor/inventory/bins/batches/:batchId/job-candidates", ({ request }) => {
+        const url = new URL(request.url);
+        expect(url.searchParams.get("printer_id")).toBe("9");
+        return HttpResponse.json([
+          {
+            id: 77,
+            print_name: "BOT x4 - plate",
+            completed_at: "2026-09-02T12:00:00",
+          },
+        ]);
+      }),
+      http.post("/api/v1/floor/inventory/bins/batches/:batchId/relink", async ({ request, params }) => {
+        matched = { batchId: Number(params.batchId), ...(await request.json() as object) };
+        return HttpResponse.json({
+          result: "recorded",
+          batch: {
+            id: 88,
+            payload: "BBN-BOT-1",
+            bin_number: 1,
+            printer_id: 9,
+            printer_name: "P1S 09",
+            archive_id: 77,
+            print_name: "BOT x4 - plate",
+            part_code: "BOT",
+            quantity: 0,
+            remaining_quantity: 0,
+            status: "harvested",
+            harvested_at: "2026-09-02T15:04:00",
+          },
+        });
+      }),
+    );
+    render(<FloorInventoryPage />);
+
+    await user.type(
+      screen.getByPlaceholderText(/Search sticker, job, printer, or status/i),
+      "BBN-BOT-1",
+    );
+    await user.click(await screen.findByText("BBN-BOT-1 #88"));
+    expect(await screen.findByText("Match to completed job")).toBeInTheDocument();
+    expect(screen.getByText("No job linked")).toBeInTheDocument();
+
+    await user.selectOptions(screen.getByRole("combobox", { name: "Printer" }), "9");
+    expect(await screen.findByRole("option", { name: /BOT x4 - plate/ })).toBeInTheDocument();
+    await user.selectOptions(screen.getByRole("combobox", { name: "Completed job" }), "77");
+    await user.click(screen.getByRole("button", { name: "Match" }));
+    await waitFor(() => expect(matched).toEqual({ batchId: 88, archive_id: 77 }));
   });
 
   it("hides archive and delete for a stocked print-linked bin fill", async () => {
@@ -719,7 +827,7 @@ describe("FloorInventoryPage", () => {
     expect(screen.getByRole("button", { name: "Fulfilled" })).toBeInTheDocument();
     await user.click(screen.getByRole("button", { name: "Fulfilled" }));
     expect(screen.getByText("BBD-000105")).toBeInTheDocument();
-    expect(screen.getByText("Shipped")).toBeInTheDocument();
+    expect(getStatusLabels("Shipped").length).toBeGreaterThan(0);
     expect(screen.getByText("Depleted (manually cleared)")).toBeInTheDocument();
   });
 
@@ -832,6 +940,278 @@ describe("FloorInventoryPage", () => {
     expect(screen.queryByText("BBD-000103")).not.toBeInTheDocument();
   });
 
+  it("shows staged-for-prod counts for tops, bottoms, buttons, and knobs", async () => {
+    const user = userEvent.setup();
+    server.use(
+      http.get("/api/v1/floor/inventory/parts", () =>
+        HttpResponse.json([
+          {
+            id: 1,
+            sticker_code: "BBD-000201",
+            printer_id: 4,
+            printer_name: "X1 Carbon 04",
+            archive_id: 31,
+            part_code: "TOP",
+            print_name: "Top Housing",
+            labeled_at: "2026-08-25T14:31:00",
+            archived_at: null,
+            released_at: null,
+            latest_event_action: "ready_for_production",
+          },
+          {
+            id: 2,
+            sticker_code: "BBD-000202",
+            printer_id: 4,
+            printer_name: "X1 Carbon 04",
+            archive_id: 32,
+            part_code: "TOP",
+            print_name: "Top Housing",
+            labeled_at: "2026-08-25T14:32:00",
+            archived_at: null,
+            released_at: null,
+            latest_event_action: "wip",
+          },
+          {
+            id: 3,
+            sticker_code: "BBD-000203",
+            printer_id: 5,
+            printer_name: "P1S 02",
+            archive_id: 33,
+            part_code: "BOT",
+            print_name: "Bottom Housing",
+            labeled_at: "2026-08-25T14:33:00",
+            archived_at: null,
+            released_at: null,
+            latest_event_action: "ready_for_production",
+          },
+          {
+            id: 4,
+            sticker_code: "BBD-000204",
+            printer_id: 5,
+            printer_name: "P1S 02",
+            archive_id: 34,
+            part_code: "BOT",
+            print_name: "Bottom Housing",
+            labeled_at: "2026-08-25T14:34:00",
+            archived_at: null,
+            released_at: null,
+            latest_event_action: "ready_for_production",
+          },
+        ]),
+      ),
+      http.get("/api/v1/floor/inventory/bins", () =>
+        HttpResponse.json([
+          {
+            payload: "BBN-BUT-1",
+            bin_number: 1,
+            part_code: "BUT",
+            part_name: "Button bin",
+            status: "ready_for_production",
+            batch: {
+              id: 11,
+              payload: "BBN-BUT-1",
+              bin_number: 1,
+              printer_id: 4,
+              printer_name: "X1 Carbon 04",
+              archive_id: 41,
+              print_name: "Buttons",
+              part_code: "BUT",
+              quantity: 47,
+              qc_passed_quantity: 47,
+              remaining_quantity: 12,
+              status: "ready_for_production",
+              harvested_at: "2026-08-25T14:00:00",
+              archived_at: null,
+            },
+          },
+          {
+            payload: "BBN-KNB-1",
+            bin_number: 1,
+            part_code: "KNB",
+            part_name: "Knob bin",
+            status: "ready_for_production",
+            batch: {
+              id: 12,
+              payload: "BBN-KNB-1",
+              bin_number: 1,
+              printer_id: 4,
+              printer_name: "X1 Carbon 04",
+              archive_id: 42,
+              print_name: "Knobs",
+              part_code: "KNB",
+              quantity: 30,
+              qc_passed_quantity: 30,
+              remaining_quantity: 5,
+              status: "ready_for_production",
+              harvested_at: "2026-08-25T14:05:00",
+              archived_at: null,
+            },
+          },
+          {
+            payload: "BBN-KNB-2",
+            bin_number: 2,
+            part_code: "KNB",
+            part_name: "Knob bin",
+            status: "wip",
+            batch: {
+              id: 13,
+              payload: "BBN-KNB-2",
+              bin_number: 2,
+              printer_id: 4,
+              printer_name: "X1 Carbon 04",
+              archive_id: 43,
+              print_name: "Knobs",
+              part_code: "KNB",
+              quantity: 30,
+              qc_passed_quantity: 30,
+              remaining_quantity: 8,
+              status: "wip",
+              harvested_at: "2026-08-25T14:10:00",
+              archived_at: null,
+            },
+          },
+        ]),
+      ),
+      http.get("/api/v1/floor/inventory/print-failures", () => HttpResponse.json([])),
+      http.get("/api/v1/floor/inventory/parts/:id/events", ({ params }) => {
+        const actions: Record<string, string> = {
+          "1": "ready_for_production",
+          "2": "wip",
+          "3": "ready_for_production",
+          "4": "ready_for_production",
+        };
+        return HttpResponse.json([
+          {
+            id: 10,
+            action: actions[String(params.id)] ?? "enrolled",
+            details: null,
+            occurred_at: "2026-08-25T14:32:00",
+          },
+        ]);
+      }),
+      http.get("/api/v1/floor/inventory/units", () => HttpResponse.json([])),
+    );
+    render(<FloorInventoryPage />);
+
+    await waitFor(() => {
+      const topsCard = screen.getByRole("button", { name: /Tops staged for prod/ });
+      expect(within(topsCard).getByText("1")).toBeInTheDocument();
+    });
+    const bottomsCard = screen.getByRole("button", { name: /Bottoms staged for prod/ });
+    const buttonsCard = screen.getByRole("button", { name: /Buttons/ });
+    const knobsCard = screen.getByRole("button", { name: /Knobs/ });
+    expect(within(bottomsCard).getByText("2")).toBeInTheDocument();
+    expect(within(buttonsCard).getByText("12")).toBeInTheDocument();
+    expect(within(knobsCard).getByText("5")).toBeInTheDocument();
+
+    await user.click(screen.getByRole("button", { name: /Tops staged for prod/ }));
+    expect(await screen.findByText("BBD-000201")).toBeInTheDocument();
+    expect(screen.queryByText("BBD-000202")).not.toBeInTheDocument();
+    expect(screen.queryByText("BBD-000203")).not.toBeInTheDocument();
+    expect(screen.getByRole("combobox", { name: "Filter by part" })).toHaveValue("TOP");
+    expect(screen.getByRole("combobox", { name: "Filter by status" })).toHaveValue(
+      "ready_for_production",
+    );
+  });
+
+  it("filters by status and part together and hides incompatible part options", async () => {
+    const user = userEvent.setup();
+    server.use(
+      http.get("/api/v1/floor/inventory/parts", () =>
+        HttpResponse.json([
+          {
+            id: 1,
+            sticker_code: "BBD-TOP-REWORK",
+            printer_id: 4,
+            printer_name: "X1 Carbon 04",
+            archive_id: 31,
+            part_code: "TOP",
+            print_name: "Top Housing",
+            labeled_at: "2026-08-25T14:31:00",
+            archived_at: null,
+            released_at: null,
+            latest_event_action: "sanding",
+          },
+          {
+            id: 2,
+            sticker_code: "BBD-BOT-REWORK",
+            printer_id: 5,
+            printer_name: "P1S 02",
+            archive_id: 32,
+            part_code: "BOT",
+            print_name: "Bottom Housing",
+            labeled_at: "2026-08-25T14:32:00",
+            archived_at: null,
+            released_at: null,
+            latest_event_action: "rework",
+          },
+          {
+            id: 3,
+            sticker_code: "BBD-TOP-SUPPORT",
+            printer_id: 4,
+            printer_name: "X1 Carbon 04",
+            archive_id: 33,
+            part_code: "TOP",
+            print_name: "Top Housing",
+            labeled_at: "2026-08-25T14:33:00",
+            archived_at: null,
+            released_at: null,
+            latest_event_action: "support_removed",
+          },
+          {
+            id: 4,
+            sticker_code: "BBD-BOT-STAGED",
+            printer_id: 5,
+            printer_name: "P1S 02",
+            archive_id: 34,
+            part_code: "BOT",
+            print_name: "Bottom Housing",
+            labeled_at: "2026-08-25T14:34:00",
+            archived_at: null,
+            released_at: null,
+            latest_event_action: "ready_for_production",
+          },
+        ]),
+      ),
+      http.get("/api/v1/floor/inventory/bins", () => HttpResponse.json([])),
+      http.get("/api/v1/floor/inventory/units", () => HttpResponse.json([])),
+      http.get("/api/v1/floor/inventory/print-failures", () => HttpResponse.json([])),
+    );
+    render(<FloorInventoryPage />);
+
+    await screen.findByText("BBD-TOP-REWORK");
+
+    const partFilter = screen.getByRole("combobox", { name: "Filter by part" });
+    const statusFilter = screen.getByRole("combobox", { name: "Filter by status" });
+
+    await user.selectOptions(partFilter, "BOT");
+    await user.selectOptions(statusFilter, "rework");
+
+    expect(await screen.findByText("BBD-BOT-REWORK")).toBeInTheDocument();
+    expect(screen.queryByText("BBD-TOP-REWORK")).not.toBeInTheDocument();
+    expect(screen.queryByText("BBD-BOT-STAGED")).not.toBeInTheDocument();
+    // Finishing statuses are TOP-only — not offered while Bottoms is selected.
+    expect(
+      within(statusFilter).queryByRole("option", { name: "Support Removed" }),
+    ).not.toBeInTheDocument();
+
+    await user.selectOptions(partFilter, "all");
+    await user.selectOptions(statusFilter, "support_removed");
+
+    expect(await screen.findByText("BBD-TOP-SUPPORT")).toBeInTheDocument();
+    expect(screen.queryByText("BBD-BOT-REWORK")).not.toBeInTheDocument();
+    expect(screen.queryByText("BBD-TOP-REWORK")).not.toBeInTheDocument();
+    expect(
+      within(partFilter).queryByRole("option", { name: "Bottoms" }),
+    ).not.toBeInTheDocument();
+    expect(within(partFilter).getByRole("option", { name: "Tops" })).toBeInTheDocument();
+
+    await user.selectOptions(partFilter, "TOP");
+    await user.selectOptions(statusFilter, "rework");
+    expect(await screen.findByText("BBD-TOP-REWORK")).toBeInTheDocument();
+    expect(screen.queryByText("BBD-BOT-REWORK")).not.toBeInTheDocument();
+  });
+
   it("switches to All parts for searches and shows failed parts from the failure log", async () => {
     const user = userEvent.setup();
     mockPartHistory();
@@ -908,6 +1288,88 @@ describe("FloorInventoryPage", () => {
     expect(screen.getByRole("button", { name: /Fit Check Pass fit check/ })).toBeInTheDocument();
   });
 
+  it("finds needs-matching parts and bins via the matching search shortcut", async () => {
+    const user = userEvent.setup();
+    server.use(
+      http.get("/api/v1/floor/inventory/parts", () =>
+        HttpResponse.json([
+          {
+            id: 2,
+            sticker_code: "BBD-000102",
+            printer_id: 4,
+            printer_name: "X1 Carbon 04",
+            archive_id: null,
+            part_code: "TOP",
+            print_name: null,
+            labeled_at: "2026-08-25T14:32:00",
+            archived_at: null,
+            released_at: null,
+            latest_event_action: "enrolled",
+          },
+          {
+            id: 1,
+            sticker_code: "BBD-000101",
+            printer_id: 4,
+            printer_name: "X1 Carbon 04",
+            archive_id: 31,
+            part_code: "TOP",
+            print_name: "Cable guide",
+            labeled_at: "2026-08-25T14:31:00",
+            archived_at: null,
+            released_at: null,
+            latest_event_action: "wip",
+          },
+        ]),
+      ),
+      http.get("/api/v1/floor/inventory/bins", () =>
+        HttpResponse.json([
+          {
+            payload: "BBN-BOT-1",
+            bin_number: 1,
+            part_code: "BOT",
+            part_name: "Bot bin",
+            status: "harvested",
+            batch: {
+              id: 88,
+              payload: "BBN-BOT-1",
+              bin_number: 1,
+              printer_id: null,
+              printer_name: null,
+              archive_id: null,
+              print_name: null,
+              part_code: "BOT",
+              quantity: 0,
+              qc_passed_quantity: null,
+              remaining_quantity: 0,
+              status: "harvested",
+              harvested_at: "2026-09-02T15:04:00",
+            },
+          },
+        ]),
+      ),
+      http.get("/api/v1/floor/inventory/print-failures", () => HttpResponse.json([])),
+      http.get("/api/v1/floor/inventory/parts/:id/events", ({ params }) =>
+        HttpResponse.json([
+          {
+            id: 10,
+            action: Number(params.id) === 2 ? "enrolled" : "wip",
+            details: { archive_id: Number(params.id) === 1 ? 31 : null },
+            occurred_at: "2026-08-25T14:32:00",
+          },
+        ]),
+      ),
+      http.get("/api/v1/floor/inventory/units", () => HttpResponse.json([])),
+    );
+    render(<FloorInventoryPage />);
+
+    await user.click(screen.getByRole("textbox", { name: "Search part history" }));
+    await user.click(screen.getByRole("button", { name: /Needs matching matching/ }));
+
+    expect(await screen.findByText("BBD-000102")).toBeInTheDocument();
+    expect(await screen.findByText("BBN-BOT-1 #88")).toBeInTheDocument();
+    expect(screen.queryByText("BBD-000101")).not.toBeInTheDocument();
+  });
+
   it("clears the search from the inline X button", async () => {
     const user = userEvent.setup();
     mockPartHistory();
@@ -918,7 +1380,11 @@ describe("FloorInventoryPage", () => {
     await user.click(screen.getByRole("button", { name: "Clear search" }));
 
     expect(search).toHaveValue("");
+    expect(search).toHaveFocus();
     expect(screen.queryByRole("button", { name: "Clear search" })).not.toBeInTheDocument();
+    expect(
+      screen.getByRole("button", { name: /Staged for Production staged/ }),
+    ).toBeInTheDocument();
   });
 
   it("shows harvest history and offers only same-printer job candidates for a match", async () => {
@@ -1377,13 +1843,11 @@ describe("FloorInventoryPage", () => {
     );
     render(<FloorInventoryPage />);
     await screen.findByText("BBD-000101");
-    expect(await screen.findByText("Rework")).toBeInTheDocument();
+    expect((await findStatusLabels("Rework")).length).toBeGreaterThan(0);
     await user.click(screen.getByText("BBD-000101"));
 
-    expect(await screen.findByText("Fit Check Pass")).toBeInTheDocument();
-    await waitFor(() =>
-      expect(screen.getAllByText("Rework")).toHaveLength(2),
-    );
+    expect((await findStatusLabels("Fit Check Pass")).length).toBeGreaterThan(0);
+    await waitFor(() => expect(getStatusLabels("Rework")).toHaveLength(2));
     const timelineItems = await screen.findAllByRole("listitem");
     expect(timelineItems[1].querySelector("span")).toHaveClass("bg-green-500");
     expect(timelineItems[2].querySelector("span")).toHaveClass("bg-orange-500");
@@ -1417,7 +1881,7 @@ describe("FloorInventoryPage", () => {
     );
     render(<FloorInventoryPage />);
 
-    expect(await screen.findByText("Visual QC pass")).toBeInTheDocument();
+    expect((await findStatusLabels("Visual QC pass")).length).toBeGreaterThan(0);
     await user.click(screen.getByText("BBD-000101"));
     expect(screen.getByRole("list")).toHaveTextContent("Visual QC pass");
   });
@@ -1474,7 +1938,7 @@ describe("FloorInventoryPage", () => {
     await user.click(screen.getByRole("button", { name: "Save" }));
 
     expect(await screen.findByText("Status overridden to Shipped")).toBeInTheDocument();
-    expect(screen.getAllByText("Shipped")).toHaveLength(1);
+    expect(getStatusLabels("Shipped")).toHaveLength(1);
   });
 });
 
@@ -1493,6 +1957,7 @@ const UNITS = [
     knob_bin_payload: "BBN-KNB-1",
     button_bin_payload: "BBN-BUT-1",
     linked_at: "2026-08-27T10:00:00",
+    unit_workflow_status: "shipped" as const,
   },
   {
     id: 901,
@@ -1508,6 +1973,7 @@ const UNITS = [
     knob_bin_payload: "BBN-KNB-2",
     button_bin_payload: "BBN-BUT-2",
     linked_at: "2026-08-26T09:00:00",
+    unit_workflow_status: "rework" as const,
   },
 ];
 
@@ -1535,6 +2001,55 @@ describe("FloorInventoryPage — Serials tab", () => {
     expect(screen.getByText("BBD-000201")).toBeInTheDocument();
     expect(screen.getAllByText("BBN-KNB-1").length).toBeGreaterThan(0);
     expect(screen.getAllByText("BBN-BUT-1").length).toBeGreaterThan(0);
+  });
+
+  it("shows shipped / rework status on each serial row and the assembly card", async () => {
+    const user = userEvent.setup();
+    mockPartHistory();
+    mockUnits();
+    render(<FloorInventoryPage />);
+
+    await user.click(screen.getByRole("button", { name: "Serials" }));
+
+    const shippedRow = (await screen.findByText("XG2SNP")).closest("tr");
+    const reworkRow = screen.getByText("8TBDT9").closest("tr");
+    expect(shippedRow).not.toBeNull();
+    expect(reworkRow).not.toBeNull();
+    expect(within(shippedRow as HTMLElement).getByText("Shipped")).toBeInTheDocument();
+    expect(within(reworkRow as HTMLElement).getByText("Rework")).toBeInTheDocument();
+
+    await user.click(shippedRow as HTMLElement);
+    expect(await screen.findByRole("heading", { name: "XG2SNP" })).toBeInTheDocument();
+    expect(
+      within(screen.getByLabelText("Assembly detail")).getByText("Shipped"),
+    ).toBeInTheDocument();
+  });
+
+  it("sorts serials with the same last-scanned / labeled options as Part history", async () => {
+    const user = userEvent.setup();
+    mockPartHistory();
+    mockUnits();
+    render(<FloorInventoryPage />);
+
+    await user.click(screen.getByRole("button", { name: "Serials" }));
+    await screen.findByText("XG2SNP");
+
+    const serialOrder = () => {
+      const newerScan = screen.getByText("XG2SNP");
+      const olderScan = screen.getByText("8TBDT9");
+      return newerScan.compareDocumentPosition(olderScan) & Node.DOCUMENT_POSITION_FOLLOWING
+        ? ["XG2SNP", "8TBDT9"]
+        : ["8TBDT9", "XG2SNP"];
+    };
+
+    // Default: last scanned newest — XG2SNP housing labeled later than 8TBDT9's.
+    expect(serialOrder()).toEqual(["XG2SNP", "8TBDT9"]);
+
+    await user.selectOptions(screen.getByLabelText("Sort by"), "labeled_asc");
+    expect(serialOrder()).toEqual(["8TBDT9", "XG2SNP"]);
+
+    await user.selectOptions(screen.getByLabelText("Sort by"), "labeled_desc");
+    expect(serialOrder()).toEqual(["XG2SNP", "8TBDT9"]);
   });
 
   it("filters serials by serial or either sticker", async () => {
@@ -1864,6 +2379,7 @@ const COLLAPSE_UNIT = {
   knob_bin_payload: "BBN-KNB-9",
   button_bin_payload: "BBN-BUT-9",
   linked_at: "2026-08-27T10:30:00",
+  unit_workflow_status: "shipped" as const,
 };
 
 const COLLAPSE_KIT_BINS = [
@@ -1974,6 +2490,64 @@ describe("FloorInventoryPage — Part history serial collapse", () => {
 
     // The unlinked, standalone housing still appears as its own part row.
     expect(screen.getByText("BBD-000701")).toBeInTheDocument();
+  });
+
+  it("shows Rework on the serial row when the unit was returned to rework (both housings)", async () => {
+    const user = userEvent.setup();
+    server.use(
+      http.get("/api/v1/floor/inventory/parts", () =>
+        HttpResponse.json(
+          COLLAPSE_PARTS.map((part) =>
+            part.id === 10 || part.id === 11
+              ? { ...part, latest_event_action: "rework" }
+              : part,
+          ),
+        ),
+      ),
+      http.get("/api/v1/floor/inventory/bins", () => HttpResponse.json(COLLAPSE_KIT_BINS)),
+      http.get("/api/v1/floor/inventory/units", () =>
+        HttpResponse.json([{ ...COLLAPSE_UNIT, unit_workflow_status: "rework" }]),
+      ),
+    );
+    render(<FloorInventoryPage />);
+
+    const serialRow = (await screen.findByText("ZK5KFG")).closest("tr");
+    expect(serialRow).not.toBeNull();
+    expect(within(serialRow as HTMLElement).getByText("Rework")).toBeInTheDocument();
+    expect(within(serialRow as HTMLElement).queryByText("Linked")).not.toBeInTheDocument();
+
+    await user.click(serialRow as HTMLElement);
+    // Only TOP/BOT housings go to rework — kit bin slots keep their bin status.
+    expect(within(screen.getByRole("row", { name: "TOP BBD-000501" })).getByText("Rework")).toBeInTheDocument();
+    expect(within(screen.getByRole("row", { name: "BOT BBD-000601" })).getByText("Rework")).toBeInTheDocument();
+    expect(within(screen.getByRole("row", { name: "KNB BBN-KNB-9 #31" })).queryByText("Rework")).not.toBeInTheDocument();
+    expect(within(screen.getByRole("row", { name: "BUT BBN-BUT-9 #32" })).queryByText("Rework")).not.toBeInTheDocument();
+  });
+
+  it("keeps Linked on the serial row when only one housing is in rework", async () => {
+    server.use(
+      http.get("/api/v1/floor/inventory/parts", () =>
+        HttpResponse.json(
+          COLLAPSE_PARTS.map((part) =>
+            part.id === 10
+              ? { ...part, latest_event_action: "rework" }
+              : part.id === 11
+                ? { ...part, latest_event_action: "shipped" }
+                : part,
+          ),
+        ),
+      ),
+      http.get("/api/v1/floor/inventory/bins", () => HttpResponse.json(COLLAPSE_KIT_BINS)),
+      http.get("/api/v1/floor/inventory/units", () =>
+        HttpResponse.json([{ ...COLLAPSE_UNIT, unit_workflow_status: "mixed" }]),
+      ),
+    );
+    render(<FloorInventoryPage />);
+
+    const serialRow = (await screen.findByText("ZK5KFG")).closest("tr");
+    expect(serialRow).not.toBeNull();
+    expect(within(serialRow as HTMLElement).getByText("Linked")).toBeInTheDocument();
+    expect(within(serialRow as HTMLElement).queryByText("Rework")).not.toBeInTheDocument();
   });
 
   it("expands the serial row into TOP, BOT, knob, and button slots without leaving Part history", async () => {

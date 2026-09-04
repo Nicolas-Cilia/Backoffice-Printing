@@ -38,6 +38,9 @@ class PrintLogEntry(Base):
     energy_kwh: Mapped[float | None] = mapped_column(Float)
     energy_cost: Mapped[float | None] = mapped_column(Float)
     failure_reason: Mapped[str | None] = mapped_column(String(100))
+    # Set when an operator discards the floor failure reason for this run —
+    # Stats 2 quality / reliability skip these so discarded history stays out.
+    failure_dismissed_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
     thumbnail_path: Mapped[str | None] = mapped_column(String(500))
     created_by_id: Mapped[int | None] = mapped_column(ForeignKey("users.id", ondelete="SET NULL"), nullable=True)
     created_by_username: Mapped[str | None] = mapped_column(String(100))

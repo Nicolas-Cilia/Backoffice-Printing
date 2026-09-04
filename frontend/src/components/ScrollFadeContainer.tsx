@@ -6,6 +6,8 @@ interface ScrollFadeContainerProps extends HTMLAttributes<HTMLDivElement> {
   children: ReactNode;
   /** Tailwind `from-*` class matching the pane background (default: page dark). */
   fadeFromClassName?: string;
+  /** Fires whenever more-content-below changes (true while not scrolled to bottom). */
+  onHasMoreChange?: (hasMore: boolean) => void;
 }
 
 /**
@@ -17,10 +19,13 @@ export function ScrollFadeContainer({
   children,
   className = '',
   fadeFromClassName = 'from-bambu-dark',
+  onHasMoreChange,
   ...props
 }: ScrollFadeContainerProps) {
   const ref = useRef<HTMLDivElement>(null);
   const [showFade, setShowFade] = useState(false);
+  const onHasMoreChangeRef = useRef(onHasMoreChange);
+  onHasMoreChangeRef.current = onHasMoreChange;
 
   useLayoutEffect(() => {
     const el = ref.current;
@@ -31,7 +36,9 @@ export function ScrollFadeContainer({
       // scroller; skip so we don't latch overflow=false.
       if (el.clientHeight < 1) return;
       const remaining = el.scrollHeight - el.scrollTop - el.clientHeight;
-      setShowFade(remaining > OVERFLOW_THRESHOLD_PX);
+      const hasMore = remaining > OVERFLOW_THRESHOLD_PX;
+      setShowFade(hasMore);
+      onHasMoreChangeRef.current?.(hasMore);
     };
 
     update();

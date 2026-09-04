@@ -7,6 +7,7 @@ import { Layout } from './components/Layout';
 import { PrintersPage } from './pages/PrintersPage';
 import { QueuePage } from './pages/QueuePage';
 import { StatsPage } from './pages/StatsPage';
+import { Stats2Page } from './pages/Stats2Page';
 import { SettingsPage } from './pages/SettingsPage';
 import { ProfilesPage } from './pages/ProfilesPage';
 import { MaintenancePage } from './pages/MaintenancePage';
@@ -218,6 +219,7 @@ export function AppRoutes() {
             Pipelines). Old standalone URL redirects. */}
         <Route path="pipelines/runs" element={<Navigate to="/queue?tab=pipelines" replace />} />
         <Route path="stats" element={<StatsPage />} />
+        <Route path="stats2" element={<Stats2Page />} />
         <Route path="profiles" element={<ProfilesPage />} />
         <Route path="maintenance" element={<MaintenancePage />} />
         {/* Floor parts inventory lives at /inventory; filament inventory at

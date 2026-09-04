@@ -390,6 +390,42 @@ describe('FloorLandingPage unlabeled build-plates panel', () => {
     await screen.findByText('WIP');
     expect(await screen.findByText('Cable guide')).toBeInTheDocument();
   });
+
+  it('offers Print failed next to Not for production and records a reason', async () => {
+    const user = userEvent.setup();
+    let plates: unknown[] = [UNLABELED_PLATE];
+    let failBody: Record<string, unknown> | null = null;
+    server.use(
+      http.get('/api/v1/floor/parts/unlabeled-build-plates', () => HttpResponse.json(plates)),
+      http.get('/api/v1/floor/parts/dismissed-build-plates', () => HttpResponse.json([])),
+      http.post('/api/v1/floor/parts/unlabeled-build-plates/:id/fail', async ({ request }) => {
+        failBody = (await request.json()) as Record<string, unknown>;
+        plates = [];
+        return HttpResponse.json({
+          print_log_id: 3,
+          archive_id: 5,
+          print_name: 'Cable guide',
+          part_code: null,
+          status: 'failed',
+          stopped_at: '2026-08-24T14:32:00',
+          reason_code: 'filament_issue',
+          reason_text: null,
+        });
+      }),
+    );
+    render(<FloorLandingPage />);
+
+    expect(await screen.findByRole('button', { name: 'Not for production' })).toBeInTheDocument();
+    await user.click(screen.getByRole('button', { name: 'Print failed' }));
+    expect(await screen.findByText('Why did this plate fail?')).toBeInTheDocument();
+    await user.click(screen.getByRole('button', { name: 'Filament issue' }));
+    await user.click(screen.getByRole('button', { name: 'Save' }));
+
+    await waitFor(() =>
+      expect(failBody).toEqual({ reason_code: 'filament_issue', reason_text: null }),
+    );
+    expect(await screen.findByText('No build plates are waiting on parts.')).toBeInTheDocument();
+  });
 });
 
 describe('FloorLandingPage non-production list', () => {

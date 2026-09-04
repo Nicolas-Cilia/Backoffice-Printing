@@ -61,6 +61,8 @@ interface ToastContextType {
   showPersistentToast: ShowPersistentToast;
   dismissToast: (id: string) => void;
   setViewportSuppressed: (suppressed: boolean) => void;
+  /** Hide the "Starting prints" dispatch toast only (Floor scan keeps local toasts). */
+  setDispatchToastSuppressed: (suppressed: boolean) => void;
 }
 
 const ToastContext = createContext<ToastContextType | undefined>(undefined);
@@ -129,6 +131,7 @@ export function ToastProvider({ children }: { children: ReactNode }) {
   const { t } = useTranslation();
   const [toasts, setToasts] = useState<Toast[]>([]);
   const [viewportSuppressed, setViewportSuppressed] = useState(false);
+  const [dispatchToastSuppressed, setDispatchToastSuppressed] = useState(false);
   const [isDispatchCollapsed, setIsDispatchCollapsed] = useState(false);
   const timeoutRefs = useRef<Map<string, ReturnType<typeof setTimeout>>>(new Map());
   // Tracks whether the provider is still mounted. A toast can be triggered by
@@ -310,13 +313,27 @@ export function ToastProvider({ children }: { children: ReactNode }) {
     timeoutRefs.current.set(DISPATCH_TOAST_ID, timeout);
   }, [toasts]);
 
+  const visibleToasts = dispatchToastSuppressed
+    ? toasts.filter((toast) => !toast.dispatchData)
+    : toasts;
+
   return (
-    <ToastContext.Provider value={{ showToast, showPersistentToast, dismissToast, setViewportSuppressed }}>
+    <ToastContext.Provider
+      value={{
+        showToast,
+        showPersistentToast,
+        dismissToast,
+        setViewportSuppressed,
+        setDispatchToastSuppressed,
+      }}
+    >
       {children}
 
       {/* Toast Container.
           The kiosk layout suppresses this entire viewport so SpoolBuddy displays stay
           free of main-app notifications.
+          Floor scan only hides the "Starting prints" dispatch toast so operators
+          aren't distracted while scanning, but still see local scan feedback.
           Position is set via safe-area-aware calc() rather than bottom-4/right-4 so an
           installed PWA on a notched phone clears the home indicator / landscape notch
           (#2612). */}
@@ -328,7 +345,7 @@ export function ToastProvider({ children }: { children: ReactNode }) {
           right: 'calc(1rem + env(safe-area-inset-right))',
         }}
       >
-        {toasts.map((toast) => (
+        {visibleToasts.map((toast) => (
           <div
             key={toast.id}
             className={`rounded-lg border shadow-lg backdrop-blur-sm animate-slide-in ${bgColors[toast.type]} ${

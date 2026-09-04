@@ -67,6 +67,7 @@ from backend.app.api.routes import (
     spoolbuddy,
     spoolman,
     spoolman_inventory,
+    stats2,
     support,
     system,
     updates,
@@ -5352,8 +5353,12 @@ async def on_print_complete(printer_id: int, data: dict):
     # after a touchscreen-abort (#1171). Persisted to DB so the gate survives
     # Auto Off power cycles and Bambuddy restarts.
     _final_status = data.get("status", "completed")
+    _plate_turnaround_finished_at = None
     if _final_status in ("completed", "failed", "aborted", "cancelled"):
         printer_manager.set_awaiting_plate_clear(printer_id, True)
+        # Stats 2 (Phase 1): capture the finish/clear-requested moment here; the
+        # turnaround row is opened below once archive_id has been resolved.
+        _plate_turnaround_finished_at = datetime.now(timezone.utc)
 
     # MQTT relay - publish print complete
     try:
@@ -5468,6 +5473,15 @@ async def on_print_complete(printer_id: int, data: dict):
                 archive = result.scalar_one_or_none()
                 if archive:
                     archive_id = archive.id
+
+    # Stats 2 (Phase 1): open a plate-turnaround measurement row now that the
+    # plate-clear gate is raised and the archive (if any) is resolved. Fire-and-
+    # forget — start_plate_turnaround swallows its own errors so stats never
+    # break the completion callback.
+    if _plate_turnaround_finished_at is not None:
+        from backend.app.services.plate_turnaround import start_plate_turnaround
+
+        await start_plate_turnaround(printer_id, archive_id, _plate_turnaround_finished_at)
 
     # Cleanup: delete uploaded file from printer SD card to prevent phantom prints (Issue #374, #1542)
     # The print scheduler uploads files to the SD card root (/). Some printers (e.g. P1S, A1)
@@ -8425,6 +8439,7 @@ app.include_router(inventory.router, prefix=app_settings.api_prefix)
 app.include_router(labels.router, prefix=app_settings.api_prefix)
 app.include_router(floor.router, prefix=app_settings.api_prefix)
 app.include_router(settings_routes.router, prefix=app_settings.api_prefix)
+app.include_router(stats2.router, prefix=app_settings.api_prefix)
 app.include_router(cloud.router, prefix=app_settings.api_prefix)
 app.include_router(orca_cloud.router, prefix=app_settings.api_prefix)
 app.include_router(local_presets.router, prefix=app_settings.api_prefix)

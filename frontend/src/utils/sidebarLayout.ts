@@ -2,6 +2,9 @@ export const SIDEBAR_HIDDEN_SYSTEM_ITEMS_KEY = 'sidebarHiddenSystemItems';
 export const SIDEBAR_ORDER_KEY = 'sidebarOrder';
 export const SIDEBAR_LAYOUT_CHANGED_EVENT = 'sidebar-layout-changed';
 
+/** First-install / Reset defaults: hide legacy Stats and Notifications. */
+export const DEFAULT_HIDDEN_SIDEBAR_SYSTEM_ITEM_IDS = ['stats', 'notifications'] as const;
+
 export function isExternalSidebarItemId(id: string): boolean {
   return id.startsWith('ext-');
 }
@@ -25,13 +28,15 @@ export function saveSidebarOrder(order: string[]) {
 
 export function getHiddenSidebarSystemItemIds(): string[] {
   const stored = localStorage.getItem(SIDEBAR_HIDDEN_SYSTEM_ITEMS_KEY);
-  if (!stored) return [];
+  if (!stored) return [...DEFAULT_HIDDEN_SIDEBAR_SYSTEM_ITEM_IDS];
 
   try {
     const parsed = JSON.parse(stored);
-    return Array.isArray(parsed) ? parsed.filter((id): id is string => typeof id === 'string') : [];
+    return Array.isArray(parsed)
+      ? parsed.filter((id): id is string => typeof id === 'string')
+      : [...DEFAULT_HIDDEN_SIDEBAR_SYSTEM_ITEM_IDS];
   } catch {
-    return [];
+    return [...DEFAULT_HIDDEN_SIDEBAR_SYSTEM_ITEM_IDS];
   }
 }
 
