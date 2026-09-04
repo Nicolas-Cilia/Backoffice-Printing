@@ -43,7 +43,7 @@ import {
 import { yieldWhereUnitsWent } from './stats2Yield';
 
 // ── Chart palette (recharts needs concrete colours; axis/grid follow theme CSS vars) ──
-type QualityTab = 'print' | 'discard' | 'rework';
+type QualityTab = 'print' | 'discard' | 'rework' | 'sanding';
 
 const ACCENT = '#07bcec';
 /** Quality category palette — saturated enough to read on dark charts (avoid pale rose/sky). */
@@ -51,11 +51,13 @@ const QUALITY_PASSED = '#22c55e';
 const QUALITY_PRINT = '#ef4444';
 const QUALITY_DISCARD = '#f59e0b';
 const QUALITY_REWORK = '#3b82f6';
-const PIE_COLORS = [QUALITY_PRINT, QUALITY_DISCARD, QUALITY_REWORK, '#a78bfa', QUALITY_PASSED, '#ec4899', '#94a3b8', '#eab308'];
+const QUALITY_SANDING = '#a78bfa';
+const PIE_COLORS = [QUALITY_PRINT, QUALITY_DISCARD, QUALITY_REWORK, QUALITY_SANDING, QUALITY_PASSED, '#ec4899', '#94a3b8', '#eab308'];
 const TAB_COLORS: Record<QualityTab, string> = {
   print: QUALITY_PRINT,
   discard: QUALITY_DISCARD,
   rework: QUALITY_REWORK,
+  sanding: QUALITY_SANDING,
 };
 
 type ChartTheme = {
@@ -201,7 +203,7 @@ function minuteOfDay(iso: string): number {
 
 // ── Reusable presentational atoms ──────────────────────────────────────────
 
-type Tone = 'neutral' | 'warning' | 'danger' | 'info' | 'success' | 'accent';
+type Tone = 'neutral' | 'warning' | 'danger' | 'info' | 'success' | 'accent' | 'violet';
 
 const TONE_PILL: Record<Tone, string> = {
   neutral: 'bg-bambu-dark-tertiary text-bambu-gray-light',
@@ -210,6 +212,7 @@ const TONE_PILL: Record<Tone, string> = {
   info: 'bg-blue-100 text-blue-800 dark:bg-blue-500/20 dark:text-blue-200',
   success: 'bg-green-100 text-green-800 dark:bg-green-500/20 dark:text-green-200',
   accent: 'bg-bambu-green/20 text-bambu-green',
+  violet: 'bg-violet-100 text-violet-800 dark:bg-violet-500/20 dark:text-violet-200',
 };
 
 function Pill({ children, tone = 'neutral', className = '' }: { children: ReactNode; tone?: Tone; className?: string }) {
@@ -243,6 +246,7 @@ const STAT_TONE: Record<Tone, string> = {
   info: 'text-blue-600 dark:text-blue-400',
   success: 'text-green-600 dark:text-green-400',
   accent: 'text-bambu-green',
+  violet: 'text-violet-600 dark:text-violet-400',
 };
 
 function Stat({ value, label, tone = 'neutral' }: { value: ReactNode; label: string; tone?: Tone }) {
@@ -264,6 +268,8 @@ const CALLOUT_TONE: Record<Tone, string> = {
   success:
     'border-green-300 bg-green-50 text-green-900 dark:border-green-500/40 dark:bg-green-500/10 dark:text-green-100',
   accent: 'border-bambu-green/40 bg-bambu-green/10 text-bambu-green',
+  violet:
+    'border-violet-300 bg-violet-50 text-violet-900 dark:border-violet-500/40 dark:bg-violet-500/10 dark:text-violet-100',
 };
 
 function Callout({ tone = 'neutral', title, children }: { tone?: Tone; title: string; children?: ReactNode }) {
@@ -1024,7 +1030,11 @@ export function Stats2Page() {
   });
   const { data: qualityRework } = useQuery({
     queryKey: ['stats2-quality', 'rework', lookback],
-    queryFn: () => api.getStats2QualityReasons({ lookbackDays: lookback, category: 'rework_sanding' }),
+    queryFn: () => api.getStats2QualityReasons({ lookbackDays: lookback, category: 'rework' }),
+  });
+  const { data: qualitySanding } = useQuery({
+    queryKey: ['stats2-quality', 'sanding', lookback],
+    queryFn: () => api.getStats2QualityReasons({ lookbackDays: lookback, category: 'sanding' }),
   });
   const { data: qualityPassed } = useQuery({
     queryKey: ['stats2-quality', 'passed', lookback],
@@ -1141,14 +1151,23 @@ export function Stats2Page() {
     const qPrint = qualityPrint as QualityResp | undefined;
     const qDiscard = qualityDiscard as QualityResp | undefined;
     const qRework = qualityRework as QualityResp | undefined;
+    const qSanding = qualitySanding as QualityResp | undefined;
     const qPassed = qualityPassed as QualityResp | undefined;
     const printTotal = qPrint?.total ?? 0;
     const discardTotal = qDiscard?.total ?? 0;
     const reworkTotal = qRework?.total ?? 0;
+    const sandingTotal = qSanding?.total ?? 0;
     const passedTotal = qPassed?.total ?? 0;
-    const lossTotal = printTotal + discardTotal + reworkTotal;
+    const lossTotal = printTotal + discardTotal + reworkTotal + sandingTotal;
 
-    const activeQ = qualityTab === 'print' ? qPrint : qualityTab === 'discard' ? qDiscard : qRework;
+    const activeQ =
+      qualityTab === 'print'
+        ? qPrint
+        : qualityTab === 'discard'
+          ? qDiscard
+          : qualityTab === 'sanding'
+            ? qSanding
+            : qRework;
     const activeByPrinter = activeQ?.by_printer || [];
     const activeByPart = activeQ?.by_part || [];
     const activeReasons = (activeQ?.reasons || []).slice(0, 8);
@@ -1156,7 +1175,9 @@ export function Stats2Page() {
     const hotPrinter = activeByPrinter[0];
 
     const daySet = new Set<string>();
-    [qPrint, qDiscard, qRework, qPassed].forEach((q) => (q?.daily || []).forEach((d) => daySet.add(d.date)));
+    [qPrint, qDiscard, qRework, qSanding, qPassed].forEach((q) =>
+      (q?.daily || []).forEach((d) => daySet.add(d.date)),
+    );
     const days = [...daySet].sort();
     const trendData = days.map((date) => ({
       label: date.slice(5), // MM-DD
@@ -1164,6 +1185,7 @@ export function Stats2Page() {
       print: qPrint?.daily?.find((d) => d.date === date)?.total ?? 0,
       discard: qDiscard?.daily?.find((d) => d.date === date)?.total ?? 0,
       rework: qRework?.daily?.find((d) => d.date === date)?.total ?? 0,
+      sanding: qSanding?.daily?.find((d) => d.date === date)?.total ?? 0,
     }));
 
     // ── Yield: where expected units went (not a fake "lost" gap) ──
@@ -1899,11 +1921,12 @@ export function Stats2Page() {
       ),
       'quality-reasons': (
         <div className="space-y-5">
-          <div className="grid grid-cols-2 gap-4 sm:grid-cols-4">
+          <div className="grid grid-cols-2 gap-4 sm:grid-cols-3 lg:grid-cols-5">
             <Stat value={fmtInt(passedTotal)} label="QC passed" tone="success" />
             <Stat value={fmtInt(printTotal)} label="Print failures" tone="danger" />
             <Stat value={fmtInt(discardTotal)} label="Discards" tone="warning" />
-            <Stat value={fmtInt(reworkTotal)} label="Rework / sanding" tone="info" />
+            <Stat value={fmtInt(reworkTotal)} label="Rework" tone="info" />
+            <Stat value={fmtInt(sandingTotal)} label="Sanding" tone="violet" />
           </div>
 
           {lossTotal > 0 && (
@@ -1915,6 +1938,7 @@ export function Stats2Page() {
                 { id: 'print', value: printTotal, className: 'bg-red-500', label: 'Print failures' },
                 { id: 'discard', value: discardTotal, className: 'bg-amber-500', label: 'Discards' },
                 { id: 'rework', value: reworkTotal, className: 'bg-blue-500', label: 'Rework' },
+                { id: 'sanding', value: sandingTotal, className: 'bg-violet-500', label: 'Sanding' },
               ]}
             />
           )}
@@ -1927,13 +1951,24 @@ export function Stats2Page() {
               Discards
             </TogglePill>
             <TogglePill active={qualityTab === 'rework'} onClick={() => setQualityTab('rework')}>
-              Rework / sanding
+              Rework
+            </TogglePill>
+            <TogglePill active={qualityTab === 'sanding'} onClick={() => setQualityTab('sanding')}>
+              Sanding
             </TogglePill>
           </div>
 
           {hotPrinter && activeTotal > 0 ? (
             <Callout
-              tone={qualityTab === 'print' ? 'danger' : qualityTab === 'discard' ? 'warning' : 'info'}
+              tone={
+                qualityTab === 'print'
+                  ? 'danger'
+                  : qualityTab === 'discard'
+                    ? 'warning'
+                    : qualityTab === 'sanding'
+                      ? 'violet'
+                      : 'info'
+              }
               title={`Hot printer · ${hotPrinter.printer_name || 'unknown'}`}
             >
               {hotPrinter.count} of {activeTotal} events in this tab (
@@ -1998,13 +2033,15 @@ export function Stats2Page() {
                   <Line type="monotone" dataKey="print" name="Print failures" stroke={QUALITY_PRINT} strokeWidth={2} dot={false} isAnimationActive={false} />
                   <Line type="monotone" dataKey="discard" name="Discards" stroke={QUALITY_DISCARD} strokeWidth={2} dot={false} isAnimationActive={false} />
                   <Line type="monotone" dataKey="rework" name="Rework" stroke={QUALITY_REWORK} strokeWidth={2} dot={false} isAnimationActive={false} />
+                  <Line type="monotone" dataKey="sanding" name="Sanding" stroke={QUALITY_SANDING} strokeWidth={2} dot={false} isAnimationActive={false} />
                 </LineChart>
               </ResponsiveContainer>
             </div>
           )}
 
           <p className="text-xs text-bambu-gray">
-            QC passed = initial fit check (sanding is rework). Printer = machine that printed the part.
+            QC passed = initial fit check. Sanding (pre-WIP) and rework (post-WIP) are tracked separately.
+            Printer = machine that printed the part.
             Part codes come from the labeled part, or from the print name for plate failures.
             Drill down via hover or Export.
           </p>
@@ -2114,6 +2151,7 @@ export function Stats2Page() {
     qualityPrint,
     qualityDiscard,
     qualityRework,
+    qualitySanding,
     qualityPassed,
     qualityTab,
     reliability,

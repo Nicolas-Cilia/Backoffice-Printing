@@ -211,6 +211,46 @@ def test_fleet_boost_from_shorts_caps_and_picks_primary_model():
     assert sum(huge.values()) <= _MAX_VIRTUAL_PRINTERS
 
 
+def test_capacity_ceiling_for_extras_prefers_schedulable_not_unconstrained():
+    """Mild over-ask (28 vs ~26) must not use unconstrained rates as the denominator."""
+    from backend.app.services.stats2_print_plan import _capacity_ceiling_for_extras
+
+    assert _capacity_ceiling_for_extras(schedulable_ceiling=26.0, devices_achievable=23.0) == 26.0
+    # Without overview ceiling, fall back to what this pack achieved — never invent unconstrained.
+    assert _capacity_ceiling_for_extras(schedulable_ceiling=None, devices_achievable=23.0) == 23.0
+    assert _capacity_ceiling_for_extras(schedulable_ceiling=0.0, devices_achievable=0.0) == 1.0
+
+
+def test_short_parts_mild_over_ask_reports_at_least_one_extra():
+    """28/day ask vs 26/day ceiling must not report 0 printers needed for a short part."""
+    import math
+
+    from backend.app.services.stats2_print_plan import _short_parts_from_pack
+
+    days = [
+        {
+            "staffed_minutes": 480,
+            "lanes": [
+                *[{"printer_id": i, "printer_model": "A1", "jobs": [{"part_code": "TOP"}]} for i in range(10)],
+            ],
+        }
+    ]
+    shorts = _short_parts_from_pack(
+        part_qty={"TOP": 1},
+        parts_needed={"TOP": 28.0},
+        parts_packed={"TOP": 23.0},
+        part_model_slots={"TOP": {"A1": [{}], "A1M": [{}], "H2D": [{}], "X1C": [{}]}},
+        fleet={"A1": 10, "A1M": 5, "H2D": 1, "X1C": 4},
+        target=28.0,
+        capacity_ceiling=26.0,
+        days_out=days,
+    )
+    assert len(shorts) == 1
+    # ceil(10 * 28/26) - 10 = 2
+    assert shorts[0]["min_extra_printers"] == max(0, int(math.ceil(10 * 28 / 26)) - 10)
+    assert shorts[0]["min_extra_printers"] >= 1
+
+
 def test_short_parts_from_pack_scales_from_capacity_ceiling_not_packed_skew():
     """Extras use target/capacity × printers that ran the part — not needed/packed."""
     from backend.app.services.stats2_print_plan import _short_parts_from_pack
