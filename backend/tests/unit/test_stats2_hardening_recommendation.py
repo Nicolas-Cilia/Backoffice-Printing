@@ -1,13 +1,13 @@
-"""Stats 2 hardening — recipe recommendation vs capacity packing.
+"""Stats 2 hardening — recipe recommendation vs physical packing.
 
 Recipe recommendation (``get_recipe_view`` / ``_recommend_slot_id`` and
-variant-compare ranking) picks the slot that yields the most *effective*
+``compute_variant_compare``) picks the slot that yields the most *effective*
 devices/day — applying per-slot print-job success from history — instead of
 blindly picking the densest slot (highest ``quantity``).
 
-Capacity / build-plan packing intentionally ranks by **physical** densest
-throughput (theoretical max). Yields still shrink expected after the slot is
-chosen — they do not change which plate is packed.
+Capacity and the build plan rank plates by *physical* throughput (theoretical
+max). Yields still shrink expected/realistic after the plate is chosen, so
+imperfect job success cannot steer theoretical capacity off the densest file.
 """
 
 from __future__ import annotations
@@ -152,8 +152,8 @@ async def test_recipe_recommendation_uses_effective_not_densest(db_session, prin
 
 
 @pytest.mark.asyncio
-async def test_capacity_packs_densest_physical_not_effective(db_session, printer_factory):
-    """Capacity packing aims at physical max; yields shrink expected after pick."""
+async def test_capacity_uses_physical_densest_slot(db_session, printer_factory):
+    """Theoretical capacity binds to the densest physical plate, not the yield winner."""
     slot_a, slot_b = await _seed_top_two_slots(db_session)
     await printer_factory(name="X1C-01", model="X1C")
     await db_session.commit()
@@ -162,14 +162,14 @@ async def test_capacity_packs_densest_physical_not_effective(db_session, printer
     top = next(c for c in cap["components"] if c["part_code"] == "TOP")
 
     assert top["slot_id"] == slot_a.id, (
-        f"capacity should pack densest physical slot A ({slot_a.id}), got {top['slot_id']} "
-        f"(effective recipe winner is slot B {slot_b.id})"
+        f"capacity should bind to physical-max slot A ({slot_a.id}), got {top['slot_id']} "
+        f"(effective winner slot B is {slot_b.id})"
     )
 
 
 @pytest.mark.asyncio
-async def test_build_plan_packs_densest_physical_not_effective(db_session, printer_factory):
-    """Build plan mirrors capacity's physical densest pick, not recipe effective."""
+async def test_build_plan_uses_physical_densest_slot(db_session, printer_factory):
+    """Build plan follows physical-max capacity, not the yield-adjusted recipe pick."""
     slot_a, slot_b = await _seed_top_two_slots(db_session)
     await printer_factory(name="X1C-01", model="X1C")
     await db_session.commit()
@@ -178,8 +178,8 @@ async def test_build_plan_packs_densest_physical_not_effective(db_session, print
     top = next(r for r in plan["rows"] if r["part_code"] == "TOP")
 
     assert top["recommended_slot_id"] == slot_a.id, (
-        f"build plan should pack densest physical slot A ({slot_a.id}), got {top['recommended_slot_id']} "
-        f"(effective recipe winner is slot B {slot_b.id})"
+        f"build plan should use physical-max slot A ({slot_a.id}), got {top['recommended_slot_id']} "
+        f"(effective winner slot B is {slot_b.id})"
     )
 
 
