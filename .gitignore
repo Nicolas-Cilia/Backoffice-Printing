@@ -1,8 +1,6 @@
 # Claude
-.claude/*
-!.claude/settings.json
-!.claude/hooks/
-.claude/hooks/protected-hosts.txt
+.claude/
+CLAUDE.md
 
 # macOS
 .DS_Store
