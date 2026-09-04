@@ -169,6 +169,10 @@ def placement_sort_key(
     4. Expected good parts per occupancy minute
     5. Earlier clear on this lane
     6. Higher physical qty
+
+    Dedicated single-part models (e.g. H2S→BOT only) pass *uncapped* plate
+    progress into ``progress`` so a leftover ask of 2 cannot make BOT x2 beat
+    BOT x5 via the sooner-wave tie-break.
     """
     return (
         float(progress),
@@ -996,7 +1000,17 @@ async def compute_print_plan(
                         )
                         plates_needed_for_ask = max(1, int((remaining + eff - 1e-9) // max(eff, 1e-9)))
                         starts = min(max(1, n_same_wave), plates_needed_for_ask)
-                        wave_progress = min(float(remaining), float(starts) * eff)
+                        raw_progress = float(starts) * eff
+                        # Single-printer dedicated models (H2S→BOT): do not cap
+                        # progress by leftover ask. Capping made BOT x2 tie BOT x5
+                        # at remaining=2, then sooner-wave picked x2 and idled the
+                        # H2S. Multi-printer fleets still cap so parallel shorts
+                        # and shared BOT→TOP switches keep working.
+                        model_fleet = sum(1 for ln in lanes.values() if ln.model == lane.model)
+                        if model_fleet <= 1 and _model_sharedness(lane.model, part_model_slots) <= 1:
+                            wave_progress = raw_progress
+                        else:
+                            wave_progress = min(float(remaining), raw_progress)
 
                         key = placement_sort_key(
                             progress=wave_progress,
