@@ -163,6 +163,7 @@ from backend.app.services.floor_units import (
     get_unit_by_part,
     get_unit_by_serial,
     link_unit,
+    list_unit_events,
     list_units,
     parse_serial,
     ready_unit_to_ship,
@@ -2743,6 +2744,23 @@ async def get_inventory_part_events(
     events = await list_part_events(db, part_id)
     if events is None:
         raise HTTPException(404, "Part not found")
+    return [InventoryPartEventResponse(**event.__dict__) for event in events]
+
+
+@router.get("/units/{unit_id}/events", response_model=list[InventoryPartEventResponse])
+async def get_unit_events_route(
+    unit_id: int,
+    db: AsyncSession = Depends(get_db),
+    _: User | None = RequirePermissionIfAuthEnabled(Permission.FLOOR_SCAN),
+) -> list[InventoryPartEventResponse]:
+    """Serial workflow timeline for a linked unit (link / ship / rework / unlink).
+
+    Merges the mirrored TOP+BOT housing audit rows into one entry per step so the
+    kiosk shows where the serial has been, not the component finishing history.
+    """
+    events = await list_unit_events(db, unit_id)
+    if events is None:
+        raise HTTPException(404, "Unit not found")
     return [InventoryPartEventResponse(**event.__dict__) for event in events]
 
 

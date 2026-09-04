@@ -75,6 +75,7 @@ import { ConfirmModal } from '../components/ConfirmModal';
 import { FloorStopReasonEditor } from '../components/FloorStopReasonEditor';
 import { floorStopReasonLabel } from '../components/floorStopReasons';
 import { ScanPartHistory } from '../components/floor/ScanPartHistory';
+import { ScanUnitHistory } from '../components/floor/ScanUnitHistory';
 import { TouchOnlyButton } from '../components/floor/TouchOnlyButton';
 import { useAuth } from '../contexts/AuthContext';
 import { useToast } from '../contexts/ToastContext';
@@ -1704,6 +1705,7 @@ export function FloorScanPage() {
       void (async () => {
         try {
           const unit = await api.getUnitBySerial(resp.serial_code!);
+          await queryClient.invalidateQueries({ queryKey: ['floor-unit-events', unit.id] });
           setStatus({ kind: 'unit-linked', unit });
           showToast(
             t('floor.unitReturnedToRework', 'Unit sent to Rework · {{reason}}', {
@@ -1722,7 +1724,7 @@ export function FloorScanPage() {
         }
       })();
     },
-    [failScan, showToast, t],
+    [failScan, queryClient, showToast, t],
   );
 
   const submitUnitReturnRework = useCallback(
@@ -1876,6 +1878,7 @@ export function FloorScanPage() {
       void (async () => {
         try {
           const unit = await api.getUnitBySerial(resp.serial_code!);
+          await queryClient.invalidateQueries({ queryKey: ['floor-unit-events', unit.id] });
           setStatus({ kind: 'unit-linked', unit });
           showToast(t('floor.unitReadyToShipDone', 'Unit ready to ship again'), 'success');
         } catch {
@@ -1884,7 +1887,7 @@ export function FloorScanPage() {
         }
       })();
     },
-    [failScan, showToast, t],
+    [failScan, queryClient, showToast, t],
   );
 
   const submitReadyToShip = useCallback(
@@ -4536,6 +4539,21 @@ function UnitCeremonyScreen({
  *  the serial and both stickers back to WIP. Shown after a fresh link, when
  *  an already-linked serial is looked up, or when either housing sticker is
  *  scanned at idle (`getUnitByPart`). */
+function unitWorkflowStatusLabel(
+  status: FloorProductUnit['unit_workflow_status'],
+  t: ReturnType<typeof useTranslation>['t'],
+) {
+  if (status === 'shipped') return t('floor.inventoryStatusShipped', 'Shipped');
+  if (status === 'rework') return t('floor.inventoryStatusRework', 'Rework');
+  return t('floor.inventoryStatusLinked', 'Linked');
+}
+
+function unitWorkflowStatusClass(status: FloorProductUnit['unit_workflow_status']) {
+  if (status === 'shipped') return 'text-sky-600 dark:text-sky-400';
+  if (status === 'rework') return 'text-orange-600 dark:text-orange-400';
+  return 'text-cyan-600 dark:text-cyan-400';
+}
+
 function UnitLinkedScreen({
   unit,
   busy,
@@ -4561,6 +4579,12 @@ function UnitLinkedScreen({
       <ScanLine className="w-16 h-16 mb-6 text-bambu-green shrink-0" aria-hidden="true" />
       <p className="text-lg text-bambu-green">{t('floor.unitLinkedHeading', 'Linked unit')}</p>
       <p className="text-4xl font-bold text-white font-mono">{unit.serial_code}</p>
+      <p
+        className={`mt-2 text-2xl font-semibold ${unitWorkflowStatusClass(unit.unit_workflow_status)}`}
+        data-testid="unit-workflow-status"
+      >
+        {unitWorkflowStatusLabel(unit.unit_workflow_status, t)}
+      </p>
       {unit.unit_workflow_status === 'rework' ? (
         <>
           <p className="mt-2 text-lg text-bambu-gray-light">
@@ -4588,6 +4612,7 @@ function UnitLinkedScreen({
           </div>
         ))}
       </dl>
+      <ScanUnitHistory unitId={unit.id} />
       <div className="mt-6 flex flex-wrap items-center justify-center gap-3">
         {confirming ? (
           <button

@@ -41,6 +41,7 @@ from backend.app.services.floor_units import (
     get_unit_by_part,
     get_unit_by_serial,
     link_unit,
+    list_unit_events,
     list_units,
     parse_serial,
     ready_unit_to_ship,
@@ -345,6 +346,67 @@ class TestUnlink:
     async def test_unlink_unknown_unit(self, db_session):
         outcome = await unlink_unit(db_session, 999999)
         assert outcome.result is UnlinkUnitResult.NOT_FOUND
+
+
+class TestListUnitEvents:
+    @pytest.mark.asyncio
+    async def test_merges_housing_mirrors_into_serial_timeline(self, db_session, printer_factory, archive_factory):
+        top = await _top_in_wip_with_kit(db_session, printer_factory, archive_factory, code="BBD-000170")
+        bottom = await _bot_in_wip(db_session, printer_factory, archive_factory, code="BBD-000270")
+        linked = await link_unit(db_session, "OEQ0AC", top.sticker_code, bottom.sticker_code)
+        await db_session.commit()
+        assert linked.unit is not None
+
+        await return_unit_to_rework(db_session, "OEQ0AC", "doesnt_fit", "Customer return")
+        await db_session.commit()
+        await ready_unit_to_ship(db_session, "OEQ0AC")
+        await db_session.commit()
+
+        events = await list_unit_events(db_session, linked.unit.id)
+        assert events is not None
+        actions = [event.action for event in events]
+        # One of each mirrored step — not TOP+BOT duplicates, and no pre-link WIP/finishing.
+        assert actions == ["unit_linked", "shipped", "rework", "shipped"]
+        assert all(
+            (event.details or {}).get("unit_id") == linked.unit.id
+            or (event.details or {}).get("serial_code") == "OEQ0AC"
+            for event in events
+        )
+        assert events[2].details is not None
+        assert events[2].details.get("source") == "serial_return"
+        assert events[3].details is not None
+        assert events[3].details.get("source") == "serial_ready_to_ship"
+
+        top_actions = [e.action for e in await list_part_events(db_session, top.id)]
+        assert "wip" in top_actions  # housing history still has finishing/WIP
+        assert "wip" not in actions
+
+    @pytest.mark.asyncio
+    async def test_keeps_history_after_housing_replace(self, db_session, printer_factory, archive_factory):
+        top = await _top_in_wip_with_kit(db_session, printer_factory, archive_factory, code="BBD-000171")
+        bottom = await _bot_in_wip(db_session, printer_factory, archive_factory, code="BBD-000271")
+        linked = await link_unit(db_session, "ME2O6N", top.sticker_code, bottom.sticker_code)
+        await db_session.commit()
+        assert linked.unit is not None
+        unit_id = linked.unit.id
+
+        top2 = await _top_in_wip_with_kit(db_session, printer_factory, archive_factory, code="BBD-000172")
+        await replace_unit(db_session, unit_id, top_sticker=top2.sticker_code)
+        await db_session.commit()
+
+        events = await list_unit_events(db_session, unit_id)
+        assert events is not None
+        actions = [event.action for event in events]
+        # Original link/ship on the old TOP must still appear after the swap.
+        assert actions[0] == "unit_linked"
+        assert actions[1] == "shipped"
+        assert "unit_unlinked" in actions
+        assert actions.count("unit_linked") >= 2
+        assert any((event.details or {}).get("source") == "unit_replace" for event in events)
+
+    @pytest.mark.asyncio
+    async def test_unknown_unit_returns_none(self, db_session):
+        assert await list_unit_events(db_session, 999_999) is None
 
 
 class TestReturnUnitToRework:

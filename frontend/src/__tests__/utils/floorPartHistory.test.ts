@@ -10,6 +10,7 @@ import {
   kitAssignedBranches,
   partEventDotClass,
   partEventLabel,
+  unitEventLabel,
 } from '../../utils/floorPartHistory';
 
 describe('floorPartHistory pass status styling', () => {
@@ -110,5 +111,47 @@ describe('floorPartHistory pass status styling', () => {
       { slot: 'KNB', batchId: 31, label: 'BBN-KNB-9 #31', payload: 'BBN-KNB-9' },
       { slot: 'BUT', batchId: 32, label: 'BBN-BUT-9 #32', payload: 'BBN-BUT-9' },
     ]);
+  });
+
+  it('labels serial timeline steps without repeating the serial', () => {
+    const t = (_key: string, fallback: string, options?: Record<string, unknown>) =>
+      options?.reason ? fallback.replace('{{reason}}', String(options.reason)) : fallback;
+    expect(
+      unitEventLabel(
+        {
+          id: 1,
+          action: 'unit_linked',
+          details: { serial_code: 'XG2SNP', unit_id: 7 },
+          occurred_at: '2026-08-28T12:00:00',
+        },
+        t,
+      ),
+    ).toBe('Linked');
+    expect(
+      unitEventLabel(
+        {
+          id: 2,
+          action: 'shipped',
+          details: { serial_code: 'XG2SNP', unit_id: 7, source: 'serial_ready_to_ship' },
+          occurred_at: '2026-08-29T15:00:00',
+        },
+        t,
+      ),
+    ).toBe('Ready to Ship');
+    expect(
+      unitEventLabel(
+        {
+          id: 3,
+          action: 'rework',
+          details: {
+            source: 'serial_return',
+            reason_code: 'doesnt_fit',
+            reason_text: 'Customer return',
+          },
+          occurred_at: '2026-08-29T09:00:00',
+        },
+        t,
+      ),
+    ).toBe('Sent to Rework · doesnt fit · Customer return');
   });
 });

@@ -154,6 +154,17 @@ export function partEventLabel(
     }
     case 'shipped':
       return t('floor.inventoryEventShipped', 'Shipped');
+    case 'unit_unlinked': {
+      if (event.details?.source === 'unit_replace') {
+        const role = event.details?.role;
+        return role === 'top'
+          ? t('floor.inventoryEventUnitUnlinkedTopReplace', 'Top housing removed')
+          : role === 'bottom'
+            ? t('floor.inventoryEventUnitUnlinkedBottomReplace', 'Bottom housing removed')
+            : t('floor.inventoryEventUnitUnlinkedReplace', 'Housing removed');
+      }
+      return t('floor.inventoryEventUnitUnlinked', 'Unit unlinked');
+    }
     case 'archived':
       return t('floor.inventoryEventArchived', 'Archived from active view');
     case 'restored':
@@ -223,6 +234,65 @@ export function partEventLabel(
   }
 }
 
+/**
+ * Labels for the serial (unit) timeline — where the serial has been, not the
+ * housings' finishing history. Omits the redundant "· SERIAL" suffix used on
+ * part history when the viewer is already on that serial card.
+ */
+export function unitEventLabel(event: FloorInventoryPartEvent, t: PartHistoryT) {
+  const details = event.details;
+  switch (event.action) {
+    case 'unit_linked': {
+      if (details?.source === 'unit_replace') {
+        const role = details?.role;
+        return role === 'top'
+          ? t('floor.unitEventTopReplaced', 'Top housing replaced')
+          : role === 'bottom'
+            ? t('floor.unitEventBottomReplaced', 'Bottom housing replaced')
+            : t('floor.unitEventHousingReplaced', 'Housing replaced');
+      }
+      return t('floor.unitEventLinked', 'Linked');
+    }
+    case 'unit_unlinked': {
+      if (details?.source === 'unit_replace') {
+        const role = details?.role;
+        return role === 'top'
+          ? t('floor.unitEventTopRemoved', 'Top housing removed')
+          : role === 'bottom'
+            ? t('floor.unitEventBottomRemoved', 'Bottom housing removed')
+            : t('floor.unitEventHousingRemoved', 'Housing removed');
+      }
+      return t('floor.unitEventUnlinked', 'Unlinked');
+    }
+    case 'shipped':
+      return details?.source === 'serial_ready_to_ship'
+        ? t('floor.unitEventReadyToShip', 'Ready to Ship')
+        : t('floor.inventoryEventShipped', 'Shipped');
+    case 'rework':
+    case 'sanding': {
+      const reasonCode = details?.reason_code;
+      const reasonText = details?.reason_text;
+      const errorName = details?.error_name;
+      const reasonLabel =
+        typeof errorName === 'string' && errorName
+          ? errorName
+          : typeof reasonCode === 'string' && reasonCode !== 'other'
+            ? reasonCode.replaceAll('_', ' ')
+            : null;
+      const description =
+        typeof reasonText === 'string' && reasonText.trim()
+          ? compactEventReason(reasonText)
+          : null;
+      const reason = [reasonLabel, description].filter(Boolean).join(' · ') || null;
+      return reason
+        ? t('floor.inventoryEventReworkWithReason', 'Sent to Rework · {{reason}}', { reason })
+        : t('floor.inventoryEventRework', 'Sent to Rework');
+    }
+    default:
+      return partEventLabel(event, null, t);
+  }
+}
+
 /** Always includes enroll from the part row; merges API audit events on top. */
 export function buildPartTimeline(
   part: Pick<FloorInventoryPart, 'id' | 'labeled_at' | 'archive_id'>,
@@ -268,6 +338,9 @@ export function partEventDotClass(action: string): string {
   }
   if (action === 'kit_assigned' || action === 'unit_linked') {
     return 'bg-sky-500';
+  }
+  if (action === 'unit_unlinked') {
+    return 'bg-bambu-gray';
   }
   if (action === 'rework' || action === 'sanding') {
     return 'bg-orange-500';
