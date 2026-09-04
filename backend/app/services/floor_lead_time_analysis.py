@@ -114,7 +114,10 @@ def _staffed_minutes(
 
 def _resolve_action_time(acts: dict[str, datetime], key: str) -> datetime | None:
     if key == "fit_checked":
-        return acts.get("fit_checked")
+        # Initial QC is the formal fit check when present. Sanding is only a
+        # stand-in for parts that never recorded fit_checked — not the earlier
+        # of the two (sanding is rework; taking min would pull QC back to it).
+        return acts.get("fit_checked") or acts.get("sanding")
     if key == "ready_or_wip":
         candidates = [t for k in ("ready_for_production", "wip") if (t := acts.get(k)) is not None]
         return min(candidates) if candidates else None

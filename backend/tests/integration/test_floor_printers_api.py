@@ -293,6 +293,69 @@ class TestPrinterInfo:
 
         assert response.status_code == 400
 
+    async def test_backlog_plate_failure_does_not_clear_gate_when_newer_failed_print_exists(
+        self, async_client, printer_factory, archive_factory
+    ):
+        """Failing an older completed plate must not drop a gate raised by a later failed run."""
+        from backend.app.services.printer_manager import printer_manager
+
+        printer = await printer_factory(name="Fouled Bed", awaiting_plate_clear=True)
+        older = await archive_factory(
+            printer_id=printer.id,
+            print_name="Older unlabeled",
+            completed_at=datetime(2026, 8, 24, 9, 0),
+            status="completed",
+        )
+        await archive_factory(
+            printer_id=printer.id,
+            print_name="Newer failed",
+            completed_at=datetime(2026, 8, 24, 15, 0),
+            status="failed",
+        )
+        printer_manager.set_awaiting_plate_clear(printer.id, True)
+        try:
+            saved = await async_client.post(
+                f"/api/v1/floor/parts/unlabeled-build-plates/{older.id}/fail",
+                json={"reason_code": "warping"},
+            )
+
+            assert saved.status_code == 200
+            assert saved.json()["archive_id"] == older.id
+            assert printer_manager.is_awaiting_plate_clear(printer.id) is True
+        finally:
+            printer_manager.set_awaiting_plate_clear(printer.id, False)
+
+    async def test_printer_plate_failure_refuses_when_newer_terminal_print_is_failed(
+        self, async_client, printer_factory, archive_factory
+    ):
+        """The plate on the bed is the later failed run, not an older completed job."""
+        from backend.app.services.printer_manager import printer_manager
+
+        printer = await printer_factory(name="Wrong Plate", awaiting_plate_clear=True)
+        await archive_factory(
+            printer_id=printer.id,
+            print_name="Older unlabeled",
+            completed_at=datetime(2026, 8, 24, 9, 0),
+            status="completed",
+        )
+        await archive_factory(
+            printer_id=printer.id,
+            print_name="Newer failed",
+            completed_at=datetime(2026, 8, 24, 15, 0),
+            status="failed",
+        )
+        printer_manager.set_awaiting_plate_clear(printer.id, True)
+        try:
+            response = await async_client.post(
+                f"/api/v1/floor/printers/{printer.id}/plate-failure",
+                json={"reason_code": "warping"},
+            )
+
+            assert response.status_code == 409
+            assert printer_manager.is_awaiting_plate_clear(printer.id) is True
+        finally:
+            printer_manager.set_awaiting_plate_clear(printer.id, False)
+
     async def test_picks_the_most_recently_completed_not_the_newest_row(
         self, async_client, printer_factory, archive_factory
     ):

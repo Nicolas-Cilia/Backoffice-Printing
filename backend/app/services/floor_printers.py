@@ -356,8 +356,9 @@ async def record_plate_print_failure(
 
     Used when a job finished successfully but the parts are scrap — operators
     report the failure without labeling stickers. Writes ``FloorPrintStopReason``
-    (same failure log as stopped/cancelled/failed runs), dismisses the plate
-    from the unlabeled linking backlog, and clears ``awaiting_plate_clear``.
+    (same failure log as stopped/cancelled/failed runs) and dismisses the plate
+    from the unlabeled linking backlog. Clears ``awaiting_plate_clear`` only
+    when this archive is the printer's most recent terminal print.
     """
     from backend.app.models.floor_bin import FloorBinBatch
     from backend.app.services.floor_parts import dismiss_build_plate, has_labeled_parts_for_archive
@@ -432,10 +433,12 @@ async def record_plate_print_failure(
         )
 
     # Clear awaiting_plate_clear only if this archive is the printer's most
-    # recent completed print (the one actually on the bed). An older plate
-    # from the backlog should not release a gate raised by a newer finish.
-    latest = await get_last_finished_print(db, archive.printer_id)
-    if latest is not None and latest.archive_id == archive.id:
+    # recent terminal print (the one actually on the bed). An older plate
+    # from the backlog must not release a gate raised by a newer finish —
+    # including failed / aborted / cancelled runs, which also raise the gate
+    # and which get_last_finished_print (completed-only) never sees.
+    latest_terminal_id = await _get_last_terminal_archive_id(db, archive.printer_id)
+    if latest_terminal_id is not None and latest_terminal_id == archive.id:
         try:
             from backend.app.services.plate_turnaround import record_plate_clear_confirmed
             from backend.app.services.printer_manager import printer_manager
@@ -460,10 +463,16 @@ async def record_printer_plate_failure(
     """Classify the printer's latest finished unlabeled plate as failed.
 
     Clears ``awaiting_plate_clear`` via ``record_plate_print_failure``.
+    Refuses when a later failed / aborted / cancelled run is the plate on
+    the bed — that job is not a completed unlabeled plate, and classifying
+    an older completed row would point at the wrong physical plate.
     """
     last = await get_last_finished_print(db, printer_id)
     if last is None:
         raise LookupError("No finished print found for this printer")
+    latest_terminal_id = await _get_last_terminal_archive_id(db, printer_id)
+    if latest_terminal_id is not None and latest_terminal_id != last.archive_id:
+        raise LookupError("Latest plate on this printer is not a completed unlabeled print")
     if last.has_labeled_parts:
         raise ValueError("Build plate already has labeled parts")
 
@@ -597,6 +606,28 @@ async def get_last_finished_print(db: AsyncSession, printer_id: int) -> LastPrin
         has_labeled_parts=await has_labeled_parts_for_archive(db, archive.id),
         part_code=await _floor_part_code_for_archive(db, archive.id),
     )
+
+
+_TERMINAL_ARCHIVE_STATUSES = ("completed", "failed", "aborted", "cancelled")
+
+
+async def _get_last_terminal_archive_id(db: AsyncSession, printer_id: int) -> int | None:
+    """The printer's most recent terminal archive id.
+
+    ``awaiting_plate_clear`` is raised for every terminal status, not just
+    ``completed``. Use this when deciding whether a given archive is the
+    plate currently on the bed.
+    """
+    result = await db.execute(
+        select(PrintArchive.id)
+        .where(
+            PrintArchive.printer_id == printer_id,
+            PrintArchive.status.in_(_TERMINAL_ARCHIVE_STATUSES),
+        )
+        .order_by(PrintArchive.completed_at.desc().nullslast(), PrintArchive.id.desc())
+        .limit(1)
+    )
+    return result.scalar_one_or_none()
 
 
 async def get_archive_summary(db: AsyncSession, archive_id: int) -> LastPrint | None:

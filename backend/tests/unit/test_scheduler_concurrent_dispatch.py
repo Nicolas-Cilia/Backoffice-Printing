@@ -54,7 +54,9 @@ from backend.app.models.printer import Printer
 from backend.app.models.settings import Settings
 from backend.app.services.print_scheduler import PrintScheduler
 
-UPLOAD_SECONDS = 0.15
+# Long enough that staggered library-archive work on SQLite still overlaps.
+# 0.15s flaked on CI (peak 3/4) after Stats 2 dispatch hooks added awaits.
+UPLOAD_SECONDS = 0.6
 
 
 @pytest.fixture
@@ -177,6 +179,12 @@ async def _scheduler_ctx(ctx, upload, job_started=None):
         patch("backend.app.services.print_scheduler.printer_manager.start_print", MagicMock(return_value=True)),
         patch("backend.app.services.print_scheduler.printer_manager.set_awaiting_plate_clear", MagicMock()),
         patch("backend.app.services.print_scheduler.upload_file_async", upload),
+        # Stats 2 hooks open their own session (unpatched here) and are
+        # measurement-only. Stub them so this harness measures upload overlap,
+        # not queue_lifecycle_events writes against the process default DB.
+        patch("backend.app.services.print_scheduler.record_queue_dispatched", AsyncMock()),
+        patch("backend.app.services.print_scheduler.record_next_print_started", AsyncMock()),
+        patch("backend.app.services.print_scheduler.record_queue_started", AsyncMock()),
         patch("backend.app.services.print_scheduler.delete_file_async", AsyncMock(return_value=True)),
         patch(
             "backend.app.services.print_scheduler.get_ftp_retry_settings",

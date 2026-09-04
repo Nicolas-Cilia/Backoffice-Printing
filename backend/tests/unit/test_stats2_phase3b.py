@@ -749,6 +749,38 @@ async def test_lead_times_finishing_support_to_ready(db_session, printer_factory
 
 
 @pytest.mark.asyncio
+async def test_lead_times_count_sanding_as_initial_qc(db_session, printer_factory):
+    """Parts that record sanding and never fit_checked still enter Initial QC spans."""
+    printer = await printer_factory(model="X1C")
+    today = datetime.utcnow().date()
+    days_since_tue = (today.weekday() - 1) % 7
+    tue = today - timedelta(days=days_since_tue if days_since_tue else 7)
+    t0 = datetime(tue.year, tue.month, tue.day, 9, 0, 0)
+    part = FloorLabeledPart(
+        sticker_code="BBD-S1",
+        printer_id=printer.id,
+        part_code="TOP",
+        labeled_at=t0,
+    )
+    db_session.add(part)
+    await db_session.flush()
+    db_session.add(FloorPartEvent(part_id=part.id, action="enrolled", occurred_at=t0))
+    db_session.add(FloorPartEvent(part_id=part.id, action="sanding", occurred_at=t0 + timedelta(minutes=30)))
+    db_session.add(
+        FloorPartEvent(part_id=part.id, action="ready_for_production", occurred_at=t0 + timedelta(minutes=90))
+    )
+    await db_session.commit()
+
+    result = await compute_lead_times(db_session)
+    linked_qc = next(m for m in result["metrics"] if m["metric_id"] == "linked_to_qc")
+    qc_prod = next(m for m in result["metrics"] if m["metric_id"] == "qc_to_production")
+    assert linked_qc["count"] == 1
+    assert linked_qc["median_minutes"] == 30.0
+    assert qc_prod["count"] == 1
+    assert qc_prod["median_minutes"] == 60.0
+
+
+@pytest.mark.asyncio
 async def test_lead_times_pst_alias_counts_pacific_afternoon(db_session, printer_factory):
     """Invalid 'PST' must resolve to America/Los_Angeles, not silent UTC (zeroed spans)."""
     printer = await printer_factory(model="X1C")
