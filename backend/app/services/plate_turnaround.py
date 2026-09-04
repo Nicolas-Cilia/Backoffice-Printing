@@ -152,21 +152,42 @@ async def record_queue_dispatched(
     created_at: datetime | None = None,
     dispatched_at: datetime | None = None,
 ) -> None:
-    """Record a queue item's dispatch claim. Idempotent — first dispatch wins."""
+    """Record a queue item's dispatch claim. Idempotent — first dispatch wins.
+
+    Safe to race with ``record_queue_started``: if the started helper inserted
+    first, we still fill ``dispatched_at`` / ``created_at`` on the existing row.
+    """
+    stamp = dispatched_at or _utcnow()
     try:
         async with async_session() as db:
             row = await _queue_lifecycle_row(db, queue_item_id)
             if row is not None:
-                # Already recorded: don't overwrite the original dispatch time.
+                if row.dispatched_at is None:
+                    row.dispatched_at = stamp
+                if row.created_at is None and created_at is not None:
+                    row.created_at = created_at
+                await db.commit()
                 return
             db.add(
                 QueueLifecycleEvent(
                     queue_item_id=queue_item_id,
                     created_at=created_at,
-                    dispatched_at=dispatched_at or _utcnow(),
+                    dispatched_at=stamp,
                 )
             )
-            await db.commit()
+            try:
+                await db.commit()
+            except Exception:
+                await db.rollback()
+                # Concurrent insert from record_queue_started — update that row.
+                row = await _queue_lifecycle_row(db, queue_item_id)
+                if row is None:
+                    raise
+                if row.dispatched_at is None:
+                    row.dispatched_at = stamp
+                if row.created_at is None and created_at is not None:
+                    row.created_at = created_at
+                await db.commit()
     except Exception:
         logger.warning("record_queue_dispatched failed for queue item %s", queue_item_id, exc_info=True)
 
@@ -175,7 +196,11 @@ async def record_queue_started(
     queue_item_id: int,
     started_at: datetime | None = None,
 ) -> None:
-    """Stamp a queue item's print-start, creating the row if dispatch never landed."""
+    """Stamp a queue item's print-start, creating the row if dispatch never landed.
+
+    Safe to race with ``record_queue_dispatched`` on the unique lifecycle row.
+    """
+    stamp = started_at or _utcnow()
     try:
         async with async_session() as db:
             row = await _queue_lifecycle_row(db, queue_item_id)
@@ -183,11 +208,20 @@ async def record_queue_started(
                 db.add(
                     QueueLifecycleEvent(
                         queue_item_id=queue_item_id,
-                        started_at=started_at or _utcnow(),
+                        started_at=stamp,
                     )
                 )
+                try:
+                    await db.commit()
+                except Exception:
+                    await db.rollback()
+                    row = await _queue_lifecycle_row(db, queue_item_id)
+                    if row is None:
+                        raise
+                    row.started_at = stamp
+                    await db.commit()
             else:
-                row.started_at = started_at or _utcnow()
-            await db.commit()
+                row.started_at = stamp
+                await db.commit()
     except Exception:
         logger.warning("record_queue_started failed for queue item %s", queue_item_id, exc_info=True)

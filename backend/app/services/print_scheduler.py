@@ -986,7 +986,13 @@ class PrintScheduler:
                     return
                 # Stats 2 (Phase 1): record the dispatch claim for queue-wait
                 # analytics. Fire-and-forget — never blocks or fails dispatch.
-                await record_queue_dispatched(item.id, item.created_at)
+                # Stamp claim time here so a delayed background write still
+                # reflects when the CAS succeeded (not when the task ran).
+                claim_utc = datetime.now(timezone.utc).replace(tzinfo=None)
+                spawn_background_task(
+                    record_queue_dispatched(item.id, item.created_at, dispatched_at=claim_utc),
+                    name=f"queue-dispatched-{item.id}",
+                )
                 await self._start_print(item_db, item)
             finally:
                 # Undo an expected-print registration whose print command never
@@ -3661,9 +3667,16 @@ class PrintScheduler:
         # Stats 2 (Phase 1): the next print starting closes the open plate-
         # turnaround row for this printer, and stamps this queue item's start.
         # Fire-and-forget — these swallow their own errors so stats never block
-        # or fail a dispatch.
-        await record_next_print_started(item.printer_id, now_utc)
-        await record_queue_started(item.id, now_utc)
+        # or fail a dispatch. Must not await on the upload critical path or
+        # concurrent fan-out serializes behind SQLite analytics I/O.
+        spawn_background_task(
+            record_next_print_started(item.printer_id, now_utc),
+            name=f"plate-turnaround-started-{item.printer_id}",
+        )
+        spawn_background_task(
+            record_queue_started(item.id, now_utc),
+            name=f"queue-started-{item.id}",
+        )
 
         logger.info("Queue item %s: Status set to 'printing', sending print command...", item.id)
 
