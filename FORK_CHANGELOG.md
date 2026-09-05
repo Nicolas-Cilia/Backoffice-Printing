@@ -3,6 +3,28 @@
 Changes made in this fork on top of upstream Bambuddy. Upstream's own release notes stay
 in `CHANGELOG.md`. Planned work lives in `FORK_PLAN.md`.
 
+## 2026-09-04: CI runs on `dev` pushes and pull requests
+
+`ci.yml` only triggered on `main`, so a PR against `dev` — the integration branch every
+change goes through first — ran nothing but the weekly security scans. It now also runs
+on pushes and pull requests to `dev`. The "skip for repo owner" comment in the workflow
+has no matching condition, so nothing else changes.
+## 2026-09-04: Stats 2 line-start guide no longer leaves a ghost row after a what-if reset
+
+User-reported bug: run a what-if ask large enough to add virtual printer lanes, then
+Reset to capacity. The virtual lanes disappear but an empty row stays at the bottom of
+the weekly schedule, and the blue line-start guide keeps running through it (with a
+stray scrollbar when the list is short enough not to nest-scroll).
+
+Root cause: the guide's height came from `scrollHeight` of the lane container, and the
+guide was an absolutely positioned child of that same container with that measured
+height. Once the container had grown for the extra lanes, the guide itself held it open,
+so the measurement could never shrink — a self-referential ratchet.
+
+Fix: the measured ref now wraps only the lane rows (`offsetHeight`), and the guide sits
+in a sibling positioning box, so removing lanes shrinks the guide with them. No API or
+data changes.
+
 ## 2026-08-23: Filament tracking donut rings keep rounded caps on small slices
 
 User-reported bug from a full-project audit: on Filament Tracking's "Consumption by
