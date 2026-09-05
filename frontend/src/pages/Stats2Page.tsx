@@ -566,6 +566,9 @@ function GanttDay({
 
   // Measure the real lane stack height. `inset-y-0` alone can end up sizing to the
   // scrollport (not content) when a parent has overflow, which truncates the guide mid-row.
+  // `lanesRef` wraps only the lane rows, never the guide itself: measuring a box that
+  // contains the guide ratchets (the guide's own height keeps the box tall), so lanes
+  // removed after a what-if reset left a ghost row the guide still ran through.
   useLayoutEffect(() => {
     if (!showTimeline) {
       setLineHeightPx(0);
@@ -573,7 +576,7 @@ function GanttDay({
     }
     const el = lanesRef.current;
     if (!el) return;
-    const sync = () => setLineHeightPx(el.scrollHeight);
+    const sync = () => setLineHeightPx(el.offsetHeight);
     sync();
     const ro = new ResizeObserver(sync);
     ro.observe(el);
@@ -710,7 +713,7 @@ function GanttDay({
   });
 
   const lanesBody = (
-    <div ref={lanesRef} className="relative flex flex-col gap-2.5">
+    <div className="relative">
       {showLineStart && lineHeightPx > 0 ? (
         <div
           className="pointer-events-none absolute top-0 z-20"
@@ -724,7 +727,9 @@ function GanttDay({
           />
         </div>
       ) : null}
-      {laneRows}
+      <div ref={lanesRef} className="flex flex-col gap-2.5">
+        {laneRows}
+      </div>
     </div>
   );
 
