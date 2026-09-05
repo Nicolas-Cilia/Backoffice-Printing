@@ -3,6 +3,12 @@
 Changes made in this fork on top of upstream Bambuddy. Upstream's own release notes stay
 in `CHANGELOG.md`. Planned work lives in `FORK_PLAN.md`.
 
+## 2026-09-04: CI runs on `dev` pushes and pull requests
+
+`ci.yml` only triggered on `main`, so a PR against `dev` — the integration branch every
+change goes through first — ran nothing but the weekly security scans. It now also runs
+on pushes and pull requests to `dev`. The "skip for repo owner" comment in the workflow
+has no matching condition, so nothing else changes.
 ## 2026-09-04: Stats 2 line-start guide no longer leaves a ghost row after a what-if reset
 
 User-reported bug: run a what-if ask large enough to add virtual printer lanes, then
