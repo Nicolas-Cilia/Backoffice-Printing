@@ -664,6 +664,32 @@ Every entry heading carries a status marker, kept in step with its **Status:** l
 
 ---
 
+### 17. Stats 2: real job success instead of the 1.0 default 🔵
+
+- **Status:** agreed 2026-09-08 (Wes) — not started
+- **Area:** backend (`services/capacity_analysis.py`, `services/stats2_slot_metrics.py`,
+  the Stats 2 CSV export)
+- **What:** When a production slot has fewer than `_MIN_JOB_SAMPLES` archived jobs,
+  `print_job_success` (and the harvest/QC yields) fall back to 1.0, so the capacity
+  report shows every plate succeeding. On the 2026-09-08 export TOP reported
+  `print_job_success 1.0` across 13 printers while `print_archives` for the same
+  30 days shows 81 of 228 top jobs failed or aborted (64% success). Add a second
+  fallback before 1.0: job success by `part_code` (all slot versions, all printers,
+  same lookback) from `print_archives`, then by printer model, then 1.0. Carry
+  `using_defaults` and the fallback level into the CSV so the reader can see which
+  rows are measured. Same treatment for harvest and QC yields where floor events
+  exist.
+- **Why:** The "realistic" devices/day (19.5) is ~25% high; the floor plans hiring
+  and printer purchases against it. Measured ceiling is ~15.5 tops/day.
+- **Acceptance:** export on the Sep 5 backup shows TOP `print_job_success` ≈ 0.64
+  and `devices_per_day_realistic` ≈ 15–16; `using_defaults` false for TOP/BOT;
+  unit tests for the three-level fallback; `test_all.sh` green.
+- **Not in v1:** changing how slots map to archived filenames; plate-turnaround
+  measurement (separate).
+- **Branch:** `feat/stats2-real-job-success`
+
+---
+
 ## Explicitly out of scope
 
 _Things we've decided NOT to change, so they don't get re-litigated._
